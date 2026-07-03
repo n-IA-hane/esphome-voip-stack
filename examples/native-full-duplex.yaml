@@ -1,0 +1,76 @@
+substitutions:
+  name: voip-native-example
+  friendly_name: VoIP Native Example
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: NONE
+
+external_components:
+  - source: github://n-IA-hane/esphome-voip-stack@main
+    components: [voip_stack]
+
+i2s_audio:
+  - id: rx_i2s
+    i2s_bclk_pin: GPIO12
+    i2s_lrclk_pin: GPIO13
+  - id: tx_i2s
+    i2s_bclk_pin: GPIO9
+    i2s_lrclk_pin: GPIO10
+
+microphone:
+  - platform: i2s_audio
+    id: native_mic
+    adc_type: external
+    i2s_audio_id: rx_i2s
+    i2s_din_pin: GPIO11
+    channel: right
+    sample_rate: 48000
+    bits_per_sample: 32bit
+
+speaker:
+  - platform: i2s_audio
+    id: native_speaker
+    dac_type: external
+    i2s_audio_id: tx_i2s
+    i2s_dout_pin: GPIO14
+    channel: mono
+    sample_rate: 48000
+    bits_per_sample: 16bit
+
+voip_stack:
+  id: phone
+  transport: udp
+  sip_port: 5060
+  rtp_port: 40000
+  microphone_source:
+    microphone: native_mic
+    bits_per_sample: 16
+    channels: [0]
+  speaker: native_speaker
+  audio:
+    tx:
+      sample_rate: 48000
+      pcm_format: s16le
+      channels: 1
+      frame_ms: 20
+    rx:
+      sample_rate: 48000
+      pcm_format: s16le
+      channels: 1
+      frame_ms: 20
