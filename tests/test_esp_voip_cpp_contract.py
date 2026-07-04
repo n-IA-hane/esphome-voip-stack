@@ -33,7 +33,9 @@ def test_audio_path_is_not_timer_paced_or_sink_callback_paced() -> None:
     assert "kTxQueuedFrames" not in combined
 
     assert "Capture-clocked TX" in audio
-    assert "speaker_->play(pcm + offset, bytes - offset, ticks_to_wait)" in audio
+    assert "TickType_t wait_budget = ticks_to_wait" in audio
+    assert "speaker_->play(pcm + offset, bytes - offset, wait_budget)" in audio
+    assert "wait_budget = 0" in audio
     assert "offset += written" in audio
     assert "written == 0" in audio
     assert "media_tx_queue_drops_" in audio

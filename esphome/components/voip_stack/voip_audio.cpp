@@ -283,8 +283,10 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
 
   size_t offset = 0;
   uint8_t stalls = 0;
+  TickType_t wait_budget = ticks_to_wait;
   while (offset < bytes && this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL) {
-    const size_t written = this->speaker_->play(pcm + offset, bytes - offset, ticks_to_wait);
+    const size_t written = this->speaker_->play(pcm + offset, bytes - offset, wait_budget);
+    wait_budget = 0;
     if (written == 0) {
       if (++stalls >= 4) {
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
