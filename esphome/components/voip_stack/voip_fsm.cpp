@@ -273,10 +273,17 @@ void VoipStack::answer_call() {
   const std::string call_id = this->get_current_call_id_();
   ESP_LOGI(TAG, "%s: answering call (call_id=%s)",
            this->device_name_.c_str(), call_id.c_str());
+  this->set_audio_devices_active_(true);
+  if (this->transport_ && !this->transport_->start_audio_path()) {
+    ESP_LOGE(TAG, "%s: RTP start failed while answering call", this->device_name_.c_str());
+    this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
+    this->set_audio_devices_active_(false);
+    return;
+  }
+  this->set_call_state_(CallState::CONNECTING);
   if (this->transport_ && !call_id.empty()) {
     this->send_sip_answer_(call_id);
   }
-  this->set_audio_devices_active_(true);
   this->set_in_call_(true);  // also publishes IN_CALL state
 }
 
@@ -371,9 +378,7 @@ void VoipStack::set_audio_devices_active_(bool on) {
   this->notify_audio_tasks_();
 
   if (on) {
-    this->first_audio_received_.store(false, std::memory_order_release);  // re-arm 200 OK echo for new call
-    this->last_peer_audio_ms_.store(0, std::memory_order_release);
-    this->media_timeout_rtp_rx_packets_.store(0, std::memory_order_release);
+    this->reset_peer_audio_watchdog_(true);
 
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
     if (this->microphone_) {
@@ -390,9 +395,7 @@ void VoipStack::set_audio_devices_active_(bool on) {
     }
 #endif
   } else {
-    this->first_audio_received_.store(false, std::memory_order_release);
-    this->last_peer_audio_ms_.store(0, std::memory_order_release);
-    this->media_timeout_rtp_rx_packets_.store(0, std::memory_order_release);
+    this->reset_peer_audio_watchdog_(false);
 
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
     if (this->speaker_) {
@@ -411,8 +414,19 @@ void VoipStack::set_audio_devices_active_(bool on) {
   }
 }
 
+void VoipStack::reset_peer_audio_watchdog_(bool seed_from_transport) {
+  uint32_t baseline_rx_packets = 0;
+  if (seed_from_transport && this->transport_ != nullptr) {
+    baseline_rx_packets = this->transport_->snapshot().rtp_rx_packets;
+  }
+  this->first_audio_received_.store(false, std::memory_order_release);
+  this->last_peer_audio_ms_.store(0, std::memory_order_release);
+  this->media_timeout_rtp_rx_packets_.store(baseline_rx_packets, std::memory_order_release);
+}
+
 void VoipStack::set_in_call_(bool on) {
   if (on) {
+    if (this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL) return;
     const std::string call_id = this->get_current_call_id_();
     std::string terminal_reason;
     if (this->recent_terminal_call_(call_id, &terminal_reason)) {
@@ -427,11 +441,8 @@ void VoipStack::set_in_call_(bool on) {
     // A new media leg starts here even if audio_devices_active_ was already true because a
     // previous call did not fully drain yet. Do not inherit peer-audio liveness
     // from the previous dialog, or the media watchdog can fire early.
-    this->first_audio_received_.store(false, std::memory_order_release);
-    this->last_peer_audio_ms_.store(0, std::memory_order_release);
-    this->media_timeout_rtp_rx_packets_.store(0, std::memory_order_release);
-
     if (this->transport_) this->transport_->start_audio_path();
+    this->reset_peer_audio_watchdog_(true);
 
     // Drop stale frames from the previous call before audio resumes.
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
@@ -817,9 +828,16 @@ handle_incoming_invite_in_idle:
       });
 
       if (this->auto_answer_) {
-        this->send_sip_answer_(incoming_cid);
         this->set_audio_devices_active_(true);
+        if (this->transport_ && !this->transport_->start_audio_path()) {
+          ESP_LOGE(TAG, "%s: RTP start failed while auto-answering call", this->device_name_.c_str());
+          this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
+          this->set_audio_devices_active_(false);
+          if (this->transport_) this->transport_->disconnect();
+          break;
+        }
         this->set_call_state_(CallState::CONNECTING);
+        this->send_sip_answer_(incoming_cid);
         this->set_in_call_(true);
       } else {
         this->send_sip_ringing_(incoming_cid);

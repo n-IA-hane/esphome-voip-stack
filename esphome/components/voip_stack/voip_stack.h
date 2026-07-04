@@ -385,6 +385,7 @@ class VoipStack : public Component {
 
   void set_audio_devices_active_(bool on);
   void set_in_call_(bool on);
+  void reset_peer_audio_watchdog_(bool seed_from_transport);
   void notify_audio_tasks_();
 
   void publish_state_();

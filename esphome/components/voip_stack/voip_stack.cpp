@@ -366,7 +366,8 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
       }
     }
     const uint32_t last_audio = this->last_peer_audio_ms_.load(std::memory_order_acquire);
-    if (last_audio != 0 && now_ms - last_audio >= MEDIA_TIMEOUT_MS) {
+    const uint32_t elapsed_since_audio = now_ms - last_audio;
+    if (last_audio != 0 && elapsed_since_audio < 0x80000000UL && elapsed_since_audio >= MEDIA_TIMEOUT_MS) {
       const std::string cid = this->get_current_call_id_();
       ESP_LOGW(TAG, "Media timeout after %u ms without RTP - ending call (call_id=%s)",
                (unsigned) MEDIA_TIMEOUT_MS, cid.c_str());
