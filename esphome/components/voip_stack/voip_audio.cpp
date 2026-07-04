@@ -327,6 +327,12 @@ void VoipStack::rx_task_() {
     }
 
     const TickType_t frame_ticks = std::max<TickType_t>(1, pdMS_TO_TICKS(this->current_rx_audio_format_.frame_ms));
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+    if (this->speaker_ != nullptr && !this->speaker_->is_running()) {
+      ulTaskNotifyTake(pdTRUE, frame_ticks);
+      continue;
+    }
+#endif
     const auto read_result = this->rx_jitter_buffer_ != nullptr
                                  ? this->rx_jitter_buffer_->read(this->rx_audio_chunk_,
                                                                  this->current_rx_audio_format_.nominal_frame_bytes())

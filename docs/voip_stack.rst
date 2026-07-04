@@ -65,8 +65,8 @@ Configuration variables
 - **audio.tx** / **audio.rx** (*Optional*): Per-direction PCM format contract.
   Each direction supports ``auto`` or explicit ``sample_rate``, ``pcm_format``,
   ``channels`` and ``frame_ms``.
-- **audio.tx_formats** / **audio.rx_formats** (*Optional*, list): Additional
-  packet-time reframes advertised in SDP.
+- **audio.tx_formats** / **audio.rx_formats** (*Optional*, list): Up to seven
+  additional packet-time reframes advertised in SDP.
 - **static_contacts** (*Optional*, list): Local outbound dial plan entries.
   Each contact requires ``name`` and may include ``ip``, ``port``, ``rtp_port``
   and ``sip_transport``.

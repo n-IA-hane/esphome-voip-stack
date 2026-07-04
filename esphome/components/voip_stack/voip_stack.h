@@ -385,6 +385,7 @@ class VoipStack : public Component {
 
   void set_audio_devices_active_(bool on);
   void set_in_call_(bool on);
+  void start_speaker_for_current_rx_();
   void reset_peer_audio_watchdog_(bool seed_from_transport);
   void notify_audio_tasks_();
 
@@ -594,7 +595,7 @@ class VoipStack : public Component {
   uint32_t ringing_timeout_ms_{0};
   uint32_t ringing_start_time_{0};
   uint32_t calling_start_time_{0};
-  static constexpr uint32_t INVITE_NO_RESPONSE_TIMEOUT_MS = 1000;
+  static constexpr uint32_t INVITE_NO_RESPONSE_TIMEOUT_MS = 5000;
   static constexpr uint32_t MEDIA_TIMEOUT_MS = 15000;
 
   // === SIP call state ===

@@ -388,20 +388,8 @@ void VoipStack::set_audio_devices_active_(bool on) {
       this->microphone_source_->start();
     }
 #endif
-#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
-    if (this->speaker_) {
-      this->speaker_->set_audio_stream_info(audio_stream_info_from_format(this->current_rx_audio_format_));
-      this->speaker_->start();
-    }
-#endif
   } else {
     this->reset_peer_audio_watchdog_(false);
-
-#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
-    if (this->speaker_) {
-      this->speaker_->stop();
-    }
-#endif
 
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
     if (this->microphone_) {
@@ -412,6 +400,14 @@ void VoipStack::set_audio_devices_active_(bool on) {
     }
 #endif
   }
+}
+
+void VoipStack::start_speaker_for_current_rx_() {
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+  if (this->speaker_ == nullptr) return;
+  this->speaker_->set_audio_stream_info(audio_stream_info_from_format(this->current_rx_audio_format_));
+  this->speaker_->start();
+#endif
 }
 
 void VoipStack::reset_peer_audio_watchdog_(bool seed_from_transport) {
@@ -457,6 +453,7 @@ void VoipStack::set_in_call_(bool on) {
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
     this->reset_rx_audio_();
+    this->start_speaker_for_current_rx_();
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
     this->dc_blocker_ = {};
@@ -894,14 +891,6 @@ handle_incoming_invite_in_idle:
         this->current_dest_to_caller_format_ = msg.selected_rx_format;
         this->set_current_tx_audio_format_(msg.selected_tx_format);
         this->current_rx_audio_format_ = msg.selected_rx_format;
-#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
-        if (this->speaker_) {
-          this->speaker_->set_audio_stream_info(audio_stream_info_from_format(this->current_rx_audio_format_));
-          if (this->audio_devices_active_.load(std::memory_order_acquire)) {
-            this->speaker_->start();
-          }
-        }
-#endif
         ESP_LOGI(TAG, "%s: destination answered, in_call (call_id=%s)",
                  this->device_name_.c_str(),
                  in_call_id.c_str());

@@ -640,12 +640,8 @@ std::string VoipStack::build_sip_snapshot_string_() const {
            field_escape(last_event, 22).c_str());
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
   if (this->audio_debug_) {
-    char debug[160];
-    snprintf(debug, sizeof(debug), "; tqdb=%u; rlate=%u; rmiss=%u; rdup=%u; rsil=%u; spkshort=%u",
-             (unsigned) this->media_tx_queue_drop_bytes_.load(std::memory_order_relaxed),
-             (unsigned) this->audio_debug_rx_late_frames_.load(std::memory_order_relaxed),
-             (unsigned) this->audio_debug_rx_missing_frames_.load(std::memory_order_relaxed),
-             (unsigned) this->audio_debug_rx_duplicate_frames_.load(std::memory_order_relaxed),
+    char debug[48];
+    snprintf(debug, sizeof(debug), "; rsil=%u; spkshort=%u",
              (unsigned) this->audio_debug_rx_silence_frames_.load(std::memory_order_relaxed),
              (unsigned) this->audio_debug_speaker_short_writes_.load(std::memory_order_relaxed));
     return std::string(out) + debug;
