@@ -106,11 +106,79 @@ voip_stack:
       frame_ms: 20
 ```
 
-Use `microphone:` directly instead of `microphone_source:` only when the
-referenced microphone already publishes the configured `audio.tx` format.
-AFE/AEC-backed branches should publish the processor output actually delivered
-to `voip_stack`; maintained profiles use `16000:s16le:1:16`. Native ESPHome
-microphone/speaker branches can advertise their real format.
+Use `microphone_source:` when the ESPHome microphone is wider than the VoIP
+stream and `voip_stack` must select a channel or bit depth. For example, an
+I2S microphone can expose 32-bit stereo while SIP/RTP should send 16-bit mono.
+
+Use `microphone:` when the referenced microphone already exposes the exact PCM
+stream you want to advertise in `audio.tx`. This is the normal shape with
+`esp_audio_stack`, because its microphone platform already publishes the
+post-AEC/AFE clean microphone stream. Maintained AEC/AFE profiles publish
+`16000:s16le:1` toward VoIP.
+
+## Software AEC / AFE
+
+`voip_stack` does not own echo cancellation. Import `esp_audio_stack` plus the
+processor you want, attach that processor to `esp_audio_stack`, then give
+`voip_stack` the resulting clean microphone and speaker surfaces:
+
+```yaml
+external_components:
+  - source: github://n-IA-hane/esphome-audio-stack@main
+    components: [esp_audio_stack, esp_aec]
+  - source: github://n-IA-hane/esphome-voip-stack@main
+    components: [voip_stack]
+
+esp_aec:
+  id: aec_processor
+  mode: sr_low_cost
+
+esp_audio_stack:
+  id: audio_stack
+  processor_id: aec_processor
+  sample_rate: 48000
+  output_sample_rate: 16000
+  # pins / codec / reference topology go here
+
+microphone:
+  - platform: esp_audio_stack
+    id: clean_mic
+    esp_audio_stack_id: audio_stack
+
+speaker:
+  - platform: esp_audio_stack
+    id: stack_speaker
+    esp_audio_stack_id: audio_stack
+
+voip_stack:
+  id: phone
+  microphone: clean_mic
+  speaker: stack_speaker
+  audio:
+    tx: auto
+    rx: auto
+```
+
+For the full Espressif AFE pipeline, import `esp_afe` instead of `esp_aec`:
+
+```yaml
+external_components:
+  - source: github://n-IA-hane/esphome-audio-stack@main
+    components: [esp_audio_stack, esp_afe]
+  - source: github://n-IA-hane/esphome-voip-stack@main
+    components: [voip_stack]
+
+esp_afe:
+  id: afe_processor
+  type: fd
+  mode: high_perf
+
+esp_audio_stack:
+  id: audio_stack
+  processor_id: afe_processor
+  sample_rate: 48000
+  output_sample_rate: 16000
+```
 
 ## Mic-Only And Speaker-Only
 
@@ -134,7 +202,7 @@ These are first-class modes, not degraded modes. They are useful for split
 installations, paging speakers, monitor/listen devices, and hardware that
 already exposes only one audio direction.
 
-## Software AEC / AFE
+## Removed Legacy AEC / AFE Options
 
 Standalone `voip_stack` AEC has been removed.
 
@@ -193,11 +261,11 @@ voip_stack:
   id: phone
   transport: udp  # SIP signaling transport only; audio is always RTP/UDP.
   static_contacts:
-    - name: Casa di nonna
+    - name: Workshop
       ip: 192.168.1.44
       port: 5060
       rtp_port: 40000
-    - name: Cancello
+    - name: Front Gate
 ```
 
 `name` is required. `ip`, `port`, `rtp_port`, and `sip_transport` are optional.

@@ -128,13 +128,28 @@ voip_stack:
     rx: { sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 20 }
 ```
 
-Use `microphone:` directly only when the referenced microphone already publishes the configured `audio.tx` format.
+Use `microphone_source:` when the ESPHome microphone is wider than the VoIP
+stream and `voip_stack` must select a channel or bit depth. In the example
+above the I2S microphone is 32-bit stereo, while the SIP/RTP TX stream is
+16-bit mono, so `microphone_source` selects one channel and converts the
+sample width before VoIP sends it.
+
+Use `microphone:` when the referenced microphone already exposes the exact PCM
+stream you want to advertise in `audio.tx`. This is the normal shape with
+`esp_audio_stack`, because its microphone platform already publishes the
+post-AEC/AFE clean microphone stream.
 
 ### 6.2 Audio Stack Facade
 
 This is the maintained path when software AEC/AFE, media player, Voice Assistant, Micro Wake Word or multiple consumers share the backend:
 
 ```yaml
+external_components:
+  - source: github://n-IA-hane/esphome-audio-stack@main
+    components: [esp_audio_stack, esp_aec]
+  - source: github://n-IA-hane/esphome-voip-stack@main
+    components: [voip_stack]
+
 esp_aec:
   id: aec_processor
   mode: sr_low_cost
@@ -165,6 +180,28 @@ voip_stack:
 ```
 
 During a call, the far end hears near-end speech after echo cancellation. Wake word keeps working locally because the same clean stream feeds it.
+
+For the full Espressif AFE pipeline, import `esp_afe` instead of `esp_aec` and
+point `processor_id` at that processor:
+
+```yaml
+external_components:
+  - source: github://n-IA-hane/esphome-audio-stack@main
+    components: [esp_audio_stack, esp_afe]
+  - source: github://n-IA-hane/esphome-voip-stack@main
+    components: [voip_stack]
+
+esp_afe:
+  id: afe_processor
+  type: fd
+  mode: high_perf
+
+esp_audio_stack:
+  id: audio_stack
+  processor_id: afe_processor
+  sample_rate: 48000
+  output_sample_rate: 16000
+```
 
 ### 6.3 Mic-Only and Speaker-Only
 
@@ -215,12 +252,12 @@ TCP signaling is useful where UDP SIP is filtered or unreliable; per-contact `si
 voip_stack:
   id: phone
   static_contacts:
-    - name: Casa
+    - name: Workshop
       ip: 192.168.1.44
       port: 5060
       rtp_port: 40000
       sip_transport: udp
-    - name: Cancello
+    - name: Front Gate
 ```
 
 `name` is required; everything else is optional. Static contacts serve offline installs, diagnostics and direct SIP peers. Normal installs use the HA-managed roster through `ha_phonebook_text_sensor_id`.
