@@ -614,7 +614,22 @@ void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
   // INVITE can replay the same final response; cleared by the next accepted INVITE.
   this->clear_call_identity_();
 
-  this->defer([this]() { this->set_call_state_(CallState::IDLE); });
+  this->defer([this]() {
+    const CallState state = this->call_state_.load(std::memory_order_acquire);
+    switch (state) {
+      case CallState::TERMINATING:
+      case CallState::BUSY:
+      case CallState::DECLINED:
+      case CallState::CANCELLED:
+      case CallState::MEDIA_INCOMPATIBLE:
+      case CallState::TRANSPORT_UNREACHABLE:
+      case CallState::AUTH_REQUIRED_UNSUPPORTED:
+        this->set_call_state_(CallState::IDLE);
+        break;
+      default:
+        break;
+    }
+  });
 }
 
 // === Transport callbacks ===

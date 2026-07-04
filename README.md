@@ -228,7 +228,9 @@ Per-direction format blocks accept `auto` per field or as the whole block:
 | `channels` | 1, 2 | `auto` |
 | `frame_ms` | 10, 16, 20, 32 | `auto` |
 
-`tx_formats` / `rx_formats` declare up to seven additional advertised formats per direction. They must be fully explicit and may only vary `frame_ms` relative to the base format.
+`tx_formats` / `rx_formats` declare up to seven additional advertised formats
+per direction. They must be fully explicit and may only vary `frame_ms` relative
+to the base format; validation rejects the eighth extra entry.
 
 RTP packet sizes are guarded by `udp_max_payload` (default 1200 bytes), enforced at validation.
 
@@ -326,6 +328,7 @@ Declared entities:
 switch:
   - platform: voip_stack
     voip_stack_id: phone
+    active: { name: Call Active }
     auto_answer: { name: Auto Answer }
     dnd: { name: Do Not Disturb }
 
@@ -339,6 +342,8 @@ button:
   - platform: voip_stack
     voip_stack_id: phone
     call: { name: Call }
+    next_contact: { name: Next Contact }
+    previous_contact: { name: Previous Contact }
     decline: { name: Decline }
 ```
 
@@ -386,5 +391,9 @@ Removed options rejected with migration guidance: `processor_id`, `aec_reference
 ## 16. Provenance and License
 
 This component is the SIP engine of the [`esphome-intercom`](https://github.com/n-IA-hane/esphome-intercom) platform, where it is exercised daily together with its Home Assistant integration, Lovelace card, maintained device YAMLs and full-experience packages. Higher layers remain in the intercom repository; this repository tracks the component itself, and `SOURCE.md` records the exact source commit of each snapshot.
+
+The repository also carries a small internal `ring_buffer` component used by
+`voip_stack` for CAPS-aware RTP/audio buffering. It is not a user-facing YAML
+component.
 
 MIT license.

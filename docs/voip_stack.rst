@@ -3,7 +3,6 @@ VoIP Stack
 
 .. seo::
     :description: Instructions for the ESPHome VoIP Stack SIP/SDP/RTP endpoint component.
-    :image: phone.svg
 
 The ``voip_stack`` component turns an ESP32 ESPHome device into a SIP endpoint.
 It handles SIP signaling over UDP or TCP, SDP offer/answer, RTP media over UDP,
@@ -138,10 +137,12 @@ or digest authentication support in the ESP component. Provider trunks,
 registrar accounts, central routing and the Lovelace softphone card are provided
 by the Home Assistant integration in ``esphome-intercom``.
 
-See also
+See Also
 --------
 
 - :doc:`/components/microphone/index`
 - :doc:`/components/speaker/index`
 - :doc:`/components/voice_assistant`
 - :doc:`/components/micro_wake_word`
+- :apiref:`voip_stack/voip_stack.h`
+- :ghedit:`Edit`
