@@ -115,6 +115,29 @@ def test_sip_tcp_rx_is_bounded_and_active_dialog_accept_is_guarded() -> None:
     assert "SIP TCP accept rejected: dialog active with different peer" in accept
 
 
+def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
+    init_py = read("__init__.py")
+    header = read("voip_stack.h")
+    stack_cpp = read("voip_stack.cpp")
+
+    assert 'CONF_CONFERENCE_GROUP = "conference_group"' in init_py
+    assert 'CONF_RING_GROUP = "ring_group"' in init_py
+    assert "_validate_endpoint_label" in init_py
+    assert "set_conference_group" in header
+    assert "set_ring_group" in header
+    assert "std::string conference_group_" in header
+    assert "std::string ring_group_" in header
+    assert "var.set_conference_group" in init_py
+    assert "var.set_ring_group" in init_py
+
+    endpoint = stack_cpp[stack_cpp.index("std::string VoipStack::build_endpoint_string_"):]
+    assert "char buf[896]" in endpoint
+    assert "!this->conference_group_.empty() || !this->ring_group_.empty()" in endpoint
+    assert 'out += " | "' in endpoint
+    assert "out += this->conference_group_" in endpoint
+    assert "out += this->ring_group_" in endpoint
+
+
 def test_voip_media_tasks_are_not_idle_polling() -> None:
     audio = read("voip_audio.cpp")
     sip_cpp = read("sip_transport.cpp")

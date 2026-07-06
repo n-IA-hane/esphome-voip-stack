@@ -551,12 +551,20 @@ std::string VoipStack::build_endpoint_string_() const {
   };
   const std::string tx = format_list_token(this->tx_audio_formats_);
   const std::string rx = format_list_token(this->rx_audio_formats_);
-  char buf[768];
+  char buf[896];
   snprintf(buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s", name.c_str(), ip.c_str(),
            (unsigned) this->sip_port_, (unsigned) this->rtp_port_,
            this->audio_capability_(), tx.c_str(), rx.c_str(),
            this->protocol_ == TransportType::TCP ? "sip_tcp" : "sip_udp",
            this->extension_.c_str());
+  if (!this->conference_group_.empty() || !this->ring_group_.empty()) {
+    std::string out = buf;
+    out += " | ";
+    out += this->conference_group_;
+    out += " | ";
+    out += this->ring_group_;
+    return out;
+  }
   return buf;
 }
 

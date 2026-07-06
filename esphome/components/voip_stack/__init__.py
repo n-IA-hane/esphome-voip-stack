@@ -81,6 +81,8 @@ CONF_STATIC_CONTACTS = "static_contacts"
 CONF_ENTRY = "entry"
 CONF_CONTACT = "contact"
 CONF_EXTENSION = "extension"
+CONF_CONFERENCE_GROUP = "conference_group"
+CONF_RING_GROUP = "ring_group"
 CONF_IP = "ip"
 CONF_PORT = "port"
 CONF_RTP_PORT_ACTION = "rtp_port"
@@ -106,6 +108,15 @@ UDP_SAFE_PAYLOAD_BYTES = 1200
 
 def _is_auto(value):
     return isinstance(value, str) and value.lower() == CONF_AUTO
+
+
+def _validate_endpoint_label(value):
+    value = cv.string(value)
+    if len(value) > 32:
+        raise cv.Invalid("must be at most 32 characters")
+    if any(ch in value for ch in ("|", ",", ";", "\r", "\n")):
+        raise cv.Invalid("must not contain |, comma, semicolon or newlines")
+    return value
 
 
 def _validate_voip_audio_format(value):
@@ -445,6 +456,8 @@ CONFIG_SCHEMA = cv.Schema(
             _validate_static_contact
         ),
         cv.Optional(CONF_EXTENSION, default=""): cv.string,
+        cv.Optional(CONF_CONFERENCE_GROUP, default=""): _validate_endpoint_label,
+        cv.Optional(CONF_RING_GROUP, default=""): _validate_endpoint_label,
         # On the first post-boot phonebook population, select the HA peer row
         # as the current destination so a freshly booted ESP is tuned to HA
         # instead of whichever contact happens to be first in the roster order.
@@ -690,6 +703,8 @@ async def _add_core_settings(var, config):
     cg.add(var.set_task_stacks_in_psram(config[CONF_TASK_STACKS_IN_PSRAM]))
     cg.add(var.set_buffers_in_psram(config[CONF_BUFFERS_IN_PSRAM]))
     cg.add(var.set_extension(config[CONF_EXTENSION]))
+    cg.add(var.set_conference_group(config[CONF_CONFERENCE_GROUP]))
+    cg.add(var.set_ring_group(config[CONF_RING_GROUP]))
     cg.add(var.set_use_ha_as_first_contact(config[CONF_USE_HA_AS_FIRST_CONTACT]))
     cg.add(var.set_audio_debug(config[CONF_AUDIO_DEBUG]))
     if config[CONF_AUDIO_DEBUG]:

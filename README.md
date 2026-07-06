@@ -266,6 +266,17 @@ voip_stack:
 
 Inbound INVITEs carry caller and destination identity and are not rejected for being unknown. ESP devices never register to an HA or provider trunk; trunk numbers and inbound DTMF routes are mapped by HA to local phonebook targets.
 
+ESP devices can also publish optional HA-managed group membership:
+
+```yaml
+voip_stack:
+  id: phone
+  conference_group: Conference
+  ring_group: Casa
+```
+
+`conference_group` means calling the group joins an HA-mixed conference immediately. `ring_group` means calling the group makes all members ring and the first answer wins. Both features are routed by the Home Assistant `voip_stack` integration; from the ESP point of view the group is just another phonebook contact. They require the HA integration release that documents group routing support.
+
 ## 10. Call Lifecycle, Triggers and Conditions
 
 FSM states: `IDLE`, `CALLING`, `REMOTE_RINGING`, `RINGING`, `CONNECTING`, `IN_CALL`, `TERMINATING`, and terminal outcomes `BUSY`, `DECLINED`, `CANCELLED`, `MEDIA_INCOMPATIBLE`, `TRANSPORT_UNREACHABLE`, `AUTH_REQUIRED_UNSUPPORTED`.
@@ -361,6 +372,8 @@ button:
 | `audio.tx_formats` / `audio.rx_formats` | `[]` | Extra packet-time reframes. |
 | `static_contacts` | `[]` | YAML dial plan. |
 | `extension` | `""` | Local SIP extension/user part. |
+| `conference_group` | `""` | Optional HA-managed conference group membership. |
+| `ring_group` | `""` | Optional HA-managed ring group membership. |
 | `use_ha_as_first_contact` | `false` | Pin the HA peer at the top of the dial plan. |
 | `ha_phonebook_text_sensor_id` | none | Bind the HA phonebook sensor. |
 | `delete_contact_missing_from` | none | Drop absent roster contact after N updates. |

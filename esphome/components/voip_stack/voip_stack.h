@@ -106,6 +106,8 @@ class VoipStack : public Component {
   void set_buffers_in_psram(bool enabled) { this->buffers_in_psram_ = enabled; }
   void set_device_name(const std::string &name) { this->device_name_ = name; }
   void set_extension(const std::string &extension) { this->extension_ = extension; }
+  void set_conference_group(const std::string &group) { this->conference_group_ = group; }
+  void set_ring_group(const std::string &group) { this->ring_group_ = group; }
   // Stable routing key (yaml `name:` slug, e.g. "spotpear-ball-v2").
   // Matches the slug HA uses for the esphome.{slug}_start_call action.
   void set_device_route_id(const std::string &id) { this->device_route_id_ = id; }
@@ -496,6 +498,8 @@ class VoipStack : public Component {
   bool first_contacts_batch_committed_{false};
   std::string device_name_;  // This device's friendly name (to exclude from contacts)
   std::string extension_;  // Optional internal dial-plan alias published to HA.
+  std::string conference_group_;
+  std::string ring_group_;
   std::string last_published_destination_;
   std::string device_route_id_;  // routing key (yaml node name slug)
 
