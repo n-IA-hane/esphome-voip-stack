@@ -360,6 +360,7 @@ class VoipStack : public Component {
   static void transport_sip_signal_callback_(void *ctx, const SipSignal &signal);
   static void transport_connection_callback_(void *ctx, bool connected);
   static bool transport_accept_callback_(void *ctx);
+  static bool transport_dialog_active_callback_(void *ctx);
   void on_audio_received_(const TransportAudioFrame &frame);
   void on_sip_signal_received_(const SipSignal &signal);
   bool ignore_if_idle_or_stale_(const char *message_name, const std::string &call_id) const;

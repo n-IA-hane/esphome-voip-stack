@@ -28,6 +28,9 @@ static const char *const TAG = "voip_stack.sip";
 
 namespace {
 
+static constexpr size_t MAX_SIP_BODY_BYTES = 4096;
+static constexpr size_t MAX_SIP_TCP_RX_BUFFER = 8192;
+
 std::string sip_header_token(const std::string &raw);
 
 std::string trim_copy(const std::string &s) {
@@ -595,6 +598,7 @@ void SipTransport::request_tcp_client_close_() {
 void SipTransport::close_tcp_client_from_sip_task_() {
   const int socket = this->sip_tcp_client_socket_.exchange(-1, std::memory_order_acq_rel);
   this->sip_tcp_client_close_requested_.store(false, std::memory_order_release);
+  this->sip_tcp_client_ip_v4_.store(0, std::memory_order_release);
   if (socket >= 0) close(socket);
   this->sip_tcp_rx_buffer_.clear();
 }
@@ -1687,10 +1691,25 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
 
 void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
   char buf[1024];
+  auto drop_tcp_stream = [&](const char *reason) {
+    char ip[16];
+    inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
+    ESP_LOGW(TAG, "%s from %s, dropping connection", reason, ip);
+    close(socket);
+    int expected = socket;
+    this->sip_tcp_client_socket_.compare_exchange_strong(expected, -1, std::memory_order_acq_rel);
+    this->sip_tcp_client_ip_v4_.store(0, std::memory_order_release);
+    this->remote_sip_tcp_.store(false, std::memory_order_release);
+    this->sip_tcp_rx_buffer_.clear();
+  };
   while (true) {
     const int n = recv(socket, buf, sizeof(buf), 0);
     if (n > 0) {
       this->sip_tcp_rx_buffer_.append(buf, static_cast<size_t>(n));
+      if (this->sip_tcp_rx_buffer_.size() > MAX_SIP_TCP_RX_BUFFER) {
+        drop_tcp_stream("SIP TCP RX buffer overflow");
+        return;
+      }
       continue;
     }
     if (n == 0) {
@@ -1698,6 +1717,7 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
       close(socket);
       int expected = socket;
       this->sip_tcp_client_socket_.compare_exchange_strong(expected, -1, std::memory_order_acq_rel);
+      this->sip_tcp_client_ip_v4_.store(0, std::memory_order_release);
       this->remote_sip_tcp_.store(false, std::memory_order_release);
       this->sip_tcp_rx_buffer_.clear();
       return;
@@ -1708,6 +1728,7 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
     close(socket);
     int expected = socket;
     this->sip_tcp_client_socket_.compare_exchange_strong(expected, -1, std::memory_order_acq_rel);
+    this->sip_tcp_client_ip_v4_.store(0, std::memory_order_release);
     this->remote_sip_tcp_.store(false, std::memory_order_release);
     this->sip_tcp_rx_buffer_.clear();
     return;
@@ -1717,7 +1738,15 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
     const size_t sep = this->sip_tcp_rx_buffer_.find("\r\n\r\n");
     if (sep == std::string::npos) return;
     const size_t body_len = sip_content_length(this->sip_tcp_rx_buffer_);
+    if (body_len > MAX_SIP_BODY_BYTES) {
+      drop_tcp_stream("SIP TCP Content-Length exceeds limit");
+      return;
+    }
     const size_t total = sep + 4 + body_len;
+    if (total > MAX_SIP_TCP_RX_BUFFER) {
+      drop_tcp_stream("SIP TCP framed message exceeds RX buffer");
+      return;
+    }
     if (this->sip_tcp_rx_buffer_.size() < total) return;
     const std::string msg = this->sip_tcp_rx_buffer_.substr(0, total);
     this->sip_tcp_rx_buffer_.erase(0, total);
@@ -1765,6 +1794,7 @@ void SipTransport::sip_task_() {
   };
   auto promote_tcp_connect = [&]() {
     this->sip_tcp_client_socket_.store(connecting_fd, std::memory_order_release);
+    this->sip_tcp_client_ip_v4_.store(connecting_ip_v4, std::memory_order_release);
     this->sip_tcp_client_close_requested_.store(false, std::memory_order_release);
     this->sip_tcp_rx_buffer_.clear();
     char ip[16];
@@ -1918,8 +1948,23 @@ void SipTransport::sip_task_() {
         setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
         int flags = fcntl(client, F_GETFL, 0);
         fcntl(client, F_SETFL, flags | O_NONBLOCK);
+        const uint32_t accepted_ip_v4 = ntohl(src.sin_addr.s_addr);
+        const int active_client = this->sip_tcp_client_socket_.load(std::memory_order_acquire);
+        const uint32_t active_ip_v4 = this->sip_tcp_client_ip_v4_.load(std::memory_order_acquire);
+        if (this->dialog_active_() && active_client >= 0 && active_ip_v4 != 0 && active_ip_v4 != accepted_ip_v4) {
+          char ip[16];
+          inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
+          ESP_LOGW(TAG, "SIP TCP accept rejected: dialog active with different peer %s", ip);
+          close(client);
+          continue;
+        }
+        if (!this->should_accept_session_() && active_client < 0) {
+          close(client);
+          continue;
+        }
         this->close_tcp_client_from_sip_task_();
         this->sip_tcp_client_socket_.store(client, std::memory_order_release);
+        this->sip_tcp_client_ip_v4_.store(accepted_ip_v4, std::memory_order_release);
         this->sip_tcp_client_close_requested_.store(false, std::memory_order_release);
         this->sip_tcp_rx_buffer_.clear();
         this->remote_sip_tcp_.store(true, std::memory_order_release);

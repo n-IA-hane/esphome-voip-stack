@@ -90,6 +90,31 @@ def test_sip_tcp_originate_is_async() -> None:
     assert "connect(" not in originate
 
 
+def test_sip_tcp_rx_is_bounded_and_active_dialog_accept_is_guarded() -> None:
+    sip_h = read("sip_transport.h")
+    transport_h = read("transport.h")
+    sip_cpp = read("sip_transport.cpp")
+    stack_cpp = read("voip_stack.cpp")
+
+    assert "MAX_SIP_BODY_BYTES = 4096" in sip_cpp
+    assert "MAX_SIP_TCP_RX_BUFFER = 8192" in sip_cpp
+    assert "sip_tcp_client_ip_v4_" in sip_h
+    assert "TransportDialogActiveCallback" in transport_h
+    assert "set_dialog_active_callback" in transport_h
+    assert "transport_dialog_active_callback_" in stack_cpp
+
+    stream = sip_cpp[sip_cpp.index("void SipTransport::handle_sip_stream_") : sip_cpp.index("\nvoid SipTransport::sip_task_trampoline_", sip_cpp.index("void SipTransport::handle_sip_stream_"))]
+    assert "this->sip_tcp_rx_buffer_.size() > MAX_SIP_TCP_RX_BUFFER" in stream
+    assert "body_len > MAX_SIP_BODY_BYTES" in stream
+    assert "drop_tcp_stream(\"SIP TCP RX buffer overflow\")" in stream
+    assert "drop_tcp_stream(\"SIP TCP Content-Length exceeds limit\")" in stream
+
+    accept = sip_cpp[sip_cpp.index("int client = accept(") : sip_cpp.index("if (this->sip_socket_ >= 0", sip_cpp.index("int client = accept("))]
+    assert "this->dialog_active_()" in accept
+    assert "active_ip_v4 != accepted_ip_v4" in accept
+    assert "SIP TCP accept rejected: dialog active with different peer" in accept
+
+
 def test_voip_media_tasks_are_not_idle_polling() -> None:
     audio = read("voip_audio.cpp")
     sip_cpp = read("sip_transport.cpp")

@@ -23,6 +23,7 @@ using TransportAudioCallback = void (*)(void *ctx, const TransportAudioFrame &fr
 using TransportSipSignalCallback = void (*)(void *ctx, const SipSignal &signal);
 using TransportConnectionCallback = void (*)(void *ctx, bool connected);
 using TransportAcceptCallback = bool (*)(void *ctx);
+using TransportDialogActiveCallback = bool (*)(void *ctx);
 
 struct SipTransportSnapshot {
   bool running{false};
@@ -136,6 +137,11 @@ class SipPhoneTransport {
     this->should_accept_session_ctx_ = ctx;
   }
 
+  void set_dialog_active_callback(TransportDialogActiveCallback cb, void *ctx) {
+    this->dialog_active_cb_ = cb;
+    this->dialog_active_ctx_ = ctx;
+  }
+
  protected:
   /// Buffer lifetime = callback duration only.
   void emit_audio_frame_(const uint8_t *pcm, size_t bytes) {
@@ -172,6 +178,10 @@ class SipPhoneTransport {
            this->should_accept_session_cb_(this->should_accept_session_ctx_);
   }
 
+  bool dialog_active_() const {
+    return this->dialog_active_cb_ != nullptr && this->dialog_active_cb_(this->dialog_active_ctx_);
+  }
+
  private:
   TransportAudioCallback on_audio_frame_{nullptr};
   void *on_audio_frame_ctx_{nullptr};
@@ -181,6 +191,8 @@ class SipPhoneTransport {
   void *on_connection_change_ctx_{nullptr};
   TransportAcceptCallback should_accept_session_cb_{nullptr};
   void *should_accept_session_ctx_{nullptr};
+  TransportDialogActiveCallback dialog_active_cb_{nullptr};
+  void *dialog_active_ctx_{nullptr};
 };
 
 }  // namespace voip_stack

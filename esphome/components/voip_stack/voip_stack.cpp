@@ -216,6 +216,7 @@ bool VoipStack::setup_transport_() {
   this->transport_->set_sip_signal_callback(VoipStack::transport_sip_signal_callback_, this);
   this->transport_->set_connection_callback(VoipStack::transport_connection_callback_, this);
   this->transport_->set_accept_callback(VoipStack::transport_accept_callback_, this);
+  this->transport_->set_dialog_active_callback(VoipStack::transport_dialog_active_callback_, this);
 
   if (!this->transport_->start()) {
     ESP_LOGE(TAG, "Transport failed to start");
@@ -238,6 +239,10 @@ void VoipStack::transport_connection_callback_(void *ctx, bool connected) {
 
 bool VoipStack::transport_accept_callback_(void *ctx) {
   return static_cast<VoipStack *>(ctx)->can_accept_session_();
+}
+
+bool VoipStack::transport_dialog_active_callback_(void *ctx) {
+  return static_cast<VoipStack *>(ctx)->is_active();
 }
 
 bool VoipStack::start_runtime_tasks_() {

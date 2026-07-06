@@ -188,6 +188,7 @@ class SipTransport : public SipPhoneTransport {
   int sip_socket_{-1};
   int sip_tcp_listener_socket_{-1};
   std::atomic<int> sip_tcp_client_socket_{-1};
+  std::atomic<uint32_t> sip_tcp_client_ip_v4_{0};
   std::atomic<uint32_t> tcp_connect_ip_v4_{0};
   std::atomic<uint16_t> tcp_connect_port_{0};
   std::atomic<bool> tcp_connect_requested_{false};
