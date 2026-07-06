@@ -121,13 +121,17 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
     stack_cpp = read("voip_stack.cpp")
 
     assert 'CONF_CONFERENCE_GROUP = "conference_group"' in init_py
+    assert 'CONF_CONFERENCE_RING = "conference_ring"' in init_py
     assert 'CONF_RING_GROUP = "ring_group"' in init_py
     assert "_validate_endpoint_label" in init_py
     assert "set_conference_group" in header
+    assert "set_conference_ring" in header
     assert "set_ring_group" in header
     assert "std::string conference_group_" in header
+    assert "bool conference_ring_{false}" in header
     assert "std::string ring_group_" in header
     assert "var.set_conference_group" in init_py
+    assert "var.set_conference_ring" in init_py
     assert "var.set_ring_group" in init_py
 
     endpoint = stack_cpp[stack_cpp.index("std::string VoipStack::build_endpoint_string_"):]
@@ -136,6 +140,7 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
     assert 'out += " | "' in endpoint
     assert "out += this->conference_group_" in endpoint
     assert "out += this->ring_group_" in endpoint
+    assert 'out += this->conference_ring_ ? "1" : "0"' in endpoint
 
 
 def test_voip_media_tasks_are_not_idle_polling() -> None:

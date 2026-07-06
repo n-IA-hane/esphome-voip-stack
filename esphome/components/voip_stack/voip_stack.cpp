@@ -563,6 +563,8 @@ std::string VoipStack::build_endpoint_string_() const {
     out += this->conference_group_;
     out += " | ";
     out += this->ring_group_;
+    out += " | ";
+    out += this->conference_ring_ ? "1" : "0";
     return out;
   }
   return buf;

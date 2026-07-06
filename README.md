@@ -272,10 +272,11 @@ ESP devices can also publish optional HA-managed group membership:
 voip_stack:
   id: phone
   conference_group: Conference
+  conference_ring: true
   ring_group: Casa
 ```
 
-`conference_group` means calling the group joins an HA-mixed conference immediately. `ring_group` means calling the group makes all members ring and the first answer wins. Both features are routed by the Home Assistant `voip_stack` integration; from the ESP point of view the group is just another phonebook contact. They require the HA integration release that documents group routing support.
+`conference_group` means calling the group joins an HA-mixed conference immediately. `conference_ring` makes this device ring when another member starts that conference; with it disabled, the device can still join by calling the conference contact manually. `ring_group` means calling the group makes all members ring and the first answer wins. All group routing is handled by the Home Assistant `voip_stack` integration; from the ESP point of view the group is just another phonebook contact. They require the HA integration release that documents group routing support.
 
 ## 10. Call Lifecycle, Triggers and Conditions
 
@@ -373,6 +374,7 @@ button:
 | `static_contacts` | `[]` | YAML dial plan. |
 | `extension` | `""` | Local SIP extension/user part. |
 | `conference_group` | `""` | Optional HA-managed conference group membership. |
+| `conference_ring` | `false` | Ring this device when another member starts its conference group. |
 | `ring_group` | `""` | Optional HA-managed ring group membership. |
 | `use_ha_as_first_contact` | `false` | Pin the HA peer at the top of the dial plan. |
 | `ha_phonebook_text_sensor_id` | none | Bind the HA phonebook sensor. |

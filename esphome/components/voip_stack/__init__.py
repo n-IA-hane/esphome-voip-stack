@@ -82,6 +82,7 @@ CONF_ENTRY = "entry"
 CONF_CONTACT = "contact"
 CONF_EXTENSION = "extension"
 CONF_CONFERENCE_GROUP = "conference_group"
+CONF_CONFERENCE_RING = "conference_ring"
 CONF_RING_GROUP = "ring_group"
 CONF_IP = "ip"
 CONF_PORT = "port"
@@ -457,6 +458,7 @@ CONFIG_SCHEMA = cv.Schema(
         ),
         cv.Optional(CONF_EXTENSION, default=""): cv.string,
         cv.Optional(CONF_CONFERENCE_GROUP, default=""): _validate_endpoint_label,
+        cv.Optional(CONF_CONFERENCE_RING, default=False): cv.boolean,
         cv.Optional(CONF_RING_GROUP, default=""): _validate_endpoint_label,
         # On the first post-boot phonebook population, select the HA peer row
         # as the current destination so a freshly booted ESP is tuned to HA
@@ -590,6 +592,8 @@ def _consume_voip_sockets(config):
 def _final_validate(config):
     """Cross-component validation + socket reservation."""
     protocol = config.get(CONF_TRANSPORT, TRANSPORT_UDP)
+    if config.get(CONF_CONFERENCE_RING, False) and not str(config.get(CONF_CONFERENCE_GROUP, "")).strip():
+        raise cv.Invalid("voip_stack.conference_ring requires conference_group.")
     if CONF_MICROPHONE in config and CONF_MICROPHONE_SOURCE in config:
         raise cv.Invalid(
             "Use only one of voip_stack.microphone or voip_stack.microphone_source."
@@ -704,6 +708,7 @@ async def _add_core_settings(var, config):
     cg.add(var.set_buffers_in_psram(config[CONF_BUFFERS_IN_PSRAM]))
     cg.add(var.set_extension(config[CONF_EXTENSION]))
     cg.add(var.set_conference_group(config[CONF_CONFERENCE_GROUP]))
+    cg.add(var.set_conference_ring(config[CONF_CONFERENCE_RING]))
     cg.add(var.set_ring_group(config[CONF_RING_GROUP]))
     cg.add(var.set_use_ha_as_first_contact(config[CONF_USE_HA_AS_FIRST_CONTACT]))
     cg.add(var.set_audio_debug(config[CONF_AUDIO_DEBUG]))
