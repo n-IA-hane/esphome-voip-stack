@@ -278,6 +278,12 @@ voip_stack:
 
 `conference_group` means calling the group joins an HA-mixed conference immediately. `conference_ring` makes this device ring when another member starts that conference; with it disabled, the device can still join by calling the conference contact manually. `ring_group` means calling the group makes all members ring and the first answer wins. All group routing is handled by the Home Assistant `voip_stack` integration; from the ESP point of view the group is just another phonebook contact. They require the HA integration release that documents group routing support.
 
+The ESP component does not implement a PBX. It only publishes local membership
+metadata in the endpoint string and calls the resulting phonebook contact by
+name. Home Assistant materializes the group entries, performs SIP forking for
+ring groups, mixes conference rooms, and pushes the updated roster back to the
+ESP devices.
+
 ## 10. Call Lifecycle, Triggers and Conditions
 
 FSM states: `IDLE`, `CALLING`, `REMOTE_RINGING`, `RINGING`, `CONNECTING`, `IN_CALL`, `TERMINATING`, and terminal outcomes `BUSY`, `DECLINED`, `CANCELLED`, `MEDIA_INCOMPATIBLE`, `TRANSPORT_UNREACHABLE`, `AUTH_REQUIRED_UNSUPPORTED`.
