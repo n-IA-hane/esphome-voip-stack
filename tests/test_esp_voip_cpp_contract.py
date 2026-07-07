@@ -124,6 +124,10 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
     assert 'CONF_CONFERENCE_RING = "conference_ring"' in init_py
     assert 'CONF_RING_GROUP = "ring_group"' in init_py
     assert "_validate_endpoint_label" in init_py
+    assert "def _validate_group_list" in init_py
+    assert 'value.split(",")' in init_py
+    assert 'cv.Optional(CONF_CONFERENCE_GROUP, default=""): _validate_group_list' in init_py
+    assert 'cv.Optional(CONF_RING_GROUP, default=""): _validate_group_list' in init_py
     assert "set_conference_group" in header
     assert "set_conference_ring" in header
     assert "set_ring_group" in header

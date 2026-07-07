@@ -120,6 +120,17 @@ def _validate_endpoint_label(value):
     return value
 
 
+def _validate_group_list(value):
+    value = cv.string(value)
+    if any(ch in value for ch in ("|", ";", "\r", "\n")):
+        raise cv.Invalid("must not contain |, semicolon or newlines")
+    groups = [part.strip() for part in value.split(",") if part.strip()]
+    for group in groups:
+        if len(group) > 32:
+            raise cv.Invalid("each group name must be at most 32 characters")
+    return ", ".join(groups)
+
+
 def _validate_voip_audio_format(value):
     if _is_auto(value):
         return CONF_AUTO
@@ -457,9 +468,9 @@ CONFIG_SCHEMA = cv.Schema(
             _validate_static_contact
         ),
         cv.Optional(CONF_EXTENSION, default=""): cv.string,
-        cv.Optional(CONF_CONFERENCE_GROUP, default=""): _validate_endpoint_label,
+        cv.Optional(CONF_CONFERENCE_GROUP, default=""): _validate_group_list,
         cv.Optional(CONF_CONFERENCE_RING, default=False): cv.boolean,
-        cv.Optional(CONF_RING_GROUP, default=""): _validate_endpoint_label,
+        cv.Optional(CONF_RING_GROUP, default=""): _validate_group_list,
         # On the first post-boot phonebook population, select the HA peer row
         # as the current destination so a freshly booted ESP is tuned to HA
         # instead of whichever contact happens to be first in the roster order.

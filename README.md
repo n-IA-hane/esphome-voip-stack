@@ -271,12 +271,12 @@ ESP devices can also publish optional HA-managed group membership:
 ```yaml
 voip_stack:
   id: phone
-  conference_group: Conference
+  conference_group: CG Home, CG Workshop
   conference_ring: true
-  ring_group: Casa
+  ring_group: RG Home
 ```
 
-`conference_group` means calling the group joins an HA-mixed conference immediately. `conference_ring` makes this device ring when another member starts that conference; with it disabled, the device can still join by calling the conference contact manually. `ring_group` means calling the group makes all members ring and the first answer wins. All group routing is handled by the Home Assistant `voip_stack` integration; from the ESP point of view the group is just another phonebook contact. They require the HA integration release that documents group routing support.
+`conference_group` and `ring_group` accept one name or a comma-separated list. `conference_group` means calling the group joins an HA-mixed conference immediately. `conference_ring` makes this device ring when another member starts one of its conference groups; with it disabled, the device can still join by calling the conference contact manually. `ring_group` means calling the group makes all members ring and the first answer wins. All group routing is handled by the Home Assistant `voip_stack` integration; from the ESP point of view the group is just another phonebook contact. They require the HA integration release that documents group routing support.
 
 The ESP component does not implement a PBX. It only publishes local membership
 metadata in the endpoint string and calls the resulting phonebook contact by
@@ -379,9 +379,9 @@ button:
 | `audio.tx_formats` / `audio.rx_formats` | `[]` | Extra packet-time reframes. |
 | `static_contacts` | `[]` | YAML dial plan. |
 | `extension` | `""` | Local SIP extension/user part. |
-| `conference_group` | `""` | Optional HA-managed conference group membership. |
+| `conference_group` | `""` | Optional HA-managed conference group membership, single name or comma-separated list. |
 | `conference_ring` | `false` | Ring this device when another member starts its conference group. |
-| `ring_group` | `""` | Optional HA-managed ring group membership. |
+| `ring_group` | `""` | Optional HA-managed ring group membership, single name or comma-separated list. |
 | `use_ha_as_first_contact` | `false` | Pin the HA peer at the top of the dial plan. |
 | `ha_phonebook_text_sensor_id` | none | Bind the HA phonebook sensor. |
 | `delete_contact_missing_from` | none | Drop absent roster contact after N updates. |
