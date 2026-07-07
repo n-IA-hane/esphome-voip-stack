@@ -126,6 +126,7 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
     assert "_validate_endpoint_label" in init_py
     assert "def _validate_group_list" in init_py
     assert 'value.split(",")' in init_py
+    assert 'cv.Optional(CONF_EXTENSION, default=""): _validate_endpoint_label' in init_py
     assert 'cv.Optional(CONF_CONFERENCE_GROUP, default=""): _validate_group_list' in init_py
     assert 'cv.Optional(CONF_RING_GROUP, default=""): _validate_group_list' in init_py
     assert "set_conference_group" in header
@@ -140,11 +141,11 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
 
     endpoint = stack_cpp[stack_cpp.index("std::string VoipStack::build_endpoint_string_"):]
     assert "char buf[896]" in endpoint
-    assert "!this->conference_group_.empty() || !this->ring_group_.empty()" in endpoint
-    assert 'out += " | "' in endpoint
-    assert "out += this->conference_group_" in endpoint
-    assert "out += this->ring_group_" in endpoint
-    assert 'out += this->conference_ring_ ? "1" : "0"' in endpoint
+    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s | %s | %s | %s"' in endpoint
+    assert "this->conference_group_.c_str()" in endpoint
+    assert "this->ring_group_.c_str()" in endpoint
+    assert 'this->conference_ring_ ? "1" : "0"' in endpoint
+    assert "VoIP endpoint string truncated" in endpoint
 
 
 def test_voip_media_tasks_are_not_idle_polling() -> None:
@@ -236,7 +237,7 @@ def test_long_diagnostic_text_sensors_have_wrapping_separators() -> None:
 
     assert 'out += "; ";' in stack
     assert 'out += ";";' not in stack
-    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s"' in stack
+    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s | %s | %s | %s"' in stack
     assert '"st=%s; id=%s; dir=%s; from=%s; to=%s; ct=%s; tr=%s; sc=%u; "' in stack
     assert '"tx=%s; rx=%s; pt=%u; pr=%u; "' in stack
     assert '"tqd=%u; tqdrop=%u; rqd=%u; rqdrop=%u; rs=%s; ev=%s"' in stack

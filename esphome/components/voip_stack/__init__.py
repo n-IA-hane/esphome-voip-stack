@@ -467,7 +467,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_STATIC_CONTACTS, default=[]): cv.ensure_list(
             _validate_static_contact
         ),
-        cv.Optional(CONF_EXTENSION, default=""): cv.string,
+        cv.Optional(CONF_EXTENSION, default=""): _validate_endpoint_label,
         cv.Optional(CONF_CONFERENCE_GROUP, default=""): _validate_group_list,
         cv.Optional(CONF_CONFERENCE_RING, default=False): cv.boolean,
         cv.Optional(CONF_RING_GROUP, default=""): _validate_group_list,

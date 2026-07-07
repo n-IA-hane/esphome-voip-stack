@@ -552,20 +552,16 @@ std::string VoipStack::build_endpoint_string_() const {
   const std::string tx = format_list_token(this->tx_audio_formats_);
   const std::string rx = format_list_token(this->rx_audio_formats_);
   char buf[896];
-  snprintf(buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s", name.c_str(), ip.c_str(),
-           (unsigned) this->sip_port_, (unsigned) this->rtp_port_,
-           this->audio_capability_(), tx.c_str(), rx.c_str(),
-           this->protocol_ == TransportType::TCP ? "sip_tcp" : "sip_udp",
-           this->extension_.c_str());
-  if (!this->conference_group_.empty() || !this->ring_group_.empty()) {
-    std::string out = buf;
-    out += " | ";
-    out += this->conference_group_;
-    out += " | ";
-    out += this->ring_group_;
-    out += " | ";
-    out += this->conference_ring_ ? "1" : "0";
-    return out;
+  const int written = snprintf(
+      buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s | %s | %s | %s",
+      name.c_str(), ip.c_str(), (unsigned) this->sip_port_, (unsigned) this->rtp_port_,
+      this->audio_capability_(), tx.c_str(), rx.c_str(),
+      this->protocol_ == TransportType::TCP ? "sip_tcp" : "sip_udp",
+      this->extension_.c_str(), this->conference_group_.c_str(), this->ring_group_.c_str(),
+      this->conference_ring_ ? "1" : "0");
+  if (written < 0 || written >= (int) sizeof(buf)) {
+    ESP_LOGW(TAG, "VoIP endpoint string truncated; endpoint will not be published");
+    return "";
   }
   return buf;
 }
