@@ -90,45 +90,6 @@ inline void audio_format_list_default(AudioFormatList *out) {
   out->count = 1;
 }
 
-inline bool encode_u32_le(uint8_t *out, size_t out_cap, uint32_t value) {
-  if (out_cap < 4) return false;
-  out[0] = static_cast<uint8_t>(value & 0xFF);
-  out[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
-  out[2] = static_cast<uint8_t>((value >> 16) & 0xFF);
-  out[3] = static_cast<uint8_t>((value >> 24) & 0xFF);
-  return true;
-}
-
-inline uint32_t decode_u32_le(const uint8_t *in) {
-  return static_cast<uint32_t>(in[0]) |
-         (static_cast<uint32_t>(in[1]) << 8) |
-         (static_cast<uint32_t>(in[2]) << 16) |
-         (static_cast<uint32_t>(in[3]) << 24);
-}
-
-inline size_t encode_audio_format(uint8_t *out, size_t out_cap, const AudioFormat &fmt) {
-  if (!fmt.is_valid() || out_cap < 8) return 0;
-  encode_u32_le(out, out_cap, fmt.sample_rate);
-  out[4] = static_cast<uint8_t>(fmt.pcm_format);
-  out[5] = fmt.channels;
-  out[6] = static_cast<uint8_t>(fmt.frame_ms & 0xFF);
-  out[7] = static_cast<uint8_t>((fmt.frame_ms >> 8) & 0xFF);
-  return 8;
-}
-
-inline size_t decode_audio_format(const uint8_t *in, size_t in_len, AudioFormat *out) {
-  if (in_len < 8) return 0;
-  AudioFormat fmt;
-  fmt.sample_rate = decode_u32_le(in);
-  fmt.pcm_format = static_cast<PcmFormat>(in[4]);
-  fmt.channels = in[5];
-  fmt.frame_ms = static_cast<uint16_t>(static_cast<uint16_t>(in[6]) |
-                                       (static_cast<uint16_t>(in[7]) << 8));
-  if (!fmt.is_valid()) return 0;
-  *out = fmt;
-  return 8;
-}
-
 enum class SipSignalType : uint8_t {
   INVITE,
   STATUS_180_RINGING,

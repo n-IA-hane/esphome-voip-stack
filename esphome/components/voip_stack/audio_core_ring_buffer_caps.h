@@ -59,11 +59,7 @@ class CapsRingBuffer : public ring_buffer::RingBuffer {
                                    bool write_partial = true);
   BaseType_t reset();
 
- protected:
-  bool discard_bytes_(size_t discard_bytes);
-
  private:
-  bool is_nosplit_() const { return this->type_ == RINGBUF_TYPE_NOSPLIT; }
   RingbufferType_t type_{RINGBUF_TYPE_BYTEBUF};
 };
 
@@ -76,7 +72,6 @@ using RingBufferPtr = std::unique_ptr<CapsRingBuffer>;
 /// @param name   identifier for boot-time placement log (must outlive the call)
 /// @return owned pointer, or nullptr on allocation failure
 RingBufferPtr create_ring_buffer(size_t len, RingBufferPolicy policy, const char *name);
-RingBufferPtr create_nosplit_ring_buffer(size_t len, RingBufferPolicy policy, const char *name);
 
 /// Convenience: force internal RAM. Use for audio hot-path ring buffers.
 inline RingBufferPtr create_internal(size_t len, const char *name) {
@@ -87,20 +82,6 @@ inline RingBufferPtr create_internal(size_t len, const char *name) {
 inline RingBufferPtr create_prefer_psram(size_t len, const char *name) {
   return create_ring_buffer(len, RingBufferPolicy::PREFER_PSRAM, name);
 }
-
-/// Convenience: PSRAM only. Use only when internal must be preserved at all cost.
-inline RingBufferPtr create_psram(size_t len, const char *name) {
-  return create_ring_buffer(len, RingBufferPolicy::PSRAM_ONLY, name);
-}
-
-inline RingBufferPtr create_nosplit_internal(size_t len, const char *name) {
-  return create_nosplit_ring_buffer(len, RingBufferPolicy::INTERNAL, name);
-}
-
-inline RingBufferPtr create_nosplit_prefer_psram(size_t len, const char *name) {
-  return create_nosplit_ring_buffer(len, RingBufferPolicy::PREFER_PSRAM, name);
-}
-
 
 namespace detail {
 
@@ -144,68 +125,20 @@ inline bool CapsRingBuffer::install(size_t len, uint32_t caps, RingbufferType_t 
 }
 
 inline size_t CapsRingBuffer::read(void *data, size_t len, TickType_t ticks_to_wait) {
-  if (!this->is_nosplit_())
-    return ring_buffer::RingBuffer::read(data, len, ticks_to_wait);
-
-  size_t item_len = 0;
-  void *item = xRingbufferReceive(this->handle_, &item_len, ticks_to_wait);
-  if (item == nullptr)
-    return 0;
-
-  const size_t copied = std::min(item_len, len);
-  std::memcpy(data, item, copied);
-  vRingbufferReturnItem(this->handle_, item);
-  return copied;
+  return ring_buffer::RingBuffer::read(data, len, ticks_to_wait);
 }
 
 inline size_t CapsRingBuffer::write(const void *data, size_t len) {
-  if (!this->is_nosplit_())
-    return ring_buffer::RingBuffer::write(data, len);
-
-  while (this->free() < len) {
-    if (!this->discard_bytes_(len - this->free()))
-      break;
-  }
-  return this->write_without_replacement(data, len, 0, false);
+  return ring_buffer::RingBuffer::write(data, len);
 }
 
 inline size_t CapsRingBuffer::write_without_replacement(const void *data, size_t len, TickType_t ticks_to_wait,
                                                         bool write_partial) {
-  if (!this->is_nosplit_())
-    return ring_buffer::RingBuffer::write_without_replacement(data, len, ticks_to_wait, write_partial);
-
-  if (xRingbufferSend(this->handle_, data, len, ticks_to_wait))
-    return len;
-  return 0;
+  return ring_buffer::RingBuffer::write_without_replacement(data, len, ticks_to_wait, write_partial);
 }
 
 inline BaseType_t CapsRingBuffer::reset() {
-  if (!this->is_nosplit_())
-    return ring_buffer::RingBuffer::reset();
-
-  while (true) {
-    size_t item_len = 0;
-    void *item = xRingbufferReceive(this->handle_, &item_len, 0);
-    if (item == nullptr)
-      return pdPASS;
-    vRingbufferReturnItem(this->handle_, item);
-  }
-}
-
-inline bool CapsRingBuffer::discard_bytes_(size_t discard_bytes) {
-  if (!this->is_nosplit_())
-    return ring_buffer::RingBuffer::discard_bytes_(discard_bytes);
-
-  size_t discarded = 0;
-  while (discarded < discard_bytes) {
-    size_t item_len = 0;
-    void *item = xRingbufferReceive(this->handle_, &item_len, 0);
-    if (item == nullptr)
-      break;
-    discarded += item_len;
-    vRingbufferReturnItem(this->handle_, item);
-  }
-  return discarded >= discard_bytes;
+  return ring_buffer::RingBuffer::reset();
 }
 
 inline RingBufferPtr create_ring_buffer_with_type(size_t len, RingBufferPolicy policy, const char *name,
@@ -235,19 +168,14 @@ inline RingBufferPtr create_ring_buffer_with_type(size_t len, RingBufferPolicy p
 
   const void *storage = rb->probe_storage();
   const char *placement = esp_ptr_internal(storage) ? "internal" : "psram";
-  ESP_LOGI("ring_buffer_caps", "ringbuffer '%s': size=%u policy=%s type=%s placement=%s",
-           name, static_cast<unsigned>(len), detail::policy_str(policy),
-           type == RINGBUF_TYPE_NOSPLIT ? "nosplit" : "bytebuf", placement);
+  ESP_LOGI("ring_buffer_caps", "ringbuffer '%s': size=%u policy=%s type=bytebuf placement=%s",
+           name, static_cast<unsigned>(len), detail::policy_str(policy), placement);
 
   return rb;
 }
 
 inline RingBufferPtr create_ring_buffer(size_t len, RingBufferPolicy policy, const char *name) {
   return create_ring_buffer_with_type(len, policy, name, RINGBUF_TYPE_BYTEBUF);
-}
-
-inline RingBufferPtr create_nosplit_ring_buffer(size_t len, RingBufferPolicy policy, const char *name) {
-  return create_ring_buffer_with_type(len, policy, name, RINGBUF_TYPE_NOSPLIT);
 }
 
 }  // namespace audio_core

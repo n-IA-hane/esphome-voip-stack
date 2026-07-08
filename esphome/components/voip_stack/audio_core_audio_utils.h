@@ -95,20 +95,6 @@ struct PcmLevelsDbfs {
   float rms_dbfs{RMS_DBFS_SILENCE};
 };
 
-// RMS power in dBFS for int16 PCM samples. Returns -120 dBFS for silence.
-// `stride` lets callers walk channel-interleaved buffers (e.g. TDM slots).
-static inline float compute_rms_dbfs_i16(const int16_t *data, size_t samples, size_t stride = 1) {
-  if (data == nullptr || samples == 0) return RMS_DBFS_SILENCE;
-  uint64_t sumsq = 0;
-  for (size_t i = 0; i < samples; i++) {
-    int32_t s = data[i * stride];
-    sumsq += static_cast<uint64_t>(s * s);
-  }
-  float mean = static_cast<float>(sumsq) / static_cast<float>(samples);
-  if (mean <= 0.0f) return RMS_DBFS_SILENCE;
-  return 10.0f * log10f(mean) - RMS_DBFS_OFFSET;
-}
-
 static inline PcmLevelsDbfs compute_levels_dbfs_i16(const int16_t *data, size_t samples, size_t stride = 1) {
   PcmLevelsDbfs levels;
   if (data == nullptr || samples == 0) return levels;
@@ -125,20 +111,6 @@ static inline PcmLevelsDbfs compute_levels_dbfs_i16(const int16_t *data, size_t 
   float mean = static_cast<float>(sumsq) / static_cast<float>(samples);
   if (mean > 0.0f) levels.rms_dbfs = 10.0f * log10f(mean) - RMS_DBFS_OFFSET;
   return levels;
-}
-
-// Variant for int32 (e.g. TDM slot data with top 16 bits used). Each sample
-// is right-shifted by 16 to land in int16 range before squaring.
-static inline float compute_rms_dbfs_i32_top16(const int32_t *data, size_t samples, size_t stride = 1) {
-  if (data == nullptr || samples == 0) return RMS_DBFS_SILENCE;
-  uint64_t sumsq = 0;
-  for (size_t i = 0; i < samples; i++) {
-    int32_t s = data[i * stride] >> 16;
-    sumsq += static_cast<uint64_t>(s * s);
-  }
-  float mean = static_cast<float>(sumsq) / static_cast<float>(samples);
-  if (mean <= 0.0f) return RMS_DBFS_SILENCE;
-  return 10.0f * log10f(mean) - RMS_DBFS_OFFSET;
 }
 #endif
 
