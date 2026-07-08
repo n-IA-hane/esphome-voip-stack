@@ -93,21 +93,26 @@ uint16_t json_u16(const cJSON *obj, const char *key, uint16_t default_value = 0)
   return default_value;
 }
 
-std::string json_metadata_string(const cJSON *obj, const char *key) {
+const cJSON *json_metadata(const cJSON *obj) {
   const cJSON *meta = cJSON_GetObjectItemCaseSensitive(obj, "metadata");
-  if (!cJSON_IsObject(meta)) return "";
+  return cJSON_IsObject(meta) ? meta : nullptr;
+}
+
+std::string json_metadata_string(const cJSON *obj, const char *key) {
+  const cJSON *meta = json_metadata(obj);
+  if (meta == nullptr) return "";
   return json_string(meta, key);
 }
 
 uint16_t json_metadata_u16(const cJSON *obj, const char *key, uint16_t default_value = 0) {
-  const cJSON *meta = cJSON_GetObjectItemCaseSensitive(obj, "metadata");
-  if (!cJSON_IsObject(meta)) return default_value;
+  const cJSON *meta = json_metadata(obj);
+  if (meta == nullptr) return default_value;
   return json_u16(meta, key, default_value);
 }
 
 bool json_metadata_bool(const cJSON *obj, const char *key) {
-  const cJSON *meta = cJSON_GetObjectItemCaseSensitive(obj, "metadata");
-  if (!cJSON_IsObject(meta)) return false;
+  const cJSON *meta = json_metadata(obj);
+  if (meta == nullptr) return false;
   return json_bool(meta, key);
 }
 
