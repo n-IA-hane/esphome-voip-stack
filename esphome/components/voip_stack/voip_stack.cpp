@@ -24,6 +24,48 @@ namespace voip_stack {
 
 static const char *const TAG = "voip_stack";
 
+namespace {
+
+std::string normalize_group_list(const std::string &value) {
+  std::string out;
+  std::string current;
+  auto flush = [&]() {
+    size_t first = current.find_first_not_of(" \t");
+    size_t last = current.find_last_not_of(" \t");
+    if (first == std::string::npos) {
+      current.clear();
+      return;
+    }
+    std::string group = current.substr(first, last - first + 1);
+    if (group.size() > 32) group.resize(32);
+    if (!out.empty()) out += ",";
+    out += group;
+    current.clear();
+  };
+  for (char ch : value) {
+    if (ch == ',') {
+      flush();
+    } else if (ch != '|' && ch != ';' && ch != '\r' && ch != '\n') {
+      current.push_back(ch);
+    }
+  }
+  flush();
+  return out;
+}
+
+std::string normalize_endpoint_label(const std::string &value) {
+  std::string out;
+  const std::string trimmed = Phonebook::trim(value);
+  for (char ch : trimmed) {
+    if (out.size() >= 32) break;
+    if (ch == '|' || ch == ',' || ch == ';' || ch == '\r' || ch == '\n') continue;
+    out.push_back(ch);
+  }
+  return out;
+}
+
+}  // namespace
+
 void VoipStack::append_audio_format_(AudioFormatList *list, const AudioFormat &format) {
   if (list == nullptr || !format.is_valid()) return;
   for (uint8_t i = 0; i < list->count; i++) {
@@ -551,19 +593,53 @@ std::string VoipStack::build_endpoint_string_() const {
   };
   const std::string tx = format_list_token(this->tx_audio_formats_);
   const std::string rx = format_list_token(this->rx_audio_formats_);
-  char buf[896];
+  char buf[640];
   const int written = snprintf(
-      buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s | %s | %s | %s",
+      buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s",
       name.c_str(), ip.c_str(), (unsigned) this->sip_port_, (unsigned) this->rtp_port_,
       this->audio_capability_(), tx.c_str(), rx.c_str(),
       this->protocol_ == TransportType::TCP ? "sip_tcp" : "sip_udp",
-      this->extension_.c_str(), this->conference_group_.c_str(), this->ring_group_.c_str(),
-      this->conference_ring_ ? "1" : "0");
+      this->extension_.c_str());
   if (written < 0 || written >= (int) sizeof(buf)) {
     ESP_LOGW(TAG, "VoIP endpoint string truncated; endpoint will not be published");
     return "";
   }
   return buf;
+}
+
+void VoipStack::set_extension(const std::string &extension) {
+  const std::string normalized = normalize_endpoint_label(extension);
+  this->extension_ = normalized;
+  if (this->extension_text_ != nullptr) {
+    this->extension_text_->publish_state(normalized);
+  }
+  this->request_endpoint_publish_();
+}
+
+void VoipStack::set_ring_groups(const std::string &groups) {
+  const std::string normalized = normalize_group_list(groups);
+  this->ring_groups_ = normalized;
+  if (this->ring_groups_text_ != nullptr) {
+    this->ring_groups_text_->publish_state(normalized);
+  }
+}
+
+void VoipStack::set_conference_groups(const std::string &groups) {
+  const std::string normalized = normalize_group_list(groups);
+  this->conference_groups_ = normalized;
+  if (normalized.empty() && this->conference_ring_) {
+    this->set_conference_ring(false);
+  }
+  if (this->conference_groups_text_ != nullptr) {
+    this->conference_groups_text_->publish_state(normalized);
+  }
+}
+
+void VoipStack::set_conference_ring(bool enabled) {
+  this->conference_ring_ = enabled && !this->conference_groups_.empty();
+  if (this->conference_ring_switch_ != nullptr) {
+    this->conference_ring_switch_->publish_state(this->conference_ring_);
+  }
 }
 
 std::string VoipStack::build_sip_snapshot_string_() const {
@@ -707,6 +783,18 @@ void VoipStack::publish_entity_states() {
   this->publish_sip_snapshot_();
   if (this->last_reason_sensor_ != nullptr) {
     this->last_reason_sensor_->publish_state(this->last_reason_);
+  }
+  if (this->extension_text_ != nullptr) {
+    this->extension_text_->publish_state(this->extension_);
+  }
+  if (this->ring_groups_text_ != nullptr) {
+    this->ring_groups_text_->publish_state(this->ring_groups_);
+  }
+  if (this->conference_groups_text_ != nullptr) {
+    this->conference_groups_text_->publish_state(this->conference_groups_);
+  }
+  if (this->conference_ring_switch_ != nullptr) {
+    this->conference_ring_switch_->publish_state(this->conference_ring_);
   }
 
   if (this->auto_answer_switch_ != nullptr) {

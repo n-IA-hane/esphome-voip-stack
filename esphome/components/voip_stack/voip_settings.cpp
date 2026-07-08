@@ -540,10 +540,35 @@ bool VoipStack::set_contact(const std::string &name) {
   return false;
 }
 
-void VoipStack::call_contact(const std::string &name) {
-  if (!this->set_contact(name)) {
+void VoipStack::call(const std::string &value) {
+  const std::string target = Phonebook::trim(value);
+  if (target.empty()) {
+    ESP_LOGW(TAG, "call failed: empty target");
+    this->defer([this]() { this->call_failed_trigger_.trigger("Empty target"); });
     return;
   }
+
+  if (this->phonebook_.select(target)) {
+    this->pending_dialplan_target_.clear();
+    this->publish_destination_();
+    ESP_LOGI(TAG, "Selected contact: %s", target.c_str());
+    this->start();
+    return;
+  }
+
+  if (this->ha_peer_name_.empty() || this->phonebook_.find(this->ha_peer_name_) == nullptr ||
+      !this->phonebook_.select(this->ha_peer_name_)) {
+    ESP_LOGW(TAG, "call('%s') failed: not in local phonebook and HA peer unavailable",
+             target.c_str());
+    std::string msg = std::string("Contact not found: ") + target;
+    this->defer([this, msg]() { this->call_failed_trigger_.trigger(msg); });
+    return;
+  }
+
+  this->pending_dialplan_target_ = target;
+  this->publish_destination_();
+  ESP_LOGI(TAG, "Routing target '%s' through HA peer '%s'",
+           target.c_str(), this->ha_peer_name_.c_str());
   this->start();
 }
 
@@ -584,7 +609,19 @@ bool VoipStack::get_current_contact_sip_transport_tcp() const {
 }
 
 void VoipStack::publish_destination_() {
-  const std::string current = this->get_current_destination();
+  std::string current = this->get_current_destination();
+  const CallState state = this->call_state_.load(std::memory_order_acquire);
+  const CallSnapshot call = this->snapshot_call_identity_();
+  if (!this->pending_dialplan_target_.empty()) {
+    current = this->pending_dialplan_target_;
+  } else if (state != CallState::IDLE && !call.dest_name.empty() &&
+             call.caller_name == this->device_name_) {
+    current = call.dest_name;
+  } else if (state == CallState::IDLE && !this->last_reason_.empty() &&
+             this->last_terminal_direction_ == "outgoing" &&
+             !this->last_terminal_dest_name_.empty()) {
+    current = this->last_terminal_dest_name_;
+  }
   if (this->destination_sensor_ != nullptr) {
     this->destination_sensor_->publish_state(current);
   }

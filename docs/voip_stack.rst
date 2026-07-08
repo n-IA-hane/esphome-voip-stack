@@ -110,7 +110,7 @@ Actions
 
 Call control: ``voip_stack.start``, ``voip_stack.stop``,
 ``voip_stack.call_toggle``, ``voip_stack.answer_call``,
-``voip_stack.decline_call``, ``voip_stack.call_contact`` and
+``voip_stack.decline_call``, ``voip_stack.call`` and
 ``voip_stack.set_remote_endpoint``.
 
 Phonebook: ``voip_stack.next_contact``, ``voip_stack.prev_contact``,

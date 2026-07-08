@@ -85,11 +85,11 @@ class SetContactAction : public Action<Ts...>, public Parented<VoipStack> {
 };
 
 template<typename... Ts>
-class CallContactAction : public Action<Ts...>, public Parented<VoipStack> {
+class CallAction : public Action<Ts...>, public Parented<VoipStack> {
  public:
-  TEMPLATABLE_VALUE(std::string, contact)
+  TEMPLATABLE_VALUE(std::string, target)
   void play(const Ts &...x) override {
-    this->parent_->call_contact(this->contact_.value(x...));
+    this->parent_->call(this->target_.value(x...));
   }
 };
 

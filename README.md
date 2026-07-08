@@ -271,18 +271,31 @@ ESP devices can also publish optional HA-managed group membership:
 ```yaml
 voip_stack:
   id: phone
-  conference_group: CG Home, CG Workshop
+  conference_groups: CG Home, CG Workshop
   conference_ring: true
-  ring_group: RG Home
+  ring_groups: RG Home
+
+text:
+  - platform: voip_stack
+    type: ring_groups
+    name: VoIP Ring Groups
+  - platform: voip_stack
+    type: conference_groups
+    name: VoIP Conference Groups
+
+switch:
+  - platform: voip_stack
+    conference_ring:
+      name: VoIP Ring On Conference
 ```
 
-`conference_group` and `ring_group` accept one name or a comma-separated list. `conference_group` means calling the group joins an HA-mixed conference immediately. `conference_ring` makes this device ring when another member starts one of its conference groups; with it disabled, the device can still join by calling the conference contact manually. `ring_group` means calling the group makes all members ring and the first answer wins. All group routing is handled by the Home Assistant `voip_stack` integration; from the ESP point of view the group is just another phonebook contact. They require the HA integration release that documents group routing support.
+`conference_groups` and `ring_groups` accept one name or a comma-separated list. `conference_groups` means calling the group joins an HA-mixed conference immediately. `conference_ring` makes this device ring when another member starts one of its conference groups; with it disabled, the device can still join by calling the conference contact manually. `ring_groups` means calling the group makes all members ring and the first answer wins. All group routing is handled by the Home Assistant `voip_stack` integration; from the ESP point of view the group is just another phonebook contact. They require the HA integration release that documents group routing support.
 
 The ESP component does not implement a PBX. It only publishes local membership
-metadata in the endpoint string and calls the resulting phonebook contact by
-name. Home Assistant materializes the group entries, performs SIP forking for
-ring groups, mixes conference rooms, and pushes the updated roster back to the
-ESP devices.
+metadata through dedicated HA entities and calls the resulting phonebook
+contact by name. Home Assistant materializes the group entries, performs SIP
+forking for ring groups, mixes conference rooms, and pushes the updated roster
+back to the ESP devices.
 
 ## 10. Call Lifecycle, Triggers and Conditions
 
@@ -318,7 +331,7 @@ Call control:
 | `voip_stack.call_toggle` | Start when idle, stop otherwise. |
 | `voip_stack.answer_call` | Answer ringing inbound call. |
 | `voip_stack.decline_call` | Decline with optional reason. |
-| `voip_stack.call_contact` | Dial a phonebook entry by name. |
+| `voip_stack.call` | Dial a destination string. Local phonebook matches go direct; unresolved targets route through HA. |
 | `voip_stack.set_remote_endpoint` | Point the next call at an explicit address. |
 
 Phonebook actions: `next_contact`, `prev_contact`, `add_contact`, `remove_contact`, `set_contact`, `set_contacts`, `flush_contacts`, `update_contacts`, `set_roster_json`, `set_ha_peer_name`.
@@ -327,18 +340,61 @@ Audio and misc actions: `set_volume`, `set_mic_gain_db`, `publish_entity_states`
 
 ## 12. Entities
 
-Auto-created text sensors:
+`voip_stack:` alone enables the local SIP/RTP engine. HA discovery, card mirror
+state, editable groups and diagnostics are exposed by declaring the native
+platform entities you need:
 
-| Sensor | Content |
-|---|---|
-| `VoIP State` | Current FSM state. |
-| `VoIP Transport` | Active signaling transport. |
-| `VoIP Endpoint` | Authoritative endpoint identity record. |
-| `VoIP Last Reason` | Last terminal outcome. |
-| `VoIP SIP Snapshot` | Diagnostic snapshot of the SIP layer. |
-| `Destination` | Currently selected dial-plan target. |
-| `Caller` | Current/last caller identity. |
-| `Contacts` | Published contact list. |
+| Platform | Type | Content |
+|---|---|---|
+| `text_sensor` | `endpoint` | Short endpoint identity record used by HA phonebook discovery. |
+| `text_sensor` | `state` | Current FSM state. |
+| `text_sensor` | `caller` | Current/last caller identity. |
+| `text_sensor` | `destination` | Currently selected dial-plan target. |
+| `text_sensor` | `last_reason` | Last terminal outcome. |
+| `text_sensor` | `contacts` | Published local contact list. |
+| `text_sensor` | `transport` | Active signaling transport. |
+| `text_sensor` | `sip_snapshot` | Diagnostic snapshot of the SIP layer. |
+| `text` | `ring_groups` | Editable comma-separated ring group memberships. |
+| `text` | `conference_groups` | Editable comma-separated conference group memberships. |
+| `switch` | `conference_ring` | Ring this endpoint when another participant starts one of its conference groups. |
+
+For HA-managed installs, include the integration package from
+`esphome-intercom` or declare the equivalent entities manually:
+
+```yaml
+text_sensor:
+  - platform: voip_stack
+    type: endpoint
+    name: VoIP Endpoint
+  - platform: voip_stack
+    type: state
+    name: VoIP State
+  - platform: voip_stack
+    type: caller
+    name: VoIP Caller
+  - platform: voip_stack
+    type: destination
+    name: VoIP Destination
+  - platform: voip_stack
+    type: last_reason
+    name: VoIP Last Reason
+  - platform: voip_stack
+    type: contacts
+    name: VoIP Contacts
+
+text:
+  - platform: voip_stack
+    type: ring_groups
+    name: VoIP Ring Groups
+  - platform: voip_stack
+    type: conference_groups
+    name: VoIP Conference Groups
+
+switch:
+  - platform: voip_stack
+    conference_ring:
+      name: VoIP Ring On Conference
+```
 
 Declared entities:
 

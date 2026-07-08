@@ -21,6 +21,7 @@
 #include "esphome/components/switch/switch.h"
 #include "esphome/components/button/button.h"
 #include "esphome/components/number/number.h"
+#include "esphome/components/text/text.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 
 #include "voip_fsm.h"
@@ -105,10 +106,14 @@ class VoipStack : public Component {
   void set_task_stacks_in_psram(bool enabled) { this->task_stacks_in_psram_ = enabled; }
   void set_buffers_in_psram(bool enabled) { this->buffers_in_psram_ = enabled; }
   void set_device_name(const std::string &name) { this->device_name_ = name; }
-  void set_extension(const std::string &extension) { this->extension_ = extension; }
-  void set_conference_group(const std::string &group) { this->conference_group_ = group; }
-  void set_conference_ring(bool enabled) { this->conference_ring_ = enabled; }
-  void set_ring_group(const std::string &group) { this->ring_group_ = group; }
+  void set_extension(const std::string &extension);
+  const std::string &get_extension() const { return this->extension_; }
+  void set_conference_groups(const std::string &groups);
+  const std::string &get_conference_groups() const { return this->conference_groups_; }
+  void set_conference_ring(bool enabled);
+  bool get_conference_ring() const { return this->conference_ring_; }
+  void set_ring_groups(const std::string &groups);
+  const std::string &get_ring_groups() const { return this->ring_groups_; }
   // Stable routing key (yaml `name:` slug, e.g. "spotpear-ball-v2").
   // Matches the slug HA uses for the esphome.{slug}_start_call action.
   void set_device_route_id(const std::string &id) { this->device_route_id_ = id; }
@@ -230,6 +235,9 @@ class VoipStack : public Component {
   void set_endpoint_sensor(text_sensor::TextSensor *sensor) { this->endpoint_sensor_ = sensor; }
   void set_last_reason_sensor(text_sensor::TextSensor *sensor) { this->last_reason_sensor_ = sensor; }
   void set_sip_snapshot_sensor(text_sensor::TextSensor *sensor) { this->sip_snapshot_sensor_ = sensor; }
+  void set_ring_groups_text(text::Text *entity) { this->ring_groups_text_ = entity; }
+  void set_conference_groups_text(text::Text *entity) { this->conference_groups_text_ = entity; }
+  void set_extension_text(text::Text *entity) { this->extension_text_ = entity; }
   // Phonebook source from HA: shipped YAMLs wire a homeassistant text_sensor
   // through ha_phonebook_text_sensor_id. Current firmware consumes the unified
   // SIP roster sensor.voip_phonebook and normalizes it locally.
@@ -240,6 +248,7 @@ class VoipStack : public Component {
   // Entity registration (for state sync after boot)
   void register_auto_answer_switch(switch_::Switch *sw) { this->auto_answer_switch_ = sw; }
   void register_dnd_switch(switch_::Switch *sw) { this->dnd_switch_ = sw; }
+  void register_conference_ring_switch(switch_::Switch *sw) { this->conference_ring_switch_ = sw; }
   void register_volume_number(number::Number *num) { this->volume_number_ = num; }
   void register_mic_gain_number(number::Number *num) { this->mic_gain_number_ = num; }
   // SIP dial-plan contact management. Public YAML should prefer the
@@ -259,7 +268,7 @@ class VoipStack : public Component {
   // CYCLE_TIMEOUT_MS elapses (loop() safety net).
   void update_contacts();
   bool set_contact(const std::string &name);
-  void call_contact(const std::string &name);
+  void call(const std::string &target);
   void next_contact();
   void prev_contact();
   const std::string &get_current_destination() const;
@@ -472,9 +481,13 @@ class VoipStack : public Component {
   // Registered entities (for state sync after boot)
   switch_::Switch *auto_answer_switch_{nullptr};
   switch_::Switch *dnd_switch_{nullptr};
+  switch_::Switch *conference_ring_switch_{nullptr};
   bool entity_restore_applied_{false};
   number::Number *volume_number_{nullptr};
   number::Number *mic_gain_number_{nullptr};
+  text::Text *extension_text_{nullptr};
+  text::Text *ring_groups_text_{nullptr};
+  text::Text *conference_groups_text_{nullptr};
   // Contacts management. Empty at boot; fed by the optional HA text_sensor
   // subscription plus any YAML sources wired on the on_phonebook_update trigger.
   // Slot order is stable:
@@ -499,10 +512,13 @@ class VoipStack : public Component {
   bool first_contacts_batch_committed_{false};
   std::string device_name_;  // This device's friendly name (to exclude from contacts)
   std::string extension_;  // Optional internal dial-plan alias published to HA.
-  std::string conference_group_;
+  std::string conference_groups_;
   bool conference_ring_{false};
-  std::string ring_group_;
+  std::string ring_groups_;
   std::string last_published_destination_;
+  // One-shot dialplan target used when call("target") cannot resolve locally
+  // and must route through the HA peer.
+  std::string pending_dialplan_target_;
   std::string device_route_id_;  // routing key (yaml node name slug)
 
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
@@ -737,6 +753,29 @@ class VoipStackDndSwitch : public switch_::Switch, public Parented<VoipStack> {
     this->parent_->set_do_not_disturb(state);
     this->publish_state(state);
   }
+};
+
+class VoipStackConferenceRingSwitch : public switch_::Switch, public Parented<VoipStack> {
+ public:
+  void write_state(bool state) override { this->parent_->set_conference_ring(state); }
+};
+
+class VoipStackGroupsText : public text::Text, public Parented<VoipStack> {
+ public:
+  void set_kind(uint8_t kind) { this->kind_ = kind; }
+
+ protected:
+  void control(const std::string &value) override {
+    if (this->kind_ == 0) {
+      this->parent_->set_ring_groups(value);
+    } else if (this->kind_ == 1) {
+      this->parent_->set_conference_groups(value);
+    } else {
+      this->parent_->set_extension(value);
+    }
+  }
+
+  uint8_t kind_{0};
 };
 
 class VoipCallButton : public button::Button, public Parented<VoipStack> {

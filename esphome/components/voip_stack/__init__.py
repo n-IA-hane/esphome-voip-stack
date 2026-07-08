@@ -22,7 +22,7 @@ DEPENDENCIES = ["esp32"]
 
 
 def AUTO_LOAD(config):
-    return ["button", "switch", "number", "text_sensor"]
+    return ["button", "switch", "number", "ring_buffer"]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -81,9 +81,9 @@ CONF_STATIC_CONTACTS = "static_contacts"
 CONF_ENTRY = "entry"
 CONF_CONTACT = "contact"
 CONF_EXTENSION = "extension"
-CONF_CONFERENCE_GROUP = "conference_group"
+CONF_CONFERENCE_GROUPS = "conference_groups"
 CONF_CONFERENCE_RING = "conference_ring"
-CONF_RING_GROUP = "ring_group"
+CONF_RING_GROUPS = "ring_groups"
 CONF_IP = "ip"
 CONF_PORT = "port"
 CONF_RTP_PORT_ACTION = "rtp_port"
@@ -384,7 +384,7 @@ SetVolumeAction = voip_stack_ns.class_("SetVolumeAction", automation.Action)
 SetMicGainDbAction = voip_stack_ns.class_("SetMicGainDbAction", automation.Action)
 SetContactsAction = voip_stack_ns.class_("SetContactsAction", automation.Action)
 SetContactAction = voip_stack_ns.class_("SetContactAction", automation.Action)
-CallContactAction = voip_stack_ns.class_("CallContactAction", automation.Action)
+CallAction = voip_stack_ns.class_("CallAction", automation.Action)
 SetRemoteEndpointAction = voip_stack_ns.class_("SetRemoteEndpointAction", automation.Action)
 AddContactAction = voip_stack_ns.class_("AddContactAction", automation.Action)
 RemoveContactAction = voip_stack_ns.class_("RemoveContactAction", automation.Action)
@@ -468,9 +468,9 @@ CONFIG_SCHEMA = cv.Schema(
             _validate_static_contact
         ),
         cv.Optional(CONF_EXTENSION, default=""): _validate_endpoint_label,
-        cv.Optional(CONF_CONFERENCE_GROUP, default=""): _validate_group_list,
+        cv.Optional(CONF_CONFERENCE_GROUPS, default=""): _validate_group_list,
         cv.Optional(CONF_CONFERENCE_RING, default=False): cv.boolean,
-        cv.Optional(CONF_RING_GROUP, default=""): _validate_group_list,
+        cv.Optional(CONF_RING_GROUPS, default=""): _validate_group_list,
         # On the first post-boot phonebook population, select the HA peer row
         # as the current destination so a freshly booted ESP is tuned to HA
         # instead of whichever contact happens to be first in the roster order.
@@ -603,8 +603,8 @@ def _consume_voip_sockets(config):
 def _final_validate(config):
     """Cross-component validation + socket reservation."""
     protocol = config.get(CONF_TRANSPORT, TRANSPORT_UDP)
-    if config.get(CONF_CONFERENCE_RING, False) and not str(config.get(CONF_CONFERENCE_GROUP, "")).strip():
-        raise cv.Invalid("voip_stack.conference_ring requires conference_group.")
+    if config.get(CONF_CONFERENCE_RING, False) and not str(config.get(CONF_CONFERENCE_GROUPS, "")).strip():
+        raise cv.Invalid("voip_stack.conference_ring requires conference_groups.")
     if CONF_MICROPHONE in config and CONF_MICROPHONE_SOURCE in config:
         raise cv.Invalid(
             "Use only one of voip_stack.microphone or voip_stack.microphone_source."
@@ -718,9 +718,9 @@ async def _add_core_settings(var, config):
     cg.add(var.set_task_stacks_in_psram(config[CONF_TASK_STACKS_IN_PSRAM]))
     cg.add(var.set_buffers_in_psram(config[CONF_BUFFERS_IN_PSRAM]))
     cg.add(var.set_extension(config[CONF_EXTENSION]))
-    cg.add(var.set_conference_group(config[CONF_CONFERENCE_GROUP]))
+    cg.add(var.set_conference_groups(config[CONF_CONFERENCE_GROUPS]))
     cg.add(var.set_conference_ring(config[CONF_CONFERENCE_RING]))
-    cg.add(var.set_ring_group(config[CONF_RING_GROUP]))
+    cg.add(var.set_ring_groups(config[CONF_RING_GROUPS]))
     cg.add(var.set_use_ha_as_first_contact(config[CONF_USE_HA_AS_FIRST_CONTACT]))
     cg.add(var.set_audio_debug(config[CONF_AUDIO_DEBUG]))
     if config[CONF_AUDIO_DEBUG]:
@@ -868,71 +868,7 @@ async def _build_voip_automations(var, config):
         )
 
 
-async def _new_voip_text_sensor(config, suffix: str, name: str, icon: str):
-    sensor_id = cv.declare_id(text_sensor.TextSensor)(f"{config[CONF_ID].id}_{suffix}")
-    return await text_sensor.new_text_sensor(
-        {
-            CONF_ID: sensor_id,
-            CONF_NAME: name,
-            CONF_ICON: icon,
-            CONF_DISABLED_BY_DEFAULT: False,
-        }
-    )
-
-
-async def _build_voip_text_sensors(var, config):
-    # === Auto-create sensors ===
-
-    # State sensor: always created.
-    state_sensor = await _new_voip_text_sensor(
-        config, "state", "VoIP State", "mdi:phone-settings"
-    )
-    cg.add(var.set_state_sensor(state_sensor))
-
-    # Transport sensor: diagnostic, exposes the active transport ("udp" or
-    # "tcp") so the HA-side voip_stack integration can route calls from a
-    # self-describing `voip_stack:` declaration.
-    transport_sensor = await _new_voip_text_sensor(
-        config, "transport", "VoIP Transport", "mdi:swap-horizontal"
-    )
-    cg.add(var.set_transport_sensor(transport_sensor))
-
-    # Endpoint sensor: authoritative HA/ESP routing identity. HA consumes this
-    # instead of inferring IP/ports from registry data.
-    endpoint_sensor = await _new_voip_text_sensor(
-        config, "endpoint", "VoIP Endpoint", "mdi:lan-connect"
-    )
-    cg.add(var.set_endpoint_sensor(endpoint_sensor))
-
-    # Last terminal reason: required by voip_stack/card mirror mode.
-    # ESP-to-ESP direct calls do not pass through HA as a signaling bridge;
-    # the source ESP must therefore publish the terminal reason as state so
-    # HA can render the real local/remote/decline/timeout outcome.
-    last_reason_sensor = await _new_voip_text_sensor(
-        config, "last_reason", "VoIP Last Reason", "mdi:phone-alert"
-    )
-    cg.add(var.set_last_reason_sensor(last_reason_sensor))
-
-    sip_snapshot_sensor = await _new_voip_text_sensor(
-        config, "sip_snapshot", "VoIP SIP Snapshot", "mdi:phone-log"
-    )
-    cg.add(var.set_sip_snapshot_sensor(sip_snapshot_sensor))
-
-    dest_sensor = await _new_voip_text_sensor(
-        config, "dest", "Destination", "mdi:phone-forward"
-    )
-    cg.add(var.set_destination_sensor(dest_sensor))
-
-    caller_sensor = await _new_voip_text_sensor(
-        config, "caller", "Caller", "mdi:phone-incoming"
-    )
-    cg.add(var.set_caller_sensor(caller_sensor))
-
-    contacts_sensor = await _new_voip_text_sensor(
-        config, "contacts", "Contacts", "mdi:account-group"
-    )
-    cg.add(var.set_contacts_sensor(contacts_sensor))
-
+async def _bind_ha_phonebook_sensor(var, config):
     if CONF_HA_PHONEBOOK_TEXT_SENSOR_ID in config:
         ha_sensor = await cg.get_variable(
             config[CONF_HA_PHONEBOOK_TEXT_SENSOR_ID]
@@ -1017,7 +953,7 @@ async def to_code(config):
     await _add_device_and_audio_settings(var, config)
     _add_static_contacts(var, config)
     await _build_voip_automations(var, config)
-    await _build_voip_text_sensors(var, config)
+    await _bind_ha_phonebook_sensor(var, config)
     await _build_voip_auto_entities(var, config)
 
 
@@ -1087,6 +1023,7 @@ CONF_VOLUME = "volume"
 CONF_GAIN_DB = "gain_db"
 CONF_CONTACTS_CSV = "contacts_csv"
 CONF_ROSTER_JSON = "roster_json"
+CONF_TARGET = "target"
 
 
 def _register_templated_action(name, action_class, key, validator, cpp_type, setter):
@@ -1152,12 +1089,12 @@ _register_templated_action(
     lambda var, value: var.set_contact(value),
 )
 _register_templated_action(
-    "voip_stack.call_contact",
-    CallContactAction,
-    CONF_CONTACT,
+    "voip_stack.call",
+    CallAction,
+    CONF_TARGET,
     cv.string,
     cg.std_string,
-    lambda var, value: var.set_contact(value),
+    lambda var, value: var.set_target(value),
 )
 
 

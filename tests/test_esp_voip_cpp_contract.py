@@ -49,6 +49,7 @@ def test_media_timeout_is_a_terminal_phone_reason() -> None:
     fsm_cpp = read("voip_fsm.cpp")
     stack_h = read("voip_stack.h")
     stack_cpp = read("voip_stack.cpp")
+    settings_cpp = read("voip_settings.cpp")
 
     assert "MEDIA_TIMEOUT" in fsm_h
     assert 'kReasonMediaTimeout = "media_timeout"' in fsm_h
@@ -119,33 +120,57 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
     init_py = read("__init__.py")
     header = read("voip_stack.h")
     stack_cpp = read("voip_stack.cpp")
+    settings_cpp = read("voip_settings.cpp")
+    text_py = read("text.py")
+    text_sensor_py = read("text_sensor.py")
+    switch_py = read("switch.py")
 
-    assert 'CONF_CONFERENCE_GROUP = "conference_group"' in init_py
+    assert 'CONF_CONFERENCE_GROUPS = "conference_groups"' in init_py
     assert 'CONF_CONFERENCE_RING = "conference_ring"' in init_py
-    assert 'CONF_RING_GROUP = "ring_group"' in init_py
+    assert 'CONF_RING_GROUPS = "ring_groups"' in init_py
     assert "_validate_endpoint_label" in init_py
     assert "def _validate_group_list" in init_py
     assert 'value.split(",")' in init_py
     assert 'cv.Optional(CONF_EXTENSION, default=""): _validate_endpoint_label' in init_py
-    assert 'cv.Optional(CONF_CONFERENCE_GROUP, default=""): _validate_group_list' in init_py
-    assert 'cv.Optional(CONF_RING_GROUP, default=""): _validate_group_list' in init_py
-    assert "set_conference_group" in header
+    assert 'cv.Optional(CONF_CONFERENCE_GROUPS, default=""): _validate_group_list' in init_py
+    assert 'cv.Optional(CONF_RING_GROUPS, default=""): _validate_group_list' in init_py
+    assert "set_conference_groups" in header
     assert "set_conference_ring" in header
-    assert "set_ring_group" in header
-    assert "std::string conference_group_" in header
+    assert "set_ring_groups" in header
+    assert "set_extension_text" in header
+    assert "get_extension" in header
+    assert "std::string conference_groups_" in header
     assert "bool conference_ring_{false}" in header
-    assert "std::string ring_group_" in header
-    assert "var.set_conference_group" in init_py
+    assert "std::string ring_groups_" in header
+    assert "text::Text *extension_text_{nullptr}" in header
+    assert "var.set_conference_groups" in init_py
     assert "var.set_conference_ring" in init_py
-    assert "var.set_ring_group" in init_py
+    assert "var.set_ring_groups" in init_py
+    assert 'TYPE_EXTENSION = "extension"' in text_py
+    assert '"set_extension_text"' in text_py
+    assert 'r"^[^|,;\\r\\n]*$"' in text_py
+    assert 'TYPE_RING_GROUPS = "ring_groups"' in text_py
+    assert 'TYPE_CONFERENCE_GROUPS = "conference_groups"' in text_py
+    assert "VoipStackGroupsText" in text_py
+    assert 'TYPE_ENDPOINT = "endpoint"' in text_sensor_py
+    assert 'TYPE_LAST_REASON = "last_reason"' in text_sensor_py
+    assert 'CONF_CONFERENCE_RING = "conference_ring"' in switch_py
 
     endpoint = stack_cpp[stack_cpp.index("std::string VoipStack::build_endpoint_string_"):]
-    assert "char buf[896]" in endpoint
-    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s | %s | %s | %s"' in endpoint
-    assert "this->conference_group_.c_str()" in endpoint
-    assert "this->ring_group_.c_str()" in endpoint
-    assert 'this->conference_ring_ ? "1" : "0"' in endpoint
+    assert "char buf[640]" in endpoint
+    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s"' in endpoint
+    assert "this->conference_groups_.c_str()" not in endpoint
+    assert "this->ring_groups_.c_str()" not in endpoint
+    assert 'this->conference_ring_ ? "1" : "0"' not in endpoint
     assert "VoIP endpoint string truncated" in endpoint
+
+    set_extension = stack_cpp[
+        stack_cpp.index("void VoipStack::set_extension(") :
+        stack_cpp.index("\nvoid VoipStack::set_ring_groups")
+    ]
+    assert "normalize_endpoint_label(extension)" in set_extension
+    assert "this->extension_text_->publish_state(normalized)" in set_extension
+    assert "this->request_endpoint_publish_()" in set_extension
 
 
 def test_voip_media_tasks_are_not_idle_polling() -> None:
@@ -237,7 +262,7 @@ def test_long_diagnostic_text_sensors_have_wrapping_separators() -> None:
 
     assert 'out += "; ";' in stack
     assert 'out += ";";' not in stack
-    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s | %s | %s | %s"' in stack
+    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s"' in stack
     assert '"st=%s; id=%s; dir=%s; from=%s; to=%s; ct=%s; tr=%s; sc=%u; "' in stack
     assert '"tx=%s; rx=%s; pt=%u; pr=%u; "' in stack
     assert '"tqd=%u; tqdrop=%u; rqd=%u; rqdrop=%u; rs=%s; ev=%s"' in stack
@@ -249,6 +274,47 @@ def test_ha_routed_contacts_use_local_esp_signaling_transport() -> None:
     assert "const bool local_sip_transport_tcp = this->protocol_ == TransportType::TCP;" in settings
     assert "entry.sip_transport_tcp = local_sip_transport_tcp;" in settings
     assert "entry.sip_transport_tcp = ha_slot.sip_transport == \"tcp\";" not in settings
+
+
+def test_call_action_is_universal_local_or_ha_dialplan() -> None:
+    init_py = read("__init__.py")
+    actions = read("actions.h")
+    header = read("voip_stack.h")
+    settings = read("voip_settings.cpp")
+    fsm = read("voip_fsm.cpp")
+
+    assert 'CallAction = voip_stack_ns.class_("CallAction", automation.Action)' in init_py
+    assert '"voip_stack.call"' in init_py
+    assert "CONF_TARGET" in init_py
+    assert "var.set_target(value)" in init_py
+    assert "voip_stack.call_contact" not in init_py
+    assert "CallContactAction" not in actions
+    assert "void call(const std::string &target);" in header
+    assert "void call_contact" not in header
+
+    call_body = settings[settings.index("void VoipStack::call(") : settings.index("\nvoid VoipStack::next_contact")]
+    assert "this->phonebook_.select(target)" in call_body
+    assert "this->pending_dialplan_target_.clear();" in call_body
+    assert "this->phonebook_.select(this->ha_peer_name_)" in call_body
+    assert "this->pending_dialplan_target_ = target;" in call_body
+    assert "Routing target '%s' through HA peer" in call_body
+    assert "this->start();" in call_body
+
+    start_body = fsm[fsm.index("void VoipStack::start()") : fsm.index("\nvoid VoipStack::stop()")]
+    assert "const bool route_via_ha" in start_body
+    assert "!this->pending_dialplan_target_.empty()" in start_body
+    assert "this->bridge_request_trigger_.trigger" in start_body
+    assert "if (route_via_ha)" in start_body
+
+    destination_body = settings[
+        settings.index("void VoipStack::publish_destination_()") :
+        settings.index("\nvoid VoipStack::publish_caller_")
+    ]
+    assert "this->pending_dialplan_target_" in destination_body
+    assert "call.dest_name" in destination_body
+    assert "call.caller_name == this->device_name_" in destination_body
+    assert "this->last_terminal_direction_ == \"outgoing\"" in destination_body
+    assert "this->last_terminal_dest_name_" in destination_body
 
 
 def test_roster_json_uses_address_direct_or_ha_route_without_kind_semantics() -> None:

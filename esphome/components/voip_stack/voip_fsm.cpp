@@ -170,13 +170,17 @@ void VoipStack::start() {
   uint16_t dial_rtp_port = this->get_current_contact_rtp_port();
   bool dial_sip_tcp = this->get_current_contact_sip_transport_tcp();
 
-  const auto &dest = this->get_current_destination();
-  const std::string dest_name = dest.empty()
+  const std::string selected_dest = this->get_current_destination();
+  const bool route_via_ha = !this->ha_peer_name_.empty() && selected_dest == this->ha_peer_name_;
+  const std::string dest_name = !this->pending_dialplan_target_.empty()
+      ? this->pending_dialplan_target_
+      : selected_dest.empty()
       ? (this->ha_peer_name_.empty() ? std::string("(unknown)") : this->ha_peer_name_)
-      : dest;
+      : selected_dest;
   if (dial_ip.empty() || dial_port == 0) {
     ESP_LOGE(TAG, "%s: SIP outgoing needs a SIP contact with host+port for '%s'",
              this->device_name_.c_str(), dest_name.c_str());
+    this->pending_dialplan_target_.clear();
     this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
     return;
   }
@@ -196,9 +200,9 @@ void VoipStack::start() {
   this->clear_terminal_response_();
 
   const std::string remote_uri = "sip:" + dest_route + "@" + dial_ip + ":" + std::to_string(dial_port);
-  this->defer([this, call_id, caller = this->device_name_, dest_name, remote_uri]() {
+  this->defer([this, call_id, caller = this->device_name_, dest_name, remote_uri, route_via_ha]() {
     this->outgoing_call_trigger_.trigger(call_id, caller, dest_name, remote_uri);
-    if (!this->ha_peer_name_.empty() && dest_name == this->ha_peer_name_) {
+    if (route_via_ha) {
       this->bridge_request_trigger_.trigger(call_id, caller, dest_name, remote_uri);
     }
   });
@@ -216,6 +220,7 @@ void VoipStack::start() {
   if (this->transport_ == nullptr || !this->transport_->originate(dial_ip, dial_port)) {
     ESP_LOGE(TAG, "%s: SIP originate to %s:%u failed",
              this->device_name_.c_str(), dial_ip.c_str(), (unsigned) dial_port);
+    this->pending_dialplan_target_.clear();
     this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
     return;
   }
@@ -223,9 +228,11 @@ void VoipStack::start() {
   if (!this->send_sip_invite_(call_id, caller_route, this->device_name_,
                               dest_route, dest_name)) {
     ESP_LOGE(TAG, "SIP INVITE send failed");
+    this->pending_dialplan_target_.clear();
     this->end_call_(CallEndReason::PROTOCOL_ERROR);
     return;
   }
+  this->pending_dialplan_target_.clear();
 }
 
 void VoipStack::stop() {
@@ -557,6 +564,7 @@ void VoipStack::set_call_state_(CallState new_state) {
 
 void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
   if (this->call_state_.load(std::memory_order_acquire) == CallState::IDLE) return;
+  this->pending_dialplan_target_.clear();
 
   std::string reason_str = detail.empty() ? call_end_reason_to_str(reason) : detail;
   const CallSnapshot call = this->snapshot_call_identity_();
@@ -633,6 +641,7 @@ void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
       case CallState::TRANSPORT_UNREACHABLE:
       case CallState::AUTH_REQUIRED_UNSUPPORTED:
         this->set_call_state_(CallState::IDLE);
+        this->publish_destination_();
         break;
       default:
         break;
