@@ -131,6 +131,21 @@ def _validate_group_list(value):
     return ", ".join(groups)
 
 
+def resolve_parent_id(config):
+    if CONF_VOIP_STACK_ID in config:
+        return config[CONF_VOIP_STACK_ID]
+    try:
+        full_config = fv.full_config.get()
+    except LookupError:
+        full_config = CORE.config
+    voip_configs = full_config.get("voip_stack", [])
+    if isinstance(voip_configs, dict):
+        voip_configs = [voip_configs]
+    if len(voip_configs) != 1:
+        raise cv.Invalid("voip_stack_id is required when zero or multiple voip_stack components are configured")
+    return voip_configs[0]["id"]
+
+
 def _validate_voip_audio_format(value):
     if _is_auto(value):
         return CONF_AUTO

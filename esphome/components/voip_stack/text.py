@@ -1,11 +1,9 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-import esphome.final_validate as fv
 from esphome.components import text
 from esphome.const import CONF_ICON, CONF_NAME
-from esphome.core import CORE
 
-from . import CONF_VOIP_STACK_ID, VoipStack, voip_stack_ns, _validate_group_list
+from . import CONF_VOIP_STACK_ID, VoipStack, voip_stack_ns, resolve_parent_id
 
 DEPENDENCIES = ["voip_stack"]
 
@@ -50,21 +48,6 @@ TYPES = {
 }
 
 
-def _resolve_parent_id(config):
-    if CONF_VOIP_STACK_ID in config:
-        return config[CONF_VOIP_STACK_ID]
-    try:
-        full_config = fv.full_config.get()
-    except LookupError:
-        full_config = CORE.config
-    voip_configs = full_config.get("voip_stack", [])
-    if isinstance(voip_configs, dict):
-        voip_configs = [voip_configs]
-    if len(voip_configs) != 1:
-        raise cv.Invalid("voip_stack_id is required when zero or multiple voip_stack components are configured")
-    return voip_configs[0]["id"]
-
-
 def _apply_type_defaults(config):
     config = dict(config)
     _, default_name, default_icon, _, _, _, _ = TYPES[config[CONF_TYPE]]
@@ -85,7 +68,7 @@ CONFIG_SCHEMA = cv.All(
 
 
 async def to_code(config):
-    parent = await cg.get_variable(_resolve_parent_id(config))
+    parent = await cg.get_variable(resolve_parent_id(config))
     kind, _, _, setter_name, getter_name, max_length, pattern = TYPES[config[CONF_TYPE]]
     var = await text.new_text(config, max_length=max_length, pattern=pattern)
     cg.add(var.set_parent(parent))
