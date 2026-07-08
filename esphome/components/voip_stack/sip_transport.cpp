@@ -425,6 +425,15 @@ const char *SipTransport::sip_event_name_(SipEvent event) {
   }
 }
 
+SipTransport::SipEvent SipTransport::sip_event_from_method_(const std::string &method) {
+  if (method == "INVITE") return SipEvent::INVITE;
+  if (method == "ACK") return SipEvent::ACK;
+  if (method == "CANCEL") return SipEvent::CANCEL;
+  if (method == "BYE") return SipEvent::BYE;
+  if (method == "OPTIONS") return SipEvent::OPTIONS;
+  return SipEvent::NONE;
+}
+
 void SipTransport::mark_sip_event_(SipEvent event, uint16_t status) {
   this->last_sip_event_.store(static_cast<uint8_t>(event), std::memory_order_release);
   if (status != 0) {
@@ -914,6 +923,22 @@ bool SipTransport::send_sip_tcp_(const std::string &message) {
   return true;
 }
 
+std::string SipTransport::wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
+                                             const std::string &maps, const std::string &flows,
+                                             uint8_t ptime) const {
+  return "v=0\r\n"
+         "o=- 0 0 IN IP4 " + local_ip + "\r\n"
+         "s=VoIP Stack\r\n"
+         "c=IN IP4 " + local_ip + "\r\n"
+         "t=0 0\r\n"
+         "m=audio " + std::to_string(this->rtp_port_) + " RTP/AVP " + payloads + "\r\n" +
+         maps +
+         flows +
+         "a=ptime:" + std::to_string(ptime) + "\r\n"
+         "a=maxptime:" + std::to_string(ptime) + "\r\n"
+         "a=sendrecv\r\n";
+}
+
 std::string SipTransport::build_sdp_offer_() const {
   const uint32_t remote_ip = this->remote_ip_v4_.load(std::memory_order_acquire);
   std::string local_ip = "0.0.0.0";
@@ -953,17 +978,7 @@ std::string SipTransport::build_sdp_offer_() const {
     ESP_LOGW(TAG, "SIP SDP offer has no common UDP-safe RTP PCM format");
     return "";
   }
-  return "v=0\r\n"
-         "o=- 0 0 IN IP4 " + local_ip + "\r\n"
-         "s=VoIP Stack\r\n"
-         "c=IN IP4 " + local_ip + "\r\n"
-         "t=0 0\r\n"
-         "m=audio " + std::to_string(this->rtp_port_) + " RTP/AVP " + payloads + "\r\n" +
-         maps +
-         flows +
-         "a=ptime:" + std::to_string(selected_ptime) + "\r\n"
-         "a=maxptime:" + std::to_string(selected_ptime) + "\r\n"
-         "a=sendrecv\r\n";
+  return this->wrap_sdp_envelope_(local_ip, payloads, maps, flows, selected_ptime);
 }
 
 std::string SipTransport::build_sdp_answer_() const {
@@ -996,17 +1011,7 @@ std::string SipTransport::build_sdp_answer_() const {
           std::to_string(selected_tx.channels) + "\r\n";
     flows += "a=x-voip-stack-flow:" + std::to_string(tx_payload_type) + " send\r\n";
   }
-  return "v=0\r\n"
-         "o=- 0 0 IN IP4 " + local_ip + "\r\n"
-         "s=VoIP Stack\r\n"
-         "c=IN IP4 " + local_ip + "\r\n"
-         "t=0 0\r\n"
-         "m=audio " + std::to_string(this->rtp_port_) + " RTP/AVP " + payloads + "\r\n" +
-         maps +
-         flows +
-         "a=ptime:" + std::to_string(selected_rx.frame_ms) + "\r\n"
-         "a=maxptime:" + std::to_string(selected_rx.frame_ms) + "\r\n"
-         "a=sendrecv\r\n";
+  return this->wrap_sdp_envelope_(local_ip, payloads, maps, flows, selected_rx.frame_ms);
 }
 
 bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp, uint32_t default_ip) {
@@ -1124,12 +1129,15 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp, uint32_t d
   return true;
 }
 
-bool SipTransport::send_request_(const std::string &method, const std::string &body, uint32_t cseq) {
+bool SipTransport::send_request_(const std::string &method, const std::string &body,
+                                 const SipRequestOptions &options) {
   const uint32_t ip = this->remote_ip_v4_.load(std::memory_order_acquire);
   const uint16_t port = this->remote_sip_port_.load(std::memory_order_acquire);
   if (ip == 0 || port == 0 || this->call_id_.empty()) return false;
   std::string branch;
-  if (method == "INVITE") {
+  if (!options.branch_override.empty()) {
+    branch = options.branch_override;
+  } else if (method == "INVITE") {
     if (this->branch_.empty()) this->branch_ = "z9hG4bK" + make_token("");
     branch = this->branch_;
   } else if (method == "CANCEL") {
@@ -1153,8 +1161,9 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
   if (!this->remote_tag_.empty()) msg += ";tag=" + this->remote_tag_;
   msg += "\r\n";
   msg += "Call-ID: " + this->call_id_ + "\r\n";
-  const uint32_t request_cseq = cseq == 0 ? this->cseq_++ : cseq;
-  msg += "CSeq: " + std::to_string(request_cseq) + " " + method + "\r\n";
+  const uint32_t request_cseq = options.cseq_number == 0 ? this->cseq_++ : options.cseq_number;
+  const std::string cseq_method = options.cseq_method.empty() ? method : options.cseq_method;
+  msg += "CSeq: " + std::to_string(request_cseq) + " " + cseq_method + "\r\n";
   msg += "Contact: " + this->local_uri_ + "\r\n";
   msg += "User-Agent: ESPHome-VoIP-Stack-SIP\r\n";
   if (method == "INVITE") {
@@ -1168,11 +1177,8 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
   msg += body;
   const bool sent = this->send_sip_(msg, ip, port);
   if (sent) {
-    if (method == "INVITE") this->mark_sip_event_(SipEvent::INVITE);
-    else if (method == "ACK") this->mark_sip_event_(SipEvent::ACK);
-    else if (method == "CANCEL") this->mark_sip_event_(SipEvent::CANCEL);
-    else if (method == "BYE") this->mark_sip_event_(SipEvent::BYE);
-    else if (method == "OPTIONS") this->mark_sip_event_(SipEvent::OPTIONS);
+    const SipEvent event = sip_event_from_method_(method);
+    if (event != SipEvent::NONE) this->mark_sip_event_(event);
     if (method == "INVITE" || method == "BYE") {
       this->remember_udp_transaction_(method, msg, ip, port);
     }
@@ -1181,53 +1187,38 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
 }
 
 bool SipTransport::send_invite_error_ack_() {
-  const uint32_t ip = this->remote_ip_v4_.load(std::memory_order_acquire);
-  const uint16_t port = this->remote_sip_port_.load(std::memory_order_acquire);
-  if (ip == 0 || port == 0 || this->call_id_.empty() || this->branch_.empty()) return false;
-  std::string local_ip = "0.0.0.0";
-  this->local_ip_for_peer_(ip, &local_ip);
-  const std::string request_uri = this->remote_uri_.empty()
-      ? ("sip:voip@" + local_ip)
-      : strip_angle_uri(this->remote_uri_);
-  const char *transport = this->remote_sip_tcp_.load(std::memory_order_acquire) ? "TCP" : "UDP";
-  std::string msg = "ACK " + request_uri + " SIP/2.0\r\n";
-  msg += "Via: SIP/2.0/" + std::string(transport) + " " + local_ip + ":" +
-         std::to_string(this->sip_port_) + ";branch=" + this->branch_ + ";rport\r\n";
-  msg += "Max-Forwards: 70\r\n";
-  msg += "From: " + this->local_uri_ + ";tag=" + this->local_tag_ + "\r\n";
-  msg += "To: " + this->remote_uri_;
-  if (!this->remote_tag_.empty()) msg += ";tag=" + this->remote_tag_;
-  msg += "\r\n";
-  msg += "Call-ID: " + this->call_id_ + "\r\n";
-  msg += "CSeq: " + std::to_string(this->invite_cseq_) + " ACK\r\n";
-  msg += "Contact: " + this->local_uri_ + "\r\n";
-  msg += "User-Agent: ESPHome-VoIP-Stack-SIP\r\n";
-  msg += "Content-Length: 0\r\n\r\n";
-  const bool sent = this->send_sip_(msg, ip, port);
-  if (sent) this->mark_sip_event_(SipEvent::ACK);
-  return sent;
+  if (this->branch_.empty()) return false;
+  SipRequestOptions options;
+  options.cseq_number = this->invite_cseq_;
+  options.cseq_method = "ACK";
+  // A non-2xx INVITE ACK reuses the INVITE client transaction branch per RFC 3261 section 17.1.1.3.
+  options.branch_override = this->branch_;
+  return this->send_request_("ACK", "", options);
 }
 
-bool SipTransport::send_response_(uint16_t status, const char *reason, const std::string &body,
-                                  const std::string &app_reason) {
-  const uint32_t ip = this->remote_ip_v4_.load(std::memory_order_acquire);
-  const uint16_t port = this->remote_sip_port_.load(std::memory_order_acquire);
-  if (ip == 0 || port == 0 || this->last_invite_via_.empty()) return false;
+std::string SipTransport::format_response_(uint16_t status, const char *reason,
+                                            const std::string &via, const std::string &from,
+                                            const std::string &to, const std::string &call_id,
+                                            const std::string &cseq, const std::string &app_reason,
+                                            const std::string &body, bool add_contact_ua,
+                                            bool add_to_tag, bool stateless) {
   std::string msg = "SIP/2.0 " + std::to_string(status) + " " + reason + "\r\n";
-  msg += "Via: " + response_via_with_rport(this->last_invite_via_, ip, port) + "\r\n";
-  msg += "From: " + this->last_invite_from_ + "\r\n";
-  msg += "To: " + this->last_invite_to_;
-  if (this->last_invite_to_.find("tag=") == std::string::npos) {
+  msg += "Via: " + via + "\r\n";
+  msg += "From: " + from + "\r\n";
+  msg += "To: " + to;
+  if (add_to_tag && to.find("tag=") == std::string::npos) {
     if (this->local_tag_.empty()) this->local_tag_ = make_token("tag");
     msg += ";tag=" + this->local_tag_;
   }
   msg += "\r\n";
-  msg += "Call-ID: " + this->call_id_ + "\r\n";
-  msg += "CSeq: " + this->last_invite_cseq_ + "\r\n";
-  msg += "Contact: " + this->local_uri_ + "\r\n";
-  msg += "User-Agent: ESPHome-VoIP-Stack-SIP\r\n";
+  msg += "Call-ID: " + call_id + "\r\n";
+  msg += "CSeq: " + cseq + "\r\n";
+  if (add_contact_ua) {
+    msg += "Contact: " + this->local_uri_ + "\r\n";
+    msg += "User-Agent: ESPHome-VoIP-Stack-SIP\r\n";
+  }
   const std::string clean_reason = sip_header_token(app_reason);
-  if (!clean_reason.empty()) {
+  if (!clean_reason.empty() && (!stateless || status >= 300)) {
     msg += "Reason: X-Voip-Stack;cause=" + std::to_string(status) + ";text=" + sip_quoted(clean_reason) + "\r\n";
     msg += "X-Voip-Stack-Decline-Reason: " + clean_reason + "\r\n";
   }
@@ -1237,6 +1228,18 @@ bool SipTransport::send_response_(uint16_t status, const char *reason, const std
   if (!body.empty()) msg += "Content-Type: application/sdp\r\n";
   msg += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
   msg += body;
+  return msg;
+}
+
+bool SipTransport::send_response_(uint16_t status, const char *reason, const std::string &body,
+                                  const std::string &app_reason) {
+  const uint32_t ip = this->remote_ip_v4_.load(std::memory_order_acquire);
+  const uint16_t port = this->remote_sip_port_.load(std::memory_order_acquire);
+  if (ip == 0 || port == 0 || this->last_invite_via_.empty()) return false;
+  const std::string msg = this->format_response_(
+      status, reason, response_via_with_rport(this->last_invite_via_, ip, port),
+      this->last_invite_from_, this->last_invite_to_, this->call_id_,
+      this->last_invite_cseq_, app_reason, body, true, true, false);
   const bool sent = this->send_sip_(msg, ip, port);
   if (sent) this->mark_sip_event_(SipEvent::RESPONSE, status);
   return sent;
@@ -1253,21 +1256,9 @@ bool SipTransport::send_stateless_response_(const std::string &request, const so
   const std::string call_id = header_value(request, "Call-ID");
   const std::string cseq = header_value(request, "CSeq");
   if (via.empty() || from.empty() || to.empty() || call_id.empty() || cseq.empty()) return false;
-  std::string msg = "SIP/2.0 " + std::to_string(status) + " " + reason + "\r\n";
-  msg += "Via: " + response_via_with_rport(via, ip, port) + "\r\n";
-  msg += "From: " + from + "\r\n";
-  msg += "To: " + to + "\r\n";
-  msg += "Call-ID: " + call_id + "\r\n";
-  msg += "CSeq: " + cseq + "\r\n";
-  const std::string clean_reason = sip_header_token(app_reason);
-  if (!clean_reason.empty() && status >= 300) {
-    msg += "Reason: X-Voip-Stack;cause=" + std::to_string(status) + ";text=" + sip_quoted(clean_reason) + "\r\n";
-    msg += "X-Voip-Stack-Decline-Reason: " + clean_reason + "\r\n";
-  }
-  if (status == 405) {
-    msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS\r\n";
-  }
-  msg += "Content-Length: 0\r\n\r\n";
+  const std::string msg = this->format_response_(
+      status, reason, response_via_with_rport(via, ip, port),
+      from, to, call_id, cseq, app_reason, "", false, false, true);
   const bool sent = this->send_sip_(msg, ip, port);
   if (sent) this->mark_sip_event_(SipEvent::RESPONSE, status);
   return sent;
@@ -1307,7 +1298,9 @@ bool SipTransport::send_invite(const std::string &call_id,
            this->caller_name_.c_str(), this->dest_name_.c_str());
   const std::string sdp = this->build_sdp_offer_();
   if (sdp.empty()) return false;
-  const bool sent = this->send_request_("INVITE", sdp, this->invite_cseq_);
+  SipRequestOptions options;
+  options.cseq_number = this->invite_cseq_;
+  const bool sent = this->send_request_("INVITE", sdp, options);
   if (sent) {
     this->outgoing_invite_pending_.store(true, std::memory_order_release);
     if (this->cseq_ <= this->invite_cseq_) this->cseq_ = this->invite_cseq_ + 1;
@@ -1389,7 +1382,9 @@ bool SipTransport::send_cancel(const std::string &call_id) {
   if (!this->outgoing_invite_pending_.load(std::memory_order_acquire)) {
     return this->send_bye(call_id);
   }
-  const bool sent = this->send_request_("CANCEL", "", this->invite_cseq_);
+  SipRequestOptions options;
+  options.cseq_number = this->invite_cseq_;
+  const bool sent = this->send_request_("CANCEL", "", options);
   this->reset_dialog_();
   return sent;
 }
@@ -1405,7 +1400,9 @@ bool SipTransport::send_final_response(const std::string &call_id,
                                        const std::string &reason) {
   if (!call_id.empty()) this->call_id_ = call_id;
   if (this->outgoing_invite_pending_.load(std::memory_order_acquire)) {
-    const bool sent = this->send_request_("CANCEL", "", this->invite_cseq_);
+    SipRequestOptions options;
+    options.cseq_number = this->invite_cseq_;
+    const bool sent = this->send_request_("CANCEL", "", options);
     this->reset_dialog_();
     return sent;
   }
@@ -1587,7 +1584,9 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
     const std::string to = header_value(message, "To");
     this->remote_tag_ = tag_from_header(to);
     this->learn_remote_rtp_from_sdp_(message_body(message), src_ip);
-    this->send_request_("ACK", "", this->invite_cseq_);
+    SipRequestOptions options;
+    options.cseq_number = this->invite_cseq_;
+    this->send_request_("ACK", "", options);
     this->open_media_session_();
     SipSignal signal;
     signal.type = SipSignalType::STATUS_200_OK;
@@ -1632,11 +1631,11 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
   const size_t first_space = msg.find(' ');
   const std::string method = first_space == std::string::npos ? "" : msg.substr(0, first_space);
   ESP_LOGI(TAG, "SIP RX method=%s len=%u", method.c_str(), (unsigned) len);
+  const SipEvent event = sip_event_from_method_(method);
+  if (event != SipEvent::NONE) this->mark_sip_event_(event);
   if (method == "INVITE") {
-    this->mark_sip_event_(SipEvent::INVITE);
     this->handle_invite_(msg, src);
   } else if (method == "ACK") {
-    this->mark_sip_event_(SipEvent::ACK);
     const std::string request_call_id = header_value(msg, "Call-ID");
     if (request_call_id.empty() || this->call_id_.empty() || request_call_id != this->call_id_) {
       ESP_LOGD(TAG, "SIP ACK ignored for stale/unknown call_id=%s current=%s",
@@ -1647,14 +1646,7 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
     this->outgoing_invite_pending_.store(false, std::memory_order_release);
     this->open_media_session_();
   } else if (method == "BYE") {
-    this->mark_sip_event_(SipEvent::BYE);
-    const std::string request_call_id = header_value(msg, "Call-ID");
-    if (!request_call_id.empty() && !this->call_id_.empty() && request_call_id != this->call_id_) {
-      ESP_LOGW(TAG, "SIP BYE ignored for stale call_id=%s current=%s",
-               request_call_id.c_str(), this->call_id_.c_str());
-      this->send_stateless_response_(msg, src, 481, "Call/Transaction Does Not Exist");
-      return;
-    }
+    if (this->reject_if_stale_dialog_(msg, src, "BYE")) return;
     this->send_stateless_response_(msg, src, 200, "OK");
     SipSignal signal;
     signal.type = SipSignalType::BYE;
@@ -1662,14 +1654,7 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
     this->emit_sip_signal_(signal);
     this->reset_dialog_();
   } else if (method == "CANCEL") {
-    this->mark_sip_event_(SipEvent::CANCEL);
-    const std::string request_call_id = header_value(msg, "Call-ID");
-    if (!request_call_id.empty() && !this->call_id_.empty() && request_call_id != this->call_id_) {
-      ESP_LOGW(TAG, "SIP CANCEL ignored for stale call_id=%s current=%s",
-               request_call_id.c_str(), this->call_id_.c_str());
-      this->send_stateless_response_(msg, src, 481, "Call/Transaction Does Not Exist");
-      return;
-    }
+    if (this->reject_if_stale_dialog_(msg, src, "CANCEL")) return;
     this->send_stateless_response_(msg, src, 200, "OK");
     this->send_response_(487, "Request Terminated");
     SipSignal signal;
@@ -1680,13 +1665,22 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
     this->emit_sip_signal_(signal);
     this->reset_dialog_();
   } else if (method == "OPTIONS") {
-    this->mark_sip_event_(SipEvent::OPTIONS);
     this->send_stateless_response_(msg, src, 200, "OK");
   } else if (sip_method_known_(method)) {
     this->send_stateless_response_(msg, src, 405, "Method Not Allowed");
   } else {
     this->send_stateless_response_(msg, src, 501, "Not Implemented");
   }
+}
+
+bool SipTransport::reject_if_stale_dialog_(const std::string &request, const sockaddr_in &src,
+                                           const char *method_name) {
+  const std::string request_call_id = header_value(request, "Call-ID");
+  if (request_call_id.empty() || this->call_id_.empty() || request_call_id == this->call_id_) return false;
+  ESP_LOGW(TAG, "SIP %s ignored for stale call_id=%s current=%s",
+           method_name, request_call_id.c_str(), this->call_id_.c_str());
+  this->send_stateless_response_(request, src, 481, "Call/Transaction Does Not Exist");
+  return true;
 }
 
 void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {

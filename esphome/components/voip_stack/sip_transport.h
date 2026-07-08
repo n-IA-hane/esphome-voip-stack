@@ -74,6 +74,12 @@ class SipTransport : public SipPhoneTransport {
     RESPONSE,
   };
 
+  struct SipRequestOptions {
+    uint32_t cseq_number{0};
+    std::string cseq_method;
+    std::string branch_override;
+  };
+
   static void sip_task_trampoline_(void *param);
   static void rtp_task_trampoline_(void *param);
   void sip_task_();
@@ -83,19 +89,29 @@ class SipTransport : public SipPhoneTransport {
   bool parse_remote_(const std::string &host);
   bool send_sip_(const std::string &message, uint32_t ip_v4, uint16_t port);
   bool send_sip_tcp_(const std::string &message);
-  bool send_request_(const std::string &method, const std::string &body = "", uint32_t cseq = 0);
+  bool send_request_(const std::string &method, const std::string &body = "",
+                     const SipRequestOptions &options = {});
   bool send_invite_error_ack_();
   bool send_response_(uint16_t status, const char *reason, const std::string &body = "",
                       const std::string &app_reason = "");
   bool send_stateless_response_(const std::string &request, const sockaddr_in &src,
                                 uint16_t status, const char *reason,
                                 const std::string &app_reason = "");
+  std::string format_response_(uint16_t status, const char *reason,
+                               const std::string &via, const std::string &from,
+                               const std::string &to, const std::string &call_id,
+                               const std::string &cseq, const std::string &app_reason,
+                               const std::string &body, bool add_contact_ua,
+                               bool add_to_tag, bool stateless);
   void handle_sip_datagram_(const char *data, size_t len, const sockaddr_in &src);
   void handle_sip_stream_(int socket, const sockaddr_in &src);
   bool handle_invite_(const std::string &message, const sockaddr_in &src);
   bool handle_response_(const std::string &message, const sockaddr_in &src);
   std::string build_sdp_offer_() const;
   std::string build_sdp_answer_() const;
+  std::string wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
+                                 const std::string &maps, const std::string &flows,
+                                 uint8_t ptime) const;
   bool learn_remote_rtp_from_sdp_(const std::string &sdp, uint32_t default_ip);
   bool local_ip_for_peer_(uint32_t peer_ip_v4, std::string *out) const;
   void clear_udp_transactions_();
@@ -116,7 +132,10 @@ class SipTransport : public SipPhoneTransport {
                                       const std::string &call_id);
   void remember_stateless_invite_final_(const std::string &call_id, uint16_t status,
                                         const char *reason, const std::string &app_reason);
+  bool reject_if_stale_dialog_(const std::string &request, const sockaddr_in &src,
+                               const char *method_name);
   void mark_sip_event_(SipEvent event, uint16_t status = 0);
+  static SipEvent sip_event_from_method_(const std::string &method);
   static const char *sip_event_name_(SipEvent event);
   void set_media_config_(const AudioFormat &tx, const AudioFormat &rx,
                          uint8_t tx_payload_type, uint8_t rx_payload_type);

@@ -196,10 +196,16 @@ def test_non_2xx_invite_final_response_sends_ack() -> None:
     sip_h = read("sip_transport.h")
     sip_cpp = read("sip_transport.cpp")
 
+    assert "struct SipRequestOptions" in sip_h
+    assert "std::string branch_override" in sip_h
+    assert "std::string cseq_method" in sip_h
     assert "send_invite_error_ack_" in sip_h
     assert "bool SipTransport::send_invite_error_ack_()" in sip_cpp
-    assert 'msg = "ACK " + request_uri + " SIP/2.0' in sip_cpp
-    assert 'std::to_string(this->invite_cseq_) + " ACK' in sip_cpp
+    assert "options.cseq_number = this->invite_cseq_" in sip_cpp
+    assert 'options.cseq_method = "ACK"' in sip_cpp
+    assert "options.branch_override = this->branch_" in sip_cpp
+    assert "RFC 3261 section 17.1.1.3" in sip_cpp
+    assert 'return this->send_request_("ACK", "", options);' in sip_cpp
     assert "this->send_invite_error_ack_();" in sip_cpp
 
 
