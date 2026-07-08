@@ -575,6 +575,8 @@ void VoipStack::call(const std::string &value) {
 void VoipStack::next_contact() {
   if (this->phonebook_.empty()) return;
   this->phonebook_.next();
+  this->publish_last_reason_("");
+  this->clear_terminal_call_snapshot_();
   this->publish_destination_();
   ESP_LOGD(TAG, "Selected contact: %s", this->get_current_destination().c_str());
 }
@@ -582,6 +584,8 @@ void VoipStack::next_contact() {
 void VoipStack::prev_contact() {
   if (this->phonebook_.empty()) return;
   this->phonebook_.prev();
+  this->publish_last_reason_("");
+  this->clear_terminal_call_snapshot_();
   this->publish_destination_();
   ESP_LOGD(TAG, "Selected contact: %s", this->get_current_destination().c_str());
 }

@@ -317,6 +317,18 @@ def test_call_action_is_universal_local_or_ha_dialplan() -> None:
     assert "this->last_terminal_dest_name_" in destination_body
 
 
+def test_contact_cycler_dismisses_terminal_destination_snapshot() -> None:
+    settings = read("voip_settings.cpp")
+    next_body = settings[settings.index("void VoipStack::next_contact()") : settings.index("\nvoid VoipStack::prev_contact()")]
+    prev_body = settings[settings.index("void VoipStack::prev_contact()") : settings.index("\nconst std::string &VoipStack::get_current_destination")]
+
+    for body in (next_body, prev_body):
+        assert "this->phonebook_" in body
+        assert 'this->publish_last_reason_("")' in body
+        assert "this->clear_terminal_call_snapshot_()" in body
+        assert "this->publish_destination_()" in body
+
+
 def test_roster_json_uses_address_direct_or_ha_route_without_kind_semantics() -> None:
     settings = read("voip_settings.cpp")
 
