@@ -8,8 +8,8 @@
 
 namespace esphome {
 
-#ifndef ESPHOME_SCALE_SAMPLE_DEFINED
-#define ESPHOME_SCALE_SAMPLE_DEFINED
+#ifndef ESPHOME_VOIP_STACK_SCALE_SAMPLE_DEFINED
+#define ESPHOME_VOIP_STACK_SCALE_SAMPLE_DEFINED
 // Scale a 16-bit PCM sample by a float gain with saturation clamping.
 // Supports gains > 1.0 (amplification) unlike ESPHome's Q15 scale_audio_samples().
 static inline int16_t scale_sample(int16_t sample, float gain) {
@@ -20,8 +20,8 @@ static inline int16_t scale_sample(int16_t sample, float gain) {
 }
 #endif
 
-#ifndef ESPHOME_SCALE_BLOCK_I16_DEFINED
-#define ESPHOME_SCALE_BLOCK_I16_DEFINED
+#ifndef ESPHOME_VOIP_STACK_SCALE_BLOCK_I16_DEFINED
+#define ESPHOME_VOIP_STACK_SCALE_BLOCK_I16_DEFINED
 // Q15 scale for standalone float gain paths. ESPHome-facing attenuation/volume
 // uses esp-audio-libs Q31 in esp_audio_stack; user-facing positive mic gain
 // uses esp_ae_alc. This helper remains for board-level input boost and
@@ -82,8 +82,8 @@ static inline void scale_block_i16(const int16_t *in, int16_t *out, size_t len, 
 }
 #endif
 
-#ifndef ESPHOME_COMPUTE_RMS_DBFS_DEFINED
-#define ESPHOME_COMPUTE_RMS_DBFS_DEFINED
+#ifndef ESPHOME_VOIP_STACK_COMPUTE_RMS_DBFS_DEFINED
+#define ESPHOME_VOIP_STACK_COMPUTE_RMS_DBFS_DEFINED
 // 20*log10(32768): subtract from 10*log10(mean) to get dBFS without an
 // extra sqrt() (more numerically stable for small means).
 static constexpr float RMS_DBFS_OFFSET = 90.30899870f;
@@ -114,8 +114,8 @@ static inline PcmLevelsDbfs compute_levels_dbfs_i16(const int16_t *data, size_t 
 }
 #endif
 
-#ifndef ESPHOME_DC_BLOCKER_STATE_DEFINED
-#define ESPHOME_DC_BLOCKER_STATE_DEFINED
+#ifndef ESPHOME_VOIP_STACK_DC_BLOCKER_STATE_DEFINED
+#define ESPHOME_VOIP_STACK_DC_BLOCKER_STATE_DEFINED
 struct DcBlockerState {
   int32_t prev_input_q16{0};
   int32_t prev_output_q16{0};
