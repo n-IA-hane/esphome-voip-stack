@@ -10,6 +10,7 @@ transaction behavior for UDP.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +43,21 @@ def test_audio_path_is_not_timer_paced_or_sink_callback_paced() -> None:
     assert "media_rx_queue_drops_" in audio
     assert "tx_task_priority" not in combined
     assert "rx_task_priority" not in combined
+
+
+def test_voip_helper_namespace_does_not_collide_with_audio_stack() -> None:
+    ring_caps = read("audio_core_ring_buffer_caps.h")
+    task_utils = read("audio_core_task_utils.h")
+    stack_h = read("voip_stack.h")
+    stack_cpp = read("voip_stack.cpp")
+    sip_cpp = read("sip_transport.cpp")
+
+    helpers = "\n".join([ring_caps, task_utils])
+    combined = "\n".join([helpers, stack_h, stack_cpp, sip_cpp])
+    assert "namespace audio_core {" not in helpers
+    assert "namespace voip_audio_core {" in helpers
+    assert re.search(r"(?<!voip_)audio_core::", combined) is None
+    assert "voip_audio_core::" in combined
 
 
 def test_media_timeout_is_a_terminal_phone_reason() -> None:
@@ -199,6 +215,10 @@ def test_non_2xx_invite_final_response_sends_ack() -> None:
     assert "struct SipRequestOptions" in sip_h
     assert "std::string branch_override" in sip_h
     assert "std::string cseq_method" in sip_h
+    assert 'bool send_request_(const std::string &method, const std::string &body = "");' in sip_h
+    assert "bool send_request_(const std::string &method, const std::string &body,\n                     const SipRequestOptions &options);" in sip_h
+    assert "SipRequestOptions &options =" not in sip_h
+    assert "bool SipTransport::send_request_(const std::string &method, const std::string &body) {" in sip_cpp
     assert "send_invite_error_ack_" in sip_h
     assert "bool SipTransport::send_invite_error_ack_()" in sip_cpp
     assert "options.cseq_number = this->invite_cseq_" in sip_cpp

@@ -575,7 +575,7 @@ bool SipTransport::start() {
     return false;
   }
   this->running_.store(true, std::memory_order_release);
-  if (!audio_core::start_pinned_task(SipTransport::sip_task_trampoline_, "voip_sip",
+  if (!voip_audio_core::start_pinned_task(SipTransport::sip_task_trampoline_, "voip_sip",
                                           kSipTaskStackBytes, this, kSipTaskPriority, 1,
                                           this->task_stacks_in_psram_, TAG,
                                           &this->sip_task_handle_, &this->sip_task_tcb_,
@@ -650,7 +650,7 @@ void SipTransport::stop() {
     this->sip_tcp_listener_socket_ = -1;
   }
   this->request_tcp_client_close_();
-  audio_core::force_delete_pinned_task(&this->sip_task_handle_, &this->sip_task_stack_, kSipTaskStackBytes);
+  voip_audio_core::force_delete_pinned_task(&this->sip_task_handle_, &this->sip_task_stack_, kSipTaskStackBytes);
   this->close_tcp_client_from_sip_task_();
   this->emit_connection_change_(false);
 }
@@ -678,7 +678,7 @@ bool SipTransport::start_audio_path() {
   }
   xSemaphoreTake(this->rtp_task_done_, 0);
   this->rtp_running_.store(true, std::memory_order_release);
-  if (!audio_core::start_pinned_task(SipTransport::rtp_task_trampoline_, "voip_rtp",
+  if (!voip_audio_core::start_pinned_task(SipTransport::rtp_task_trampoline_, "voip_rtp",
                                           kRtpTaskStackBytes, this, kRtpTaskPriority, 1,
                                           this->task_stacks_in_psram_, TAG,
                                           &this->rtp_task_handle_, &this->rtp_task_tcb_,
@@ -696,7 +696,7 @@ void SipTransport::stop_audio_path() {
   if (!this->rtp_running_.exchange(false, std::memory_order_acq_rel)) return;
   this->wake_rtp_task_();
   if (this->rtp_task_done_ != nullptr && xSemaphoreTake(this->rtp_task_done_, pdMS_TO_TICKS(1000)) == pdTRUE) {
-    audio_core::cleanup_pinned_task(&this->rtp_task_handle_, &this->rtp_task_stack_, kRtpTaskStackBytes);
+    voip_audio_core::cleanup_pinned_task(&this->rtp_task_handle_, &this->rtp_task_stack_, kRtpTaskStackBytes);
   } else {
     ESP_LOGE(TAG, "RTP task did not stop cleanly; leaving task resources owned by FreeRTOS");
     this->rtp_task_handle_ = nullptr;
@@ -1127,6 +1127,11 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp, uint32_t d
   this->remote_ip_v4_.store(media_ip, std::memory_order_release);
   this->remote_rtp_port_.store(media_port, std::memory_order_release);
   return true;
+}
+
+bool SipTransport::send_request_(const std::string &method, const std::string &body) {
+  SipRequestOptions options;
+  return this->send_request_(method, body, options);
 }
 
 bool SipTransport::send_request_(const std::string &method, const std::string &body,

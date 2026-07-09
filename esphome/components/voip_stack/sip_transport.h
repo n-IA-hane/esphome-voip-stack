@@ -89,8 +89,9 @@ class SipTransport : public SipPhoneTransport {
   bool parse_remote_(const std::string &host);
   bool send_sip_(const std::string &message, uint32_t ip_v4, uint16_t port);
   bool send_sip_tcp_(const std::string &message);
-  bool send_request_(const std::string &method, const std::string &body = "",
-                     const SipRequestOptions &options = {});
+  bool send_request_(const std::string &method, const std::string &body = "");
+  bool send_request_(const std::string &method, const std::string &body,
+                     const SipRequestOptions &options);
   bool send_invite_error_ack_();
   bool send_response_(uint16_t status, const char *reason, const std::string &body = "",
                       const std::string &app_reason = "");

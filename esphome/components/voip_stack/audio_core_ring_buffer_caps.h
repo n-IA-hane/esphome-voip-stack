@@ -17,7 +17,7 @@
 #include <cstring>
 
 namespace esphome {
-namespace audio_core {
+namespace voip_audio_core {
 
 /// Ring buffer allocation policy.
 ///
@@ -178,7 +178,7 @@ inline RingBufferPtr create_ring_buffer(size_t len, RingBufferPolicy policy, con
   return create_ring_buffer_with_type(len, policy, name, RINGBUF_TYPE_BYTEBUF);
 }
 
-}  // namespace audio_core
+}  // namespace voip_audio_core
 }  // namespace esphome
 
 #endif  // USE_ESP32

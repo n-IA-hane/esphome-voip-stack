@@ -9,7 +9,7 @@
 #include <freertos/task.h>
 
 namespace esphome {
-namespace audio_core {
+namespace voip_audio_core {
 
 /// Pin a FreeRTOS task to a core, with optional static stack from PSRAM.
 ///
@@ -120,7 +120,7 @@ inline void cleanup_pinned_task(TaskHandle_t *handle, StackType_t **stack, uint3
   }
 }
 
-}  // namespace audio_core
+}  // namespace voip_audio_core
 }  // namespace esphome
 
 #endif  // USE_ESP32

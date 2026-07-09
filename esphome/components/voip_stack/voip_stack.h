@@ -523,7 +523,7 @@ class VoipStack : public Component {
 
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
   // Audio buffers
-  audio_core::RingBufferPtr mic_buffer_;
+  voip_audio_core::RingBufferPtr mic_buffer_;
 
   // Per-iteration drain buffers, heap-allocated at setup() so the audio
   // tasks don't carry 4 KB VLAs on top of an 8 KB stack.
