@@ -45,6 +45,44 @@ def test_audio_path_is_not_timer_paced_or_sink_callback_paced() -> None:
     assert "rx_task_priority" not in combined
 
 
+def test_audio_stack_tx_queue_is_optimized_without_changing_native_mic_path() -> None:
+    init_py = read("__init__.py")
+    audio = read("voip_audio.cpp")
+    stack = read("voip_stack.cpp")
+    header = read("voip_stack.h")
+
+    assert "def _tx_uses_esp_audio_stack" in init_py
+    assert 'CONF_TX_USES_ESP_AUDIO_STACK = "_tx_uses_esp_audio_stack"' in init_py
+    assert 'mic_config.get("platform") == "esp_audio_stack"' in init_py
+    assert "_esp_audio_stack_parent_config(mic_config) is not None" in init_py
+    assert "config[CONF_TX_USES_ESP_AUDIO_STACK] = _tx_uses_esp_audio_stack(config)" in init_py
+    assert 'cg.add_define("USE_ESPHOME_VOIP_STACK_AUDIO_STACK_MIC")' in init_py
+    assert "set_microphone_source_is_audio_stack" not in header
+    assert "microphone_source_is_audio_stack_" not in header
+
+    assert "size_t VoipStack::tx_audio_buffer_bytes_() const" in audio
+    assert "#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_STACK_MIC" in audio
+    assert "frame_bytes * 6" in audio
+    assert "frame_bytes + 1024" in audio
+    assert "frame_bytes * 16" in audio
+    assert "frame_bytes + 4096" in audio
+    assert "const size_t tx_buffer_bytes = this->tx_audio_buffer_bytes_();" in stack
+    assert "std::max<size_t>(tx_frame_bytes * 16, tx_frame_bytes + 4096)" not in stack
+
+
+def test_mic_enqueue_drop_accounting_is_single_primitive() -> None:
+    audio = read("voip_audio.cpp")
+    header = read("voip_stack.h")
+
+    assert "bool write_mic_buffer_(const uint8_t *data, size_t len);" in header
+    assert "bool VoipStack::write_mic_buffer_(const uint8_t *data, size_t len)" in audio
+    assert "media_tx_queue_drops_.fetch_add(frames_for_bytes(dropped, frame_bytes)" in audio
+    assert "xTaskNotifyGive(this->tx_task_handle_)" in audio
+    assert "this->write_mic_buffer_(reinterpret_cast<const uint8_t *>(mic_converted), bytes);" in audio
+    assert "this->write_mic_buffer_(data, len);" in audio
+    assert audio.count("media_tx_queue_drops_.fetch_add(frames_for_bytes(dropped, frame_bytes)") == 1
+
+
 def test_voip_helper_namespace_does_not_collide_with_audio_stack() -> None:
     ring_caps = read("audio_core_ring_buffer_caps.h")
     task_utils = read("audio_core_task_utils.h")

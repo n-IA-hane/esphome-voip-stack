@@ -537,12 +537,14 @@ class VoipStack : public Component {
     }
     return bytes;
   }
+  size_t tx_audio_buffer_bytes_() const;
   size_t mic_processing_samples_() const { return this->tx_audio_max_chunk_bytes_() / sizeof(int16_t); }
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
   uint8_t *tx_audio_chunk_{nullptr};
   size_t tx_audio_chunk_alloc_bytes_{0};
   bool read_tx_chunk_(uint8_t *audio_chunk);
+  bool write_mic_buffer_(const uint8_t *data, size_t len);
 
   // task_stacks_in_psram_: true puts task stacks in PSRAM (saves internal
   // heap on S3/P4 with heavy AFE/MWW/LVGL load); false keeps them in

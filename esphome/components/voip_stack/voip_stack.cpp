@@ -155,8 +155,7 @@ void VoipStack::cleanup_partial_setup_() {
 bool VoipStack::allocate_setup_buffers_() {
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
   if (this->has_microphone_()) {
-    const size_t tx_frame_bytes = this->tx_audio_chunk_bytes_();
-    const size_t tx_buffer_bytes = std::max<size_t>(tx_frame_bytes * 16, tx_frame_bytes + 4096);
+    const size_t tx_buffer_bytes = this->tx_audio_buffer_bytes_();
     this->mic_buffer_ = this->buffers_in_psram_
         ? voip_audio_core::create_prefer_psram(tx_buffer_bytes, "voip.mic")
         : voip_audio_core::create_internal(tx_buffer_bytes, "voip.mic");

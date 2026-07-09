@@ -87,6 +87,7 @@ CONF_RING_GROUPS = "ring_groups"
 CONF_IP = "ip"
 CONF_PORT = "port"
 CONF_RTP_PORT_ACTION = "rtp_port"
+CONF_TX_USES_ESP_AUDIO_STACK = "_tx_uses_esp_audio_stack"
 
 TRANSPORT_TCP = "tcp"
 TRANSPORT_UDP = "udp"
@@ -327,6 +328,17 @@ def _derive_tx_format(config: dict) -> dict | None:
             direction=CONF_TX,
         )
     return None
+
+
+def _tx_uses_esp_audio_stack(config: dict) -> bool:
+    if CONF_MICROPHONE in config:
+        mic_config = _declared_config_for_id(config[CONF_MICROPHONE])
+        return mic_config.get("platform") == "esp_audio_stack"
+    if CONF_MICROPHONE_SOURCE in config:
+        source = config[CONF_MICROPHONE_SOURCE]
+        mic_config = _declared_config_for_id(source[CONF_MICROPHONE])
+        return _esp_audio_stack_parent_config(mic_config) is not None
+    return False
 
 
 def _derive_rx_format(config: dict) -> dict | None:
@@ -628,6 +640,7 @@ def _final_validate(config):
     audio_cfg = config[CONF_AUDIO]
     audio_cfg[CONF_TX] = _resolve_audio_format(config, CONF_TX, audio_cfg[CONF_TX])
     audio_cfg[CONF_RX] = _resolve_audio_format(config, CONF_RX, audio_cfg[CONF_RX])
+    config[CONF_TX_USES_ESP_AUDIO_STACK] = _tx_uses_esp_audio_stack(config)
     tx_fmt = audio_cfg[CONF_TX]
     rx_fmt = audio_cfg[CONF_RX]
     _validate_tx_reframe_formats(tx_fmt, audio_cfg[CONF_TX_FORMATS])
@@ -723,6 +736,9 @@ async def _add_core_settings(var, config):
         cg.add_define("USE_ESPHOME_VOIP_STACK_MIC")
         mic_source = await microphone.microphone_source_to_code(config[CONF_MICROPHONE_SOURCE])
         cg.add(var.set_microphone_source(mic_source))
+
+    if config.get(CONF_TX_USES_ESP_AUDIO_STACK, False):
+        cg.add_define("USE_ESPHOME_VOIP_STACK_AUDIO_STACK_MIC")
 
     if CONF_SPEAKER in config:
         cg.add_define("USE_ESPHOME_VOIP_STACK_SPEAKER")

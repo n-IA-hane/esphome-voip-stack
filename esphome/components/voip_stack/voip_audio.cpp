@@ -68,6 +68,18 @@ static uint32_t frames_for_bytes(size_t bytes, size_t frame_bytes) {
 
 // === TX Task (Core 0) - Mic to Network ===
 
+size_t VoipStack::tx_audio_buffer_bytes_() const {
+  const size_t frame_bytes = this->tx_audio_max_chunk_bytes_();
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_STACK_MIC
+  // esp_audio_stack already owns the realtime I2S/AFE buffering and emits
+  // regular processed frames. Keep only enough VoIP queue to bridge scheduler
+  // jitter into the network task.
+  return std::max<size_t>(frame_bytes * 6, frame_bytes + 1024);
+#else
+  return std::max<size_t>(frame_bytes * 16, frame_bytes + 4096);
+#endif
+}
+
 void VoipStack::tx_task(void *param) {
   static_cast<VoipStack *>(param)->tx_task_();
 }
@@ -99,6 +111,27 @@ bool VoipStack::read_tx_chunk_(uint8_t *audio_chunk) {
   const size_t frame_bytes = this->tx_audio_chunk_bytes_();
   return this->mic_buffer_ != nullptr &&
          this->mic_buffer_->read(audio_chunk, frame_bytes, 0) == frame_bytes;
+}
+
+bool VoipStack::write_mic_buffer_(const uint8_t *data, size_t len) {
+  if (this->mic_buffer_ == nullptr || data == nullptr || len == 0) {
+    return false;
+  }
+  const size_t frame_bytes = this->tx_audio_chunk_bytes_();
+  const size_t free_before = this->mic_buffer_->free();
+  const size_t replaced = free_before < len ? len - free_before : 0;
+  const size_t written = this->mic_buffer_->write(data, len);
+  const size_t dropped = replaced + (written < len ? len - written : 0);
+  if (dropped > 0) {
+    this->media_tx_queue_drops_.fetch_add(frames_for_bytes(dropped, frame_bytes), std::memory_order_relaxed);
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+    this->media_tx_queue_drop_bytes_.fetch_add(static_cast<uint32_t>(dropped), std::memory_order_relaxed);
+#endif
+  }
+  if (written > 0 && this->tx_task_handle_ != nullptr) {
+    xTaskNotifyGive(this->tx_task_handle_);
+  }
+  return written == len;
 }
 
 void VoipStack::tx_task_() {
@@ -193,38 +226,12 @@ void VoipStack::on_microphone_data_(const uint8_t *data, size_t len) {
       } else {
         scale_block_i16(src + off, mic_converted, chunk, effective_gain);
       }
-      const size_t frame_bytes = this->tx_audio_chunk_bytes_();
       const size_t bytes = chunk * sizeof(int16_t);
-      const size_t free_before = this->mic_buffer_->free();
-      const size_t replaced = free_before < bytes ? bytes - free_before : 0;
-      const size_t written = this->mic_buffer_->write(mic_converted, bytes);
-      const size_t dropped = replaced + (written < bytes ? bytes - written : 0);
-      if (dropped > 0) {
-        this->media_tx_queue_drops_.fetch_add(frames_for_bytes(dropped, frame_bytes), std::memory_order_relaxed);
-#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
-        this->media_tx_queue_drop_bytes_.fetch_add(static_cast<uint32_t>(dropped), std::memory_order_relaxed);
-#endif
-      }
-      if (this->tx_task_handle_ != nullptr) {
-        xTaskNotifyGive(this->tx_task_handle_);
-      }
+      this->write_mic_buffer_(reinterpret_cast<const uint8_t *>(mic_converted), bytes);
       off += chunk;
     }
   } else {
-    const size_t frame_bytes = this->tx_audio_chunk_bytes_();
-    const size_t free_before = this->mic_buffer_->free();
-    const size_t replaced = free_before < len ? len - free_before : 0;
-    const size_t written = this->mic_buffer_->write(data, len);
-    const size_t dropped = replaced + (written < len ? len - written : 0);
-    if (dropped > 0) {
-      this->media_tx_queue_drops_.fetch_add(frames_for_bytes(dropped, frame_bytes), std::memory_order_relaxed);
-#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
-      this->media_tx_queue_drop_bytes_.fetch_add(static_cast<uint32_t>(dropped), std::memory_order_relaxed);
-#endif
-    }
-    if (this->tx_task_handle_ != nullptr) {
-      xTaskNotifyGive(this->tx_task_handle_);
-    }
+    this->write_mic_buffer_(data, len);
   }
 }
 #endif  // USE_ESPHOME_VOIP_STACK_MIC
