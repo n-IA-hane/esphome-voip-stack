@@ -285,11 +285,11 @@ class VoipStack : public Component {
   std::string get_contacts_csv() const;
 
   // Call state triggers (exposed to YAML)
-  Trigger<> *get_ringing_trigger() { return &this->ringing_trigger_; }
-  Trigger<> *get_in_call_trigger() { return &this->in_call_trigger_; }
+  Trigger<std::string> *get_ringing_trigger() { return &this->ringing_trigger_; }
+  Trigger<std::string> *get_in_call_trigger() { return &this->in_call_trigger_; }
   Trigger<> *get_idle_trigger() { return &this->idle_trigger_; }
-  Trigger<> *get_calling_trigger() { return &this->calling_trigger_; }
-  Trigger<> *get_dest_ringing_trigger() { return &this->dest_ringing_trigger_; }
+  Trigger<std::string> *get_calling_trigger() { return &this->calling_trigger_; }
+  Trigger<std::string> *get_dest_ringing_trigger() { return &this->dest_ringing_trigger_; }
   Trigger<std::string, std::string, std::string, std::string> *get_incoming_call_trigger() {
     return &this->incoming_call_trigger_;
   }
@@ -299,12 +299,12 @@ class VoipStack : public Component {
   Trigger<std::string, std::string, std::string, std::string> *get_bridge_request_trigger() {
     return &this->bridge_request_trigger_;
   }
-  Trigger<std::string> *get_hangup_trigger() { return &this->hangup_trigger_; }
-  Trigger<std::string> *get_call_failed_trigger() { return &this->call_failed_trigger_; }
-  Trigger<> *get_destination_changed_trigger() { return &this->destination_changed_trigger_; }
+  Trigger<std::string, std::string> *get_hangup_trigger() { return &this->hangup_trigger_; }
+  Trigger<std::string, std::string> *get_call_failed_trigger() { return &this->call_failed_trigger_; }
+  Trigger<std::string> *get_destination_changed_trigger() { return &this->destination_changed_trigger_; }
   // Fires after every real phonebook mutation: HA roster push, manual
   // add/remove/set/flush, or stale-contact pruning.
-  Trigger<> *get_phonebook_update_trigger() { return &this->phonebook_update_trigger_; }
+  Trigger<std::string> *get_phonebook_update_trigger() { return &this->phonebook_update_trigger_; }
 
   // Call state getter
   CallState get_call_state() const { return this->call_state_.load(std::memory_order_acquire); }
@@ -725,18 +725,18 @@ class VoipStack : public Component {
   std::atomic<int16_t *> mic_converted_{nullptr};  // 512 samples, lazy for optional mic processing
 #endif
 
-  Trigger<> ringing_trigger_;
-  Trigger<> in_call_trigger_;
+  Trigger<std::string> ringing_trigger_;
+  Trigger<std::string> in_call_trigger_;
   Trigger<> idle_trigger_;
-  Trigger<> calling_trigger_;
-  Trigger<> dest_ringing_trigger_;
+  Trigger<std::string> calling_trigger_;
+  Trigger<std::string> dest_ringing_trigger_;
   Trigger<std::string, std::string, std::string, std::string> incoming_call_trigger_;
   Trigger<std::string, std::string, std::string, std::string> outgoing_call_trigger_;
   Trigger<std::string, std::string, std::string, std::string> bridge_request_trigger_;
-  Trigger<std::string> hangup_trigger_;
-  Trigger<std::string> call_failed_trigger_;
-  Trigger<> destination_changed_trigger_;
-  Trigger<> phonebook_update_trigger_;
+  Trigger<std::string, std::string> hangup_trigger_;
+  Trigger<std::string, std::string> call_failed_trigger_;
+  Trigger<std::string> destination_changed_trigger_;
+  Trigger<std::string> phonebook_update_trigger_;
   CallbackManager<void(CallState)> state_callback_{};
 };
 

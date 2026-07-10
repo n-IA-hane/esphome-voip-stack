@@ -567,7 +567,7 @@ bool VoipStack::set_contact(const std::string &name) {
   if (this->phonebook_.empty()) {
     ESP_LOGW(TAG, "set_contact('%s') failed: contacts list is empty", name.c_str());
     std::string msg = std::string("Contact not found: ") + name;
-    this->defer([this, msg]() { this->call_failed_trigger_.trigger(msg); });
+    this->defer([this, name, msg]() { this->call_failed_trigger_.trigger(name, msg); });
     return false;
   }
   if (this->phonebook_.select(name)) {
@@ -578,7 +578,7 @@ bool VoipStack::set_contact(const std::string &name) {
   ESP_LOGW(TAG, "set_contact('%s') failed: not found in %zu contacts",
            name.c_str(), this->phonebook_.size());
   std::string msg = std::string("Contact not found: ") + name;
-  this->defer([this, msg]() { this->call_failed_trigger_.trigger(msg); });
+  this->defer([this, name, msg]() { this->call_failed_trigger_.trigger(name, msg); });
   return false;
 }
 
@@ -586,13 +586,13 @@ void VoipStack::call(const std::string &value) {
   const std::string target = Phonebook::trim(value);
   if (target.empty()) {
     ESP_LOGW(TAG, "call failed: empty target");
-    this->defer([this]() { this->call_failed_trigger_.trigger("Empty target"); });
+    this->defer([this]() { this->call_failed_trigger_.trigger("", "Empty target"); });
     return;
   }
   if (target.size() > Phonebook::MAX_NAME_BYTES ||
       target.find_first_of("|,;\r\n") != std::string::npos) {
     ESP_LOGW(TAG, "call failed: invalid target label");
-    this->defer([this]() { this->call_failed_trigger_.trigger("Invalid target"); });
+    this->defer([this, target]() { this->call_failed_trigger_.trigger(target, "Invalid target"); });
     return;
   }
 
@@ -609,7 +609,7 @@ void VoipStack::call(const std::string &value) {
     ESP_LOGW(TAG, "call('%s') failed: not in local phonebook and HA peer unavailable",
              target.c_str());
     std::string msg = std::string("Contact not found: ") + target;
-    this->defer([this, msg]() { this->call_failed_trigger_.trigger(msg); });
+    this->defer([this, target, msg]() { this->call_failed_trigger_.trigger(target, msg); });
     return;
   }
 
@@ -679,7 +679,7 @@ void VoipStack::publish_destination_() {
   }
   if (current != this->last_published_destination_) {
     this->last_published_destination_ = current;
-    this->destination_changed_trigger_.trigger();
+    this->destination_changed_trigger_.trigger(current);
   }
   this->publish_sip_snapshot_();
 }
@@ -705,7 +705,7 @@ void VoipStack::publish_contacts_() {
 void VoipStack::publish_phonebook_changed_() {
   this->publish_destination_();
   this->publish_contacts_();
-  this->phonebook_update_trigger_.trigger();
+  this->phonebook_update_trigger_.trigger(this->get_current_destination());
 }
 
 std::string VoipStack::get_contacts_csv() const {

@@ -553,6 +553,11 @@ void VoipStack::set_call_state_(CallState new_state) {
   // the voip_srv task on Core 1, but on_* actions often touch LVGL
   // which must run on the main loop. Running inline trips the WD.
   this->defer([this, new_state]() { this->state_callback_.call(new_state); });
+  const CallSnapshot trigger_call = this->snapshot_call_identity_();
+  std::string trigger_peer = trigger_call.caller_name == this->device_name_
+                                 ? trigger_call.dest_name
+                                 : trigger_call.caller_name;
+  if (trigger_peer.empty()) trigger_peer = this->get_current_destination();
   switch (new_state) {
     case CallState::IDLE:
       this->defer([this]() { this->idle_trigger_.trigger(); });
@@ -560,22 +565,22 @@ void VoipStack::set_call_state_(CallState new_state) {
       break;
     case CallState::CALLING:
       this->publish_last_reason_("");
-      this->defer([this]() { this->calling_trigger_.trigger(); });
+      this->defer([this, trigger_peer]() { this->calling_trigger_.trigger(trigger_peer); });
       break;
     case CallState::REMOTE_RINGING:
       this->publish_last_reason_("");
-      this->defer([this]() { this->dest_ringing_trigger_.trigger(); });
+      this->defer([this, trigger_peer]() { this->dest_ringing_trigger_.trigger(trigger_peer); });
       break;
     case CallState::RINGING:
       this->publish_last_reason_("");
-      this->defer([this]() { this->ringing_trigger_.trigger(); });
+      this->defer([this, trigger_peer]() { this->ringing_trigger_.trigger(trigger_peer); });
       break;
     case CallState::CONNECTING:
       this->publish_last_reason_("");
       break;
     case CallState::IN_CALL:
       this->publish_last_reason_("");
-      this->defer([this]() { this->in_call_trigger_.trigger(); });
+      this->defer([this, trigger_peer]() { this->in_call_trigger_.trigger(trigger_peer); });
       break;
     case CallState::TERMINATING:
     case CallState::BUSY:
@@ -596,6 +601,8 @@ void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
 
   std::string reason_str = detail.empty() ? call_end_reason_to_str(reason) : detail;
   const CallSnapshot call = this->snapshot_call_identity_();
+  std::string peer = call.caller_name == this->device_name_ ? call.dest_name : call.caller_name;
+  if (peer.empty()) peer = this->get_current_destination();
   const std::string call_id = call.call_id;
   this->last_terminal_call_id_ = call.call_id;
   this->last_terminal_caller_name_ = call.caller_name;
@@ -651,9 +658,9 @@ void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
       reason == CallEndReason::PROXY_AUTH_REQUIRED_UNSUPPORTED ||
       reason == CallEndReason::BUSY ||
       reason == CallEndReason::PROTOCOL_ERROR) {
-    this->defer([this, reason_str]() { this->call_failed_trigger_.trigger(reason_str); });
+    this->defer([this, peer, reason_str]() { this->call_failed_trigger_.trigger(peer, reason_str); });
   } else {
-    this->defer([this, reason_str]() { this->hangup_trigger_.trigger(reason_str); });
+    this->defer([this, peer, reason_str]() { this->hangup_trigger_.trigger(peer, reason_str); });
   }
   // Clear per-call identity. Terminal response cache stays so a duplicate
   // INVITE can replay the same final response; cleared by the next accepted
@@ -1001,7 +1008,6 @@ handle_incoming_invite_in_idle:
                  this->device_name_.c_str(),
                  in_call_id.c_str());
         this->set_call_state_(CallState::REMOTE_RINGING);
-        this->defer([this]() { this->dest_ringing_trigger_.trigger(); });
       } else {
         ESP_LOGD(TAG, "180 ignored in state %s", this->get_call_state_str());
       }

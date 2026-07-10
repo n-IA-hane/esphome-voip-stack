@@ -308,18 +308,18 @@ Triggers:
 
 | Trigger | Fires |
 |---|---|
-| `on_ringing` | Inbound call starts ringing locally. |
-| `on_calling` | Outbound call enters `CALLING`. |
-| `on_dest_ringing` | Remote side reports ringing. |
-| `on_in_call` | Media is established. |
-| `on_hangup` | Call ends normally. |
-| `on_call_failed` | Call ends in a failure terminal state. |
+| `on_ringing` | Inbound call starts ringing locally; provides `peer`. |
+| `on_calling` | Outbound call enters `CALLING`; provides `peer`. |
+| `on_dest_ringing` | Remote side reports ringing; provides `peer`. |
+| `on_in_call` | Media is established; provides `peer`. |
+| `on_hangup` | Call ends normally; provides `peer` and `reason`. |
+| `on_call_failed` | Call ends in a failure terminal state; provides `peer` and `reason`. |
 | `on_idle` | FSM returns to idle. |
 | `on_incoming_call` | Inbound INVITE parsed; provides `call_id`, `caller`, `callee`, `uri`. |
 | `on_outgoing_call` | Outbound call placed. |
 | `on_bridge_request` | An ESP-originated route explicitly targets the HA peer. |
-| `on_destination_changed` | Selected destination changed. |
-| `on_phonebook_update` | Contact list changed. |
+| `on_destination_changed` | Selected destination changed; provides `destination`. |
+| `on_phonebook_update` | Contact list changed; provides `destination`. |
 
 Conditions: `voip_stack.is_idle`, `voip_stack.is_ringing`,
 `voip_stack.is_in_call`, `voip_stack.is_calling`, `voip_stack.is_incoming`,

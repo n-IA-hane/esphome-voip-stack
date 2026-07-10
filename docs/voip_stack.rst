@@ -98,19 +98,19 @@ Configuration variables
 Triggers
 --------
 
-- **on_ringing**: Inbound call starts ringing.
-- **on_calling**: Outbound call starts.
-- **on_dest_ringing**: Remote side reports ringing.
-- **on_in_call**: Media is established.
-- **on_hangup**: Call ends normally.
-- **on_call_failed**: Call ends in a failure terminal state.
+- **on_ringing**: Inbound call starts ringing. Provides ``peer``.
+- **on_calling**: Outbound call starts. Provides ``peer``.
+- **on_dest_ringing**: Remote side reports ringing. Provides ``peer``.
+- **on_in_call**: Media is established. Provides ``peer``.
+- **on_hangup**: Call ends normally. Provides ``peer`` and ``reason``.
+- **on_call_failed**: Call ends in a failure terminal state. Provides ``peer`` and ``reason``.
 - **on_idle**: FSM returns to idle.
 - **on_incoming_call**: Inbound INVITE parsed. Provides ``call_id``, ``caller``,
   ``callee`` and ``uri``.
 - **on_outgoing_call**: Outbound call placed.
 - **on_bridge_request**: ESP-originated route explicitly targets HA.
-- **on_destination_changed**: Selected contact changed.
-- **on_phonebook_update**: Contact list changed.
+- **on_destination_changed**: Selected contact changed. Provides ``destination``.
+- **on_phonebook_update**: Contact list changed. Provides ``destination``.
 
 Actions
 -------

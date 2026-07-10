@@ -850,13 +850,13 @@ async def _build_voip_automations(var, config):
     # on_ringing automation
     if CONF_ON_RINGING in config:
         await automation.build_automation(
-            var.get_ringing_trigger(), [], config[CONF_ON_RINGING]
+            var.get_ringing_trigger(), [(cg.std_string, "peer")], config[CONF_ON_RINGING]
         )
 
     # on_in_call automation
     if CONF_ON_IN_CALL in config:
         await automation.build_automation(
-            var.get_in_call_trigger(), [], config[CONF_ON_IN_CALL]
+            var.get_in_call_trigger(), [(cg.std_string, "peer")], config[CONF_ON_IN_CALL]
         )
 
     # on_idle automation
@@ -868,12 +868,12 @@ async def _build_voip_automations(var, config):
     # FSM triggers.
     if CONF_ON_CALLING in config:
         await automation.build_automation(
-            var.get_calling_trigger(), [], config[CONF_ON_CALLING]
+            var.get_calling_trigger(), [(cg.std_string, "peer")], config[CONF_ON_CALLING]
         )
 
     if CONF_ON_DEST_RINGING in config:
         await automation.build_automation(
-            var.get_dest_ringing_trigger(), [], config[CONF_ON_DEST_RINGING]
+            var.get_dest_ringing_trigger(), [(cg.std_string, "peer")], config[CONF_ON_DEST_RINGING]
         )
 
     trigger_args = [
@@ -899,22 +899,22 @@ async def _build_voip_automations(var, config):
 
     if CONF_ON_HANGUP in config:
         await automation.build_automation(
-            var.get_hangup_trigger(), [(cg.std_string, "reason")], config[CONF_ON_HANGUP]
+            var.get_hangup_trigger(), [(cg.std_string, "peer"), (cg.std_string, "reason")], config[CONF_ON_HANGUP]
         )
 
     if CONF_ON_CALL_FAILED in config:
         await automation.build_automation(
-            var.get_call_failed_trigger(), [(cg.std_string, "reason")], config[CONF_ON_CALL_FAILED]
+            var.get_call_failed_trigger(), [(cg.std_string, "peer"), (cg.std_string, "reason")], config[CONF_ON_CALL_FAILED]
         )
 
     if CONF_ON_DESTINATION_CHANGED in config:
         await automation.build_automation(
-            var.get_destination_changed_trigger(), [], config[CONF_ON_DESTINATION_CHANGED]
+            var.get_destination_changed_trigger(), [(cg.std_string, "destination")], config[CONF_ON_DESTINATION_CHANGED]
         )
 
     if CONF_ON_PHONEBOOK_UPDATE in config:
         await automation.build_automation(
-            var.get_phonebook_update_trigger(), [], config[CONF_ON_PHONEBOOK_UPDATE]
+            var.get_phonebook_update_trigger(), [(cg.std_string, "destination")], config[CONF_ON_PHONEBOOK_UPDATE]
         )
 
 

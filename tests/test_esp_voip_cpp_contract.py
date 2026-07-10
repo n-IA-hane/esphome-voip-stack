@@ -21,6 +21,35 @@ def read(name: str) -> str:
     return (VOIP / name).read_text(encoding="utf-8")
 
 
+def test_yaml_lifecycle_callbacks_receive_stable_peer_identity() -> None:
+    init_py = read("__init__.py")
+    fsm = read("voip_fsm.cpp")
+    header = read("voip_stack.h")
+
+    for trigger in ("ringing", "in_call", "calling", "dest_ringing"):
+        assert f"Trigger<std::string> *get_{trigger}_trigger()" in header
+        assert f'var.get_{trigger}_trigger(), [(cg.std_string, "peer")]' in init_py
+
+    assert "Trigger<std::string, std::string> *get_hangup_trigger()" in header
+    assert "Trigger<std::string, std::string> *get_call_failed_trigger()" in header
+    assert '[(cg.std_string, "peer"), (cg.std_string, "reason")]' in init_py
+    assert "Trigger<std::string> *get_destination_changed_trigger()" in header
+    assert "Trigger<std::string> *get_phonebook_update_trigger()" in header
+    assert 'var.get_destination_changed_trigger(), [(cg.std_string, "destination")]' in init_py
+    assert 'var.get_phonebook_update_trigger(), [(cg.std_string, "destination")]' in init_py
+    assert "const CallSnapshot trigger_call = this->snapshot_call_identity_();" in fsm
+    assert "const CallSnapshot call = this->snapshot_call_identity_();" in fsm
+    assert "this->clear_call_identity_();" in fsm
+    assert fsm.index("const CallSnapshot call = this->snapshot_call_identity_();") < fsm.index(
+        "this->clear_call_identity_();"
+    )
+
+
+def test_remote_ringing_transition_emits_one_callback() -> None:
+    fsm = read("voip_fsm.cpp")
+    assert fsm.count("dest_ringing_trigger_.trigger(") == 1
+
+
 def test_audio_path_is_not_timer_paced_or_sink_callback_paced() -> None:
     audio = read("voip_audio.cpp")
     stack = read("voip_stack.cpp")
