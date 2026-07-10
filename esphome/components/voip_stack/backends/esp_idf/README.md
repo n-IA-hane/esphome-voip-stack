@@ -1,4 +1,5 @@
 # ESP-IDF Backend
 
-This directory will contain ESP32-S3/P4 hardware implementations for the same
-interfaces used by the host backend.
+Design placeholder only. The current production `voip_stack` implementation
+already calls ESPHome and ESP-IDF APIs from the main component; no separate
+ESP-IDF backend implementation is selected from this directory.

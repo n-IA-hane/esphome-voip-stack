@@ -1,6 +1,8 @@
 # VoIP Stack Backends
 
-Phase 00V introduces backend boundaries for host simulation.
+These directories are design placeholders retained from the Phase 00V host
+simulation proposal. No selectable backend abstraction or host simulator ships
+in this standalone component today; production code uses ESP-IDF directly.
 
 Rules:
 
@@ -9,7 +11,7 @@ Rules:
 - `#ifdef USE_HOST` is allowed in backend/factory files only;
 - tests must use snapshots exposed through the simulator control socket.
 
-Initial backend interfaces to extract:
+Interfaces considered by that proposal were:
 
 - `AudioBackend`
 - `CodecBackend`
@@ -19,3 +21,6 @@ Initial backend interfaces to extract:
 - `TaskExecutor`
 - `NetworkBackend`
 - `FaultInjector`
+
+Do not configure or depend on these names as public APIs. The directories may
+be removed or populated only as part of a separately tested implementation.

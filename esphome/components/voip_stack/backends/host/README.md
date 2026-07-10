@@ -1,6 +1,7 @@
 # Host Backend
 
-This directory will contain Linux host implementations for the virtual device:
+Design placeholder only. No Linux host backend or virtual-device binary ships
+from this directory. The original proposal considered:
 
 - WAV/PCM microphone input;
 - WAV/PCM speaker output;
@@ -10,3 +11,6 @@ This directory will contain Linux host implementations for the virtual device:
 - deterministic clock;
 - JSON-RPC control socket;
 - fault injection.
+
+Tests in this repository must not be described as a hardware-equivalent host
+backend unless an implementation and its validation artifacts are added.

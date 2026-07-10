@@ -56,8 +56,8 @@ Configuration variables
   ``tcp``. RTP media is always UDP. Defaults to ``udp``.
 - **sip_port** (*Optional*, int): Local SIP port. Defaults to ``5060``.
 - **rtp_port** (*Optional*, int): Local RTP port. Defaults to ``40000``.
-- **udp_max_payload** (*Optional*, int): RTP payload budget. Defaults to
-  ``1200``.
+- **udp_max_payload** (*Optional*, int): RTP payload budget in the accepted
+  range ``576..1488``. Defaults to ``1200``.
 - **microphone** (*Optional*, :ref:`config-id`): ESPHome microphone used for TX.
 - **microphone_source** (*Optional*): Microphone source block with microphone
   ID, bit-depth and channel selection.
@@ -66,11 +66,18 @@ Configuration variables
   Each direction supports ``auto`` or explicit ``sample_rate``, ``pcm_format``,
   ``channels`` and ``frame_ms``.
 - **audio.tx_formats** / **audio.rx_formats** (*Optional*, list): Up to seven
-  additional packet-time reframes advertised in SDP.
+  additional explicit capabilities advertised in SDP. TX entries may only
+  change packet time from ``audio.tx``; RX entries may describe other supported
+  speaker-side formats.
 - **static_contacts** (*Optional*, list): Local outbound dial plan entries.
-  Each contact requires ``name`` and may include ``ip``, ``port``, ``rtp_port``
-  and ``sip_transport``.
+  Each structured contact requires ``name`` and may include ``ip``, ``port``,
+  ``rtp_port`` and ``transport``. A pre-serialized ``entry`` is also accepted.
 - **extension** (*Optional*, string): Local SIP extension/user part.
+- **conference_groups** / **ring_groups** (*Optional*, string): One HA-managed
+  group name or a comma-separated membership list.
+- **conference_ring** (*Optional*, boolean): Ring when another participant
+  starts one of this endpoint's conference groups. Requires
+  ``conference_groups``. Defaults to ``false``.
 - **use_ha_as_first_contact** (*Optional*, boolean): Put the Home Assistant peer
   first in the dial plan. Defaults to ``false``.
 - **ha_phonebook_text_sensor_id** (*Optional*, :ref:`config-id`): Text sensor
@@ -127,7 +134,8 @@ Conditions
 
 ``voip_stack.is_idle``, ``voip_stack.is_ringing``,
 ``voip_stack.is_in_call``, ``voip_stack.is_calling``,
-``voip_stack.is_incoming`` and ``voip_stack.destination_is``.
+``voip_stack.is_incoming``, ``voip_stack.destination_is`` and
+``voip_stack.is_ha_destination``.
 
 Boundaries
 ----------
@@ -136,6 +144,12 @@ ESP devices are SIP peers, not registrar clients. There is no SIP registration
 or digest authentication support in the ESP component. Provider trunks,
 registrar accounts, central routing and the Lovelace softphone card are provided
 by the Home Assistant integration in ``esphome-intercom``.
+
+The phonebook controls outbound resolution; it is not an inbound caller
+allowlist. SIP has no TLS and RTP has no SRTP on ESP, so expose the listeners
+only on a trusted LAN/VPN or behind network admission policy. Session-changing
+in-dialog INVITE (including hold) is rejected with ``488`` while the original
+dialog remains established and can later receive BYE normally.
 
 See Also
 --------

@@ -268,8 +268,8 @@ voip_stack:
     - name: Front Gate
 ```
 
-`name` is required. `ip`, `port`, `rtp_port`, and `sip_transport` are optional.
-When `sip_transport` is omitted, the contact uses the component SIP signaling
+`name` is required. `ip`, `port`, `rtp_port`, and `transport` are optional.
+When `transport` is omitted, the contact uses the component SIP signaling
 transport (`transport: udp` or `transport: tcp` on `voip_stack`). A name-only
 contact is a logical target that can later be upgraded by the HA roster or
 routed through HA.
@@ -372,3 +372,15 @@ yamls/voip-only/dual-bus/generic-s3-voip.yaml
 That profile intentionally avoids `esp_audio_stack` and binds `voip_stack` to
 native ESPHome `i2s_audio` microphone/speaker components. It is for regression
 testing standalone full-duplex, mic-only and speaker-only modes.
+
+## Protocol And Security Boundaries
+
+- ESP endpoints do not register and do not implement SIP Digest challenges.
+- The phonebook is an outbound dial plan, not an inbound caller allowlist. Any
+  network-reachable peer may send an INVITE; normal busy/DND and SDP validation
+  still apply.
+- SIP is UDP/TCP without TLS and RTP is plaintext UDP without SRTP. Use a
+  trusted LAN/VPN or enforce admission at a firewall/SBC boundary.
+- In-dialog re-INVITE (including hold or codec renegotiation) receives `488`
+  without replacing the established dialog. Existing media and a later BYE
+  continue on the original session.

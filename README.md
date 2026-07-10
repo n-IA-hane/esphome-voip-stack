@@ -75,7 +75,7 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 | PBX/provider trunk reaching ESP devices | HA terminates the trunk and routes; ESPs stay plain SIP peers |
 | Offline installation with a fixed dial plan | `static_contacts`, no HA required |
 
-# The Manual
+## The Manual
 
 ## 4. Core Concepts
 
@@ -229,8 +229,10 @@ Per-direction format blocks accept `auto` per field or as the whole block:
 | `frame_ms` | 10, 16, 20, 32 | `auto` |
 
 `tx_formats` / `rx_formats` declare up to seven additional advertised formats
-per direction. They must be fully explicit and may only vary `frame_ms` relative
-to the base format; validation rejects the eighth extra entry.
+per direction. Extra entries are explicit. TX extras may only vary `frame_ms`
+relative to `audio.tx`, because the microphone path only reframes its native
+stream; RX extras may describe other supported speaker-side formats. Validation
+rejects the eighth extra entry.
 
 RTP packet sizes are guarded by `udp_max_payload` (default 1200 bytes), enforced at validation.
 
@@ -246,7 +248,8 @@ voip_stack:
   rtp_port: 40000
 ```
 
-TCP signaling is useful where UDP SIP is filtered or unreliable; per-contact `sip_transport` allows mixing.
+TCP signaling is useful where UDP SIP is filtered or unreliable; per-contact
+`transport` allows mixing.
 
 ## 9. Phonebook and Routing
 
@@ -258,7 +261,7 @@ voip_stack:
       ip: 192.168.1.44
       port: 5060
       rtp_port: 40000
-      sip_transport: udp
+      transport: udp
     - name: Front Gate
 ```
 
@@ -318,7 +321,9 @@ Triggers:
 | `on_destination_changed` | Selected destination changed. |
 | `on_phonebook_update` | Contact list changed. |
 
-Conditions: `voip_stack.is_idle`, `voip_stack.is_ringing`, `voip_stack.is_in_call`, `voip_stack.is_calling`, `voip_stack.is_incoming`, `voip_stack.destination_is`.
+Conditions: `voip_stack.is_idle`, `voip_stack.is_ringing`,
+`voip_stack.is_in_call`, `voip_stack.is_calling`, `voip_stack.is_incoming`,
+`voip_stack.destination_is`, and `voip_stack.is_ha_destination`.
 
 ## 11. Actions
 
@@ -334,9 +339,14 @@ Call control:
 | `voip_stack.call` | Dial a destination string. Local phonebook matches go direct; unresolved targets route through HA. |
 | `voip_stack.set_remote_endpoint` | Point the next call at an explicit address. |
 
-Phonebook actions: `next_contact`, `prev_contact`, `add_contact`, `remove_contact`, `set_contact`, `set_contacts`, `flush_contacts`, `update_contacts`, `set_roster_json`, `set_ha_peer_name`.
+Phonebook actions: `voip_stack.next_contact`, `voip_stack.prev_contact`,
+`voip_stack.add_contact`, `voip_stack.remove_contact`,
+`voip_stack.set_contact`, `voip_stack.set_contacts`,
+`voip_stack.flush_contacts`, `voip_stack.update_contacts`,
+`voip_stack.set_roster_json`, and `voip_stack.set_ha_peer_name`.
 
-Audio and misc actions: `set_volume`, `set_mic_gain_db`, `publish_entity_states`.
+Audio and diagnostic actions: `voip_stack.set_volume`,
+`voip_stack.set_mic_gain_db`, and `voip_stack.publish_entity_states`.
 
 ## 12. Entities
 
@@ -432,12 +442,12 @@ button:
 | `microphone` / `microphone_source` | none | TX audio source. |
 | `speaker` | none | RX audio sink. |
 | `audio.tx` / `audio.rx` | `auto` | Per-direction PCM contract. |
-| `audio.tx_formats` / `audio.rx_formats` | `[]` | Extra packet-time reframes. |
+| `audio.tx_formats` / `audio.rx_formats` | `[]` | Extra explicit capabilities; TX extras are packet-time reframes, RX extras may use other supported formats. |
 | `static_contacts` | `[]` | YAML dial plan. |
 | `extension` | `""` | Local SIP extension/user part. |
-| `conference_group` | `""` | Optional HA-managed conference group membership, single name or comma-separated list. |
+| `conference_groups` | `""` | Optional HA-managed conference group membership, single name or comma-separated list. |
 | `conference_ring` | `false` | Ring this device when another member starts its conference group. |
-| `ring_group` | `""` | Optional HA-managed ring group membership, single name or comma-separated list. |
+| `ring_groups` | `""` | Optional HA-managed ring group membership, single name or comma-separated list. |
 | `use_ha_as_first_contact` | `false` | Pin the HA peer at the top of the dial plan. |
 | `ha_phonebook_text_sensor_id` | none | Bind the HA phonebook sensor. |
 | `delete_contact_missing_from` | none | Drop absent roster contact after N updates. |
@@ -464,10 +474,16 @@ Removed options rejected with migration guidance: `processor_id`, `aec_reference
 - SIP over UDP/TCP only; no TLS signaling and no SRTP.
 - RTP media is UDP in both signaling modes and requires UDP reachability.
 - Audio is uncompressed PCM within the supported rate/format matrix; there are no compressed codecs.
+- In-dialog re-INVITE, including ordinary hold or codec renegotiation, receives
+  `488 Not Acceptable Here`. The established dialog/media remains active and a
+  later BYE still terminates the original call.
+- The phonebook is not an inbound allowlist. Any peer with network reachability
+  may send an INVITE, so plaintext SIP/RTP belongs on a trusted LAN/VPN or
+  behind firewall/SBC policy.
 
 ## 16. Provenance and License
 
-This component is the SIP engine of the [`esphome-intercom`](https://github.com/n-IA-hane/esphome-intercom) platform, where it is exercised daily together with its Home Assistant integration, Lovelace card, maintained device YAMLs and full-experience packages. Higher layers remain in the intercom repository; this repository tracks the component itself, and `SOURCE.md` records the exact source commit of each snapshot.
+This component is the SIP engine of the [`esphome-intercom`](https://github.com/n-IA-hane/esphome-intercom) platform, where it is exercised together with its Home Assistant integration, Lovelace card, maintained device YAMLs and full-experience packages. Higher layers remain in the intercom repository; this repository tracks the component itself, and `SOURCE.md` records its extraction origin and scope.
 
 The repository also carries a small internal `ring_buffer` component used by
 `voip_stack` for CAPS-aware RTP/audio buffering. It is not a user-facing YAML
