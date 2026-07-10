@@ -103,11 +103,24 @@ inline void force_delete_pinned_task(TaskHandle_t *handle, StackType_t **stack, 
 /// fail safe instead of free-while-in-use.
 inline void cleanup_pinned_task(TaskHandle_t *handle, StackType_t **stack, uint32_t stack_bytes) {
   if (handle != nullptr && *handle != nullptr) {
+    // Dynamically-created tasks own their stack/TCB and FreeRTOS reclaims both
+    // after self-delete. The done signal is sufficient; do not inspect a
+    // handle that the idle task may already have reclaimed.
+    if (stack == nullptr || *stack == nullptr) {
+      *handle = nullptr;
+      return;
+    }
+    // Static tasks signal immediately before vTaskDelete(nullptr). Yield a few
+    // times on their pinned core so the final self-delete completes before the
+    // caller releases the PSRAM stack. This is teardown-only and adds no tick
+    // delay or media-loop latency.
+    for (uint8_t attempt = 0; attempt < 8 && eTaskGetState(*handle) != eDeleted; attempt++) {
+      taskYIELD();
+    }
     if (eTaskGetState(*handle) != eDeleted) {
       ESP_LOGE("task_utils",
                "cleanup_pinned_task: task still alive; caller did not wait "
-               "on its done signal - leaking stack to avoid UAF");
-      *handle = nullptr;
+               "on its done signal - retaining stack to avoid UAF");
       return;
     }
     *handle = nullptr;

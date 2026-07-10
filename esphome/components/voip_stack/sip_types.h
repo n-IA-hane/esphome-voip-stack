@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 namespace esphome {
@@ -80,6 +81,21 @@ struct AudioFormat {
 static constexpr AudioFormat DEFAULT_AUDIO_FORMAT{};
 static constexpr size_t VOIP_STACK_MAX_AUDIO_FORMATS = 8;
 
+inline constexpr uint32_t pack_audio_format(const AudioFormat &format) {
+  return (format.sample_rate & 0xFFFFU) | (static_cast<uint32_t>(format.pcm_format) << 16) |
+         (static_cast<uint32_t>(format.channels & 0x03U) << 24) |
+         (static_cast<uint32_t>(format.frame_ms & 0x3FU) << 26);
+}
+
+inline constexpr AudioFormat unpack_audio_format(uint32_t packed) {
+  return AudioFormat{
+      packed & 0xFFFFU,
+      static_cast<PcmFormat>((packed >> 16) & 0xFFU),
+      static_cast<uint8_t>((packed >> 24) & 0x03U),
+      static_cast<uint16_t>((packed >> 26) & 0x3FU),
+  };
+}
+
 struct AudioFormatList {
   AudioFormat formats[VOIP_STACK_MAX_AUDIO_FORMATS]{};
   uint8_t count{1};
@@ -157,7 +173,6 @@ inline uint8_t audio_format_bits_per_sample(const AudioFormat &format) {
 
 inline const char *audio_format_rtp_encoding(const AudioFormat &format,
                                              size_t max_payload = UDP_SAFE_AUDIO_PAYLOAD_BYTES) {
-  if (format.channels != 1) return nullptr;
   if (format.nominal_rtp_payload_bytes() > max_payload) return nullptr;
   if (format.pcm_format == PcmFormat::S16LE) return "L16";
   if (format.pcm_format == PcmFormat::S24LE || format.pcm_format == PcmFormat::S24LE_IN_S32) return "L24";
@@ -207,9 +222,17 @@ inline bool audio_format_list_match_udp_safe(const AudioFormatList &list, const 
                                              AudioFormat *local,
                                              size_t max_payload = UDP_SAFE_AUDIO_PAYLOAD_BYTES) {
   if (remote.nominal_rtp_payload_bytes() > max_payload) return false;
+  const char *remote_encoding = audio_format_rtp_encoding(remote, max_payload);
+  if (remote_encoding == nullptr) return false;
   for (uint8_t i = 0; i < list.count; i++) {
     const AudioFormat &candidate = list.formats[i];
-    if (candidate == remote && candidate.nominal_rtp_payload_bytes() <= max_payload) {
+    const char *candidate_encoding = audio_format_rtp_encoding(candidate, max_payload);
+    const bool same_wire_format = candidate.sample_rate == remote.sample_rate &&
+                                  candidate.channels == remote.channels &&
+                                  candidate.frame_ms == remote.frame_ms &&
+                                  candidate_encoding != nullptr && remote_encoding != nullptr &&
+                                  std::strcmp(candidate_encoding, remote_encoding) == 0;
+    if (same_wire_format) {
       if (local != nullptr) *local = candidate;
       return true;
     }

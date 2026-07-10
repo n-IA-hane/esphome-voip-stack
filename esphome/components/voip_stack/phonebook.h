@@ -2,6 +2,7 @@
 
 #ifdef USE_ESP32
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -59,6 +60,9 @@ enum class AddResult : uint8_t {
 class Phonebook {
  public:
   static constexpr size_t MAX_CONTACTS = 64;
+  static constexpr size_t MAX_NAME_BYTES = 64;
+  static constexpr size_t MAX_ADDRESS_BYTES = 64;
+  static constexpr size_t MAX_CAPABILITY_BYTES = 160;
 
   /// Skip add_one() for this name (the device's own name).
   void set_self_name(const std::string &n) { this->self_name_ = n; }
@@ -95,10 +99,12 @@ class Phonebook {
   bool add_batch(const std::string &csv) {
     bool changed = false;
     size_t start = 0;
-    while (start <= csv.size() && this->entries_.size() < MAX_CONTACTS) {
+    size_t processed = 0;
+    while (start <= csv.size() && processed < MAX_CONTACTS) {
       const size_t comma = csv.find(',', start);
       const size_t end = (comma == std::string::npos) ? csv.size() : comma;
       const AddResult r = this->add_one(csv.substr(start, end - start));
+      processed++;
       if (r == AddResult::Added || r == AddResult::Upgraded ||
           r == AddResult::EndpointReplaced) {
         changed = true;
@@ -110,8 +116,6 @@ class Phonebook {
   }
 
   AddResult add_entry(const ContactEntry &entry) {
-    if (entry.name.empty()) return AddResult::Rejected;
-    if (this->entries_.size() >= MAX_CONTACTS && !this->contains_(entry.name)) return AddResult::Rejected;
     if (!this->self_name_.empty() && entry.name == this->self_name_) {
       return AddResult::Rejected;
     }
@@ -123,10 +127,10 @@ class Phonebook {
   bool replace_all(std::vector<ContactEntry> entries) {
     const std::string selected = this->current_name();
     std::vector<ContactEntry> normalized;
-    normalized.reserve(entries.size());
+    normalized.reserve(std::min(entries.size(), MAX_CONTACTS));
     for (auto &entry : entries) {
       if (normalized.size() >= MAX_CONTACTS) break;
-      if (entry.name.empty()) continue;
+      if (!valid_entry_(entry)) continue;
       if (!this->self_name_.empty() && entry.name == this->self_name_) continue;
       entry.missing_count = 0;
       bool replaced = false;
@@ -267,6 +271,7 @@ class Phonebook {
   /// authority for cross-device SIP routing, including cross-transport peers.
   /// DHCP IP changes resolve on the next batch.
   AddResult merge_(const ContactEntry &incoming) {
+    if (!valid_entry_(incoming)) return AddResult::Rejected;
     for (auto &existing : this->entries_) {
       if (existing.name != incoming.name) continue;
       if (incoming.ip.empty() && incoming.port == 0 && incoming.rtp_port == 0) {
@@ -275,6 +280,7 @@ class Phonebook {
       if (existing.ip == incoming.ip && existing.port == incoming.port &&
           existing.rtp_port == incoming.rtp_port &&
           existing.endpoint_type == incoming.endpoint_type &&
+          existing.sip_transport_tcp == incoming.sip_transport_tcp &&
           existing.audio_capability == incoming.audio_capability) {
         return AddResult::Noop;
       }
@@ -289,6 +295,7 @@ class Phonebook {
       return was_unset ? AddResult::Upgraded : AddResult::EndpointReplaced;
     }
     // New name: append; cursor unchanged so the UI doesn't jump.
+    if (this->entries_.size() >= MAX_CONTACTS) return AddResult::Rejected;
     this->entries_.push_back(incoming);
     return AddResult::Added;
   }
@@ -321,6 +328,7 @@ class Phonebook {
     if (c.name.empty()) return false;
 
     if (!parse_short_entry_(parts, &c)) return false;
+    if (!valid_entry_(c)) return false;
 
     *out = std::move(c);
     return true;
@@ -370,7 +378,7 @@ class Phonebook {
     std::vector<std::string> out;
     out.reserve(8);
     size_t start = 0;
-    while (start <= s.size()) {
+    while (start <= s.size() && out.size() < MAX_CONTACTS) {
       const size_t pos = s.find(sep, start);
       if (pos == std::string::npos) {
         out.push_back(s.substr(start));
@@ -394,16 +402,36 @@ class Phonebook {
     return true;
   }
 
+  static bool valid_text_field_(const std::string &value, size_t max_bytes,
+                                bool reject_list_delimiters) {
+    if (value.size() > max_bytes) return false;
+    for (char ch : value) {
+      if (static_cast<unsigned char>(ch) < 0x20 || static_cast<unsigned char>(ch) == 0x7F || ch == '|' ||
+          (reject_list_delimiters && (ch == ',' || ch == ';'))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static bool valid_entry_(const ContactEntry &entry) {
+    if (entry.name.empty() ||
+        !valid_text_field_(entry.name, MAX_NAME_BYTES, true) ||
+        !valid_text_field_(entry.ip, MAX_ADDRESS_BYTES, true) ||
+        !valid_text_field_(entry.audio_capability, MAX_CAPABILITY_BYTES, true)) {
+      return false;
+    }
+    if (entry.endpoint_type == ContactEndpointType::SIP) {
+      return !entry.ip.empty() && entry.port != 0;
+    }
+    return entry.endpoint_type == ContactEndpointType::UNKNOWN && entry.ip.empty() &&
+           entry.port == 0 && entry.rtp_port == 0;
+  }
+
   std::vector<ContactEntry> entries_;
   size_t index_{0};
   std::string self_name_;
 
-  bool contains_(const std::string &name) const {
-    for (const auto &entry : this->entries_) {
-      if (entry.name == name) return true;
-    }
-    return false;
-  }
 };
 
 }  // namespace voip_stack

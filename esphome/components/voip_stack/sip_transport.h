@@ -8,11 +8,11 @@
 
 #include "esphome/core/helpers.h"
 
-#include <lwip/sockets.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <lwip/sockets.h>
 
 #include <atomic>
 #include <cstddef>
@@ -31,7 +31,7 @@ class SipTransport : public SipPhoneTransport {
   static constexpr uint8_t kRtpTaskPriority = 9;
   static constexpr int kRtpSocketRxBufferBytes = 65536;
 
-  SipTransport(uint16_t sip_port, uint16_t rtp_port, size_t udp_max_payload, std::string remote_host,
+  SipTransport(uint16_t sip_port, uint16_t rtp_port, size_t udp_max_payload, const std::string &remote_host,
                bool task_stacks_in_psram);
   ~SipTransport() override;
 
@@ -89,15 +89,19 @@ class SipTransport : public SipPhoneTransport {
   bool parse_remote_(const std::string &host);
   bool send_sip_(const std::string &message, uint32_t ip_v4, uint16_t port);
   bool send_sip_tcp_(const std::string &message);
+  bool send_sip_tcp_record_(const std::string &message, int socket);
   bool send_request_(const std::string &method, const std::string &body = "");
   bool send_request_(const std::string &method, const std::string &body,
                      const SipRequestOptions &options);
+  bool send_cancel_unlocked_(const std::string &call_id);
+  bool send_bye_unlocked_(const std::string &call_id);
   bool send_invite_error_ack_();
   bool send_response_(uint16_t status, const char *reason, const std::string &body = "",
                       const std::string &app_reason = "");
   bool send_stateless_response_(const std::string &request, const sockaddr_in &src,
                                 uint16_t status, const char *reason,
-                                const std::string &app_reason = "");
+                                const std::string &app_reason = "",
+                                bool cache_transaction = false);
   std::string format_response_(uint16_t status, const char *reason,
                                const std::string &via, const std::string &from,
                                const std::string &to, const std::string &call_id,
@@ -126,13 +130,20 @@ class SipTransport : public SipPhoneTransport {
   void close_media_session_();
   void request_tcp_client_close_();
   void close_tcp_client_from_sip_task_();
+  void handle_tcp_peer_loss_();
   void wake_sip_task_();
   void wake_rtp_task_();
   void reset_dialog_();
-  bool replay_stateless_invite_final_(const std::string &request, const sockaddr_in &src,
-                                      const std::string &call_id);
-  void remember_stateless_invite_final_(const std::string &call_id, uint16_t status,
-                                        const char *reason, const std::string &app_reason);
+  bool replay_completed_response_(const std::string &request, const sockaddr_in &src,
+                                  const std::string &method);
+  void remember_completed_response_(const std::string &request, uint32_t peer_ip_v4,
+                                    uint16_t peer_port, const std::string &method,
+                                    const std::string &response);
+  uint16_t acknowledge_completed_invite_(const std::string &request,
+                                         const sockaddr_in &src);
+  bool replay_completed_invite_ack_(const std::string &response, const sockaddr_in &src);
+  void remember_completed_invite_ack_(const std::string &request, uint32_t target_ip_v4,
+                                      uint16_t target_port);
   bool reject_if_stale_dialog_(const std::string &request, const sockaddr_in &src,
                                const char *method_name);
   void mark_sip_event_(SipEvent event, uint16_t status = 0);
@@ -148,17 +159,83 @@ class SipTransport : public SipPhoneTransport {
     uint32_t ip_v4{0};
     uint16_t port{0};
     uint32_t next_ms{0};
+    uint32_t deadline_ms{0};
     uint16_t interval_ms{500};
     uint8_t retries{0};
+    bool completed{false};
     void clear() {
       this->request.clear();
       this->ip_v4 = 0;
       this->port = 0;
       this->next_ms = 0;
+      this->deadline_ms = 0;
       this->interval_ms = 500;
       this->retries = 0;
+      this->completed = false;
     }
     bool empty() const { return this->request.empty(); }
+  };
+
+  struct CompletedServerTransaction {
+    std::string method;
+    std::string call_id;
+    std::string branch;
+    std::string from_tag;
+    std::string to_tag;
+    std::string response;
+    uint32_t cseq{0};
+    uint32_t peer_ip_v4{0};
+    uint16_t peer_port{0};
+    uint16_t status{0};
+    uint32_t completed_ms{0};
+    uint32_t next_retransmit_ms{0};
+    uint32_t deadline_ms{0};
+    uint16_t retransmit_interval_ms{500};
+    uint8_t retransmits{0};
+    bool udp{false};
+    bool awaiting_ack{false};
+    void clear() {
+      this->method.clear();
+      this->call_id.clear();
+      this->branch.clear();
+      this->from_tag.clear();
+      this->to_tag.clear();
+      this->response.clear();
+      this->cseq = 0;
+      this->peer_ip_v4 = 0;
+      this->peer_port = 0;
+      this->status = 0;
+      this->completed_ms = 0;
+      this->next_retransmit_ms = 0;
+      this->deadline_ms = 0;
+      this->retransmit_interval_ms = 500;
+      this->retransmits = 0;
+      this->udp = false;
+      this->awaiting_ack = false;
+    }
+    bool empty() const { return this->response.empty(); }
+  };
+
+  struct CompletedInviteClientTransaction {
+    std::string call_id;
+    std::string branch;
+    std::string ack;
+    uint32_t cseq{0};
+    uint32_t response_ip_v4{0};
+    uint32_t ack_ip_v4{0};
+    uint16_t ack_port{0};
+    uint32_t completed_ms{0};
+    void clear() {
+      this->call_id.clear();
+      this->branch.clear();
+      this->ack.clear();
+      this->cseq = 0;
+      this->response_ip_v4 = 0;
+      this->ack_ip_v4 = 0;
+      this->ack_port = 0;
+      this->completed_ms = 0;
+    }
+    bool empty() const { return this->ack.empty(); }
   };
 
   uint16_t sip_port_{5060};
@@ -166,6 +243,7 @@ class SipTransport : public SipPhoneTransport {
   size_t udp_max_payload_{UDP_SAFE_AUDIO_PAYLOAD_BYTES};
   bool task_stacks_in_psram_{false};
   std::atomic<uint32_t> remote_ip_v4_{0};
+  std::atomic<uint32_t> remote_rtp_ip_v4_{0};
   std::atomic<uint16_t> remote_sip_port_{5060};
   std::atomic<uint16_t> remote_rtp_port_{0};
   std::atomic<uint16_t> rtp_sequence_{0};
@@ -178,20 +256,20 @@ class SipTransport : public SipPhoneTransport {
   std::string branch_;
   std::string local_uri_;
   std::string remote_uri_;
+  std::string remote_target_uri_;
   std::string last_invite_via_;
   std::string last_invite_from_;
   std::string last_invite_to_;
   std::string last_invite_cseq_;
+  std::string last_invite_response_;
   uint32_t last_invite_cseq_number_{0};
   std::string caller_route_;
   std::string caller_name_;
   std::string dest_route_;
   std::string dest_name_;
-  std::string last_stateless_invite_final_call_id_;
-  std::string last_stateless_invite_final_reason_;
-  std::string last_stateless_invite_final_app_reason_;
-  uint16_t last_stateless_invite_final_status_{0};
-  uint32_t last_stateless_invite_final_ms_{0};
+  CompletedServerTransaction completed_invite_;
+  CompletedServerTransaction completed_control_;
+  CompletedInviteClientTransaction completed_invite_client_;
   std::string sip_tcp_rx_buffer_;
   AudioFormatList offer_tx_formats_{};
   AudioFormatList offer_rx_formats_{};
@@ -203,6 +281,7 @@ class SipTransport : public SipPhoneTransport {
   uint32_t cseq_{1};
   uint32_t invite_cseq_{1};
   UdpTransaction pending_invite_;
+  UdpTransaction pending_cancel_;
   UdpTransaction pending_bye_;
 
   int sip_socket_{-1};
@@ -214,18 +293,27 @@ class SipTransport : public SipPhoneTransport {
   std::atomic<bool> tcp_connect_requested_{false};
   mutable Mutex tcp_tx_pending_mutex_;
   std::string tcp_tx_pending_;
+  mutable Mutex tcp_send_mutex_;
+  mutable Mutex dialog_mutex_;
+  mutable Mutex rtp_socket_mutex_;
   int rtp_socket_{-1};
   TaskHandle_t sip_task_handle_{nullptr};
   StaticTask_t sip_task_tcb_{};
   StackType_t *sip_task_stack_{nullptr};
+  SemaphoreHandle_t sip_task_done_{nullptr};
+  StaticSemaphore_t sip_task_done_storage_{};
   TaskHandle_t rtp_task_handle_{nullptr};
   StaticTask_t rtp_task_tcb_{};
   StackType_t *rtp_task_stack_{nullptr};
   SemaphoreHandle_t rtp_task_done_{nullptr};
+  StaticSemaphore_t rtp_task_done_storage_{};
   std::atomic<bool> running_{false};
   std::atomic<bool> rtp_running_{false};
+  std::atomic<bool> rtp_task_quiesced_{true};
+  std::atomic<bool> rtp_task_terminate_{false};
   std::atomic<bool> media_active_{false};
   std::atomic<bool> outgoing_invite_pending_{false};
+  std::atomic<bool> cancel_requested_{false};
   std::atomic<bool> remote_sip_tcp_{false};
   std::atomic<bool> sip_tcp_client_close_requested_{false};
   std::atomic<uint32_t> rtp_tx_packets_{0};

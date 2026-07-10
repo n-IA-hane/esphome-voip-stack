@@ -4,7 +4,8 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 import esphome.final_validate as fv
 from esphome import automation
-from esphome.core import CORE, TimePeriod
+from esphome.core import CORE
+from esphome.components import number as _number_ns, switch as _switch_ns
 from esphome.const import (
     CONF_ID,
     CONF_MICROPHONE,
@@ -15,7 +16,7 @@ from esphome.const import (
     CONF_MODE,
     CONF_DISABLED_BY_DEFAULT,
 )
-from esphome.components import audio, microphone, speaker, text_sensor
+from esphome.components import audio, esp32, microphone, speaker, text_sensor
 
 CODEOWNERS = ["@n-IA-hane"]
 DEPENDENCIES = ["esp32"]
@@ -106,6 +107,7 @@ PCM_FORMAT_IDS = {
 
 SUPPORTED_PHONE_SAMPLE_RATES = (8000, 12000, 16000, 24000, 32000, 44100, 48000)
 UDP_SAFE_PAYLOAD_BYTES = 1200
+UDP_IMPLEMENTATION_MAX_PAYLOAD_BYTES = 1488
 
 
 def _is_auto(value):
@@ -114,10 +116,17 @@ def _is_auto(value):
 
 def _validate_endpoint_label(value):
     value = cv.string(value)
-    if len(value) > 32:
-        raise cv.Invalid("must be at most 32 characters")
-    if any(ch in value for ch in ("|", ",", ";", "\r", "\n")):
-        raise cv.Invalid("must not contain |, comma, semicolon or newlines")
+    if len(value.encode("utf-8")) > 32:
+        raise cv.Invalid("must be at most 32 UTF-8 bytes")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F or ch in "|,;" for ch in value):
+        raise cv.Invalid("must not contain control characters, |, comma or semicolon")
+    return value
+
+
+def _validate_contact_name(value):
+    value = _validate_endpoint_label(value)
+    if not value:
+        raise cv.Invalid("must not be empty")
     return value
 
 
@@ -127,8 +136,8 @@ def _validate_group_list(value):
         raise cv.Invalid("must not contain |, semicolon or newlines")
     groups = [part.strip() for part in value.split(",") if part.strip()]
     for group in groups:
-        if len(group) > 32:
-            raise cv.Invalid("each group name must be at most 32 characters")
+        if len(group.encode("utf-8")) > 32:
+            raise cv.Invalid("each group name must be at most 32 UTF-8 bytes")
     return ", ".join(groups)
 
 
@@ -243,7 +252,7 @@ def _declared_config_for_id(id_value):
     return fconf.get_config_for_path(path)
 
 
-def _single_stream_value(declaration: dict, key: str, min_key: str, max_key: str, *, context: str):
+def _single_stream_value(declaration: dict, key: str, min_key: str, max_key: str):
     if key in declaration:
         return declaration[key]
     low = declaration.get(min_key)
@@ -284,21 +293,18 @@ def _derive_stream_format_from_device(device_config: dict, *, direction: str) ->
         CONF_SAMPLE_RATE,
         audio.CONF_MIN_SAMPLE_RATE,
         audio.CONF_MAX_SAMPLE_RATE,
-        context=direction,
     )
     bits = _single_stream_value(
         device_config,
         "bits_per_sample",
         audio.CONF_MIN_BITS_PER_SAMPLE,
         audio.CONF_MAX_BITS_PER_SAMPLE,
-        context=direction,
     )
     channels = _single_stream_value(
         device_config,
         CONF_NUM_CHANNELS,
         audio.CONF_MIN_CHANNELS,
         audio.CONF_MAX_CHANNELS,
-        context=direction,
     )
     if sample_rate is None or bits is None or channels is None:
         return None
@@ -431,7 +437,6 @@ VoipIsHaDestinationCondition = voip_stack_ns.class_("VoipIsHaDestinationConditio
 # Auto-entity classes: declared here so to_code below can construct them even
 # when YAML does not include explicit `switch:` / `number:` platform blocks.
 # The explicit platforms reuse the same class names through the namespace.
-from esphome.components import switch as _switch_ns, number as _number_ns
 VoipStackAutoAnswerCls = voip_stack_ns.class_(
     "VoipStackAutoAnswer", _switch_ns.Switch, cg.Parented.template(VoipStack)
 )
@@ -449,8 +454,8 @@ VoipStackMicGainCls = voip_stack_ns.class_(
 PHONEBOOK_CONTACT_SCHEMA = cv.Schema(
     {
         cv.Optional(CONF_ENTRY): cv.string,
-        cv.Optional(CONF_NAME): cv.string,
-        cv.Optional(CONF_IP): cv.string,
+        cv.Optional(CONF_NAME): _validate_contact_name,
+        cv.Optional(CONF_IP): cv.ipv4address,
         cv.Optional(CONF_PORT, default=5060): cv.port,
         cv.Optional(CONF_RTP_PORT_ACTION, default=40000): cv.port,
         cv.Optional(CONF_TRANSPORT): cv.one_of(TRANSPORT_UDP, TRANSPORT_TCP, lower=True),
@@ -487,7 +492,7 @@ CONFIG_SCHEMA = cv.Schema(
             TRANSPORT_TCP, TRANSPORT_UDP, lower=True
         ),
         cv.Optional(CONF_UDP_MAX_PAYLOAD, default=UDP_SAFE_PAYLOAD_BYTES): cv.int_range(
-            min=576, max=65507
+            min=576, max=UDP_IMPLEMENTATION_MAX_PAYLOAD_BYTES
         ),
         cv.Optional(CONF_SIP_PORT, default=5060): cv.port,
         cv.Optional(CONF_RTP_PORT, default=40000): cv.port,
@@ -630,6 +635,15 @@ def _consume_voip_sockets(config):
 def _final_validate(config):
     """Cross-component validation + socket reservation."""
     protocol = config.get(CONF_TRANSPORT, TRANSPORT_UDP)
+    if config[CONF_TASK_STACKS_IN_PSRAM]:
+        if "psram" not in fv.full_config.get():
+            raise cv.Invalid("voip_stack.task_stacks_in_psram requires the psram component")
+        if esp32.get_esp32_variant() == esp32.VARIANT_ESP32:
+            raise cv.Invalid(
+                "voip_stack.task_stacks_in_psram is unsafe on the original ESP32 because "
+                "the SIP/RTP tasks call Wi-Fi/lwIP code while flash cache can be disabled. "
+                "Keep task stacks in internal RAM on ESP32; ESP32-S3/P4 are supported."
+            )
     if config.get(CONF_CONFERENCE_RING, False) and not str(config.get(CONF_CONFERENCE_GROUPS, "")).strip():
         raise cv.Invalid("voip_stack.conference_ring requires conference_groups.")
     if CONF_MICROPHONE in config and CONF_MICROPHONE_SOURCE in config:
@@ -655,6 +669,11 @@ def _final_validate(config):
         checks.extend((CONF_TX_FORMATS, fmt) for fmt in audio_cfg[CONF_TX_FORMATS])
         checks.extend((CONF_RX_FORMATS, fmt) for fmt in audio_cfg[CONF_RX_FORMATS])
         for direction, fmt in checks:
+            if fmt[CONF_PCM_FORMAT] == "s32le":
+                raise cv.Invalid(
+                    f"voip_stack audio.{direction} uses s32le, which has no standard RTP L16/L24 mapping. "
+                    "Use s24le_in_s32 for 24-bit samples stored in 32-bit containers."
+                )
             payload_bytes = _format_rtp_payload_bytes(fmt)
             if payload_bytes > max_payload:
                 raise cv.Invalid(

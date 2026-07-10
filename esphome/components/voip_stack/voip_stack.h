@@ -2,13 +2,13 @@
 
 #ifdef USE_ESP32
 
-#include "esphome/core/component.h"
+#include "audio_core_audio_utils.h"
+#include "audio_core_ring_buffer_caps.h"
 #include "esphome/core/automation.h"
+#include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 #include "esphome/core/preferences.h"
-#include "audio_core_audio_utils.h"
-#include "audio_core_ring_buffer_caps.h"
 
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
 #include "esphome/components/microphone/microphone.h"
@@ -18,25 +18,25 @@
 #include "esphome/components/speaker/speaker.h"
 #endif
 
-#include "esphome/components/switch/switch.h"
 #include "esphome/components/button/button.h"
 #include "esphome/components/number/number.h"
+#include "esphome/components/switch/switch.h"
 #include "esphome/components/text/text.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 
-#include "voip_fsm.h"
-#include "sip_types.h"
 #include "phonebook.h"
 #include "rtp_jitter_buffer.h"
+#include "sip_types.h"
 #include "transport.h"
+#include "voip_fsm.h"
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <freertos/semphr.h>
 #include <esp_event.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
+#include <algorithm>
 
 #include <atomic>
-#include <algorithm>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -90,7 +90,8 @@ class VoipStack : public Component {
   // the HA API is up (AFTER_WIFI would race the API connection).
   float get_setup_priority() const override { return setup_priority::AFTER_CONNECTION; }
 
-  // Call from YAML api: on_client_connected: to publish restored entity states to HA
+  // Call from YAML api: on_client_connected: to publish restored entity states
+  // to HA
   void publish_entity_states();
 
   // Configuration
@@ -152,6 +153,7 @@ class VoipStack : public Component {
     this->rx_audio_format_ = AudioFormat{sample_rate, static_cast<PcmFormat>(pcm_format), channels, frame_ms};
     this->rx_audio_formats_.formats[0] = this->rx_audio_format_;
     this->rx_audio_formats_.count = 1;
+    this->set_current_rx_audio_format_(this->rx_audio_format_);
   }
   void add_supported_tx_audio_format(uint32_t sample_rate, uint8_t pcm_format, uint8_t channels, uint16_t frame_ms) {
     this->append_audio_format_(&this->tx_audio_formats_,
@@ -259,7 +261,8 @@ class VoipStack : public Component {
   // replaced. Slot order is stable; only flush_contacts() trims.
   void add_contact(const std::string &entry);
   void remove_contact(const std::string &name);
-  void set_contacts(const std::string &contacts_csv);  // batch wrapper, same merge rules per entry
+  void set_contacts(const std::string &contacts_csv);  // batch wrapper, same
+                                                       // merge rules per entry
   void flush_contacts();
   // Open a phonebook update cycle: commit any previously-open cycle (counter
   // advance + prune), then read the HA sensor (if configured + non-empty).
@@ -489,24 +492,25 @@ class VoipStack : public Component {
   text::Text *ring_groups_text_{nullptr};
   text::Text *conference_groups_text_{nullptr};
   // Contacts management. Empty at boot; fed by the optional HA text_sensor
-  // subscription plus any YAML sources wired on the on_phonebook_update trigger.
-  // Slot order is stable:
-  // re-add keeps the slot, only the endpoint may upgrade or replace. The
-  // cycle counter on each ContactEntry advances/resets in commit_cycle()
-  // and prunes once delete_contact_missing_from.updates_number is hit.
+  // subscription plus any YAML sources wired on the on_phonebook_update
+  // trigger. Slot order is stable: re-add keeps the slot, only the endpoint may
+  // upgrade or replace. The cycle counter on each ContactEntry advances/resets
+  // in commit_cycle() and prunes once
+  // delete_contact_missing_from.updates_number is hit.
   Phonebook phonebook_;
-  // Phonebook update cycle state. update_contacts() opens a cycle, set_contacts()
-  // calls within the open cycle add their CSV names to seen_in_cycle_, and the
-  // next update_contacts() (or the loop() timeout safeguard) commits the cycle.
+  // Phonebook update cycle state. update_contacts() opens a cycle,
+  // set_contacts() calls within the open cycle add their CSV names to
+  // seen_in_cycle_, and the next update_contacts() (or the loop() timeout
+  // safeguard) commits the cycle.
   text_sensor::TextSensor *ha_phonebook_sensor_{nullptr};
   std::unordered_set<std::string> seen_in_cycle_;
   uint32_t cycle_started_at_{0};
   bool cycle_active_{false};
   uint8_t prune_threshold_{0};  // 0 = pruning disabled (default)
   static constexpr uint32_t CYCLE_TIMEOUT_MS = 10000;  // safety net for stuck cycles
-  // Empty by default. HA-facing YAML should set this to hass.config.location_name
-  // through voip_stack.set_ha_peer_name for default dial-plan selection.
-  // phonebook entry. Direct P2P usage can leave it empty.
+  // Empty by default. HA-facing YAML should set this to
+  // hass.config.location_name through voip_stack.set_ha_peer_name for default
+  // dial-plan selection. phonebook entry. Direct P2P usage can leave it empty.
   std::string ha_peer_name_;
   bool use_ha_as_first_contact_{false};
   bool first_contacts_batch_committed_{false};
@@ -573,17 +577,46 @@ class VoipStack : public Component {
   AudioFormat rx_audio_format_{DEFAULT_AUDIO_FORMAT};
   AudioFormatList tx_audio_formats_{};
   AudioFormatList rx_audio_formats_{};
-  AudioFormat current_caller_to_dest_format_{DEFAULT_AUDIO_FORMAT};
-  AudioFormat current_dest_to_caller_format_{DEFAULT_AUDIO_FORMAT};
-  AudioFormat current_tx_audio_format_{DEFAULT_AUDIO_FORMAT};
-  AudioFormat current_rx_audio_format_{DEFAULT_AUDIO_FORMAT};
+  struct CurrentMediaFormats {
+    AudioFormat caller_to_dest{DEFAULT_AUDIO_FORMAT};
+    AudioFormat dest_to_caller{DEFAULT_AUDIO_FORMAT};
+    AudioFormat tx{DEFAULT_AUDIO_FORMAT};
+    AudioFormat rx{DEFAULT_AUDIO_FORMAT};
+  };
+  mutable Mutex media_format_mutex_;
+  CurrentMediaFormats current_media_formats_{};
+  std::atomic<uint32_t> current_tx_audio_format_packed_{pack_audio_format(DEFAULT_AUDIO_FORMAT)};
+  std::atomic<uint32_t> current_rx_audio_format_packed_{pack_audio_format(DEFAULT_AUDIO_FORMAT)};
+  CurrentMediaFormats snapshot_current_media_formats_() const {
+    LockGuard lock(this->media_format_mutex_);
+    return this->current_media_formats_;
+  }
+  AudioFormat get_current_tx_audio_format_() const {
+    return unpack_audio_format(this->current_tx_audio_format_packed_.load(std::memory_order_acquire));
+  }
+  AudioFormat get_current_rx_audio_format_() const {
+    return unpack_audio_format(this->current_rx_audio_format_packed_.load(std::memory_order_acquire));
+  }
+  void set_current_media_formats_(const AudioFormat &caller_to_dest, const AudioFormat &dest_to_caller,
+                                  const AudioFormat &tx, const AudioFormat &rx) {
+    LockGuard lock(this->media_format_mutex_);
+    this->current_media_formats_ = CurrentMediaFormats{caller_to_dest, dest_to_caller, tx, rx};
+    this->current_tx_audio_format_packed_.store(pack_audio_format(tx), std::memory_order_release);
+    this->current_rx_audio_format_packed_.store(pack_audio_format(rx), std::memory_order_release);
+    this->current_tx_audio_frame_bytes_.store(tx.nominal_frame_bytes(), std::memory_order_release);
+  }
   void set_current_tx_audio_format_(const AudioFormat &format) {
-    this->current_tx_audio_format_ = format;
+    LockGuard lock(this->media_format_mutex_);
+    this->current_media_formats_.tx = format;
+    this->current_tx_audio_format_packed_.store(pack_audio_format(format), std::memory_order_release);
     this->current_tx_audio_frame_bytes_.store(format.nominal_frame_bytes(), std::memory_order_release);
-    this->current_tx_audio_frame_ms_.store(format.frame_ms == 0 ? 1 : format.frame_ms, std::memory_order_release);
+  }
+  void set_current_rx_audio_format_(const AudioFormat &format) {
+    LockGuard lock(this->media_format_mutex_);
+    this->current_media_formats_.rx = format;
+    this->current_rx_audio_format_packed_.store(pack_audio_format(format), std::memory_order_release);
   }
   std::atomic<size_t> current_tx_audio_frame_bytes_{DEFAULT_AUDIO_FORMAT.nominal_frame_bytes()};
-  std::atomic<uint16_t> current_tx_audio_frame_ms_{DEFAULT_AUDIO_FORMAT.frame_ms};
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
   uint32_t audio_debug_last_tx_log_ms_{0};
   uint32_t audio_debug_last_rx_log_ms_{0};
@@ -605,7 +638,7 @@ class VoipStack : public Component {
   std::atomic<uint32_t> audio_debug_rx_silence_frames_{0};
   std::atomic<uint32_t> audio_debug_speaker_short_writes_{0};
 #endif
-  uint32_t rx_underrun_start_ms_{0};
+  std::atomic<uint32_t> rx_underrun_start_ms_{0};
 
   // First peer audio frame closes the 200 OK echo loop.
   std::atomic<bool> first_audio_received_{false};

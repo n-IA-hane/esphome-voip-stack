@@ -48,7 +48,7 @@ Two scope decisions shape the component:
 
 Mic-only and speaker-only are not degraded modes. They exist for paging speakers, monitor devices, split installations, and hardware that physically has one direction.
 
-**Explicit per-direction PCM negotiation.** TX and RX formats are declared independently: sample rate from 8000 to 48000 Hz, PCM format `s16le`/`s24le`/`s24le_in_s32`/`s32le`, 1 or 2 channels, packet time 10/16/20/32 ms. Devices advertise their real capabilities instead of pretending everything is 8 kHz telephony audio.
+**Explicit per-direction PCM negotiation.** TX and RX formats are declared independently: sample rate from 8000 to 48000 Hz, RTP-mappable PCM format `s16le`/`s24le`/`s24le_in_s32`, 1 or 2 channels, packet time 10/16/20/32 ms. Devices advertise their real capabilities instead of pretending everything is 8 kHz telephony audio.
 
 **Auto-derivation from the audio graph.** `audio.tx: auto` reads the configured microphone/microphone_source and derives rate, format and channels from what that source actually publishes, with validation errors when the source cannot answer.
 
@@ -224,7 +224,7 @@ Per-direction format blocks accept `auto` per field or as the whole block:
 | Field | Values | Default |
 |---|---|---|
 | `sample_rate` | 8000, 12000, 16000, 24000, 32000, 44100, 48000 | `auto` |
-| `pcm_format` | `s16le`, `s24le`, `s24le_in_s32`, `s32le` | `auto` |
+| `pcm_format` | `s16le`, `s24le`, `s24le_in_s32` (`s32le` is rejected because RTP has no mapping) | `auto` |
 | `channels` | 1, 2 | `auto` |
 | `frame_ms` | 10, 16, 20, 32 | `auto` |
 

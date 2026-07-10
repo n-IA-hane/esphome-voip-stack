@@ -47,6 +47,7 @@ class RtpJitterBuffer {
  protected:
   struct Slot {
     bool valid{false};
+    bool has_metadata{false};
     uint16_t sequence{0};
     uint32_t timestamp{0};
     size_t bytes{0};
@@ -79,6 +80,10 @@ inline RtpJitterBuffer::RtpJitterBuffer(uint8_t *storage, size_t frame_capacity,
   if (this->storage_ == nullptr || this->frame_capacity_ == 0 || this->slot_count_ == 0) {
     return;
   }
+  if (this->prebuffer_ == 0)
+    this->prebuffer_ = 1;
+  if (this->prebuffer_ > this->slot_count_)
+    this->prebuffer_ = this->slot_count_;
   for (uint8_t i = 0; i < this->slot_count_; i++) {
     this->slots_[i].pcm = this->storage_ + (static_cast<size_t>(i) * this->frame_capacity_);
   }
@@ -134,19 +139,26 @@ inline bool RtpJitterBuffer::push(const Frame &frame) {
     this->next_sequence_valid_ = true;
   }
 
-  if (!this->buffering_) {
-    const int16_t delta = sequence_delta_(sequence, this->next_sequence_);
-    if (delta < 0) {
+  const int16_t delta = sequence_delta_(sequence, this->next_sequence_);
+  bool realigned = false;
+  if (delta < 0) {
+    // Before playout starts, the first datagram is only an anchor. Accept an
+    // earlier packet that still fits in the fixed window and move the anchor
+    // back so initial network reordering cannot count stale slots toward the
+    // prebuffer. Once playout has started, older packets are genuinely late.
+    if (this->buffering_ && delta > -static_cast<int16_t>(this->slot_count_)) {
+      this->next_sequence_ = sequence;
+      this->keep_window_from_(this->next_sequence_);
+    } else {
       this->counters_.late++;
       return false;
     }
-    if (delta >= static_cast<int16_t>(this->slot_count_)) {
-      const uint8_t keep_frames = this->slot_count_ > this->prebuffer_ ? this->slot_count_ - this->prebuffer_ : 1;
-      this->next_sequence_ = static_cast<uint16_t>(sequence - keep_frames + 1);
-      this->keep_window_from_(this->next_sequence_);
-      this->buffering_ = this->valid_count_ < this->prebuffer_;
-      this->counters_.drops++;
-    }
+  } else if (delta >= static_cast<int16_t>(this->slot_count_)) {
+    const uint8_t keep_frames = this->slot_count_ > this->prebuffer_ ? this->slot_count_ - this->prebuffer_ : 1;
+    this->next_sequence_ = static_cast<uint16_t>(sequence - keep_frames + 1);
+    this->keep_window_from_(this->next_sequence_);
+    realigned = true;
+    this->counters_.drops++;
   }
 
   Slot &slot = this->slots_[sequence % this->slot_count_];
@@ -163,12 +175,26 @@ inline bool RtpJitterBuffer::push(const Frame &frame) {
 
   memcpy(slot.pcm, frame.pcm, frame.bytes);
   slot.valid = true;
+  slot.has_metadata = frame.has_metadata;
   slot.sequence = sequence;
   slot.timestamp = frame.timestamp;
   slot.bytes = frame.bytes;
   this->valid_count_++;
 
-  if (this->buffering_ && this->valid_count_ >= this->prebuffer_) {
+  if (realigned) {
+    // Anchor playout at the first frame that actually survived the window
+    // move. Keeping the purely mathematical window start would manufacture
+    // silence when a large sequence jump arrives after a sparse queue.
+    for (uint8_t offset = 0; offset < this->slot_count_; offset++) {
+      const uint16_t candidate = static_cast<uint16_t>(this->next_sequence_ + offset);
+      const Slot &candidate_slot = this->slots_[candidate % this->slot_count_];
+      if (candidate_slot.valid && candidate_slot.sequence == candidate) {
+        this->next_sequence_ = candidate;
+        break;
+      }
+    }
+    this->buffering_ = this->valid_count_ < this->prebuffer_;
+  } else if (this->buffering_ && this->valid_count_ >= this->prebuffer_) {
     this->buffering_ = false;
   }
   return true;
@@ -191,9 +217,18 @@ inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t ex
 
   Slot &slot = this->slots_[this->next_sequence_ % this->slot_count_];
   if (slot.valid && slot.sequence == this->next_sequence_) {
+    if (slot.bytes != expected_bytes) {
+      slot.valid = false;
+      slot.bytes = 0;
+      if (this->valid_count_ > 0) this->valid_count_--;
+      this->next_sequence_ = static_cast<uint16_t>(this->next_sequence_ + 1);
+      this->counters_.drops++;
+      return ReadResult::MISSING;
+    }
     if (sequence != nullptr) *sequence = slot.sequence;
     if (timestamp != nullptr) *timestamp = slot.timestamp;
-    if (has_metadata != nullptr) *has_metadata = true;
+    if (has_metadata != nullptr)
+      *has_metadata = slot.has_metadata;
     memcpy(out, slot.pcm, slot.bytes);
     slot.valid = false;
     slot.bytes = 0;

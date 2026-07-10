@@ -5,13 +5,13 @@
 #include <algorithm>
 #include <cstring>
 
-#include "esphome/core/application.h"
+#include "audio_core_ring_buffer_caps.h"
+#include "audio_core_task_utils.h"
 #include "esphome/components/network/util.h"
+#include "esphome/core/application.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
-#include "audio_core_ring_buffer_caps.h"
-#include "audio_core_task_utils.h"
 #ifdef USE_ESPHOME_VOIP_SIP_TRANSPORT
 #include "sip_transport.h"
 #endif
@@ -45,7 +45,8 @@ std::string normalize_group_list(const std::string &value) {
   for (char ch : value) {
     if (ch == ',') {
       flush();
-    } else if (ch != '|' && ch != ';' && ch != '\r' && ch != '\n') {
+    } else if (static_cast<unsigned char>(ch) >= 0x20 && static_cast<unsigned char>(ch) != 0x7F &&
+               ch != '|' && ch != ';') {
       current.push_back(ch);
     }
   }
@@ -58,7 +59,10 @@ std::string normalize_endpoint_label(const std::string &value) {
   const std::string trimmed = Phonebook::trim(value);
   for (char ch : trimmed) {
     if (out.size() >= 32) break;
-    if (ch == '|' || ch == ',' || ch == ';' || ch == '\r' || ch == '\n') continue;
+    if (static_cast<unsigned char>(ch) < 0x20 || static_cast<unsigned char>(ch) == 0x7F ||
+        ch == '|' || ch == ',' || ch == ';') {
+      continue;
+    }
     out.push_back(ch);
   }
   return out;
@@ -82,7 +86,8 @@ void VoipStack::append_audio_format_(AudioFormatList *list, const AudioFormat &f
 bool VoipStack::ensure_mic_processing_buffer_() {
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
   if (this->tx_audio_format_.pcm_format != PcmFormat::S16LE) {
-    ESP_LOGE(TAG, "mic_gain and dc_offset_removal require voip_stack.audio.tx.pcm_format: s16le");
+    ESP_LOGE(TAG, "mic_gain and dc_offset_removal require "
+                  "voip_stack.audio.tx.pcm_format: s16le");
     return false;
   }
   if (this->mic_converted_.load(std::memory_order_acquire) != nullptr)
@@ -271,11 +276,15 @@ void VoipStack::transport_audio_callback_(void *ctx, const TransportAudioFrame &
 }
 
 void VoipStack::transport_sip_signal_callback_(void *ctx, const SipSignal &signal) {
-  static_cast<VoipStack *>(ctx)->on_sip_signal_received_(signal);
+  auto *self = static_cast<VoipStack *>(ctx);
+  self->defer([self, signal]() { self->on_sip_signal_received_(signal); });
+  self->enable_loop_soon_any_context();
 }
 
 void VoipStack::transport_connection_callback_(void *ctx, bool connected) {
-  static_cast<VoipStack *>(ctx)->on_connection_change_(connected);
+  auto *self = static_cast<VoipStack *>(ctx);
+  self->defer([self, connected]() { self->on_connection_change_(connected); });
+  self->enable_loop_soon_any_context();
 }
 
 bool VoipStack::transport_accept_callback_(void *ctx) {
@@ -385,7 +394,9 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
     }
     if (!saw_sip_response) {
       const std::string cid = this->get_current_call_id_();
-      ESP_LOGI(TAG, "SIP INVITE timeout after %u ms without response - ending call (call_id=%s)",
+      ESP_LOGI(TAG,
+               "SIP INVITE timeout after %u ms without response - ending call "
+               "(call_id=%s)",
                (unsigned) INVITE_NO_RESPONSE_TIMEOUT_MS, cid.c_str());
       this->fire_timeout_decline_();
       return;
@@ -437,8 +448,9 @@ void VoipStack::loop() {
   }
 
   // Phonebook cycle timeout safeguard: a stuck on_phonebook_update chain (e.g.
-  // an external update source never completes) would otherwise leave the cycle open forever
-  // and block subsequent counter advances. CYCLE_TIMEOUT_MS commits forcibly.
+  // an external update source never completes) would otherwise leave the cycle
+  // open forever and block subsequent counter advances. CYCLE_TIMEOUT_MS
+  // commits forcibly.
   if (this->cycle_active_ &&
       (millis() - this->cycle_started_at_) > CYCLE_TIMEOUT_MS) {
     ESP_LOGD("voip_stack", "Phonebook update cycle auto-commit after %u ms",
@@ -467,15 +479,22 @@ void VoipStack::loop() {
 }
 
 void VoipStack::fire_timeout_decline_() {
-  // Timeout sends CANCEL for pending outbound INVITE or a SIP final response for inbound ringing.
+  // Timeout sends CANCEL for pending outbound INVITE or a SIP final response
+  // for inbound ringing.
   const std::string call_id = this->get_current_call_id_();
+  const CallState state = this->call_state_.load(std::memory_order_acquire);
+  bool waiting_for_terminal_response = false;
   if (this->transport_ && this->transport_->is_connected() && !call_id.empty()) {
-    this->send_sip_final_response_(call_id, kReasonTimeout);
+    if (state == CallState::RINGING) {
+      this->send_sip_final_response_(call_id, kReasonTimeout);
+    } else {
+      waiting_for_terminal_response = this->send_sip_cancel_(call_id);
+    }
   }
   this->set_terminal_response_(call_id, kReasonTimeout);
   this->set_audio_devices_active_(false);
   this->end_call_(CallEndReason::TIMEOUT, kReasonTimeout);
-  if (this->transport_) this->transport_->disconnect();
+  if (this->transport_ && !waiting_for_terminal_response) this->transport_->disconnect();
 }
 
 void VoipStack::dump_config() {
@@ -682,8 +701,9 @@ std::string VoipStack::build_sip_snapshot_string_() const {
   uint32_t rtp_rx_packets = 0;
   uint16_t sip_status = 0;
   const char *last_event = "";
-  AudioFormat selected_tx_format = this->current_tx_audio_format_;
-  AudioFormat selected_rx_format = this->current_rx_audio_format_;
+  const CurrentMediaFormats current_formats = this->snapshot_current_media_formats_();
+  AudioFormat selected_tx_format = current_formats.tx;
+  AudioFormat selected_rx_format = current_formats.rx;
   if (!this->last_terminal_call_id_.empty() && !this->last_reason_.empty() &&
       this->call_state_.load(std::memory_order_acquire) == CallState::IDLE) {
     selected_tx_format = this->last_terminal_tx_audio_format_;

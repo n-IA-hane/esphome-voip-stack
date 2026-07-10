@@ -23,7 +23,6 @@ struct ParsedPhonebookSlot {
 
 struct JsonRosterSlot {
   std::string name;
-  std::string number;
   std::string address;
   std::string endpoint_type;
   std::string sip_transport;
@@ -32,6 +31,8 @@ struct JsonRosterSlot {
   uint16_t sip_port{0};
   uint16_t rtp_port{0};
 };
+
+static constexpr size_t MAX_ROSTER_JSON_BYTES = 32768;
 
 float db_to_linear(float db) {
   return std::pow(10.0f, db / 20.0f);
@@ -83,7 +84,9 @@ bool json_bool(const cJSON *obj, const char *key) {
 
 uint16_t json_u16(const cJSON *obj, const char *key, uint16_t default_value = 0) {
   const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
-  if (cJSON_IsNumber(item) && item->valuedouble >= 0 && item->valuedouble <= 65535) {
+  if (cJSON_IsNumber(item) && std::isfinite(item->valuedouble) &&
+      item->valuedouble >= 0 && item->valuedouble <= 65535 &&
+      std::floor(item->valuedouble) == item->valuedouble) {
     return static_cast<uint16_t>(item->valuedouble);
   }
   if (cJSON_IsString(item) && item->valuestring != nullptr) {
@@ -122,18 +125,36 @@ bool parse_json_roster_slot(const cJSON *obj, JsonRosterSlot *slot) {
   std::string name = Phonebook::trim(json_string(obj, "name"));
   if (name.empty()) name = id;
   if (id.empty()) id = name;
-  if (name.empty()) return false;
+  const auto valid_name = [](const std::string &value) {
+    if (value.empty() || value.size() > Phonebook::MAX_NAME_BYTES) return false;
+    for (const char ch : value) {
+      const auto byte = static_cast<unsigned char>(ch);
+      if (byte < 0x20 || byte == 0x7F || ch == '|' || ch == ',' || ch == ';') return false;
+    }
+    return true;
+  };
+  // A human-friendly UTF-8 display name may exceed the ESP phonebook's byte
+  // budget even when its stable SIP/account id is short. Keep the contact
+  // dialable under that id instead of dropping the whole roster row.
+  if (!valid_name(name)) name = id;
+  if (!valid_name(name)) {
+    return false;
+  }
 
   slot->name = name;
-  slot->number = Phonebook::trim(json_string(obj, "number"));
   slot->address = Phonebook::trim(json_string(obj, "address"));
   if (slot->address.empty()) slot->address = Phonebook::trim(json_string(obj, "host"));
+  if (slot->address.size() > Phonebook::MAX_ADDRESS_BYTES ||
+      slot->address.find_first_of("|,;\r\n\x7f") != std::string::npos) {
+    return false;
+  }
   slot->local_ha = json_metadata_bool(obj, "local_ha");
   slot->ha_bridge = json_bool(obj, "ha_bridge");
   if (!slot->address.empty()) {
     slot->endpoint_type = "sip";
   }
-  std::transform(slot->endpoint_type.begin(), slot->endpoint_type.end(), slot->endpoint_type.begin(), ::tolower);
+  std::transform(slot->endpoint_type.begin(), slot->endpoint_type.end(), slot->endpoint_type.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
   slot->sip_transport = Phonebook::trim(json_metadata_string(obj, "sip_transport"));
   if (slot->sip_transport.empty()) {
     slot->sip_transport = Phonebook::trim(json_metadata_string(obj, "transport"));
@@ -154,7 +175,8 @@ bool parse_json_roster_slot(const cJSON *obj, JsonRosterSlot *slot) {
       slot->sip_transport = sip_uri.substr(start, end == std::string::npos ? std::string::npos : end - start);
     }
   }
-  std::transform(slot->sip_transport.begin(), slot->sip_transport.end(), slot->sip_transport.begin(), ::tolower);
+  std::transform(slot->sip_transport.begin(), slot->sip_transport.end(), slot->sip_transport.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
   if (slot->sip_transport != "tcp" && slot->sip_transport != "udp") slot->sip_transport.clear();
   slot->sip_port = json_metadata_u16(obj, "sip_port", json_u16(obj, "sip_port", 0));
   if (slot->sip_port == 0) slot->sip_port = json_metadata_u16(obj, "port", json_u16(obj, "port", 5060));
@@ -366,6 +388,11 @@ std::string VoipStack::normalize_phonebook_for_transport_(const std::string &con
 
 bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
   if (roster_json.empty()) return false;
+  if (roster_json.size() > MAX_ROSTER_JSON_BYTES) {
+    ESP_LOGW(TAG, "Ignoring HA roster_json: payload exceeds %u bytes",
+             (unsigned) MAX_ROSTER_JSON_BYTES);
+    return false;
+  }
 
   cJSON *root = cJSON_ParseWithLength(roster_json.data(), roster_json.size());
   if (root == nullptr) {
@@ -387,15 +414,18 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
   }
 
   std::vector<JsonRosterSlot> slots;
-  slots.reserve(std::min(static_cast<size_t>(cJSON_GetArraySize(contacts)), Phonebook::MAX_CONTACTS));
+  const size_t roster_size = static_cast<size_t>(cJSON_GetArraySize(contacts));
+  slots.reserve(std::min(roster_size, Phonebook::MAX_CONTACTS));
   JsonRosterSlot ha_slot;
   bool has_ha = false;
+  bool saw_valid_slot = false;
 
   const cJSON *item = nullptr;
   cJSON_ArrayForEach(item, contacts) {
     if (slots.size() >= Phonebook::MAX_CONTACTS) break;
     JsonRosterSlot slot;
     if (!parse_json_roster_slot(item, &slot)) continue;
+    saw_valid_slot = true;
     if (slot.name == this->device_name_ || slot.name == this->device_route_id_) continue;
     slots.push_back(slot);
     if (slot.local_ha && !slot.address.empty()) {
@@ -404,7 +434,15 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
     }
   }
   cJSON_Delete(root);
-  if (slots.empty()) return false;
+  if (slots.empty()) {
+    // An authoritative empty roster (or one containing only this device)
+    // clears stale contacts. A non-empty but wholly malformed payload leaves
+    // the last known-good phonebook untouched.
+    if (roster_size == 0 || saw_valid_slot) {
+      return this->phonebook_.replace_all({});
+    }
+    return false;
+  }
 
   if (has_ha && this->ha_peer_name_ != ha_slot.name) {
     this->ha_peer_name_ = ha_slot.name;
@@ -424,8 +462,7 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
     Phonebook::parse_endpoint_type(slot.endpoint_type, &endpoint_type);
     const bool contact_transport_tcp = slot.sip_transport.empty() ? local_sip_transport_tcp : slot.sip_transport == "tcp";
     const bool direct_candidate = !slot.address.empty() && !slot.local_ha && !slot.ha_bridge &&
-                                  endpoint_type == ContactEndpointType::SIP &&
-                                  contact_transport_tcp == local_sip_transport_tcp;
+                                  endpoint_type == ContactEndpointType::SIP;
 
     ContactEntry entry;
     entry.name = slot.name;
@@ -550,6 +587,12 @@ void VoipStack::call(const std::string &value) {
   if (target.empty()) {
     ESP_LOGW(TAG, "call failed: empty target");
     this->defer([this]() { this->call_failed_trigger_.trigger("Empty target"); });
+    return;
+  }
+  if (target.size() > Phonebook::MAX_NAME_BYTES ||
+      target.find_first_of("|,;\r\n") != std::string::npos) {
+    ESP_LOGW(TAG, "call failed: invalid target label");
+    this->defer([this]() { this->call_failed_trigger_.trigger("Invalid target"); });
     return;
   }
 

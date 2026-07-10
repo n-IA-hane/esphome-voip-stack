@@ -45,10 +45,6 @@ void VoipStack::clear_call_identity_() {
   this->current_caller_name_.clear();
   this->current_dest_route_id_.clear();
   this->current_dest_name_.clear();
-  this->current_caller_to_dest_format_ = DEFAULT_AUDIO_FORMAT;
-  this->current_dest_to_caller_format_ = DEFAULT_AUDIO_FORMAT;
-  this->set_current_tx_audio_format_(DEFAULT_AUDIO_FORMAT);
-  this->current_rx_audio_format_ = DEFAULT_AUDIO_FORMAT;
 }
 
 VoipStack::CallSnapshot VoipStack::snapshot_call_identity_() const {
@@ -125,10 +121,9 @@ bool VoipStack::send_sip_final_response_(const std::string &call_id, const std::
 }
 
 bool VoipStack::send_sip_answer_(const std::string &call_id) {
+  const CurrentMediaFormats formats = this->snapshot_current_media_formats_();
   return this->transport_ != nullptr &&
-         this->transport_->send_answer(call_id,
-                                       this->current_caller_to_dest_format_,
-                                       this->current_dest_to_caller_format_);
+         this->transport_->send_answer(call_id, formats.caller_to_dest, formats.dest_to_caller);
 }
 
 bool VoipStack::send_sip_invite_(const std::string &call_id,
@@ -177,20 +172,27 @@ void VoipStack::start() {
       : selected_dest.empty()
       ? (this->ha_peer_name_.empty() ? std::string("(unknown)") : this->ha_peer_name_)
       : selected_dest;
-  if (dial_ip.empty() || dial_port == 0) {
-    ESP_LOGE(TAG, "%s: SIP outgoing needs a SIP contact with host+port for '%s'",
-             this->device_name_.c_str(), dest_name.c_str());
-    this->pending_dialplan_target_.clear();
-    this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
-    return;
-  }
-
   const std::string caller_route =
       this->device_route_id_.empty() ? this->device_name_ : this->device_route_id_;
   const std::string &dest_route = dest_name;
   const std::string call_id = caller_route + "-" + std::to_string(millis()) + "-" +
                               std::to_string(static_cast<unsigned>(esp_random())) +
                               "@" + (this->device_route_id_.empty() ? std::string("esp") : this->device_route_id_);
+  if (dial_ip.empty() || dial_port == 0) {
+    ESP_LOGE(TAG, "%s: SIP outgoing needs a SIP contact with host+port for '%s'", this->device_name_.c_str(),
+             dest_name.c_str());
+    // end_call_ intentionally ignores IDLE. Publish a short-lived CALLING
+    // attempt with identity so invalid dial-plan routes still produce a
+    // terminal reason and on_call_failed event instead of failing silently.
+    this->clear_terminal_call_snapshot_();
+    this->set_call_identity_(call_id, caller_route, this->device_name_, dest_route, dest_name);
+    this->clear_terminal_response_();
+    this->set_current_media_formats_(this->tx_audio_format_, this->rx_audio_format_, this->tx_audio_format_,
+                                     this->rx_audio_format_);
+    this->set_call_state_(CallState::CALLING);
+    this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
+    return;
+  }
 
   this->clear_terminal_call_snapshot_();
   this->set_remote_sip_transport_tcp(dial_sip_tcp);
@@ -209,10 +211,8 @@ void VoipStack::start() {
 
   ESP_LOGI(TAG, "%s -> %s: calling... (call_id=%s)",
            this->device_name_.c_str(), dest_name.c_str(), call_id.c_str());
-  this->current_caller_to_dest_format_ = this->tx_audio_format_;
-  this->current_dest_to_caller_format_ = this->rx_audio_format_;
-  this->set_current_tx_audio_format_(this->tx_audio_format_);
-  this->current_rx_audio_format_ = this->rx_audio_format_;
+  this->set_current_media_formats_(this->tx_audio_format_, this->rx_audio_format_, this->tx_audio_format_,
+                                   this->rx_audio_format_);
   this->set_audio_devices_active_(true);
   this->set_call_state_(CallState::CALLING);
   this->calling_start_time_ = millis();
@@ -222,6 +222,8 @@ void VoipStack::start() {
              this->device_name_.c_str(), dial_ip.c_str(), (unsigned) dial_port);
     this->pending_dialplan_target_.clear();
     this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
+    this->set_audio_devices_active_(false);
+    if (this->transport_) this->transport_->disconnect();
     return;
   }
 
@@ -230,15 +232,20 @@ void VoipStack::start() {
     ESP_LOGE(TAG, "SIP INVITE send failed");
     this->pending_dialplan_target_.clear();
     this->end_call_(CallEndReason::PROTOCOL_ERROR);
+    this->set_audio_devices_active_(false);
+    if (this->transport_) this->transport_->disconnect();
     return;
   }
   this->pending_dialplan_target_.clear();
 }
 
 void VoipStack::stop() {
-  // Re-entrancy guard: the FSM may already be IDLE while audio devices are
-  // still draining from teardown, so both layers are checked intentionally.
-  if (!this->audio_devices_active_.load(std::memory_order_acquire) && this->call_state_.load(std::memory_order_acquire) == CallState::IDLE) {
+  // Terminal states already own their reason and deferred IDLE transition. A
+  // repeated button/API stop must not replace that snapshot with local_hangup.
+  if (!this->is_active()) {
+    if (this->audio_devices_active_.load(std::memory_order_acquire)) {
+      this->set_audio_devices_active_(false);
+    }
     return;
   }
 
@@ -253,17 +260,19 @@ void VoipStack::stop() {
     this->set_terminal_response_(call_id, "");
   }
   this->end_call_(CallEndReason::LOCAL_HANGUP);
-  bool waiting_for_bye_response = false;
+  bool waiting_for_terminal_response = false;
   if (this->transport_ && this->transport_->is_connected() && !call_id.empty()) {
     if (state == CallState::IN_CALL) {
-      waiting_for_bye_response = this->send_sip_bye_(call_id);
+      waiting_for_terminal_response = this->send_sip_bye_(call_id);
+    } else if (state == CallState::RINGING) {
+      this->send_sip_final_response_(call_id, kReasonDeclined);
     } else {
-      this->send_sip_cancel_(call_id);
+      waiting_for_terminal_response = this->send_sip_cancel_(call_id);
     }
   }
   this->set_audio_devices_active_(false);
   this->set_in_call_(false);
-  if (this->transport_ && !waiting_for_bye_response) this->transport_->disconnect();
+  if (this->transport_ && !waiting_for_terminal_response) this->transport_->disconnect();
 }
 
 void VoipStack::answer_call() {
@@ -285,24 +294,32 @@ void VoipStack::answer_call() {
     ESP_LOGE(TAG, "%s: RTP start failed while answering call", this->device_name_.c_str());
     this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
     this->set_audio_devices_active_(false);
+    this->transport_->disconnect();
     return;
   }
   this->set_call_state_(CallState::CONNECTING);
   if (this->transport_ && !call_id.empty()) {
-    this->send_sip_answer_(call_id);
+    if (!this->send_sip_answer_(call_id)) {
+      ESP_LOGE(TAG, "%s: failed to send SIP answer", this->device_name_.c_str());
+      this->end_call_(CallEndReason::PROTOCOL_ERROR);
+      this->set_audio_devices_active_(false);
+      this->transport_->disconnect();
+      return;
+    }
   }
   this->set_in_call_(true);  // also publishes IN_CALL state
 }
 
 void VoipStack::decline_call(const std::string &reason) {
-  // A SIP rejection is a pre-call final response. Mid-call termination uses BYE, so a
-  // YAML decline_call() during IN_CALL falls back to stop() to avoid a
-  // misleading "declined" reaching the peer after we'd already accepted.
+  // A SIP rejection is a pre-call final response. Mid-call termination uses
+  // BYE, so a YAML decline_call() during IN_CALL falls back to stop() to avoid
+  // a misleading "declined" reaching the peer after we'd already accepted.
   if (this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL) {
     ESP_LOGD(TAG, "decline_call() during IN_CALL -> falling back to stop()");
     this->stop();
     return;
   }
+  const bool cancelling_outgoing = this->is_calling();
   if (this->is_ringing()) {
     ESP_LOGI(TAG, "%s: declining incoming call", this->device_name_.c_str());
   } else if (this->is_calling()) {
@@ -324,14 +341,18 @@ void VoipStack::decline_call(const std::string &reason) {
   this->end_call_(
       reason.empty() ? CallEndReason::LOCAL_HANGUP : CallEndReason::DECLINED,
       reason);
+  bool waiting_for_terminal_response = false;
   if (this->transport_ && this->transport_->is_connected() && !call_id.empty()) {
-    this->send_sip_final_response_(call_id, reason);
+    const bool sent = this->send_sip_final_response_(call_id, reason);
+    // For an outgoing INVITE send_final_response() is a CANCEL. Keep the SIP
+    // dialog alive for its 200/487 exchange and bounded retransmission timer.
+    waiting_for_terminal_response = cancelling_outgoing && sent;
   }
   this->set_audio_devices_active_(false);
 
   // Disconnect after end_call_ so on_connection_change_(false) sees IDLE
   // and skips the REMOTE_HANGUP path that would mask our trigger.
-  if (this->transport_ && this->transport_->is_connected()) {
+  if (this->transport_ && this->transport_->is_connected() && !waiting_for_terminal_response) {
     this->transport_->disconnect();
   }
 }
@@ -412,7 +433,7 @@ void VoipStack::set_audio_devices_active_(bool on) {
 void VoipStack::start_speaker_for_current_rx_() {
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   if (this->speaker_ == nullptr) return;
-  this->speaker_->set_audio_stream_info(audio_stream_info_from_format(this->current_rx_audio_format_));
+  this->speaker_->set_audio_stream_info(audio_stream_info_from_format(this->get_current_rx_audio_format_()));
   this->speaker_->start();
 #endif
 }
@@ -423,7 +444,11 @@ void VoipStack::reset_peer_audio_watchdog_(bool seed_from_transport) {
     baseline_rx_packets = this->transport_->snapshot().rtp_rx_packets;
   }
   this->first_audio_received_.store(false, std::memory_order_release);
-  this->last_peer_audio_ms_.store(0, std::memory_order_release);
+  // Seed on media start so a peer that never sends its first RTP packet is
+  // covered by the same timeout as a stream that stops later.
+  uint32_t watchdog_start = seed_from_transport ? millis() : 0;
+  if (seed_from_transport && watchdog_start == 0) watchdog_start = 1;
+  this->last_peer_audio_ms_.store(watchdog_start, std::memory_order_release);
   this->media_timeout_rtp_rx_packets_.store(baseline_rx_packets, std::memory_order_release);
 }
 
@@ -441,10 +466,10 @@ void VoipStack::set_in_call_(bool on) {
     }
   }
   if (on) {
-    // A new media leg starts here even if audio_devices_active_ was already true because a
-    // previous call did not fully drain yet. Do not inherit peer-audio liveness
-    // from the previous dialog, or the media watchdog can fire early.
-    if (this->transport_) this->transport_->start_audio_path();
+    // A new media leg starts here even if audio_devices_active_ was already
+    // true because a previous call did not fully drain yet. Do not inherit
+    // peer-audio liveness from the previous dialog, or the media watchdog can
+    // fire early.
     this->reset_peer_audio_watchdog_(true);
 
     // Drop stale frames from the previous call before audio resumes.
@@ -480,6 +505,9 @@ void VoipStack::set_in_call_(bool on) {
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
     this->reset_rx_audio_();
+    if (this->speaker_ != nullptr && this->speaker_->is_running()) {
+      this->speaker_->stop();
+    }
 #endif
     this->publish_state_();
   }
@@ -572,8 +600,9 @@ void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
   this->last_terminal_call_id_ = call.call_id;
   this->last_terminal_caller_name_ = call.caller_name;
   this->last_terminal_dest_name_ = call.dest_name;
-  this->last_terminal_tx_audio_format_ = this->current_tx_audio_format_;
-  this->last_terminal_rx_audio_format_ = this->current_rx_audio_format_;
+  const CurrentMediaFormats formats = this->snapshot_current_media_formats_();
+  this->last_terminal_tx_audio_format_ = formats.tx;
+  this->last_terminal_rx_audio_format_ = formats.rx;
   if (!call.caller_name.empty() && call.caller_name == this->device_name_) {
     this->last_terminal_direction_ = "outgoing";
   } else if (!call.dest_name.empty() && call.dest_name == this->device_name_) {
@@ -627,7 +656,8 @@ void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
     this->defer([this, reason_str]() { this->hangup_trigger_.trigger(reason_str); });
   }
   // Clear per-call identity. Terminal response cache stays so a duplicate
-  // INVITE can replay the same final response; cleared by the next accepted INVITE.
+  // INVITE can replay the same final response; cleared by the next accepted
+  // INVITE.
   this->clear_call_identity_();
 
   this->defer([this]() {
@@ -652,16 +682,18 @@ void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
 // === Transport callbacks ===
 
 void VoipStack::on_audio_received_(const TransportAudioFrame &frame) {
-  const AudioFormat &rx_format = this->current_rx_audio_format_;
+  const CallState state = this->call_state_.load(std::memory_order_acquire);
+  if (state != CallState::CONNECTING && state != CallState::IN_CALL) {
+    return;
+  }
+  const AudioFormat rx_format = this->get_current_rx_audio_format_();
   const size_t expected = rx_format.nominal_frame_bytes();
   if (frame.bytes != expected) {
     ESP_LOGW(TAG,
-             "Dropping VoIP audio frame with wrong size: got %u bytes, expected %u for rx format %u:%u:%u:%u",
-             (unsigned) frame.bytes, (unsigned) expected,
-             (unsigned) rx_format.sample_rate,
-             (unsigned) rx_format.pcm_format,
-             (unsigned) rx_format.channels,
-             (unsigned) rx_format.frame_ms);
+             "Dropping VoIP audio frame with wrong size: got %u bytes, "
+             "expected %u for rx format %u:%u:%u:%u",
+             (unsigned) frame.bytes, (unsigned) expected, (unsigned) rx_format.sample_rate,
+             (unsigned) rx_format.pcm_format, (unsigned) rx_format.channels, (unsigned) rx_format.frame_ms);
     return;
   }
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
@@ -672,14 +704,6 @@ void VoipStack::on_audio_received_(const TransportAudioFrame &frame) {
   }
 #endif
 
-  const std::string current_call_id = this->get_current_call_id_();
-  std::string terminal_reason;
-  if (this->recent_terminal_call_(current_call_id, &terminal_reason)) {
-    ESP_LOGD(TAG, "Dropping late audio for terminal call_id=%s reason=%s",
-             current_call_id.c_str(),
-             terminal_reason.empty() ? "(none)" : terminal_reason.c_str());
-    return;
-  }
   // First inbound audio is the strongest "call established" signal; gates
   // the 200 OK echo loop in on_sip_signal_received_() and arms media timeout.
   this->first_audio_received_.store(true, std::memory_order_release);
@@ -690,11 +714,6 @@ void VoipStack::on_audio_received_(const TransportAudioFrame &frame) {
   }
 #endif
 
-  // Audio arrival also promotes CALLING -> IN_CALL (the dest answered).
-  if (this->call_state_.load(std::memory_order_acquire) == CallState::CALLING) {
-    ESP_LOGI(TAG, "Dest answered - received audio, transitioning to IN_CALL");
-    this->set_in_call_(true);
-  }
 }
 
 void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
@@ -796,9 +815,9 @@ handle_incoming_invite_in_idle:
       if (!choose_common_audio_format(msg.caller_tx_formats, this->rx_audio_formats_, &caller_to_dest) ||
           !choose_common_audio_format(msg.caller_rx_formats, this->tx_audio_formats_, &dest_to_caller)) {
         ESP_LOGW(TAG,
-                 "%s: inbound INVITE from %s has no compatible audio format - 488 media_incompatible",
-                 this->device_name_.c_str(),
-                 in_caller_name.empty() ? "(unknown caller)" : in_caller_name.c_str());
+                 "%s: inbound INVITE from %s has no compatible audio format - "
+                 "488 media_incompatible",
+                 this->device_name_.c_str(), in_caller_name.empty() ? "(unknown caller)" : in_caller_name.c_str());
         this->set_terminal_response_(incoming_cid, kReasonMediaIncompatible);
         this->send_sip_final_response_(incoming_cid, kReasonMediaIncompatible);
         if (this->transport_ != nullptr) {
@@ -806,10 +825,7 @@ handle_incoming_invite_in_idle:
         }
         break;
       }
-      this->current_caller_to_dest_format_ = caller_to_dest;
-      this->current_dest_to_caller_format_ = dest_to_caller;
-      this->current_rx_audio_format_ = caller_to_dest;
-      this->set_current_tx_audio_format_(dest_to_caller);
+      this->set_current_media_formats_(caller_to_dest, dest_to_caller, dest_to_caller, caller_to_dest);
 
       this->clear_terminal_call_snapshot_();
       const std::string dest_route = in_dest_route.empty()
@@ -843,10 +859,21 @@ handle_incoming_invite_in_idle:
           break;
         }
         this->set_call_state_(CallState::CONNECTING);
-        this->send_sip_answer_(incoming_cid);
+        if (!this->send_sip_answer_(incoming_cid)) {
+          ESP_LOGE(TAG, "%s: failed to send automatic SIP answer", this->device_name_.c_str());
+          this->end_call_(CallEndReason::PROTOCOL_ERROR);
+          this->set_audio_devices_active_(false);
+          if (this->transport_) this->transport_->disconnect();
+          break;
+        }
         this->set_in_call_(true);
       } else {
-        this->send_sip_ringing_(incoming_cid);
+        if (!this->send_sip_ringing_(incoming_cid)) {
+          ESP_LOGE(TAG, "%s: failed to send SIP ringing response", this->device_name_.c_str());
+          this->end_call_(CallEndReason::PROTOCOL_ERROR);
+          if (this->transport_) this->transport_->disconnect();
+          break;
+        }
         this->ringing_start_time_ = millis();
         this->set_call_state_(CallState::RINGING);
         ESP_LOGI(TAG, "%s: ringing (waiting for local answer)", this->device_name_.c_str());
@@ -896,19 +923,23 @@ handle_incoming_invite_in_idle:
           if (this->transport_) this->transport_->disconnect();
           break;
         }
-        this->current_caller_to_dest_format_ = msg.selected_tx_format;
-        this->current_dest_to_caller_format_ = msg.selected_rx_format;
-        this->set_current_tx_audio_format_(msg.selected_tx_format);
-        this->current_rx_audio_format_ = msg.selected_rx_format;
+        if (this->transport_ && !this->transport_->start_audio_path()) {
+          ESP_LOGE(TAG, "%s: RTP start failed after SIP answer", this->device_name_.c_str());
+          this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
+          this->set_audio_devices_active_(false);
+          this->transport_->disconnect();
+          break;
+        }
+        this->set_current_media_formats_(msg.selected_tx_format, msg.selected_rx_format, msg.selected_tx_format,
+                                         msg.selected_rx_format);
         ESP_LOGI(TAG, "%s: destination answered, in_call (call_id=%s)",
                  this->device_name_.c_str(),
                  in_call_id.c_str());
+        this->set_call_state_(CallState::CONNECTING);
         this->set_in_call_(true);
       } else if (state == CallState::RINGING) {
         ESP_LOGI(TAG, "%s: answered remotely (by HA)", this->device_name_.c_str());
-        this->set_audio_devices_active_(true);
-        this->set_in_call_(true);
-        this->send_sip_answer_(this->get_current_call_id_());
+        this->answer_call();
       } else if (state == CallState::IN_CALL &&
                  !this->first_audio_received_.load(std::memory_order_acquire)) {
         ESP_LOGD(TAG, "200 OK repeat in IN_CALL (no audio yet) - re-echoing ACK");
@@ -940,6 +971,7 @@ handle_incoming_invite_in_idle:
       if (msg.status_code == 486 || in_reason == kReasonBusy) reason = CallEndReason::BUSY;
       else if (msg.status_code == 487 || in_reason == kReasonCancelled) reason = CallEndReason::CANCELLED;
       else if (msg.status_code == 488 || in_reason == kReasonMediaIncompatible) reason = CallEndReason::MEDIA_INCOMPATIBLE;
+      else if (msg.status_code == 408 || in_reason == kReasonTimeout) reason = CallEndReason::TIMEOUT;
       else if (msg.status_code == 401 || in_reason == kReasonAuthRequiredUnsupported) reason = CallEndReason::AUTH_REQUIRED_UNSUPPORTED;
       else if (msg.status_code == 407 || in_reason == kReasonProxyAuthRequiredUnsupported) reason = CallEndReason::PROXY_AUTH_REQUIRED_UNSUPPORTED;
       else if (msg.type == SipSignalType::PROTOCOL_ERROR) reason = CallEndReason::PROTOCOL_ERROR;
@@ -953,7 +985,13 @@ handle_incoming_invite_in_idle:
                in_call_id.c_str());
       this->end_call_(reason, detail);
       this->set_audio_devices_active_(false);
-      if (this->transport_) this->transport_->disconnect();
+      // A malformed/incompatible 2xx still creates a confirmed SIP dialog.
+      // SipTransport has already ACKed it and owns a retransmitted BYE; do not
+      // clear that transaction here. A non-2xx 488 was reset by the transport
+      // before the signal was emitted, so leaving it alone is also safe.
+      if (this->transport_ && msg.type != SipSignalType::MEDIA_INCOMPATIBLE) {
+        this->transport_->disconnect();
+      }
       break;
     }
 
@@ -989,6 +1027,7 @@ void VoipStack::on_connection_change_(bool connected) {
   this->set_audio_devices_active_(false);
   if (this->call_state_.load(std::memory_order_acquire) != CallState::IDLE) {
     this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
+    this->set_in_call_(false);
   } else {
     this->publish_caller_("");
     this->publish_state_();
