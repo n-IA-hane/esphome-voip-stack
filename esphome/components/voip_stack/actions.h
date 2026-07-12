@@ -206,7 +206,13 @@ class VoipIsInCallCondition : public Condition<Ts...>, public Parented<VoipStack
 template<typename... Ts>
 class VoipIsCallingCondition : public Condition<Ts...>, public Parented<VoipStack> {
  public:
-  bool check(const Ts &...x) override { return this->parent_->get_call_state() == CallState::CALLING; }
+  bool check(const Ts &...x) override { return this->parent_->is_calling(); }
+};
+
+template<typename... Ts>
+class VoipIsRemoteRingingCondition : public Condition<Ts...>, public Parented<VoipStack> {
+ public:
+  bool check(const Ts &...x) override { return this->parent_->get_call_state() == CallState::REMOTE_RINGING; }
 };
 
 template<typename... Ts>

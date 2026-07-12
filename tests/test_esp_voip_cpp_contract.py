@@ -1120,3 +1120,14 @@ def test_roster_json_uses_address_direct_or_ha_route_without_kind_semantics() ->
     assert "contact_transport_tcp == local_sip_transport_tcp" not in settings
     assert "entry.sip_transport_tcp = contact_transport_tcp;" in settings
     assert '} else if (has_ha) {' in settings
+
+
+def test_yaml_calling_conditions_cover_remote_ringing() -> None:
+    actions = read("actions.h")
+    init = read("__init__.py")
+
+    assert "VoipIsCallingCondition" in actions
+    assert "return this->parent_->is_calling();" in actions
+    assert "VoipIsRemoteRingingCondition" in actions
+    assert "CallState::REMOTE_RINGING" in actions
+    assert '"voip_stack.is_remote_ringing"' in init

@@ -430,6 +430,7 @@ VoipIsIdleCondition = voip_stack_ns.class_("VoipIsIdleCondition", automation.Con
 VoipIsRingingCondition = voip_stack_ns.class_("VoipIsRingingCondition", automation.Condition)
 VoipIsInCallCondition = voip_stack_ns.class_("VoipIsInCallCondition", automation.Condition)
 VoipIsCallingCondition = voip_stack_ns.class_("VoipIsCallingCondition", automation.Condition)
+VoipIsRemoteRingingCondition = voip_stack_ns.class_("VoipIsRemoteRingingCondition", automation.Condition)
 VoipIsIncomingCondition = voip_stack_ns.class_("VoipIsIncomingCondition", automation.Condition)
 VoipDestinationIsCondition = voip_stack_ns.class_("VoipDestinationIsCondition", automation.Condition)
 VoipIsHaDestinationCondition = voip_stack_ns.class_("VoipIsHaDestinationCondition", automation.Condition)
@@ -1269,6 +1270,7 @@ _register_simple_condition("voip_stack.is_idle", VoipIsIdleCondition)
 _register_simple_condition("voip_stack.is_ringing", VoipIsRingingCondition)
 _register_simple_condition("voip_stack.is_in_call", VoipIsInCallCondition)
 _register_simple_condition("voip_stack.is_calling", VoipIsCallingCondition)
+_register_simple_condition("voip_stack.is_remote_ringing", VoipIsRemoteRingingCondition)
 _register_simple_condition("voip_stack.is_incoming", VoipIsIncomingCondition)
 
 
