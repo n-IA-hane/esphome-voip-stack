@@ -300,6 +300,32 @@ contact by name. Home Assistant materializes the group entries, performs SIP
 forking for ring groups, mixes conference rooms, and pushes the updated roster
 back to the ESP devices.
 
+### Home Assistant Inbound Routing
+
+Provider/PBX trunks and automation routing belong to the optional Home
+Assistant integration, never to ESP firmware. That integration keeps the same
+shared phonebook as its canonical dial plan and offers two explicit trunk
+inbound modes:
+
+- **Direct** immediately follows the configured default phonebook target.
+- **DTMF** answers the trunk leg and lets explicit digits select a phonebook
+  extension; no digits use the configured default target.
+
+An unknown explicit extension fails instead of falling through to another
+destination. A separate experimental switch may expose a short Home Assistant
+automation decision before Direct routing or the no-digits DTMF fallback.
+Explicit DTMF digits always keep priority, and disabling that switch restores
+the ordinary phonebook route.
+
+After HA starts ringing, an ordinary HA state trigger with `for:` can redirect
+the same unanswered call to another phonebook destination such as an ESP,
+registered phone or Assist. The ESP remains a normal SIP peer and contains no
+parallel automation dial plan.
+
+See the main project's
+[Automation Dial Plan](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/AUTOMATION_DIALPLAN.md)
+guide for the exact config-flow semantics and native HA automation examples.
+
 ## 10. Call Lifecycle, Triggers and Conditions
 
 FSM states: `IDLE`, `CALLING`, `REMOTE_RINGING`, `RINGING`, `CONNECTING`, `IN_CALL`, `TERMINATING`, and terminal outcomes `BUSY`, `DECLINED`, `CANCELLED`, `MEDIA_INCOMPATIBLE`, `TRANSPORT_UNREACHABLE`, `AUTH_REQUIRED_UNSUPPORTED`.
