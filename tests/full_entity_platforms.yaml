@@ -1,0 +1,41 @@
+packages:
+  minimal: !include minimal_no_text.yaml
+
+esphome:
+  name: voip-full-entity-platforms
+
+switch:
+  - platform: voip_stack
+    voip_stack_id: phone
+    auto_answer:
+      name: Auto Answer
+    dnd:
+      name: Do Not Disturb
+
+number:
+  - platform: voip_stack
+    voip_stack_id: phone
+    master_volume:
+      name: Master Volume
+    mic_gain:
+      name: Mic Gain
+
+button:
+  - platform: voip_stack
+    voip_stack_id: phone
+    call:
+      name: Call
+    decline:
+      name: Decline
+
+text:
+  - platform: voip_stack
+    voip_stack_id: phone
+    type: extension
+    name: Extension
+
+text_sensor:
+  - platform: voip_stack
+    voip_stack_id: phone
+    type: state
+    name: State

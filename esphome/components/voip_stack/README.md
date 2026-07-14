@@ -339,17 +339,18 @@ voip_stack:
 HA peer. HA-side dial-plan decisions are exposed as Home Assistant bus events
 and services by `voip_stack`.
 
-## Auto Entities
+## Optional Entity Platforms
 
-`auto_entities: true` can create the common HA entities for minimal YAMLs:
+Declare only the native ESPHome platforms an endpoint needs:
 
 - `auto_answer`
 - `dnd`
 - `master_volume`, only when a speaker is configured
 - `mic_gain`, only when a mic is configured
 
-Existing maintained YAMLs generally declare entities through packages for
-stable names and UI layout.
+The core component does not auto-load primary entity platforms. The maintained
+YAML packages provide explicit `switch:`, `number:`, `button:`, `text:` and
+`text_sensor:` entries with stable names and UI layout.
 
 ## Resource Notes
 

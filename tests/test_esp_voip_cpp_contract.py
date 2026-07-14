@@ -21,6 +21,24 @@ def read(name: str) -> str:
     return (VOIP / name).read_text(encoding="utf-8")
 
 
+def test_optional_entity_platforms_are_feature_gated_not_autoloaded() -> None:
+    init_py = read("__init__.py")
+    header = read("voip_stack.h")
+    autoload = init_py.split("def AUTO_LOAD", 1)[1].split("\n\n", 1)[0]
+    for platform in ("button", "number", "switch", "text", "text_sensor"):
+        assert f'"{platform}"' not in autoload
+    for flag, component in (
+        ("USE_BUTTON", "button"),
+        ("USE_NUMBER", "number"),
+        ("USE_SWITCH", "switch"),
+        ("USE_TEXT", "text"),
+        ("USE_TEXT_SENSOR", "text_sensor"),
+    ):
+        assert (
+            f'#ifdef {flag}\n#include "esphome/components/{component}/'
+        ) in header
+
+
 def test_yaml_lifecycle_callbacks_receive_stable_peer_identity() -> None:
     init_py = read("__init__.py")
     fsm = read("voip_fsm.cpp")

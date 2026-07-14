@@ -549,9 +549,11 @@ void VoipStack::set_remote_sip_transport_tcp(bool tcp) {
 }
 
 void VoipStack::publish_transport_() {
+#ifdef USE_TEXT_SENSOR
   if (this->transport_sensor_ != nullptr) {
     this->transport_sensor_->publish_state(this->protocol_ == TransportType::TCP ? "tcp" : "udp");
   }
+#endif
 }
 
 std::string VoipStack::audio_format_token_(const AudioFormat &fmt) {
@@ -628,18 +630,22 @@ std::string VoipStack::build_endpoint_string_() const {
 void VoipStack::set_extension(const std::string &extension) {
   const std::string normalized = normalize_endpoint_label(extension);
   this->extension_ = normalized;
+#ifdef USE_TEXT
   if (this->extension_text_ != nullptr) {
     this->extension_text_->publish_state(normalized);
   }
+#endif
   this->request_endpoint_publish_();
 }
 
 void VoipStack::set_ring_groups(const std::string &groups) {
   const std::string normalized = normalize_group_list(groups);
   this->ring_groups_ = normalized;
+#ifdef USE_TEXT
   if (this->ring_groups_text_ != nullptr) {
     this->ring_groups_text_->publish_state(normalized);
   }
+#endif
 }
 
 void VoipStack::set_conference_groups(const std::string &groups) {
@@ -648,16 +654,20 @@ void VoipStack::set_conference_groups(const std::string &groups) {
   if (normalized.empty() && this->conference_ring_) {
     this->set_conference_ring(false);
   }
+#ifdef USE_TEXT
   if (this->conference_groups_text_ != nullptr) {
     this->conference_groups_text_->publish_state(normalized);
   }
+#endif
 }
 
 void VoipStack::set_conference_ring(bool enabled) {
   this->conference_ring_ = enabled && !this->conference_groups_.empty();
+#ifdef USE_SWITCH
   if (this->conference_ring_switch_ != nullptr) {
     this->conference_ring_switch_->publish_state(this->conference_ring_);
   }
+#endif
 }
 
 std::string VoipStack::build_sip_snapshot_string_() const {
@@ -757,11 +767,13 @@ std::string VoipStack::build_sip_snapshot_string_() const {
 }
 
 void VoipStack::publish_sip_snapshot_() {
+#ifdef USE_TEXT_SENSOR
   if (this->sip_snapshot_sensor_ == nullptr) return;
   const std::string snapshot = this->build_sip_snapshot_string_();
   if (snapshot == this->last_sip_snapshot_) return;
   this->last_sip_snapshot_ = snapshot;
   this->sip_snapshot_sensor_->publish_state(snapshot);
+#endif
 }
 
 void VoipStack::publish_endpoint_() {
@@ -770,10 +782,12 @@ void VoipStack::publish_endpoint_() {
     ESP_LOGW(TAG, "VoIP endpoint waiting for IPv4 address from ESPHome network");
     return;
   }
+#ifdef USE_TEXT_SENSOR
   if (this->endpoint_sensor_ != nullptr && endpoint != this->last_endpoint_) {
     this->last_endpoint_ = endpoint;
     this->endpoint_sensor_->publish_state(endpoint);
   }
+#endif
   this->publish_sip_snapshot_();
 }
 
@@ -800,9 +814,12 @@ void VoipStack::publish_entity_states() {
   this->publish_transport_();
   this->publish_endpoint_();
   this->publish_sip_snapshot_();
+#ifdef USE_TEXT_SENSOR
   if (this->last_reason_sensor_ != nullptr) {
     this->last_reason_sensor_->publish_state(this->last_reason_);
   }
+#endif
+#ifdef USE_TEXT
   if (this->extension_text_ != nullptr) {
     this->extension_text_->publish_state(this->extension_);
   }
@@ -812,6 +829,8 @@ void VoipStack::publish_entity_states() {
   if (this->conference_groups_text_ != nullptr) {
     this->conference_groups_text_->publish_state(this->conference_groups_);
   }
+#endif
+#ifdef USE_SWITCH
   if (this->conference_ring_switch_ != nullptr) {
     this->conference_ring_switch_->publish_state(this->conference_ring_);
   }
@@ -835,17 +854,22 @@ void VoipStack::publish_entity_states() {
     }
     this->dnd_switch_->publish_state(this->do_not_disturb_);
   }
+#else
+  (void) apply_restore;
+#endif
 
   ESP_LOGD(TAG, "Entity states synced (vol=%.0f%%, mic=%.1fdB, auto=%s, dnd=%s)",
            this->volume_.load(std::memory_order_relaxed) * 100.0f, this->mic_gain_db_,
            this->auto_answer_ ? "ON" : "OFF", this->do_not_disturb_ ? "ON" : "OFF");
 
+#ifdef USE_NUMBER
   if (this->volume_number_ != nullptr) {
     this->volume_number_->publish_state(this->volume_.load(std::memory_order_relaxed) * 100.0f);
   }
   if (this->mic_gain_number_ != nullptr) {
     this->mic_gain_number_->publish_state(this->mic_gain_db_);
   }
+#endif
 }
 
 }  // namespace voip_stack

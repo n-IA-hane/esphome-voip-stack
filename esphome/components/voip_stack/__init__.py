@@ -5,16 +5,12 @@ import esphome.config_validation as cv
 import esphome.final_validate as fv
 from esphome import automation
 from esphome.core import CORE
-from esphome.components import number as _number_ns, switch as _switch_ns
 from esphome.const import (
     CONF_ID,
     CONF_MICROPHONE,
     CONF_NUM_CHANNELS,
     CONF_SPEAKER,
-    CONF_ICON,
     CONF_NAME,
-    CONF_MODE,
-    CONF_DISABLED_BY_DEFAULT,
 )
 from esphome.components import audio, esp32, microphone, speaker, text_sensor
 
@@ -23,7 +19,7 @@ DEPENDENCIES = ["esp32"]
 
 
 def AUTO_LOAD(config):
-    return ["button", "switch", "number", "ring_buffer"]
+    return ["ring_buffer"]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,7 +27,6 @@ CONF_VOIP_STACK_ID = "voip_stack_id"
 CONF_DC_OFFSET_REMOVAL = "dc_offset_removal"
 CONF_TASK_STACKS_IN_PSRAM = "task_stacks_in_psram"
 CONF_BUFFERS_IN_PSRAM = "buffers_in_psram"
-CONF_AUTO_ENTITIES = "auto_entities"
 CONF_MICROPHONE_SOURCE = "microphone_source"
 
 CONF_PROCESSOR_ID = "processor_id"
@@ -435,23 +430,6 @@ VoipIsIncomingCondition = voip_stack_ns.class_("VoipIsIncomingCondition", automa
 VoipDestinationIsCondition = voip_stack_ns.class_("VoipDestinationIsCondition", automation.Condition)
 VoipIsHaDestinationCondition = voip_stack_ns.class_("VoipIsHaDestinationCondition", automation.Condition)
 
-# Auto-entity classes: declared here so to_code below can construct them even
-# when YAML does not include explicit `switch:` / `number:` platform blocks.
-# The explicit platforms reuse the same class names through the namespace.
-VoipStackAutoAnswerCls = voip_stack_ns.class_(
-    "VoipStackAutoAnswer", _switch_ns.Switch, cg.Parented.template(VoipStack)
-)
-VoipStackDndSwitchCls = voip_stack_ns.class_(
-    "VoipStackDndSwitch", _switch_ns.Switch, cg.Parented.template(VoipStack)
-)
-VoipStackVolumeCls = voip_stack_ns.class_(
-    "VoipStackVolume", _number_ns.Number, cg.Parented.template(VoipStack)
-)
-VoipStackMicGainCls = voip_stack_ns.class_(
-    "VoipStackMicGain", _number_ns.Number, cg.Parented.template(VoipStack)
-)
-
-
 PHONEBOOK_CONTACT_SCHEMA = cv.Schema(
     {
         cv.Optional(CONF_ENTRY): cv.string,
@@ -547,11 +525,6 @@ CONFIG_SCHEMA = cv.Schema(
         # required on plain ESP32 boards without PSRAM. Set true on heavy S3/P4
         # builds when PSRAM stacks are enabled in sdkconfig.
         cv.Optional(CONF_TASK_STACKS_IN_PSRAM, default=False): cv.boolean,
-        # Auto-create the boilerplate switches/numbers (auto_answer, volume,
-        # mic_gain). Default false for YAMLs that already declare them via
-        # `switch:`/`number: - platform: voip_stack`.
-        # Set to true on a minimal new yaml to skip that boilerplate.
-        cv.Optional(CONF_AUTO_ENTITIES, default=False): cv.boolean,
         # Standalone VoIP DSP/AEC was removed. Use native ESPHome mic/speaker
         # directly, or put software AEC/AFE on esp_audio_stack and pass its
         # microphone/speaker facade here.
@@ -927,74 +900,6 @@ async def _bind_ha_phonebook_sensor(var, config):
         cg.add(var.set_ha_phonebook_sensor(ha_sensor))
 
 
-async def _build_voip_auto_entities(var, config):
-    # Optional auto-entities: gated to opt-in (auto_entities: true) so yamls
-    # that already declare `switch:`/`number: - platform: voip_stack`
-    # don't end up with two competing entity registrations. New minimal
-    # yamls can flip this on and skip the boilerplate altogether.
-    if config[CONF_AUTO_ENTITIES]:
-        from esphome.components import switch as switch_module, number as number_module
-        from esphome.const import CONF_RESTORE_MODE, CONF_ENTITY_CATEGORY
-
-        aa_id = cv.declare_id(VoipStackAutoAnswerCls)(f"{config[CONF_ID].id}_auto_answer")
-        aa = await switch_module.new_switch({
-            CONF_ID: aa_id,
-            CONF_NAME: "Auto Answer",
-            CONF_ICON: "mdi:phone-in-talk",
-            CONF_DISABLED_BY_DEFAULT: False,
-            CONF_RESTORE_MODE: switch_module.RESTORE_MODES["RESTORE_DEFAULT_ON"],
-            CONF_ENTITY_CATEGORY: "config",
-        })
-        cg.add(aa.set_parent(var))
-        cg.add(var.register_auto_answer_switch(aa))
-
-        dnd_id = cv.declare_id(VoipStackDndSwitchCls)(f"{config[CONF_ID].id}_dnd")
-        dnd = await switch_module.new_switch({
-            CONF_ID: dnd_id,
-            CONF_NAME: "Do Not Disturb",
-            CONF_ICON: "mdi:minus-circle",
-            CONF_DISABLED_BY_DEFAULT: False,
-            CONF_RESTORE_MODE: switch_module.RESTORE_MODES["RESTORE_DEFAULT_OFF"],
-            CONF_ENTITY_CATEGORY: "config",
-        })
-        cg.add(dnd.set_parent(var))
-        cg.add(var.register_dnd_switch(dnd))
-
-        if CONF_SPEAKER in config:
-            vol_id = cv.declare_id(VoipStackVolumeCls)(f"{config[CONF_ID].id}_volume")
-            vol = await number_module.new_number(
-                {
-                    CONF_ID: vol_id,
-                    CONF_NAME: "Master Volume",
-                    CONF_ICON: "mdi:volume-high",
-                    CONF_DISABLED_BY_DEFAULT: False,
-                    CONF_MODE: number_module.NUMBER_MODES["SLIDER"],
-                },
-                min_value=0,
-                max_value=100,
-                step=5,
-            )
-            cg.add(vol.set_parent(var))
-            cg.add(var.register_volume_number(vol))
-
-        if CONF_MICROPHONE in config or CONF_MICROPHONE_SOURCE in config:
-            mg_id = cv.declare_id(VoipStackMicGainCls)(f"{config[CONF_ID].id}_mic_gain")
-            mg = await number_module.new_number(
-                {
-                    CONF_ID: mg_id,
-                    CONF_NAME: "Mic Gain",
-                    CONF_ICON: "mdi:microphone",
-                    CONF_DISABLED_BY_DEFAULT: False,
-                    CONF_MODE: number_module.NUMBER_MODES["SLIDER"],
-                },
-                min_value=-20,
-                max_value=20,
-                step=1,
-            )
-            cg.add(mg.set_parent(var))
-            cg.add(var.register_mic_gain_number(mg))
-
-
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
@@ -1005,7 +910,6 @@ async def to_code(config):
     _add_static_contacts(var, config)
     await _build_voip_automations(var, config)
     await _bind_ha_phonebook_sensor(var, config)
-    await _build_voip_auto_entities(var, config)
 
 
 # === Action registrations ===

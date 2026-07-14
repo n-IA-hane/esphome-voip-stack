@@ -478,7 +478,6 @@ button:
 | `ha_phonebook_text_sensor_id` | none | Bind the HA phonebook sensor. |
 | `delete_contact_missing_from` | none | Drop absent roster contact after N updates. |
 | `ringing_timeout` / `calling_timeout` | none | Guard timers. |
-| `auto_entities` | `false` | Create common entity set automatically. |
 | `dc_offset_removal` | `false` | Remove DC bias on TX. |
 | `audio_debug` | `false` | Verbose audio-path diagnostics. |
 | `buffers_in_psram` | `false` | Place VoIP-owned buffers in PSRAM. |

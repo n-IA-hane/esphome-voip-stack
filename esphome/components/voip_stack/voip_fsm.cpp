@@ -374,9 +374,11 @@ const char *VoipStack::get_state_str() const {
 }
 
 void VoipStack::publish_state_() {
+#ifdef USE_TEXT_SENSOR
   if (this->state_sensor_ != nullptr) {
     this->state_sensor_->publish_state(this->get_state_str());
   }
+#endif
   this->publish_sip_snapshot_();
 }
 
@@ -394,9 +396,11 @@ void VoipStack::publish_last_reason_(const std::string &reason) {
     return;
   }
   this->last_reason_ = reason;
+#ifdef USE_TEXT_SENSOR
   if (this->last_reason_sensor_ != nullptr) {
     this->last_reason_sensor_->publish_state(reason);
   }
+#endif
   this->publish_sip_snapshot_();
 }
 
@@ -539,11 +543,10 @@ void VoipStack::set_call_state_(CallState new_state) {
     this->notify_audio_tasks_();
   }
 
-  if (new_state == CallState::IN_CALL && this->caller_sensor_ != nullptr &&
-      !this->caller_sensor_->state.empty()) {
+  if (new_state == CallState::IN_CALL && !this->current_caller_name_.empty()) {
     ESP_LOGI(TAG, "%s: %s -> %s with %s", this->device_name_.c_str(),
              call_state_to_str(old_state), call_state_to_str(new_state),
-             this->caller_sensor_->state.c_str());
+             this->current_caller_name_.c_str());
   } else {
     ESP_LOGI(TAG, "%s: %s -> %s", this->device_name_.c_str(),
              call_state_to_str(old_state), call_state_to_str(new_state));

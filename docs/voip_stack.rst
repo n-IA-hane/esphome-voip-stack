@@ -84,8 +84,6 @@ Configuration variables
   containing the HA-managed roster JSON.
 - **delete_contact_missing_from** (*Optional*): Roster cleanup policy.
 - **ringing_timeout** / **calling_timeout** (*Optional*, time): Guard timers.
-- **auto_entities** (*Optional*, boolean): Create common switches, buttons and
-  numbers automatically. Defaults to ``false``.
 - **dc_offset_removal** (*Optional*, boolean): Remove DC bias on TX.
 - **audio_debug** (*Optional*, boolean): Verbose audio diagnostics.
 - **buffers_in_psram** (*Optional*, boolean): Store VoIP-owned staging buffers in

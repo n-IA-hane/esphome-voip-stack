@@ -18,11 +18,21 @@
 #include "esphome/components/speaker/speaker.h"
 #endif
 
+#ifdef USE_BUTTON
 #include "esphome/components/button/button.h"
+#endif
+#ifdef USE_NUMBER
 #include "esphome/components/number/number.h"
+#endif
+#ifdef USE_SWITCH
 #include "esphome/components/switch/switch.h"
+#endif
+#ifdef USE_TEXT
 #include "esphome/components/text/text.h"
+#endif
+#ifdef USE_TEXT_SENSOR
 #include "esphome/components/text_sensor/text_sensor.h"
+#endif
 
 #include "phonebook.h"
 #include "rtp_jitter_buffer.h"
@@ -228,7 +238,8 @@ class VoipStack : public Component {
   }
   const char *get_state_str() const;
 
-  // Sensor registration
+#ifdef USE_TEXT_SENSOR
+  // Optional text-sensor platform registration.
   void set_state_sensor(text_sensor::TextSensor *sensor) { this->state_sensor_ = sensor; }
   void set_destination_sensor(text_sensor::TextSensor *sensor) { this->destination_sensor_ = sensor; }
   void set_caller_sensor(text_sensor::TextSensor *sensor) { this->caller_sensor_ = sensor; }
@@ -237,22 +248,30 @@ class VoipStack : public Component {
   void set_endpoint_sensor(text_sensor::TextSensor *sensor) { this->endpoint_sensor_ = sensor; }
   void set_last_reason_sensor(text_sensor::TextSensor *sensor) { this->last_reason_sensor_ = sensor; }
   void set_sip_snapshot_sensor(text_sensor::TextSensor *sensor) { this->sip_snapshot_sensor_ = sensor; }
-  void set_ring_groups_text(text::Text *entity) { this->ring_groups_text_ = entity; }
-  void set_conference_groups_text(text::Text *entity) { this->conference_groups_text_ = entity; }
-  void set_extension_text(text::Text *entity) { this->extension_text_ = entity; }
   // Phonebook source from HA: shipped YAMLs wire a homeassistant text_sensor
   // through ha_phonebook_text_sensor_id. Current firmware consumes the unified
   // SIP roster sensor.voip_phonebook and normalizes it locally.
   void set_ha_phonebook_sensor(text_sensor::TextSensor *sensor) { this->ha_phonebook_sensor_ = sensor; }
+#endif
+#ifdef USE_TEXT
+  void set_ring_groups_text(text::Text *entity) { this->ring_groups_text_ = entity; }
+  void set_conference_groups_text(text::Text *entity) { this->conference_groups_text_ = entity; }
+  void set_extension_text(text::Text *entity) { this->extension_text_ = entity; }
+#endif
   // Prune threshold (1..10). 0 disables pruning entirely.
   void set_prune_threshold(uint8_t t) { this->prune_threshold_ = t; }
 
-  // Entity registration (for state sync after boot)
+#ifdef USE_SWITCH
+  // Optional switch-platform registration.
   void register_auto_answer_switch(switch_::Switch *sw) { this->auto_answer_switch_ = sw; }
   void register_dnd_switch(switch_::Switch *sw) { this->dnd_switch_ = sw; }
   void register_conference_ring_switch(switch_::Switch *sw) { this->conference_ring_switch_ = sw; }
+#endif
+#ifdef USE_NUMBER
+  // Optional number-platform registration.
   void register_volume_number(number::Number *num) { this->volume_number_ = num; }
   void register_mic_gain_number(number::Number *num) { this->mic_gain_number_ = num; }
+#endif
   // SIP dial-plan contact management. Public YAML should prefer the
   // structured add_contact action. add_contact(std::string) remains the compact
   // internal transport-row path used by HA roster sync and generated helpers.
@@ -281,7 +300,7 @@ class VoipStack : public Component {
   uint16_t get_current_contact_port() const;
   uint16_t get_current_contact_rtp_port() const;
   bool get_current_contact_sip_transport_tcp() const;
-  std::string get_caller() const { return this->caller_sensor_ ? this->caller_sensor_->state : ""; }
+  std::string get_caller() const { return this->current_caller_name_; }
   std::string get_contacts_csv() const;
 
   // Call state triggers (exposed to YAML)
@@ -461,7 +480,8 @@ class VoipStack : public Component {
   // Active SIP phone transport (created in setup() based on protocol_).
   std::unique_ptr<SipPhoneTransport> transport_;
 
-  // Sensors
+#ifdef USE_TEXT_SENSOR
+  // Optional text-sensor entities.
   text_sensor::TextSensor *state_sensor_{nullptr};
   text_sensor::TextSensor *destination_sensor_{nullptr};  // full: selected contact
   text_sensor::TextSensor *caller_sensor_{nullptr};       // full: who is calling
@@ -470,6 +490,7 @@ class VoipStack : public Component {
   text_sensor::TextSensor *endpoint_sensor_{nullptr};     // HA roster row with SIP route and audio capabilities.
   text_sensor::TextSensor *last_reason_sensor_{nullptr};  // terminal reason for HA/card mirroring
   text_sensor::TextSensor *sip_snapshot_sensor_{nullptr};  // diagnostic SipPhoneState JSON
+#endif
   std::string last_reason_;
   std::string last_endpoint_;
   std::string last_sip_snapshot_;
@@ -481,16 +502,22 @@ class VoipStack : public Component {
   std::string last_terminal_dest_name_;
   AudioFormat last_terminal_tx_audio_format_{DEFAULT_AUDIO_FORMAT};
   AudioFormat last_terminal_rx_audio_format_{DEFAULT_AUDIO_FORMAT};
-  // Registered entities (for state sync after boot)
+#ifdef USE_SWITCH
+  // Optional switch entities (for state sync after boot).
   switch_::Switch *auto_answer_switch_{nullptr};
   switch_::Switch *dnd_switch_{nullptr};
   switch_::Switch *conference_ring_switch_{nullptr};
+#endif
   bool entity_restore_applied_{false};
+#ifdef USE_NUMBER
   number::Number *volume_number_{nullptr};
   number::Number *mic_gain_number_{nullptr};
+#endif
+#ifdef USE_TEXT
   text::Text *extension_text_{nullptr};
   text::Text *ring_groups_text_{nullptr};
   text::Text *conference_groups_text_{nullptr};
+#endif
   // Contacts management. Empty at boot; fed by the optional HA text_sensor
   // subscription plus any YAML sources wired on the on_phonebook_update
   // trigger. Slot order is stable: re-add keeps the slot, only the endpoint may
@@ -502,7 +529,9 @@ class VoipStack : public Component {
   // set_contacts() calls within the open cycle add their CSV names to
   // seen_in_cycle_, and the next update_contacts() (or the loop() timeout
   // safeguard) commits the cycle.
+#ifdef USE_TEXT_SENSOR
   text_sensor::TextSensor *ha_phonebook_sensor_{nullptr};
+#endif
   std::unordered_set<std::string> seen_in_cycle_;
   uint32_t cycle_started_at_{0};
   bool cycle_active_{false};
@@ -740,6 +769,7 @@ class VoipStack : public Component {
   CallbackManager<void(CallState)> state_callback_{};
 };
 
+#ifdef USE_SWITCH
 class VoipStackSwitch : public switch_::Switch, public Parented<VoipStack> {
  public:
   void write_state(bool state) override {
@@ -749,28 +779,6 @@ class VoipStackSwitch : public switch_::Switch, public Parented<VoipStack> {
       this->parent_->stop();
     }
     this->publish_state(state);
-  }
-};
-
-class VoipStackVolume : public number::Number, public Parented<VoipStack> {
- public:
-  void control(float value) override {
-    if (value != value) value = 0.0f;
-    if (value < 0.0f) value = 0.0f;
-    if (value > 100.0f) value = 100.0f;
-    this->parent_->set_volume(value / 100.0f);
-    this->publish_state(value);
-  }
-};
-
-class VoipStackMicGain : public number::Number, public Parented<VoipStack> {
- public:
-  void control(float value) override {
-    if (value != value) value = 0.0f;
-    if (value < -20.0f) value = -20.0f;
-    if (value > 20.0f) value = 20.0f;
-    this->parent_->set_mic_gain_db(value);
-    this->publish_state(value);
   }
 };
 
@@ -794,7 +802,33 @@ class VoipStackConferenceRingSwitch : public switch_::Switch, public Parented<Vo
  public:
   void write_state(bool state) override { this->parent_->set_conference_ring(state); }
 };
+#endif
 
+#ifdef USE_NUMBER
+class VoipStackVolume : public number::Number, public Parented<VoipStack> {
+ public:
+  void control(float value) override {
+    if (value != value) value = 0.0f;
+    if (value < 0.0f) value = 0.0f;
+    if (value > 100.0f) value = 100.0f;
+    this->parent_->set_volume(value / 100.0f);
+    this->publish_state(value);
+  }
+};
+
+class VoipStackMicGain : public number::Number, public Parented<VoipStack> {
+ public:
+  void control(float value) override {
+    if (value != value) value = 0.0f;
+    if (value < -20.0f) value = -20.0f;
+    if (value > 20.0f) value = 20.0f;
+    this->parent_->set_mic_gain_db(value);
+    this->publish_state(value);
+  }
+};
+#endif
+
+#ifdef USE_TEXT
 class VoipStackGroupsText : public text::Text, public Parented<VoipStack> {
  public:
   void set_kind(uint8_t kind) { this->kind_ = kind; }
@@ -812,7 +846,9 @@ class VoipStackGroupsText : public text::Text, public Parented<VoipStack> {
 
   uint8_t kind_{0};
 };
+#endif
 
+#ifdef USE_BUTTON
 class VoipCallButton : public button::Button, public Parented<VoipStack> {
  protected:
   void press_action() override { this->parent_->call_toggle(); }
@@ -832,6 +868,7 @@ class VoipDeclineButton : public button::Button, public Parented<VoipStack> {
  protected:
   void press_action() override { this->parent_->decline_call(); }
 };
+#endif
 
 }  // namespace voip_stack
 }  // namespace esphome

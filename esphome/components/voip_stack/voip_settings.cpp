@@ -199,6 +199,7 @@ void VoipStack::load_settings_() {
     // template-number setups own their own DAC + AEC sync.
     const float volume = clamp_volume_(stored.volume_pct / 100.0f);
     this->volume_.store(volume, std::memory_order_relaxed);
+#ifdef USE_NUMBER
     if (this->volume_number_ != nullptr) {
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
       if (this->speaker_ != nullptr) {
@@ -207,9 +208,11 @@ void VoipStack::load_settings_() {
 #endif
       ESP_LOGD(TAG, "Loaded volume: %.0f%%", volume * 100.0f);
     }
+#endif
 
     // Skip mic_gain when esp_audio_stack owns it (its own persistence).
     this->mic_gain_db_ = clamp_mic_gain_db_(stored.mic_gain_db);
+#ifdef USE_NUMBER
     if (this->mic_gain_number_ != nullptr && this->has_microphone_()) {
       if (this->mic_gain_db_ != 0.0f && !this->ensure_mic_processing_buffer_()) {
         ESP_LOGE(TAG, "Stored mic_gain %.1fdB ignored: processing buffer unavailable", this->mic_gain_db_);
@@ -218,6 +221,7 @@ void VoipStack::load_settings_() {
       this->mic_gain_.store(db_to_linear(this->mic_gain_db_), std::memory_order_relaxed);
       ESP_LOGD(TAG, "Loaded mic_gain: %.1fdB", this->mic_gain_db_);
     }
+#endif
 
     // auto_answer / AEC use switch restore_mode, not this struct.
     this->suppress_save_ = false;
@@ -507,6 +511,7 @@ void VoipStack::update_contacts() {
   this->seen_in_cycle_.clear();
   this->enable_loop_soon_any_context();
 
+#ifdef USE_TEXT_SENSOR
   if (this->ha_phonebook_sensor_ != nullptr) {
     const std::string &raw_phonebook = this->ha_phonebook_sensor_->state;
     if (!raw_phonebook.empty()) {
@@ -518,6 +523,7 @@ void VoipStack::update_contacts() {
       }
     }
   }
+#endif
 
   // If set_contacts() changed the phonebook it already emitted
   // on_phonebook_update. Otherwise the cycle closes later without UI churn.
@@ -674,9 +680,11 @@ void VoipStack::publish_destination_() {
              !this->last_terminal_dest_name_.empty()) {
     current = this->last_terminal_dest_name_;
   }
+#ifdef USE_TEXT_SENSOR
   if (this->destination_sensor_ != nullptr) {
     this->destination_sensor_->publish_state(current);
   }
+#endif
   if (current != this->last_published_destination_) {
     this->last_published_destination_ = current;
     this->destination_changed_trigger_.trigger(current);
@@ -685,13 +693,16 @@ void VoipStack::publish_destination_() {
 }
 
 void VoipStack::publish_caller_(const std::string &caller_name) {
+#ifdef USE_TEXT_SENSOR
   if (this->caller_sensor_ != nullptr) {
     this->caller_sensor_->publish_state(caller_name);
   }
+#endif
   this->publish_sip_snapshot_();
 }
 
 void VoipStack::publish_contacts_() {
+#ifdef USE_TEXT_SENSOR
   if (this->contacts_sensor_ != nullptr) {
     // Count only ("3 contacts"); the CSV is on demand via get_contacts_csv().
     char buf[32];
@@ -700,6 +711,7 @@ void VoipStack::publish_contacts_() {
              this->phonebook_.size() == 1 ? "" : "s");
     this->contacts_sensor_->publish_state(buf);
   }
+#endif
 }
 
 void VoipStack::publish_phonebook_changed_() {
