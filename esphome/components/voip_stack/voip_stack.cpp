@@ -3,6 +3,7 @@
 #ifdef USE_ESP32
 
 #include <algorithm>
+#include <cinttypes>
 #include <cstring>
 
 #include "audio_core_ring_buffer_caps.h"
@@ -380,7 +381,7 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
   if (this->ringing_timeout_ms_ > 0 && state == CallState::RINGING &&
       now_ms - this->ringing_start_time_ >= this->ringing_timeout_ms_) {
     const std::string cid = this->get_current_call_id_();
-    ESP_LOGI(TAG, "Ringing timeout after %u ms - declining caller (call_id=%s)",
+    ESP_LOGI(TAG, "Ringing timeout after %" PRIu32 " ms - declining caller (call_id=%s)",
              this->ringing_timeout_ms_, cid.c_str());
     this->fire_timeout_decline_();
     return;
@@ -395,9 +396,9 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
     if (!saw_sip_response) {
       const std::string cid = this->get_current_call_id_();
       ESP_LOGI(TAG,
-               "SIP INVITE timeout after %u ms without response - ending call "
+               "SIP INVITE timeout after %" PRIu32 " ms without response - ending call "
                "(call_id=%s)",
-               (unsigned) INVITE_NO_RESPONSE_TIMEOUT_MS, cid.c_str());
+               INVITE_NO_RESPONSE_TIMEOUT_MS, cid.c_str());
       this->fire_timeout_decline_();
       return;
     }
@@ -406,7 +407,7 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
   if (calling_timeout_ms > 0 && (state == CallState::CALLING || state == CallState::REMOTE_RINGING) &&
       now_ms - this->calling_start_time_ >= calling_timeout_ms) {
     const std::string cid = this->get_current_call_id_();
-    ESP_LOGI(TAG, "Calling timeout after %u ms - sending CANCEL (call_id=%s)",
+    ESP_LOGI(TAG, "Calling timeout after %" PRIu32 " ms - sending CANCEL (call_id=%s)",
              calling_timeout_ms, cid.c_str());
     this->fire_timeout_decline_();
     return;
@@ -521,12 +522,12 @@ void VoipStack::dump_config() {
   ESP_LOGCONFIG(TAG, "  Device Name: %s",
                 this->device_name_.empty() ? "(unset)" : this->device_name_.c_str());
   if (this->ringing_timeout_ms_ > 0) {
-    ESP_LOGCONFIG(TAG, "  Ringing Timeout: %u ms", this->ringing_timeout_ms_);
+    ESP_LOGCONFIG(TAG, "  Ringing Timeout: %" PRIu32 " ms", this->ringing_timeout_ms_);
   } else {
     ESP_LOGCONFIG(TAG, "  Ringing Timeout: disabled");
   }
   if (this->calling_timeout_ms_ > 0) {
-    ESP_LOGCONFIG(TAG, "  Calling Timeout: %u ms", this->calling_timeout_ms_);
+    ESP_LOGCONFIG(TAG, "  Calling Timeout: %" PRIu32 " ms", this->calling_timeout_ms_);
   } else {
     ESP_LOGCONFIG(TAG, "  Calling Timeout: disabled");
   }
