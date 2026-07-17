@@ -17,7 +17,7 @@ component and pass its clean microphone and speaker surfaces to ``voip_stack``.
 .. code-block:: yaml
 
     external_components:
-      - source: github://n-IA-hane/esphome-voip-stack@main
+      - source: github://n-IA-hane/esphome-voip-stack@v2026.7.0
         components: [voip_stack]
 
     voip_stack:

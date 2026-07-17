@@ -22,7 +22,7 @@ wifi:
   power_save_mode: NONE
 
 external_components:
-  - source: github://n-IA-hane/esphome-voip-stack@main
+  - source: github://n-IA-hane/esphome-voip-stack@v2026.7.0
     components: [voip_stack]
 
 i2s_audio:
