@@ -728,18 +728,22 @@ class VoipStack : public Component {
   float mic_gain_db_{0.0f};  // UI-friendly dB value (persisted)
 
   // === Settings persistence (local flash) ===
-  static constexpr uint8_t SETTINGS_VERSION = 1;
+  static constexpr uint8_t SETTINGS_VERSION = 2;
 
   struct StoredSettings {
     uint8_t version{SETTINGS_VERSION};
     uint8_t volume_pct{100};
     int8_t mic_gain_db{0};
     uint8_t reserved{0};
+    char extension[33]{};
+    char ring_groups[241]{};
+    char conference_groups[241]{};
   };
 
   ESPPreferenceObject settings_pref_{};
   bool suppress_save_{false};
   bool save_scheduled_{false};
+  bool settings_loaded_{false};
 
   void load_settings_();
   void schedule_save_settings_();

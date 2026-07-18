@@ -637,6 +637,7 @@ void VoipStack::set_extension(const std::string &extension) {
   }
 #endif
   this->request_endpoint_publish_();
+  if (this->settings_loaded_) this->schedule_save_settings_();
 }
 
 void VoipStack::set_ring_groups(const std::string &groups) {
@@ -647,6 +648,7 @@ void VoipStack::set_ring_groups(const std::string &groups) {
     this->ring_groups_text_->publish_state(normalized);
   }
 #endif
+  if (this->settings_loaded_) this->schedule_save_settings_();
 }
 
 void VoipStack::set_conference_groups(const std::string &groups) {
@@ -660,6 +662,7 @@ void VoipStack::set_conference_groups(const std::string &groups) {
     this->conference_groups_text_->publish_state(normalized);
   }
 #endif
+  if (this->settings_loaded_) this->schedule_save_settings_();
 }
 
 void VoipStack::set_conference_ring(bool enabled) {
