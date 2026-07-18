@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-#include <cstring>
 
 #include "cJSON.h"
 #include "esphome/core/helpers.h"
@@ -224,23 +223,11 @@ void VoipStack::load_settings_() {
     }
 #endif
 
-    stored.extension[sizeof(stored.extension) - 1] = '\0';
-    stored.ring_groups[sizeof(stored.ring_groups) - 1] = '\0';
-    stored.conference_groups[sizeof(stored.conference_groups) - 1] = '\0';
-    this->set_extension(stored.extension);
-    this->set_ring_groups(stored.ring_groups);
-    this->set_conference_groups(stored.conference_groups);
-
     // auto_answer / AEC use switch restore_mode, not this struct.
     this->suppress_save_ = false;
   } else {
     ESP_LOGD(TAG, "No saved settings, using defaults");
   }
-  this->settings_loaded_ = true;
-  // Persist YAML defaults on first boot.  Subsequent controls from HA update
-  // this same record, so a firmware reboot restores the user's latest values
-  // instead of applying the compiled YAML strings again.
-  this->schedule_save_settings_();
 }
 
 void VoipStack::schedule_save_settings_() {
@@ -262,10 +249,6 @@ void VoipStack::save_settings_() {
   stored.volume_pct = static_cast<uint8_t>(
       std::lround(volume * 100.0f));
   stored.mic_gain_db = static_cast<int8_t>(std::lround(clamp_mic_gain_db_(this->mic_gain_db_)));
-  std::strncpy(stored.extension, this->extension_.c_str(), sizeof(stored.extension) - 1);
-  std::strncpy(stored.ring_groups, this->ring_groups_.c_str(), sizeof(stored.ring_groups) - 1);
-  std::strncpy(stored.conference_groups, this->conference_groups_.c_str(),
-               sizeof(stored.conference_groups) - 1);
 
   this->settings_pref_.save(&stored);
   ESP_LOGD(TAG, "Saved settings: vol=%d%%, mic=%ddB",
