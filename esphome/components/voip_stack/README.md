@@ -31,7 +31,6 @@ The endpoint capability is inferred from the YAML wiring:
 | `microphone`/`microphone_source` + `speaker` | `full_duplex` | Sends mic audio and plays remote audio. |
 | `microphone`/`microphone_source` only | `mic_only` | Sends mic audio; incoming audio is ignored. |
 | `speaker` only | `speaker_only` | Plays incoming audio; no mic TX task is created. |
-| neither mic nor speaker | `control_only` | Signaling/phonebook only. |
 
 The endpoint sensor publishes this device as a SIP phonebook endpoint. SIP is
 implicit. The public concepts are:

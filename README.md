@@ -37,14 +37,13 @@ Two scope decisions shape the component:
 
 **A real SIP endpoint.** INVITE/ACK/BYE over UDP or TCP signaling, SDP offer/answer, RTP media that stays UDP in both signaling modes, and a jitter buffer on the receive path.
 
-**Four first-class capability modes, inferred from YAML.**
+**Three supported media roles, inferred from YAML.**
 
 | YAML wiring | Published mode | Runtime behavior |
 |---|---|---|
 | microphone + speaker | `full_duplex` | Sends mic audio, plays remote audio. |
 | microphone only | `mic_only` | Sends mic audio; incoming audio is ignored. |
 | speaker only | `speaker_only` | Plays incoming audio; no TX task is created. |
-| neither | `control_only` | Signaling and phonebook only. |
 
 Mic-only and speaker-only are not degraded modes. They exist for paging speakers, monitor devices, split installations, and hardware that physically has one direction.
 
@@ -71,7 +70,6 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 | Voice assistant device that is also an intercom | `esp_audio_stack` + `voip_stack` |
 | Paging speaker in a workshop | speaker-only `voip_stack` |
 | Baby monitor / listen-in device | mic-only `voip_stack` |
-| Wall panel that only dials and shows state | `control_only` + buttons and text sensors |
 | PBX/provider trunk reaching ESP devices | HA terminates the trunk and routes; ESPs stay plain SIP peers |
 | Offline installation with a fixed dial plan | `static_contacts`, no HA required |
 

@@ -21,6 +21,17 @@ def read(name: str) -> str:
     return (VOIP / name).read_text(encoding="utf-8")
 
 
+def test_endpoint_requires_at_least_one_audio_direction() -> None:
+    init_py = read("__init__.py")
+    header = read("voip_stack.h")
+
+    assert "voip_stack requires at least one audio direction" in init_py
+    assert "CONF_MICROPHONE not in config" in init_py
+    assert "CONF_MICROPHONE_SOURCE not in config" in init_py
+    assert "CONF_SPEAKER not in config" in init_py
+    assert 'return "control_only"' not in header
+
+
 def test_optional_entity_platforms_are_feature_gated_not_autoloaded() -> None:
     init_py = read("__init__.py")
     header = read("voip_stack.h")

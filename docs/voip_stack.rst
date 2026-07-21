@@ -42,11 +42,11 @@ The published endpoint mode is inferred from YAML wiring:
 
 - microphone plus speaker: ``full_duplex``;
 - microphone only: ``mic_only``;
-- speaker only: ``speaker_only``;
-- neither microphone nor speaker: ``control_only``.
+- speaker only: ``speaker_only``.
 
 The mode is published in the endpoint text sensor so peers and Home Assistant do
-not attempt an audio direction that the device cannot provide.
+not attempt an audio direction that the device cannot provide. At least one
+audio direction is required; a signaling-only endpoint is not supported.
 
 Configuration variables
 -----------------------

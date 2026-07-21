@@ -357,8 +357,9 @@ class VoipStack : public Component {
     const bool spk = this->has_speaker_();
     if (mic && spk) return "full_duplex";
     if (mic) return "mic_only";
-    if (spk) return "speaker_only";
-    return "control_only";
+    // ESPHome validation guarantees at least one audio direction, therefore
+    // the only remaining supported role is speaker-only.
+    return "speaker_only";
   }
 
   // setup() phases. Kept separate so setup() reads as a transaction and the

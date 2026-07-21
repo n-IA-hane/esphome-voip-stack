@@ -624,6 +624,15 @@ def _final_validate(config):
         raise cv.Invalid(
             "Use only one of voip_stack.microphone or voip_stack.microphone_source."
         )
+    if (
+        CONF_MICROPHONE not in config
+        and CONF_MICROPHONE_SOURCE not in config
+        and CONF_SPEAKER not in config
+    ):
+        raise cv.Invalid(
+            "voip_stack requires at least one audio direction: configure a "
+            "microphone/microphone_source, a speaker, or both."
+        )
 
     audio_cfg = config[CONF_AUDIO]
     audio_cfg[CONF_TX] = _resolve_audio_format(config, CONF_TX, audio_cfg[CONF_TX])
