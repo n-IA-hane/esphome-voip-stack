@@ -21,6 +21,37 @@ def read(name: str) -> str:
     return (VOIP / name).read_text(encoding="utf-8")
 
 
+def test_full_duplex_examples_fit_the_default_rtp_payload_budget() -> None:
+    example = (ROOT / "examples" / "native-full-duplex.yaml").read_text(
+        encoding="utf-8"
+    )
+    root_readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    component_readme = read("README.md")
+
+    # 48 kHz mono s16le at 10 ms is 960 bytes. The previous 20 ms example
+    # produced 1920-byte RTP payloads and was rejected by the documented
+    # 1200-byte default safety budget.
+    assert example.count("frame_ms: 10") == 2
+    assert "frame_ms: 20" not in example
+    assert root_readme.count(
+        "sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 10"
+    ) >= 2
+    assert component_readme.count("frame_ms: 10") >= 2
+
+
+def test_phonebook_exposes_allocation_free_contact_count() -> None:
+    header = read("voip_stack.h")
+
+    accessor = re.search(
+        r"size_t\s+get_contact_count\(\)\s+const\s*\{(?P<body>.*?)\}",
+        header,
+        re.DOTALL,
+    )
+    assert accessor is not None
+    assert "return this->phonebook_.size();" in accessor.group("body")
+    assert "std::string get_contacts_csv() const;" in header
+
+
 def test_endpoint_requires_at_least_one_audio_direction() -> None:
     init_py = read("__init__.py")
     header = read("voip_stack.h")

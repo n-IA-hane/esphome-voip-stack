@@ -301,6 +301,7 @@ class VoipStack : public Component {
   uint16_t get_current_contact_rtp_port() const;
   bool get_current_contact_sip_transport_tcp() const;
   std::string get_caller() const { return this->current_caller_name_; }
+  size_t get_contact_count() const { return this->phonebook_.size(); }
   std::string get_contacts_csv() const;
 
   // Call state triggers (exposed to YAML)

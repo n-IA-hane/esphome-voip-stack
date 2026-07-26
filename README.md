@@ -122,8 +122,8 @@ voip_stack:
     channels: [0]
   speaker: native_speaker
   audio:
-    tx: { sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 20 }
-    rx: { sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 20 }
+    tx: { sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 10 }
+    rx: { sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 10 }
 ```
 
 Use `microphone_source:` when the ESPHome microphone is wider than the VoIP
