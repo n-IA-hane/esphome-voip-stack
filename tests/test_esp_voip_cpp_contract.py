@@ -52,6 +52,40 @@ def test_phonebook_exposes_allocation_free_contact_count() -> None:
     assert "std::string get_contacts_csv() const;" in header
 
 
+def test_video_rtp_burst_capacity_is_compile_time_gated() -> None:
+    init_py = read("__init__.py")
+    video_rtp = read("video_rtp.cpp")
+
+    video_codegen = init_py[
+        init_py.index("    if CONF_VIDEO in config:", init_py.index("async def _add_core_settings")) :
+        init_py.index("    cg.add(var.set_extension", init_py.index("async def _add_core_settings"))
+    ]
+    assert 'cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO")' in video_codegen
+    assert (
+        'esp32.add_idf_sdkconfig_option("CONFIG_LWIP_UDP_RECVMBOX_SIZE", 32)'
+        in video_codegen
+    )
+    assert "this->sequence_valid_ = false;" in video_rtp
+    assert "batch++ < kMaxReceiveBatchPackets" in video_rtp
+    assert re.search(r"recv\(\s*this->rtp_socket_", video_rtp)
+
+
+def test_video_media_tasks_are_event_driven_and_bounded() -> None:
+    header = read("video_rtp.h")
+    video = read("video.h")
+    video_rtp = read("video_rtp.cpp")
+
+    assert "queue_access_unit_(access_unit);" in video_rtp
+    assert "source_callback_" in video_rtp
+    assert "send_access_unit_(access_unit);" in video_rtp
+    assert "ulTaskNotifyTake(pdTRUE, portMAX_DELAY);" in video_rtp
+    assert "select(maxfd + 1" in video_rtp
+    assert "kMaxReceiveBatchPackets" in header
+    assert "pdMS_TO_TICKS(100)" not in video_rtp
+    assert "virtual bool consume_video_access_unit(" in video
+    assert "rx_drop_current_timestamp_" not in header
+
+
 def test_endpoint_requires_at_least_one_audio_direction() -> None:
     init_py = read("__init__.py")
     header = read("voip_stack.h")
@@ -650,7 +684,16 @@ def test_reinvite_and_rtp_latch_are_explicit() -> None:
 
     assert "last_invite_cseq_number_" in sip_h
     assert "cseq_number(" in sip_cpp
-    assert "reinvite_unsupported" in sip_cpp
+    assert "bool handle_reinvite_" in sip_h
+    reinvite = sip_cpp[
+        sip_cpp.index("bool SipTransport::handle_reinvite_") :
+        sip_cpp.index("\nbool SipTransport::handle_response_")
+    ]
+    assert "RFC 3261 section 14" in reinvite
+    assert "this->emit_sip_signal_" not in reinvite
+    assert "this->video_session_->stop();" in reinvite
+    assert 'this->send_response_(200, "OK", answer)' in reinvite
+    assert '"media_incompatible"' in reinvite
     assert "latched_rtp_ip_v4_" in sip_h
     assert "latched_rtp_port_" in sip_h
     assert "latched_rtp_ssrc_" in sip_h

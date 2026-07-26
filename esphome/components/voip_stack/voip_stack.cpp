@@ -257,6 +257,12 @@ bool VoipStack::setup_transport_() {
   }
 
   this->transport_->set_audio_formats(this->tx_audio_formats_, this->rx_audio_formats_);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  this->transport_->set_video_endpoints(this->video_source_, this->video_sink_);
+  this->transport_->set_video_config(
+      this->video_rtp_port_, this->video_offer_payload_type_,
+      this->video_max_rtp_payload_);
+#endif
 
   // Wire callbacks before start() so the transport task never fires into null.
   this->transport_->set_audio_callback(VoipStack::transport_audio_callback_, this);
@@ -507,6 +513,14 @@ void VoipStack::dump_config() {
   }
   ESP_LOGCONFIG(TAG, "  SIP listen port: %u", (unsigned) this->sip_port_);
   ESP_LOGCONFIG(TAG, "  RTP port: %u", (unsigned) this->rtp_port_);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  ESP_LOGCONFIG(TAG, "  Video RTP port: %u", (unsigned) this->video_rtp_port_);
+  ESP_LOGCONFIG(TAG, "  Video: %s%s PT=%u max_payload=%u",
+                this->video_source_ != nullptr ? "send" : "",
+                this->video_sink_ != nullptr ? "recv" : "",
+                (unsigned) this->video_offer_payload_type_,
+                (unsigned) this->video_max_rtp_payload_);
+#endif
   ESP_LOGCONFIG(TAG, "  Routing: SIP dial plan");
   ESP_LOGCONFIG(TAG, "  HA peer name: %s", this->ha_peer_name_.c_str());
   ESP_LOGCONFIG(TAG, "  Audio capability: %s", this->audio_capability_());

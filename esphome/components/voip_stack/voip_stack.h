@@ -36,6 +36,9 @@
 
 #include "phonebook.h"
 #include "rtp_jitter_buffer.h"
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+#include "video.h"
+#endif
 #include "sip_types.h"
 #include "transport.h"
 #include "voip_fsm.h"
@@ -146,6 +149,17 @@ class VoipStack : public Component {
   void set_udp_max_payload(size_t bytes) { this->udp_max_payload_ = bytes; }
   void set_sip_port(uint16_t port) { this->sip_port_ = port; }
   void set_rtp_port(uint16_t port) { this->rtp_port_ = port; }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  void set_video_source(EncodedVideoSource *source) { this->video_source_ = source; }
+  void set_video_sink(EncodedVideoSink *sink) { this->video_sink_ = sink; }
+  void set_video_rtp_port(uint16_t port) { this->video_rtp_port_ = port; }
+  void set_video_offer_payload_type(uint8_t payload_type) {
+    this->video_offer_payload_type_ = payload_type;
+  }
+  void set_video_max_rtp_payload(size_t bytes) {
+    this->video_max_rtp_payload_ = bytes;
+  }
+#endif
   std::string get_endpoint() const { return this->build_endpoint_string_(); }
   const char *get_audio_capability() const { return this->audio_capability_(); }
 
@@ -212,6 +226,14 @@ class VoipStack : public Component {
   }
   bool is_idle() const { return this->call_state_.load(std::memory_order_acquire) == CallState::IDLE; }
   bool is_in_call() const { return this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL; }
+  bool is_video_active() const {
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+    return this->transport_ != nullptr &&
+           this->transport_->snapshot().video_running;
+#else
+    return false;
+#endif
+  }
   // True when the selected contact name matches the configured HA peer.
   // Empty ha_peer_name_ disables the check (treated as "no HA configured").
   bool is_ha_destination() const {
@@ -478,6 +500,13 @@ class VoipStack : public Component {
   size_t udp_max_payload_{UDP_SAFE_AUDIO_PAYLOAD_BYTES};
   uint16_t sip_port_{5060};
   uint16_t rtp_port_{40000};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  EncodedVideoSource *video_source_{nullptr};
+  EncodedVideoSink *video_sink_{nullptr};
+  uint16_t video_rtp_port_{40002};
+  uint8_t video_offer_payload_type_{103};
+  size_t video_max_rtp_payload_{1200};
+#endif
 
   // Active SIP phone transport (created in setup() based on protocol_).
   std::unique_ptr<SipPhoneTransport> transport_;
@@ -600,7 +629,11 @@ class VoipStack : public Component {
   StackType_t *rx_task_stack_{nullptr};
 #endif
   bool task_stacks_in_psram_{false};
-  static constexpr uint8_t kMediaTaskPriority = 5;
+  // Audio must pre-empt video encode/decode/RTP work. Espressif's own
+  // audio/video scheduler gives the audio source priority 15 and the H.264
+  // encoder priority 10; keeping the same ordering prevents camera bursts
+  // from draining the short realtime microphone queue too late.
+  static constexpr uint8_t kMediaTaskPriority = 15;
 
   std::atomic<float> volume_{1.0f};
   bool audio_debug_{false};

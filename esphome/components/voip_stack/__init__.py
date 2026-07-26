@@ -62,6 +62,11 @@ CONF_RTP_PORT = "rtp_port"
 CONF_USE_HA_AS_FIRST_CONTACT = "use_ha_as_first_contact"
 CONF_AUDIO_DEBUG = "audio_debug"
 CONF_AUDIO = "audio"
+CONF_VIDEO = "video"
+CONF_SOURCE = "source"
+CONF_SINK = "sink"
+CONF_OFFER_PAYLOAD_TYPE = "offer_payload_type"
+CONF_MAX_RTP_PAYLOAD = "max_rtp_payload"
 CONF_TX = "tx"
 CONF_RX = "rx"
 CONF_TX_FORMATS = "tx_formats"
@@ -92,6 +97,8 @@ voip_stack_ns = cg.esphome_ns.namespace("voip_stack")
 VoipStack = voip_stack_ns.class_("VoipStack", cg.Component)
 TransportType = voip_stack_ns.enum("TransportType", is_class=True)
 PcmFormat = voip_stack_ns.enum("PcmFormat", is_class=True)
+EncodedVideoSource = voip_stack_ns.class_("EncodedVideoSource")
+EncodedVideoSink = voip_stack_ns.class_("EncodedVideoSink")
 
 PCM_FORMAT_IDS = {
     "s16le": 1,
@@ -212,6 +219,20 @@ PHONE_AUDIO_FORMAT_SCHEMA = cv.All(cv.Any(cv.one_of(CONF_AUTO, lower=True), cv.S
         ),
     }
 )), _validate_voip_audio_format)
+
+PHONE_VIDEO_SCHEMA = cv.Schema(
+    {
+        cv.Optional(CONF_SOURCE): cv.use_id(EncodedVideoSource),
+        cv.Optional(CONF_SINK): cv.use_id(EncodedVideoSink),
+        cv.Optional(CONF_RTP_PORT, default=40002): cv.port,
+        cv.Optional(CONF_OFFER_PAYLOAD_TYPE, default=103): cv.int_range(
+            min=96, max=127
+        ),
+        cv.Optional(CONF_MAX_RTP_PAYLOAD, default=1200): cv.int_range(
+            min=576, max=1400
+        ),
+    }
+)
 
 
 def _format_container_bits(fmt: dict) -> int:
@@ -504,6 +525,7 @@ CONFIG_SCHEMA = cv.Schema(
                 ),
             }
         ), _validate_voip_audio_config),
+        cv.Optional(CONF_VIDEO): PHONE_VIDEO_SCHEMA,
         # Preferred path: use the native ESPHome microphone directly. Maintained
         # esp_audio_stack profiles already expose 16 kHz / 16-bit / mono audio,
         # so MicrophoneSource would only add an avoidable copy/conversion pass.
@@ -600,6 +622,9 @@ def _consume_voip_sockets(config):
     socket.consume_sockets(2, "voip_stack_sip", socket.SocketType.UDP)(config)
     socket.consume_sockets(2, "voip_stack_sip_tcp")(config)
     socket.consume_sockets(1, "voip_stack_sip", socket.SocketType.TCP_LISTEN)(config)
+    if CONF_VIDEO in config:
+        # Separate RTP and RTCP UDP sockets. They exist only in video builds.
+        socket.consume_sockets(2, "voip_stack_video", socket.SocketType.UDP)(config)
     extra = config.get(CONF_NETWORK_SOCKET_HEADROOM, 0)
     if extra:
         socket.consume_sockets(extra, "voip_stack_headroom")(config)
@@ -633,6 +658,20 @@ def _final_validate(config):
             "voip_stack requires at least one audio direction: configure a "
             "microphone/microphone_source, a speaker, or both."
         )
+    if CONF_VIDEO in config:
+        video = config[CONF_VIDEO]
+        if CONF_SOURCE not in video and CONF_SINK not in video:
+            raise cv.Invalid(
+                "voip_stack.video requires at least one of source or sink."
+            )
+        if video[CONF_RTP_PORT] == config[CONF_RTP_PORT]:
+            raise cv.Invalid(
+                "voip_stack.video.rtp_port must differ from the audio rtp_port."
+            )
+        if video[CONF_RTP_PORT] + 1 == config[CONF_RTP_PORT]:
+            raise cv.Invalid(
+                "voip_stack.video RTCP port overlaps the audio RTP port."
+            )
 
     audio_cfg = config[CONF_AUDIO]
     audio_cfg[CONF_TX] = _resolve_audio_format(config, CONF_TX, audio_cfg[CONF_TX])
@@ -750,6 +789,23 @@ async def _add_core_settings(var, config):
     cg.add(var.set_dc_offset_removal(config[CONF_DC_OFFSET_REMOVAL]))
     cg.add(var.set_task_stacks_in_psram(config[CONF_TASK_STACKS_IN_PSRAM]))
     cg.add(var.set_buffers_in_psram(config[CONF_BUFFERS_IN_PSRAM]))
+    if CONF_VIDEO in config:
+        video = config[CONF_VIDEO]
+        cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO")
+        # H.264 keyframes arrive as short RTP bursts. ESP-IDF's default
+        # six-entry UDP mailbox can drop FU-A fragments before the video task
+        # is scheduled, making every recovery IDR unusable. Keep the larger
+        # mailbox compile-time gated to firmware that actually enables video.
+        esp32.add_idf_sdkconfig_option("CONFIG_LWIP_UDP_RECVMBOX_SIZE", 32)
+        if CONF_SOURCE in video:
+            source = await cg.get_variable(video[CONF_SOURCE])
+            cg.add(var.set_video_source(source))
+        if CONF_SINK in video:
+            sink = await cg.get_variable(video[CONF_SINK])
+            cg.add(var.set_video_sink(sink))
+        cg.add(var.set_video_rtp_port(video[CONF_RTP_PORT]))
+        cg.add(var.set_video_offer_payload_type(video[CONF_OFFER_PAYLOAD_TYPE]))
+        cg.add(var.set_video_max_rtp_payload(video[CONF_MAX_RTP_PAYLOAD]))
     cg.add(var.set_extension(config[CONF_EXTENSION]))
     cg.add(var.set_conference_groups(config[CONF_CONFERENCE_GROUPS]))
     cg.add(var.set_conference_ring(config[CONF_CONFERENCE_RING]))

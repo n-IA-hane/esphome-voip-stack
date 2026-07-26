@@ -7,6 +7,9 @@
 #include <string>
 
 #include "sip_types.h"
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+#include "video.h"
+#endif
 
 namespace esphome {
 namespace voip_stack {
@@ -28,6 +31,7 @@ using TransportDialogActiveCallback = bool (*)(void *ctx);
 struct SipTransportSnapshot {
   bool running{false};
   bool rtp_running{false};
+  bool video_running{false};
   bool call_active{false};
   bool pending_invite{false};
   bool sip_tcp{false};
@@ -107,6 +111,19 @@ class SipPhoneTransport {
     (void) tx;
     (void) rx;
   }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  virtual void set_video_endpoints(EncodedVideoSource *source,
+                                   EncodedVideoSink *sink) {
+    (void) source;
+    (void) sink;
+  }
+  virtual void set_video_config(uint16_t rtp_port, uint8_t offer_payload_type,
+                                size_t max_rtp_payload) {
+    (void) rtp_port;
+    (void) offer_payload_type;
+    (void) max_rtp_payload;
+  }
+#endif
 
   /// Lazy audio path. UDP binds the audio socket and spawns recv_task
   /// only here so an idle device isn't a passive PCM listener. TCP no-op.

@@ -5,6 +5,9 @@
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_SIP_TRANSPORT)
 
 #include "transport.h"
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+#include "video_rtp.h"
+#endif
 
 #include "esphome/core/helpers.h"
 
@@ -17,6 +20,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -25,7 +29,13 @@ namespace voip_stack {
 
 class SipTransport : public SipPhoneTransport {
  public:
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  // Video SDP parsing is compiled only behind voip_stack.video. Keep the
+  // additional stack in PSRAM with the existing task_stacks_in_psram policy.
+  static constexpr uint32_t kSipTaskStackBytes = 12288;
+#else
   static constexpr uint32_t kSipTaskStackBytes = 8192;
+#endif
   static constexpr uint32_t kRtpTaskStackBytes = 8192;
   static constexpr uint8_t kSipTaskPriority = 4;
   static constexpr uint8_t kRtpTaskPriority = 9;
@@ -61,6 +71,12 @@ class SipTransport : public SipPhoneTransport {
   void set_remote(const std::string &ip, uint16_t port, uint16_t rtp_port = 0) override;
   void set_sip_signaling_transport(bool tcp) override;
   void set_audio_formats(const AudioFormatList &tx, const AudioFormatList &rx) override;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  void set_video_endpoints(EncodedVideoSource *source,
+                           EncodedVideoSink *sink) override;
+  void set_video_config(uint16_t rtp_port, uint8_t offer_payload_type,
+                        size_t max_rtp_payload) override;
+#endif
   SipTransportSnapshot snapshot() const override;
 
  protected:
@@ -111,6 +127,7 @@ class SipTransport : public SipPhoneTransport {
   void handle_sip_datagram_(const char *data, size_t len, const sockaddr_in &src);
   void handle_sip_stream_(int socket, const sockaddr_in &src);
   bool handle_invite_(const std::string &message, const sockaddr_in &src);
+  bool handle_reinvite_(const std::string &message, const sockaddr_in &src);
   bool handle_response_(const std::string &message, const sockaddr_in &src);
   std::string build_sdp_offer_() const;
   std::string build_sdp_answer_() const;
@@ -118,6 +135,16 @@ class SipTransport : public SipPhoneTransport {
                                  const std::string &maps, const std::string &flows,
                                  uint8_t ptime) const;
   bool learn_remote_rtp_from_sdp_(const std::string &sdp, uint32_t default_ip);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  bool learn_remote_video_from_sdp_(const std::string &sdp,
+                                    uint32_t default_ip);
+  std::string append_video_sdp_(const std::string &sdp,
+                                const std::string &local_ip,
+                                bool answer) const;
+  VideoCapability local_video_send_capability_() const;
+  VideoCapability local_video_receive_capability_() const;
+  void reset_video_negotiation_();
+#endif
   bool local_ip_for_peer_(uint32_t peer_ip_v4, std::string *out) const;
   void clear_udp_transactions_();
   void remember_udp_transaction_(const std::string &method, const std::string &message,
@@ -278,6 +305,21 @@ class SipTransport : public SipPhoneTransport {
   uint8_t rtp_tx_payload_type_{96};
   uint8_t rtp_rx_payload_type_{96};
   mutable portMUX_TYPE media_config_lock_ = portMUX_INITIALIZER_UNLOCKED;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  EncodedVideoSource *video_source_{nullptr};
+  EncodedVideoSink *video_sink_{nullptr};
+  std::unique_ptr<VideoRtpSession> video_session_;
+  uint16_t video_rtp_port_{40002};
+  uint8_t video_offer_payload_type_{103};
+  size_t video_max_rtp_payload_{1200};
+  bool video_offered_{false};
+  bool video_negotiated_{false};
+  bool video_send_enabled_{false};
+  bool video_receive_enabled_{false};
+  uint32_t remote_video_ip_v4_{0};
+  uint16_t remote_video_rtp_port_{0};
+  VideoCapability negotiated_video_capability_{};
+#endif
   uint32_t cseq_{1};
   uint32_t invite_cseq_{1};
   UdpTransaction pending_invite_;
