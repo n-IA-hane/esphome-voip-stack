@@ -1866,7 +1866,10 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
 
     endpoint = stack_cpp[stack_cpp.index("std::string VoipStack::build_endpoint_string_"):]
     assert "char buf[640]" in endpoint
-    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s"' in endpoint
+    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s%s"' in endpoint
+    assert 'video_extra = " | video=jpeg"' in endpoint
+    assert 'video_extra = " | video=h264"' in endpoint
+    assert 'video_extra = ""' in endpoint
     assert "this->conference_groups_.c_str()" not in endpoint
     assert "this->ring_groups_.c_str()" not in endpoint
     assert 'this->conference_ring_ ? "1" : "0"' not in endpoint
@@ -2812,7 +2815,7 @@ def test_long_diagnostic_text_sensors_have_wrapping_separators() -> None:
 
     assert 'out += "; ";' in stack
     assert 'out += ";";' not in stack
-    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s"' in stack
+    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s%s"' in stack
     assert '"st=%s; id=%s; dir=%s; from=%s; to=%s; ct=%s; tr=%s; sc=%u; "' in stack
     assert '"tx=%s; rx=%s; pt=%u; pr=%u; "' in stack
     assert '"tqd=%u; tqdrop=%u; rqd=%u; rqdrop=%u; rs=%s; ev=%s"' in stack

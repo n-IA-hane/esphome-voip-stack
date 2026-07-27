@@ -689,13 +689,20 @@ std::string VoipStack::build_endpoint_string_() const {
   };
   const std::string tx = format_list_token(this->tx_audio_formats_);
   const std::string rx = format_list_token(this->rx_audio_formats_);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  constexpr const char *video_extra = " | video=jpeg";
+#elif defined(USE_ESPHOME_VOIP_STACK_VIDEO_H264)
+  constexpr const char *video_extra = " | video=h264";
+#else
+  constexpr const char *video_extra = "";
+#endif
   char buf[640];
   const int written = snprintf(
-      buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s",
+      buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s%s",
       name.c_str(), ip.c_str(), (unsigned) this->sip_port_, (unsigned) this->rtp_port_,
       this->audio_capability_(), tx.c_str(), rx.c_str(),
       this->protocol_ == TransportType::TCP ? "sip_tcp" : "sip_udp",
-      this->extension_.c_str());
+      this->extension_.c_str(), video_extra);
   if (written < 0 || written >= (int) sizeof(buf)) {
     ESP_LOGW(TAG, "VoIP endpoint string truncated; endpoint will not be published");
     return "";
