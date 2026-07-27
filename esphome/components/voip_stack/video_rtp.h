@@ -45,7 +45,10 @@ class VideoRtpSession {
 #endif
   static constexpr size_t kMaxAccessUnitBytes = 512 * 1024;
   static constexpr size_t kMaxRtpPacketBytes = 1500;
-  static constexpr size_t kMaxReceiveBatchPackets = 32;
+  // One 800x800 RTP/JPEG access unit commonly spans 40-60 datagrams. Drain a
+  // complete standards-compliant burst per wake while higher-priority audio
+  // workers remain able to preempt this task.
+  static constexpr size_t kMaxReceiveBatchPackets = 64;
   // Before the first audio packet arrives, keep video startup bounded. Once
   // audio is flowing, ESP-Hosted video is strictly released by successful
   // audio sends and has no periodic pacing wakeup.

@@ -893,11 +893,12 @@ async def _add_core_settings(var, config):
             cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_H264")
             codec_enum = VideoCodec.H264
         cg.add(var.set_video_codec(codec_enum))
-        # H.264 keyframes arrive as short RTP bursts. ESP-IDF's default
-        # six-entry UDP mailbox can drop FU-A fragments before the video task
-        # is scheduled, making every recovery IDR unusable. Keep the larger
-        # mailbox compile-time gated to firmware that actually enables video.
-        esp32.add_idf_sdkconfig_option("CONFIG_LWIP_UDP_RECVMBOX_SIZE", 32)
+        # A high-resolution JPEG frame and an H.264 keyframe both arrive as
+        # short RTP bursts. Espressif's P4 + ESP-Hosted throughput profile uses
+        # the maximum 64-entry UDP mailbox; smaller mailboxes discard fragments
+        # before the video worker can drain a complete access unit. Keep the
+        # setting compile-time gated to firmware that actually enables video.
+        esp32.add_idf_sdkconfig_option("CONFIG_LWIP_UDP_RECVMBOX_SIZE", 64)
         if CONF_SOURCE in video:
             source = await cg.get_variable(video[CONF_SOURCE])
             cg.add(var.set_video_source(source))

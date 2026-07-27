@@ -138,7 +138,7 @@ def test_video_rtp_burst_capacity_is_compile_time_gated() -> None:
     ]
     assert 'cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO")' in video_codegen
     assert (
-        'esp32.add_idf_sdkconfig_option("CONFIG_LWIP_UDP_RECVMBOX_SIZE", 32)'
+        'esp32.add_idf_sdkconfig_option("CONFIG_LWIP_UDP_RECVMBOX_SIZE", 64)'
         in video_codegen
     )
     assert "this->sequence_valid_ = false;" in video_rtp
@@ -1195,6 +1195,7 @@ def test_video_sender_completes_owned_au_and_bounds_udp_backpressure() -> None:
     assert "xSemaphoreTake(this->audio_pacing_, portMAX_DELAY)" in video
     assert "xSemaphoreGive(this->audio_pacing_)" in video
     assert "kVideoPacketsPerAudioCredit = 12" in header
+    assert "kMaxReceiveBatchPackets = 64" in header
     assert "kVideoPacketsPerAudioCredit - 1" in video
     assert "audio_pacing_burst_remaining_" in header
     assert "pdMS_TO_TICKS(100)" not in video
