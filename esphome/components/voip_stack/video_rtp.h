@@ -29,15 +29,25 @@ class VideoRtpSession {
  public:
   static constexpr uint32_t kTaskStackBytes = 12288;
   static constexpr uint32_t kSenderTaskStackBytes = 8192;
-  static constexpr uint8_t kTaskPriority = 7;
+  static constexpr uint8_t kReceiveTaskPriority = 7;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
+  // ESP-Hosted funnels every network packet through the same blocking SDIO
+  // queue. Keep the video producer below the priority-23 hosted drain workers
+  // and lwIP, while the priority-24 audio TX remains the realtime owner. The
+  // binary audio credit still releases exactly one packet without polling.
+  static constexpr uint8_t kSenderTaskPriority = 15;
+  static constexpr BaseType_t kSenderTaskCore = 1;
+#else
+  static constexpr uint8_t kSenderTaskPriority = 7;
+  static constexpr BaseType_t kSenderTaskCore = 0;
+#endif
   static constexpr size_t kMaxAccessUnitBytes = 512 * 1024;
   static constexpr size_t kMaxRtpPacketBytes = 1500;
   static constexpr size_t kMaxReceiveBatchPackets = 32;
-  // A frame packet burst must not monopolize a shallow embedded network
-  // queue shared with realtime audio. This pacer runs only while a queued
-  // access unit is actively being sent; the sender otherwise blocks forever
-  // on its task notification.
-  static constexpr uint32_t kTxPacketPacingMs = 3;
+  // Before the first audio packet arrives, keep video startup bounded. Once
+  // audio is flowing, ESP-Hosted video is strictly released by successful
+  // audio sends and has no periodic pacing wakeup.
+  static constexpr uint32_t kAudioPacingStartupWaitMs = 40;
   static constexpr uint32_t kTxBackpressureWaitMs = 3;
 
   explicit VideoRtpSession(bool task_stack_in_psram);
@@ -48,11 +58,33 @@ class VideoRtpSession {
   void set_local_port(uint16_t port) { this->local_rtp_port_ = port; }
   void set_max_payload(size_t bytes) { this->max_payload_ = bytes; }
   bool set_negotiated(const VideoCapability &capability,
+                      const VideoCapability &send_capability,
+                      const VideoCapability &receive_capability,
                       uint32_t remote_ip_v4, uint16_t remote_rtp_port,
                       uint32_t remote_rtcp_ip_v4, uint16_t remote_rtcp_port,
                       bool send_enabled, bool receive_enabled);
 
-  bool start();
+  /// Prepare the negotiated RTP/codec resources. When activate is false no
+  /// source media is produced and no receive frame is presented until the
+  /// offer/answer transaction commits through request_media_direction().
+  bool start(bool activate = true);
+  /// Change only the producer side of an established video session. The
+  /// request is consumed by the existing RTP worker; callers never join media
+  /// tasks from the SIP signaling task.
+  bool request_send_direction(bool enabled);
+  bool can_request_media_direction(bool send_enabled,
+                                   bool receive_enabled) const;
+  bool request_media_direction(bool send_enabled, bool receive_enabled);
+  bool negotiation_matches(const VideoCapability &capability,
+                           const VideoCapability &send_capability,
+                           const VideoCapability &receive_capability,
+                           uint32_t remote_ip_v4,
+                           uint16_t remote_rtp_port,
+                           uint32_t remote_rtcp_ip_v4,
+                           uint16_t remote_rtcp_port) const;
+  bool send_direction_enabled() const {
+    return this->send_enabled_.load(std::memory_order_acquire);
+  }
   /// Gate callbacks and wake both workers without waiting for their joins.
   /// The owning media lifecycle worker follows with stop().
   void request_stop();
@@ -64,6 +96,9 @@ class VideoRtpSession {
   uint32_t dropped_access_units() const {
     return this->dropped_access_units_.load(std::memory_order_acquire);
   }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
+  void notify_audio_packet_sent();
+#endif
 
  protected:
   static void source_callback_(void *ctx, const EncodedVideoAccessUnit &access_unit);
@@ -84,6 +119,9 @@ class VideoRtpSession {
   void send_jpeg_access_unit_(const EncodedVideoAccessUnit &access_unit);
   bool send_rtp_payload_(const uint8_t *payload, size_t size, bool marker,
                          uint32_t timestamp);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
+  bool wait_for_audio_pacing_();
+#endif
   bool handle_rtp_packet_(const uint8_t *packet, size_t size);
   bool handle_h264_payload_(const uint8_t *payload, size_t payload_size,
                             bool marker, uint32_t timestamp,
@@ -107,20 +145,43 @@ class VideoRtpSession {
   bool task_stack_in_psram_{false};
   EncodedVideoSource *source_{nullptr};
   EncodedVideoSink *sink_{nullptr};
+  // SDP selects one RTP codec/PT contract, while local encoder and decoder
+  // may legitimately have different frame envelopes. Keep those directional
+  // contracts separate (for example P4 JPEG TX 400x400 and RX 640x480).
   VideoCapability capability_{};
+  VideoCapability send_capability_{};
+  VideoCapability receive_capability_{};
   uint16_t local_rtp_port_{40002};
   size_t max_payload_{1200};
   std::atomic<uint32_t> remote_ip_v4_{0};
   std::atomic<uint16_t> remote_rtp_port_{0};
   std::atomic<uint32_t> remote_rtcp_ip_v4_{0};
   std::atomic<uint16_t> remote_rtcp_port_{0};
-  bool send_enabled_{false};
-  bool receive_enabled_{false};
+  std::atomic<bool> send_enabled_{false};
+  std::atomic<bool> receive_enabled_{false};
   std::atomic<bool> source_started_{false};
   std::atomic<bool> sink_started_{false};
+  std::atomic<bool> send_prepared_{false};
+  std::atomic<bool> receive_prepared_{false};
+  // Reassembly is worker-owned. Signaling only posts this command and wakes
+  // select(); it never mutates the plain depacketizer state concurrently.
+  std::atomic<bool> rx_reset_requested_{false};
 
   int rtp_socket_{-1};
   int rtcp_socket_{-1};
+  // Private loopback datagram socket included in the receive select set.
+  // This is the same self-pipe pattern used by SipTransport: control changes
+  // wake immediately without polling or injecting a fake RTP packet.
+  int wake_socket_{-1};
+  uint16_t wake_port_{0};
+  // Source control can be requested by the signaling owner while RTCP or the
+  // sender asks for a key frame. Serialize those rare control operations;
+  // frame delivery itself remains lock-free through the bounded AU slot.
+  Mutex source_control_mutex_;
+  // A committed SDP direction change and terminal worker cleanup must never
+  // operate the camera/renderer concurrently. request_stop() remains an
+  // atomic gate+wake and therefore never blocks the SIP task.
+  Mutex direction_mutex_;
   // SIP teardown and the main-loop FSM can observe the same BYE nearly
   // simultaneously. Serialize the idempotent stop so only one caller consumes
   // the task completion semaphore; the follower then sees a fully stopped
@@ -145,6 +206,12 @@ class VideoRtpSession {
   std::atomic<bool> terminate_{false};
   std::atomic<bool> sender_running_{false};
   std::atomic<bool> stop_had_active_session_{false};
+  std::atomic<bool> rtcp_bye_requested_{false};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
+  SemaphoreHandle_t audio_pacing_{nullptr};
+  StaticSemaphore_t audio_pacing_storage_{};
+  std::atomic<bool> audio_pacing_started_{false};
+#endif
 
   // One bounded PSRAM access-unit slot decouples the hardware encoder from
   // UDP packetisation. A slow network drops a GOP and requests a fresh IDR;
@@ -189,7 +256,12 @@ class VideoRtpSession {
   uint32_t tx_backpressure_events_{0};
   uint32_t tx_send_failures_{0};
   uint32_t tx_max_access_unit_ms_{0};
+  uint32_t tx_slow_send_calls_{0};
+  uint32_t tx_max_send_us_{0};
   uint32_t tx_last_debug_log_ms_{0};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
+  uint32_t tx_audio_pacing_startup_fallbacks_{0};
+#endif
 #endif
 };
 

@@ -76,6 +76,7 @@ class SipTransport : public SipPhoneTransport {
                            EncodedVideoSink *sink) override;
   void set_video_config(uint16_t rtp_port, uint8_t offer_payload_type,
                         size_t max_rtp_payload) override;
+  bool request_video_send(bool enabled) override;
 #endif
   SipTransportSnapshot snapshot() const override;
 
@@ -101,6 +102,9 @@ class SipTransport : public SipPhoneTransport {
     uint32_t cseq_number{0};
     std::string cseq_method;
     std::string branch_override;
+    bool remember_transaction{true};
+    bool remember_invite_ack{true};
+    std::string *formatted_request{nullptr};
   };
 
   static void sip_task_trampoline_(void *param);
@@ -124,13 +128,15 @@ class SipTransport : public SipPhoneTransport {
   bool send_stateless_response_(const std::string &request, const sockaddr_in &src,
                                 uint16_t status, const char *reason,
                                 const std::string &app_reason = "",
-                                bool cache_transaction = false);
+                                bool cache_transaction = false,
+                                int retry_after_seconds = -1);
   std::string format_response_(uint16_t status, const char *reason,
                                const std::string &via, const std::string &from,
                                const std::string &to, const std::string &call_id,
                                const std::string &cseq, const std::string &app_reason,
                                const std::string &body, bool add_contact_ua,
-                               bool add_to_tag, bool stateless);
+                               bool add_to_tag, bool stateless,
+                               int retry_after_seconds);
   void handle_sip_datagram_(const char *data, size_t len, const sockaddr_in &src);
   void handle_sip_stream_(int socket, const sockaddr_in &src);
   bool handle_invite_(const std::string &message, const sockaddr_in &src);
@@ -155,7 +161,24 @@ class SipTransport : public SipPhoneTransport {
                                 bool answer) const;
   VideoCapability local_video_send_capability_() const;
   VideoCapability local_video_receive_capability_() const;
+  VideoCapability local_video_direction_capability_(
+      const VideoCapability &negotiated, bool send) const;
+  bool prepare_video_session_locked_();
   void reset_video_negotiation_();
+  bool send_video_direction_reinvite_unlocked_(bool enabled,
+                                                bool retry = false);
+  bool handle_video_direction_response_(const std::string &message,
+                                        const sockaddr_in &src,
+                                        uint16_t status,
+                                        uint32_t response_cseq);
+  void pump_video_direction_transaction_();
+  std::string build_video_direction_offer_(bool enabled,
+                                            uint32_t session_version) const;
+  bool apply_video_direction_answer_(const std::string &sdp,
+                                     uint32_t default_ip,
+                                     bool *accepted_send);
+  bool replay_completed_video_direction_ack_(
+      const std::string &response, const sockaddr_in &src);
 #endif
   bool local_ip_for_peer_(uint32_t peer_ip_v4, std::string *out) const;
   void clear_udp_transactions_();
@@ -176,13 +199,16 @@ class SipTransport : public SipPhoneTransport {
   void request_audio_path_stop_locked_();
   void finish_audio_path_stop_();
   void reset_dialog_();
+  void reset_dialog_media_locked_();
+  bool terminal_transaction_pending_locked_() const;
   bool replay_completed_response_(const std::string &request, const sockaddr_in &src,
                                   const std::string &method);
   void remember_completed_response_(const std::string &request, uint32_t peer_ip_v4,
                                     uint16_t peer_port, const std::string &method,
                                     const std::string &response);
   uint16_t acknowledge_completed_invite_(const std::string &request,
-                                         const sockaddr_in &src);
+                                         const sockaddr_in &src,
+                                         bool *terminate_after_ack);
   bool replay_completed_invite_ack_(const std::string &response, const sockaddr_in &src);
   void remember_completed_invite_ack_(const std::string &request, uint32_t target_ip_v4,
                                       uint16_t target_port);
@@ -204,6 +230,9 @@ class SipTransport : public SipPhoneTransport {
     uint32_t deadline_ms{0};
     uint16_t interval_ms{500};
     uint8_t retries{0};
+    // Despite the historical type name, reliable transports use the same
+    // record for their response deadline; only UDP retransmits the request.
+    bool udp{true};
     bool completed{false};
     void clear() {
       this->request.clear();
@@ -213,6 +242,7 @@ class SipTransport : public SipPhoneTransport {
       this->deadline_ms = 0;
       this->interval_ms = 500;
       this->retries = 0;
+      this->udp = true;
       this->completed = false;
     }
     bool empty() const { return this->request.empty(); }
@@ -267,6 +297,7 @@ class SipTransport : public SipPhoneTransport {
     uint32_t ack_ip_v4{0};
     uint16_t ack_port{0};
     uint32_t completed_ms{0};
+    bool udp{true};
     void clear() {
       this->call_id.clear();
       this->branch.clear();
@@ -276,9 +307,43 @@ class SipTransport : public SipPhoneTransport {
       this->ack_ip_v4 = 0;
       this->ack_port = 0;
       this->completed_ms = 0;
+      this->udp = true;
     }
     bool empty() const { return this->ack.empty(); }
   };
+
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  struct PendingVideoDirectionInvite {
+    UdpTransaction transaction;
+    std::string branch;
+    std::string offered_sdp;
+    uint32_t cseq{0};
+    uint32_t session_version{0};
+    uint32_t response_deadline_ms{0};
+    uint32_t retry_at_ms{0};
+    bool target_send{false};
+    bool previous_send{false};
+    bool waiting_retry{false};
+    uint8_t retry_count{0};
+
+    void clear() {
+      this->transaction.clear();
+      this->branch.clear();
+      this->offered_sdp.clear();
+      this->cseq = 0;
+      this->session_version = 0;
+      this->response_deadline_ms = 0;
+      this->retry_at_ms = 0;
+      this->target_send = false;
+      this->previous_send = false;
+      this->waiting_retry = false;
+      this->retry_count = 0;
+    }
+    bool pending() const {
+      return this->cseq != 0 || this->waiting_retry;
+    }
+  };
+#endif
 
   uint16_t sip_port_{5060};
   uint16_t rtp_port_{40000};
@@ -305,6 +370,8 @@ class SipTransport : public SipPhoneTransport {
   std::string last_invite_cseq_;
   std::string last_invite_response_;
   uint32_t last_invite_cseq_number_{0};
+  uint32_t last_invite_peer_ip_v4_{0};
+  uint16_t last_invite_peer_port_{0};
   std::string caller_route_;
   std::string caller_name_;
   std::string dest_route_;
@@ -312,6 +379,7 @@ class SipTransport : public SipPhoneTransport {
   CompletedServerTransaction completed_invite_;
   CompletedServerTransaction completed_control_;
   CompletedInviteClientTransaction completed_invite_client_;
+  bool terminate_after_invite_ack_{false};
   std::string sip_tcp_rx_buffer_;
   AudioFormatList offer_tx_formats_{};
   AudioFormatList offer_rx_formats_{};
@@ -320,6 +388,10 @@ class SipTransport : public SipPhoneTransport {
   uint8_t rtp_tx_payload_type_{96};
   uint8_t rtp_rx_payload_type_{96};
   mutable portMUX_TYPE media_config_lock_ = portMUX_INITIALIZER_UNLOCKED;
+  // Even values are stable; odd values mean an SDP proposal is being parsed
+  // into temporary live fields. Realtime readers compare the epoch before
+  // publishing a packet/frame, which avoids both blocking and ABA races.
+  std::atomic<uint32_t> media_proposal_epoch_{0};
   // RFC 3264 matches media streams by m-line position. Keep only the bounded
   // original m-lines while answering an offer; media payload buffers remain
   // owned by their dedicated audio/video paths.
@@ -339,12 +411,19 @@ class SipTransport : public SipPhoneTransport {
   bool video_negotiated_{false};
   bool video_send_enabled_{false};
   bool video_receive_enabled_{false};
+  std::atomic<bool> video_send_requested_{true};
   uint32_t remote_video_ip_v4_{0};
   uint16_t remote_video_rtp_port_{0};
   uint32_t remote_video_rtcp_ip_v4_{0};
   uint16_t remote_video_rtcp_port_{0};
   VideoCapability negotiated_video_capability_{};
+  PendingVideoDirectionInvite pending_video_direction_invite_{};
+  CompletedInviteClientTransaction completed_video_direction_invite_{};
+  std::string confirmed_local_sdp_;
+  bool dialog_originated_{false};
 #endif
+  uint32_t sdp_session_id_{0};
+  uint32_t sdp_session_version_{0};
   uint32_t cseq_{1};
   uint32_t invite_cseq_{1};
   UdpTransaction pending_invite_;
@@ -408,6 +487,12 @@ class SipTransport : public SipPhoneTransport {
   std::atomic<uint32_t> rtp_rx_packets_{0};
   std::atomic<uint32_t> rtp_tx_bytes_{0};
   std::atomic<uint32_t> rtp_rx_bytes_{0};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+  uint32_t audio_tx_slow_send_calls_{0};
+  uint32_t audio_tx_send_failures_{0};
+  uint32_t audio_tx_max_send_us_{0};
+  uint32_t audio_tx_last_debug_log_ms_{0};
+#endif
   std::atomic<uint16_t> last_sip_status_code_{0};
   std::atomic<uint8_t> last_sip_event_{0};
   std::atomic<uint32_t> latched_rtp_ip_v4_{0};

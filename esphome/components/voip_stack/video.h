@@ -63,6 +63,10 @@ class EncodedVideoSource {
  public:
   virtual ~EncodedVideoSource() = default;
   virtual VideoCapability get_video_capability() const = 0;
+  /// Validate and reserve any source-side state needed by the negotiated
+  /// format without producing media. Offer/answer can therefore admit a
+  /// stream before its final response without leaking RTP before commit.
+  virtual bool prepare_video(const VideoCapability &capability) = 0;
   /// Start the producer with the codec/dimensions/rate committed by SDP.
   /// Sources that can reconfigure an encoder do so here; adapters for a fixed
   /// source must at least enforce the negotiated maximum frame rate.
@@ -79,7 +83,12 @@ class EncodedVideoSink {
   /// Local decoder contract advertised in SDP. This is intentionally
   /// independent from the encoder SPS used by EncodedVideoSource.
   virtual VideoCapability get_receive_video_capability() const = 0;
+  /// Allocate/start dormant decoder resources. This must not make a stale
+  /// frame visible before the SDP transaction commits.
   virtual bool start_video(const VideoCapability &capability) = 0;
+  /// Commit or suspend receive presentation without joining/freeing the
+  /// prepared decoder worker. Direction-only re-INVITEs stay lightweight.
+  virtual bool set_video_active(bool active) = 0;
   virtual void stop_video() = 0;
   /// Returns false when the complete access unit could not be admitted. RTP
   /// then requests a fresh random-access point instead of feeding dependent

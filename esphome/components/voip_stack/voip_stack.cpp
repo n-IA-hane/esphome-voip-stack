@@ -262,6 +262,8 @@ bool VoipStack::setup_transport_() {
   this->transport_->set_video_config(
       this->video_rtp_port_, this->video_offer_payload_type_,
       this->video_max_rtp_payload_);
+  this->transport_->set_video_send_state_callback(
+      VoipStack::transport_video_send_state_callback_, this);
 #endif
 
   // Wire callbacks before start() so the transport task never fires into null.
@@ -302,13 +304,24 @@ bool VoipStack::transport_dialog_active_callback_(void *ctx) {
   return static_cast<VoipStack *>(ctx)->is_active();
 }
 
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+void VoipStack::transport_video_send_state_callback_(void *ctx, bool enabled,
+                                                     bool pending) {
+  auto *self = static_cast<VoipStack *>(ctx);
+  const uint8_t event = 0x01U | (enabled ? 0x02U : 0U) |
+                        (pending ? 0x04U : 0U);
+  self->video_send_state_event_.store(event, std::memory_order_release);
+  self->enable_loop_soon_any_context();
+}
+#endif
+
 bool VoipStack::start_runtime_tasks_() {
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
   // TX task exists only when a microphone is configured. Speaker-only peers
   // still accept calls and play incoming audio through the transport recv task.
   if (this->has_microphone_()) {
     if (!voip_audio_core::start_pinned_task(VoipStack::tx_task, "voip_tx",
-                                             VoipStack::kTxTaskStackBytes, this, VoipStack::kMediaTaskPriority, 0,
+                                             VoipStack::kTxTaskStackBytes, this, VoipStack::kTxTaskPriority, 0,
                                              this->task_stacks_in_psram_, TAG,
                                              &this->tx_task_handle_, &this->tx_task_tcb_,
                                              &this->tx_task_stack_)) {
@@ -319,7 +332,7 @@ bool VoipStack::start_runtime_tasks_() {
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   if (this->has_speaker_()) {
     if (!voip_audio_core::start_pinned_task(VoipStack::rx_task, "voip_rx",
-                                             VoipStack::kRxTaskStackBytes, this, VoipStack::kMediaTaskPriority, 0,
+                                             VoipStack::kRxTaskStackBytes, this, VoipStack::kRxTaskPriority, 0,
                                              this->task_stacks_in_psram_, TAG,
                                              &this->rx_task_handle_, &this->rx_task_tcb_,
                                              &this->rx_task_stack_)) {
@@ -454,6 +467,18 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
 
 void VoipStack::loop() {
   uint32_t now = millis();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  const uint8_t video_send_event =
+      this->video_send_state_event_.exchange(0, std::memory_order_acq_rel);
+#ifdef USE_SWITCH
+  if ((video_send_event & 0x01U) != 0 &&
+      (video_send_event & 0x04U) == 0 &&
+      this->video_send_switch_ != nullptr) {
+    this->video_send_switch_->publish_state(
+        (video_send_event & 0x02U) != 0);
+  }
+#endif
+#endif
   if (this->endpoint_publish_requested_.exchange(false, std::memory_order_acq_rel)) {
     this->publish_endpoint_();
   }
@@ -559,6 +584,18 @@ void VoipStack::set_remote_endpoint(const std::string &ip, uint16_t port, uint16
   ESP_LOGI(TAG, "Remote endpoint updated to SIP %s:%u RTP %u", ip.c_str(), (unsigned) port,
            (unsigned) (rtp_port != 0 ? rtp_port : this->rtp_port_));
 }
+
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+bool VoipStack::set_video_send(bool enabled) {
+  if (this->call_state_.load(std::memory_order_acquire) !=
+          CallState::IN_CALL ||
+      this->transport_ == nullptr) {
+    ESP_LOGW(TAG, "Video send direction can only change during an active call");
+    return false;
+  }
+  return this->transport_->request_video_send(enabled);
+}
+#endif
 
 void VoipStack::set_remote_sip_transport_tcp(bool tcp) {
   if (this->transport_ != nullptr) {
@@ -873,6 +910,11 @@ void VoipStack::publish_entity_states() {
     }
     this->dnd_switch_->publish_state(this->do_not_disturb_);
   }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  if (this->video_send_switch_ != nullptr) {
+    this->video_send_switch_->publish_state(this->get_video_send());
+  }
+#endif
 #else
   (void) apply_restore;
 #endif

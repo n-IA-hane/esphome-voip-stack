@@ -30,6 +30,7 @@ class CameraJpegVideoSource : public EncodedVideoSource,
   void register_listener();
 
   VideoCapability get_video_capability() const override;
+  bool prepare_video(const VideoCapability &capability) override;
   bool start_video(EncodedVideoAccessUnitCallback callback, void *ctx,
                    const VideoCapability &capability) override;
   void stop_video() override;

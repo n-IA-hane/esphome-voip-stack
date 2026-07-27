@@ -140,6 +140,9 @@ inline const char *sip_signal_type_name(SipSignalType type) {
 struct SipSignal {
   SipSignalType type{SipSignalType::PROTOCOL_ERROR};
   uint16_t status_code{0};
+  // The transport already owns the terminal ACK/BYE transaction. Consumers
+  // may end UI/media state but must not reset the dialog prematurely.
+  bool terminal_transaction_pending{false};
   std::string call_id;
   std::string caller_route;
   std::string caller_name;

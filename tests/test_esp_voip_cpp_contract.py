@@ -27,6 +27,76 @@ def read(name: str) -> str:
     return (VOIP / name).read_text(encoding="utf-8")
 
 
+def cpp_method(source: str, qualified_name_pattern: str) -> str:
+    """Return one balanced C++ method definition matched by a name regex."""
+
+    signature = re.search(
+        rf"\b(?:bool|void)\s+{qualified_name_pattern}\s*\([^;{{}}]*\)"
+        r"(?:\s+const)?\s*\{",
+        source,
+        re.DOTALL,
+    )
+    assert signature is not None, f"C++ method not found: {qualified_name_pattern}"
+    opening = source.index("{", signature.start())
+    depth = 0
+    for index in range(opening, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[signature.start() : index + 1]
+    raise AssertionError(f"Unbalanced C++ method: {qualified_name_pattern}")
+
+
+def cpp_methods(source: str, name_pattern: str) -> str:
+    """Join C++ method definitions whose unqualified names match a regex."""
+
+    names = re.findall(
+        rf"\b(?:bool|void)\s+SipTransport::(?P<name>{name_pattern})\s*\(",
+        source,
+    )
+    return "\n".join(
+        cpp_method(source, rf"SipTransport::{re.escape(name)}")
+        for name in dict.fromkeys(names)
+    )
+
+
+def video_reinvite_state(header: str) -> tuple[str, str]:
+    """Return the dedicated local re-INVITE declaration and instance name."""
+
+    struct = re.search(
+        r"struct\s+(?P<type>(?:\w*[Rr]e[Ii]nvite\w*|"
+        r"\w*[Vv]ideo\w*[Dd]irection\w*[Ii]nvite\w*))"
+        r"\s*\{(?P<body>.*?)\n\s*\};",
+        header,
+        re.DOTALL,
+    )
+    assert struct is not None
+    assert all(token in struct.group("body").lower() for token in ("cseq", "branch"))
+    instance = re.search(
+        rf"\b{re.escape(struct.group('type'))}\s+(?P<name>\w+)"
+        r"\s*(?:\{\})?\s*;",
+        header,
+    )
+    assert instance is not None
+    return struct.group(0), instance.group("name")
+
+
+def braced_block_after(source: str, marker: str) -> str:
+    start = source.index(marker)
+    opening = source.index("{", start)
+    depth = 0
+    for index in range(opening, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"Unbalanced block after: {marker}")
+
+
 def test_full_duplex_examples_fit_the_default_rtp_payload_budget() -> None:
     example = (ROOT / "examples" / "native-full-duplex.yaml").read_text(
         encoding="utf-8"
@@ -74,6 +144,30 @@ def test_video_rtp_burst_capacity_is_compile_time_gated() -> None:
     assert "this->sequence_valid_ = false;" in video_rtp
     assert "batch++ < kMaxReceiveBatchPackets" in video_rtp
     assert re.search(r"recvfrom\(\s*this->rtp_socket_", video_rtp)
+
+
+def test_video_debug_gates_hosted_and_media_send_timing() -> None:
+    init_py = read("__init__.py")
+    video_header = read("video_rtp.h")
+    video_rtp = read("video_rtp.cpp")
+    sip_header = read("sip_transport.h")
+    sip_cpp = read("sip_transport.cpp")
+
+    debug_codegen = init_py[
+        init_py.index("        if config[CONF_VIDEO_DEBUG]:") :
+        init_py.index("    cg.add(var.set_extension")
+    ]
+    assert 'if "esp32_hosted" in (CORE.config or {}):' in debug_codegen
+    assert '"CONFIG_ESP_HOSTED_PKT_STATS", True' in debug_codegen
+    assert '"CONFIG_ESP_HOSTED_PKT_STATS_INTERVAL_SEC", 5' in debug_codegen
+    assert "tx_max_send_us_" in video_header
+    assert "send_elapsed_us >= 5000U" in video_rtp
+    assert "audio_tx_max_send_us_" in sip_header
+    assert "send_elapsed_us >= 5000U" in sip_cpp
+    assert (
+        sip_cpp.index("#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG")
+        < sip_cpp.index("const uint32_t send_started_us = micros();")
+    )
 
 
 def test_same_tuple_rtp_source_restart_resets_audio_and_video_state() -> None:
@@ -148,6 +242,74 @@ def test_video_rtp_latches_only_codec_valid_media_packets() -> None:
     assert negotiation.index("this->reset_reassembly_();") < negotiation.index(
         "this->jpeg_depacketizer_.reset_session();"
     )
+
+
+def test_video_rtp_keeps_directional_endpoint_capabilities() -> None:
+    header = read("video_rtp.h")
+    source = read("video_rtp.cpp")
+    transport = read("sip_transport.cpp")
+
+    assert "VideoCapability send_capability_{};" in header
+    assert "VideoCapability receive_capability_{};" in header
+    assert "prepare_video(this->send_capability_)" in source
+    assert "start_video(this->receive_capability_)" in source
+    assert "this->send_capability_);" in source
+
+    helper = transport[
+        transport.index(
+            "VideoCapability SipTransport::local_video_direction_capability_"
+        ) :
+        transport.index("bool SipTransport::prepare_video_session_locked_")
+    ]
+    assert "send ? this->local_video_send_capability_()" in helper
+    assert ": this->local_video_receive_capability_();" in helper
+    assert "capability.payload_type = negotiated.payload_type;" in helper
+    assert "capability.width = negotiated.width;" not in helper
+    assert "capability.height = negotiated.height;" not in helper
+    assert "capability.profile_level_id = negotiated.profile_level_id;" not in helper
+
+    initial = transport[
+        transport.index("bool SipTransport::prepare_video_session_locked_") :
+        transport.index("void SipTransport::reset_video_negotiation_")
+    ]
+    assert "this->negotiated_video_capability_, true" in initial
+    assert "this->negotiated_video_capability_, false" in initial
+
+    reinvite = transport[
+        transport.index("bool SipTransport::handle_reinvite_(") :
+        transport.index(
+            "bool SipTransport::handle_video_direction_response_"
+        )
+    ]
+    add_video_start = reinvite.index(
+        "if (!old_video_negotiated && new_video_negotiated)"
+    )
+    add_video = reinvite[
+        add_video_start :
+        reinvite.index("} else if ((replace_video_direction", add_video_start)
+    ]
+    assert "new_video_capability, true" in add_video
+    assert "new_video_capability, false" in add_video
+    wire_identity = reinvite[
+        reinvite.index("const bool same_video_media =") :
+        reinvite.index("const bool same_video_direction =")
+    ]
+    assert ".width ==" not in wire_identity
+    assert ".height ==" not in wire_identity
+    assert ".max_fps ==" in wire_identity
+    assert ".level_asymmetry_allowed ==" in wire_identity
+
+    direction_answer = transport[
+        transport.index("bool SipTransport::apply_video_direction_answer_") :
+        transport.index("bool SipTransport::replay_completed_video_direction_ack_")
+    ]
+    assert "new_capability.max_fps == old_capability.max_fps" in direction_answer
+    assert (
+        "new_capability.level_asymmetry_allowed ==\n"
+        "          old_capability.level_asymmetry_allowed"
+    ) in direction_answer
+    assert "new_capability.width == old_capability.width" not in direction_answer
+    assert "new_capability.height == old_capability.height" not in direction_answer
 
 
 def test_rtp_jpeg_dimension_limit_matches_rfc2435_encoding() -> None:
@@ -481,25 +643,22 @@ def test_rejected_video_answer_preserves_the_first_offered_payload_type() -> Non
 
 def test_video_reinvite_admits_resources_before_success_and_rolls_back() -> None:
     sip_cpp = read("sip_transport.cpp")
-    reinvite = sip_cpp[
-        sip_cpp.index("bool SipTransport::handle_reinvite_") :
-        sip_cpp.index("\nbool SipTransport::handle_response_")
-    ]
+    reinvite = cpp_method(sip_cpp, r"SipTransport::handle_reinvite_")
 
-    prestart = reinvite.index("this->video_session_->start()")
+    prestart = reinvite.index("this->video_session_->start(false)")
     success = reinvite.index('this->send_response_(200, "OK", answer)')
-    assert prestart < success
+    activate = reinvite.index("this->video_session_->request_media_direction(")
+    assert prestart < success < activate
     assert '"video_resources_unavailable"' in reinvite
     assert '"video_renegotiation_unsupported"' in reinvite
-    assert "Video direction re-INVITE rollback failed" in reinvite
+    assert "this->video_session_->request_media_direction(" in reinvite
+    assert "old_video_send" in reinvite
+    assert "old_video_receive" in reinvite
 
 
 def test_reinvite_waits_for_prior_invite_ack_without_mutating_dialog() -> None:
     sip_cpp = read("sip_transport.cpp")
-    reinvite = sip_cpp[
-        sip_cpp.index("bool SipTransport::handle_reinvite_") :
-        sip_cpp.index("\nbool SipTransport::handle_response_")
-    ]
+    reinvite = cpp_method(sip_cpp, r"SipTransport::handle_reinvite_")
 
     pending = reinvite.index("this->completed_invite_.awaiting_ack")
     parse_media = reinvite.index("this->learn_remote_rtp_from_sdp_")
@@ -508,8 +667,9 @@ def test_reinvite_waits_for_prior_invite_ack_without_mutating_dialog() -> None:
     )
     assert pending < parse_media < mutate_dialog
     pending_response = reinvite[pending:parse_media]
-    assert 'message, src, 491, "Request Pending"' in pending_response
-    assert "cache_transaction" not in pending_response
+    assert 'message, src, 500, "Server Internal Error"' in pending_response
+    assert "esp_random() % 11U" in pending_response
+    assert "false" in pending_response
 
 
 def test_failed_reinvite_response_restores_dialog_and_is_not_cached() -> None:
@@ -536,10 +696,7 @@ def test_failed_reinvite_response_restores_dialog_and_is_not_cached() -> None:
         "this->remember_completed_response_"
     )
 
-    reinvite = sip_cpp[
-        sip_cpp.index("bool SipTransport::handle_reinvite_") :
-        sip_cpp.index("\nbool SipTransport::handle_response_")
-    ]
+    reinvite = cpp_method(sip_cpp, r"SipTransport::handle_reinvite_")
     failure = reinvite[
         reinvite.index('if (!this->send_response_(200, "OK", answer))') :
         reinvite.index(
@@ -568,6 +725,269 @@ def test_failed_reinvite_response_restores_dialog_and_is_not_cached() -> None:
         assert f"this->{field}_ = old_{field};" in restore
 
 
+def test_video_send_action_is_templatable_and_compile_time_gated() -> None:
+    init_py = read("__init__.py")
+    actions = read("actions.h")
+
+    registration = init_py.index('"voip_stack.set_video_send"')
+    registration_contract = init_py[registration : registration + 700]
+    assert "cv.boolean" in registration_contract
+    assert (
+        "_register_templated_action" in init_py[registration - 80 : registration]
+        or "cg.templatable" in registration_contract
+    )
+
+    action_match = re.search(
+        r"class\s+(?P<name>\w*[Vv]ideo\w*[Ss]end\w*Action)"
+        r".*?\{(?P<body>.*?)\n\};",
+        actions,
+        re.DOTALL,
+    )
+    assert action_match is not None
+    action_body = action_match.group("body")
+    assert re.search(r"TEMPLATABLE_VALUE\s*\(\s*bool\s*,", action_body)
+    assert re.search(
+        r"parent_->set_video_send(?:_enabled)?\s*\(", action_body
+    )
+
+    action_pos = action_match.start()
+    guard_pos = actions.rfind(
+        "#ifdef USE_ESPHOME_VOIP_STACK_VIDEO", 0, action_pos
+    )
+    assert guard_pos >= 0
+    assert guard_pos > actions.rfind("#endif", 0, action_pos)
+    assert actions.find("#endif", action_pos) >= 0
+
+
+def test_video_send_switch_is_compile_gated_and_transport_confirmed() -> None:
+    schema = read("switch.py")
+    header = read("voip_stack.h")
+    source = read("voip_stack.cpp")
+    transport = read("transport.h")
+
+    assert 'CONF_VIDEO_SEND = "video_send"' in schema
+    assert "voip_stack video_send switch requires voip_stack.video." in schema
+    assert "register_video_send_switch" in schema
+    assert "class VoipStackVideoSendSwitch" in header
+    assert "if (!this->parent_->set_video_send(state))" in header
+    assert "set_video_send_state_callback" in transport
+    assert "transport_video_send_state_callback_" in source
+    loop = cpp_method(source, r"VoipStack::loop")
+    assert "video_send_state_event_.exchange" in loop
+    assert "video_send_switch_->publish_state" in loop
+
+
+def test_video_send_control_has_a_dedicated_transport_api() -> None:
+    transport = read("transport.h")
+    sip_header = read("sip_transport.h")
+    component_header = read("voip_stack.h")
+    component_source = read("voip_stack.cpp")
+
+    transport_api = r"(?:request|set)_video_send(?:_enabled)?"
+    transport_match = re.search(
+        rf"virtual\s+bool\s+(?P<name>{transport_api})\s*\(\s*bool\b",
+        transport,
+    )
+    assert transport_match is not None
+    transport_name = transport_match.group("name")
+    assert re.search(
+        rf"\bbool\s+{re.escape(transport_name)}\s*\(\s*bool\b"
+        rf"[^;]*\boverride\s*;",
+        sip_header,
+    )
+    component_match = re.search(
+        r"\bbool\s+(?P<name>set_video_send(?:_enabled)?)\s*\(\s*bool\b",
+        component_header,
+    )
+    assert component_match is not None
+    component_name = component_match.group("name")
+
+    component_method = cpp_method(
+        component_source, rf"VoipStack::{re.escape(component_name)}"
+    )
+    assert f"transport_->{transport_name}(" in component_method
+    assert "call(" not in component_method
+    assert "call_toggle(" not in component_method
+
+    api_pos = transport_match.start()
+    guard_pos = transport.rfind(
+        "#ifdef USE_ESPHOME_VOIP_STACK_VIDEO", 0, api_pos
+    )
+    assert guard_pos > transport.rfind("#endif", 0, api_pos)
+
+
+def test_local_video_reinvite_is_an_event_driven_dialog_transaction() -> None:
+    header = read("sip_transport.h")
+    source = read("sip_transport.cpp")
+    transaction, instance = video_reinvite_state(header)
+    local_flow = cpp_methods(
+        source,
+        r"\w*(?:[Rr]e[Ii]nvite|[Vv]ideo_[Ss]end|"
+        r"[Vv]ideo_[Dd]irection)\w*",
+    )
+
+    assert f"this->{instance}" in local_flow
+    assert re.search(r'send_request_\s*\(\s*"INVITE"', local_flow)
+    assert "wake_sip_task_();" in local_flow
+    sender = cpp_methods(
+        source, r"\w*[Vv]ideo_[Dd]irection_[Rr]e[Ii]nvite\w*"
+    )
+    assert re.search(rf"\bpending\s*=\s*this->{re.escape(instance)}", sender)
+    assert "pending.cseq = cseq;" in sender
+    assert "pending.branch = branch;" in sender
+    assert not re.search(
+        r"this->(?:invite_cseq_|branch_)\s*(?:=|\+\+|--)", local_flow
+    )
+
+    deadline = re.search(
+        r"\b\w+\s+(?P<name>\w*deadline\w*)"
+        r"\s*(?:\{[^}]*\})?\s*;",
+        transaction,
+        re.I,
+    )
+    assert deadline is not None
+    deadline_name = deadline.group("name")
+    sip_task = cpp_method(source, r"SipTransport::sip_task_")
+    assert instance in sip_task
+    assert deadline_name in sip_task
+    assert "select(max_fd + 1" in sip_task
+    assert "vTaskDelay" not in sip_task
+    assert "pending.transaction.udp" in sip_task
+
+    incoming = cpp_method(source, r"SipTransport::handle_reinvite_")
+    pending = incoming.index(f"this->{instance}")
+    parse_media = incoming.index("this->learn_remote_rtp_from_sdp_")
+    assert pending < parse_media
+    assert "491" in incoming[pending:parse_media]
+    assert "Request Pending" in incoming[pending:parse_media]
+
+    response = cpp_methods(
+        source,
+        r"(?:\w*[Rr]e[Ii]nvite\w*|"
+        r"\w*[Vv]ideo_[Dd]irection\w*)[Rr]esponse\w*",
+    )
+    assert response
+    assert re.search(r"\bACK\b", response)
+    glare = braced_block_after(response, "if (status == 491")
+    assert "pending.waiting_retry = true;" in glare
+    assert "reset_dialog_" not in glare
+    ordinary_reject = response[
+        response.index("pending.clear();", response.index(glare))
+        : response.index("if (status == 408")
+    ]
+    assert "video_send_requested_.store(previous_send" in ordinary_reject
+    assert "established media retained" in ordinary_reject
+    assert "reset_dialog_" not in ordinary_reject
+    assert "status == 408 || status == 481" in response
+
+
+def test_in_dialog_reinvite_dispatch_works_for_outbound_dialogs() -> None:
+    source = read("sip_transport.cpp")
+    invite = cpp_method(source, r"SipTransport::handle_invite_")
+    dispatch = invite[
+        invite.index("const bool in_dialog_invite") :
+        invite.index("LockGuard media_lock", invite.index("const bool in_dialog_invite"))
+    ]
+
+    assert "incoming_call_id == this->call_id_" in dispatch
+    assert "this->media_active_.load(std::memory_order_acquire)" in dispatch
+    assert "tag_from_header(incoming_from) == this->remote_tag_" in dispatch
+    assert "tag_from_header(incoming_to) == this->local_tag_" in dispatch
+    assert "return this->handle_reinvite_(message, src);" in dispatch
+    assert "last_invite_cseq_number_ != 0" not in dispatch
+
+
+def test_in_dialog_merged_invite_is_rejected_before_reinvite_dispatch() -> None:
+    source = read("sip_transport.cpp")
+    invite = cpp_method(source, r"SipTransport::handle_invite_")
+    merged = invite.index("SIP merged in-dialog INVITE rejected")
+    dispatch = invite.index("return this->handle_reinvite_(message, src);")
+
+    assert merged < dispatch
+    guard = invite[invite.rfind("if (", 0, merged) : merged]
+    assert "incoming_cseq_number == this->last_invite_cseq_number_" in guard
+    assert "via_branch(incoming_via) != via_branch(this->last_invite_via_)" in guard
+    assert "482" in invite[merged : dispatch]
+
+
+def test_video_direction_commit_uses_prepared_media_without_polling() -> None:
+    header = read("video_rtp.h")
+    source = read("video_rtp.cpp")
+    request = cpp_method(source, r"VideoRtpSession::request_media_direction")
+    start = cpp_method(source, r"VideoRtpSession::start")
+
+    assert "send_prepared_" in header
+    assert "receive_prepared_" in header
+    admission = cpp_method(
+        source, r"VideoRtpSession::can_request_media_direction"
+    )
+    assert "send_prepared_" in admission
+    assert "receive_prepared_" in admission
+    assert "can_request_media_direction" in request
+    assert "start_video" in request
+    assert "rx_reset_requested_.store" in request
+    assert "wake_task_();" in request
+    assert "vTaskDelay" not in request
+    assert "heap_caps_malloc" not in request
+    assert "start_sender_task_" not in request
+    assert "stop_sender_task_" not in request
+    assert "heap_caps_malloc" in start
+    assert "start_sender_task_" in start
+
+
+def test_video_direction_response_uses_transaction_target_and_caches_ack() -> None:
+    source = read("sip_transport.cpp")
+    response = cpp_method(
+        source, r"SipTransport::handle_video_direction_response_"
+    )
+
+    assert "pending.transaction.ip_v4" in response
+    assert "expected_response_ip" in response
+    assert "if (!ack.empty()" in response
+    assert "if (ack_sent &&" not in response
+    assert "completed.ack = ack;" in response
+
+
+def test_local_video_send_direction_changes_do_not_stop_video_rx() -> None:
+    video_header = read("video_rtp.h")
+    video_source = read("video_rtp.cpp")
+    sip_source = read("sip_transport.cpp")
+
+    declaration = re.search(
+        r"\bbool\s+(?P<name>\w*[Ss]end\w*)\s*\(\s*bool\b[^;]*\)\s*;",
+        video_header,
+    )
+    assert declaration is not None
+    method_name = declaration.group("name")
+    direction_method = cpp_method(
+        video_source,
+        rf"VideoRtpSession::{re.escape(method_name)}",
+    )
+    for receive_teardown in (
+        "this->stop()",
+        "request_stop()",
+        "reap_receive_task_",
+        "receive_task_handle_",
+        "sink_->",
+        "close(",
+        "shutdown(",
+    ):
+        assert receive_teardown not in direction_method
+
+    local_apply = cpp_methods(
+        sip_source,
+        r"(?:\w*[Rr]e[Ii]nvite\w*|"
+        r"\w*[Vv]ideo_[Dd]irection\w*)[Rr]esponse\w*",
+    )
+    assert "apply_video_direction_answer_(" in local_apply
+    assert "video_session_->stop();" not in local_apply
+    answer_apply = cpp_method(
+        sip_source, r"SipTransport::apply_video_direction_answer_"
+    )
+    assert f"video_session_->{method_name}(" in answer_apply
+    assert "video_session_->stop();" not in answer_apply
+
+
 def test_h264_tx_failure_aborts_the_au_and_requests_resynchronization() -> None:
     video = read("video_rtp.cpp")
     packetizer = video[
@@ -590,6 +1010,8 @@ def test_h264_tx_failure_aborts_the_au_and_requests_resynchronization() -> None:
 def test_video_sender_completes_owned_au_and_bounds_udp_backpressure() -> None:
     header = read("video_rtp.h")
     video = read("video_rtp.cpp")
+    sip = read("sip_transport.cpp")
+    codegen = read("__init__.py")
     sender = video[
         video.index("void VideoRtpSession::send_access_unit_") :
         video.index("\nvoid VideoRtpSession::task_trampoline_")
@@ -604,8 +1026,9 @@ def test_video_sender_completes_owned_au_and_bounds_udp_backpressure() -> None:
     # AU is paced, and each individual UDP retry remains bounded.
     assert "tx_access_unit_deadline_ms_" not in header
     assert "tx_access_unit_deadline_expired_" not in payload
-    assert "kTxPacketPacingMs" in header
-    assert "pdMS_TO_TICKS(kTxPacketPacingMs)" in payload
+    assert "kTxPacketPacingMs" not in header
+    assert "wait_for_audio_pacing_()" in payload
+    assert "vTaskDelay" not in payload
     for transient_error in ("EAGAIN", "EWOULDBLOCK", "ENOBUFS", "ENOMEM"):
         assert transient_error in payload
     assert "attempt < 2" in payload
@@ -613,6 +1036,34 @@ def test_video_sender_completes_owned_au_and_bounds_udp_backpressure() -> None:
     assert "select(this->rtp_socket_ + 1" in payload
     assert "pdMS_TO_TICKS(20)" not in payload
     assert "DSCP AF41" in video
+
+    # ESP-Hosted has one blocking SDIO queue for both flows. Its compile-time
+    # gated scheduler gives video one binary credit only after audio has
+    # successfully entered that queue; native-WiFi builds carry none of it.
+    assert "USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING" in codegen
+    assert '"esp32_hosted" in (CORE.config or {})' in codegen
+    assert "xSemaphoreCreateBinaryStatic(&this->audio_pacing_storage_)" in video
+    assert "xSemaphoreTake(this->audio_pacing_, portMAX_DELAY)" in video
+    assert "xSemaphoreGive(this->audio_pacing_)" in video
+    assert "this->video_session_->notify_audio_packet_sent();" in sip
+
+    voip_header = read("voip_stack.h")
+    voip_source = read("voip_stack.cpp")
+    assert "static constexpr uint8_t kTxTaskPriority = 24;" in voip_header
+    assert "static constexpr uint8_t kTxTaskPriority = 15;" in voip_header
+    assert "static constexpr uint8_t kRxTaskPriority = 15;" in voip_header
+    assert "static constexpr uint8_t kSenderTaskPriority = 15;" in header
+    assert "static constexpr uint8_t kSenderTaskPriority = 7;" in header
+    assert "static constexpr BaseType_t kSenderTaskCore = 1;" in header
+    assert "static constexpr BaseType_t kSenderTaskCore = 0;" in header
+    assert "static constexpr uint8_t kReceiveTaskPriority = 7;" in header
+    assert "VoipStack::kTxTaskPriority" in voip_source
+    assert "VoipStack::kRxTaskPriority" in voip_source
+    assert (
+        "kSenderTaskStackBytes, this, kSenderTaskPriority, kSenderTaskCore"
+        in video
+    )
+    assert "this, kReceiveTaskPriority" in video
 
 
 def test_video_offer_does_not_invent_a_missing_endpoint_capability() -> None:
@@ -657,7 +1108,7 @@ def test_media_lifecycle_is_serialized_across_fsm_and_sip_tasks() -> None:
     assert lock in start
     assert lock in stop
     assert lock in reinvite
-    assert reinvite.index(lock) < reinvite.index("this->video_session_->start()")
+    assert reinvite.index(lock) < reinvite.index("this->video_session_->start(false)")
     reset = source[
         source.index("void SipTransport::reset_dialog_()") :
         source.index("\nvoid SipTransport::remember_udp_transaction_")
@@ -722,8 +1173,28 @@ def test_call_teardown_is_deferred_to_the_event_driven_rtp_worker() -> None:
     ]
     assert "source_->stop_video()" not in video_request
     assert "send_rtcp_bye_()" not in video_request
+    assert "rtcp_bye_requested_" in video_request
     assert "source_->stop_video()" in video_stop
-    assert "send_rtcp_bye_()" in video_stop
+    assert "sink_->stop_video()" in video_stop
+    video_worker = cpp_method(video, r"VideoRtpSession::task_")
+    assert "rtcp_bye_requested_.exchange" in video_worker
+    assert "send_rtcp_bye_()" in video_worker
+    assert "sink_->set_video_active(false)" in video_worker
+    assert "FD_SET(this->wake_socket_, &readfds)" in video_worker
+    assert "FD_ISSET(this->wake_socket_, &readfds)" in video_worker
+    assert re.search(
+        r"if \(worker_failed &&\s+"
+        r"this->sink_started_\.exchange\(false, std::memory_order_acq_rel\)\)",
+        video_worker,
+    )
+    video_wake = video[
+        video.index("void VideoRtpSession::wake_task_()") :
+        video.index("\n}  // namespace voip_stack")
+    ]
+    assert "this->wake_socket_" in video_wake
+    assert "this->wake_port_" in video_wake
+    assert "this->rtp_socket_" not in video_wake
+    assert 'socket.consume_sockets(3, "voip_stack_video"' in read("__init__.py")
 
     shutdown = source[
         source.index("void SipTransport::stop()") :
@@ -1077,7 +1548,24 @@ def test_sip_tcp_rx_is_bounded_and_active_dialog_accept_is_guarded() -> None:
     accept = sip_cpp[sip_cpp.index("int client = accept(") : sip_cpp.index("if (this->sip_socket_ >= 0", sip_cpp.index("int client = accept("))]
     assert "this->dialog_active_()" in accept
     assert "active_ip_v4 != accepted_ip_v4" in accept
-    assert "SIP TCP accept rejected: dialog active with different peer" in accept
+    assert "signaling_owned" in accept
+    assert "signaling_uses_tcp" in accept
+    assert "terminal_transaction_pending_locked_()" in accept
+    assert "replaces_owned_transport" in accept
+    assert "SIP TCP accept rejected: signaling transport owned" in accept
+
+    peer_loss = cpp_method(sip_cpp, r"SipTransport::handle_tcp_peer_loss_")
+    assert "this->terminal_transaction_pending_locked_()" in peer_loss
+    assert "!this->completed_invite_.udp" in peer_loss
+    assert "this->completed_invite_.clear();" in peer_loss
+    assert "!this->completed_control_.udp" in peer_loss
+    assert "this->completed_control_.clear();" in peer_loss
+    assert "!this->completed_invite_client_.udp" in peer_loss
+    assert "this->completed_invite_client_.clear();" in peer_loss
+    assert "this->terminate_after_invite_ack_ = false;" in peer_loss
+    assert peer_loss.index("this->completed_invite_.clear();") < peer_loss.index(
+        "this->remote_sip_tcp_.store(false"
+    )
 
 
 def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
@@ -1345,13 +1833,13 @@ def test_reinvite_and_rtp_latch_are_explicit() -> None:
     assert "last_invite_cseq_number_" in sip_h
     assert "cseq_number(" in sip_cpp
     assert "bool handle_reinvite_" in sip_h
-    reinvite = sip_cpp[
-        sip_cpp.index("bool SipTransport::handle_reinvite_") :
-        sip_cpp.index("\nbool SipTransport::handle_response_")
-    ]
+    reinvite = cpp_method(sip_cpp, r"SipTransport::handle_reinvite_")
     assert "RFC 3261 section 14" in reinvite
-    assert "this->emit_sip_signal_" not in reinvite
-    assert "this->video_session_->stop();" in reinvite
+    assert 'signal.reason = "video_activation_failed";' in reinvite
+    assert "this->terminate_after_invite_ack_ = true;" in reinvite
+    assert "signal.terminal_transaction_pending = true;" in reinvite
+    assert "this->video_session_->request_media_direction(" in reinvite
+    assert "this->video_session_->stop();" not in reinvite
     assert 'this->send_response_(200, "OK", answer)' in reinvite
     assert '"media_incompatible"' in reinvite
     assert "latched_rtp_ip_v4_" in sip_h
@@ -1364,8 +1852,9 @@ def test_reinvite_and_rtp_latch_are_explicit() -> None:
     assert "uint8_t pcm[2048];" in sip_cpp
 
 
-def test_simultaneous_invites_use_one_deterministic_glare_winner() -> None:
+def test_simultaneous_invites_preserve_local_transaction_and_reject_glare() -> None:
     sip_cpp = read("sip_transport.cpp")
+    fsm = read("voip_fsm.cpp")
     inbound = sip_cpp[
         sip_cpp.index("bool SipTransport::handle_invite_") :
         sip_cpp.index("\nbool SipTransport::handle_response_")
@@ -1374,9 +1863,28 @@ def test_simultaneous_invites_use_one_deterministic_glare_winner() -> None:
     assert "const bool glare = this->outgoing_invite_pending_" in inbound
     assert "active_peer_ip == src_ip" in inbound
     assert "incoming_caller_name == this->dest_name_" in inbound
-    assert "const bool local_invite_wins" in inbound
-    assert "this->call_id_ < incoming_call_id" in inbound
-    assert "this->send_cancel_unlocked_(this->call_id_);" in inbound
+    glare = inbound[
+        inbound.index("// One transport owns one dialog") :
+        inbound.index("\n  const uint32_t active_peer_ip", inbound.index("// One transport owns one dialog"))
+    ]
+    assert 'message, src, 491, "Request Pending", "glare", true' in glare
+    assert "static_cast<int>(esp_random() % 3U)" in glare
+    assert "send_cancel_unlocked_" not in glare
+    assert "reset_dialog_" not in glare
+
+    invite_signal = fsm[
+        fsm.index("case SipSignalType::INVITE:") :
+        fsm.index("\n    case SipSignalType::BYE:")
+    ]
+    non_idle = invite_signal[
+        invite_signal.index("if (state != CallState::IDLE)") :
+        invite_signal.index("std::string cached_cid")
+    ]
+    assert "SipTransport owns transaction collisions" in non_idle
+    assert "goto " not in non_idle
+    assert "we_win" not in non_idle
+    assert "set_call_state_(CallState::IDLE)" not in non_idle
+    assert "send_sip_final_response_" not in non_idle
 
 
 def test_in_progress_invite_retransmission_replays_without_refiring_fsm() -> None:
@@ -1483,19 +1991,20 @@ def test_call_identity_formats_survive_teardown_and_invalid_route_is_terminal() 
 def test_sip_response_validation_precedes_retarget_and_bad_sdp_closes_dialog() -> None:
     sip_h = read("sip_transport.h")
     sip_cpp = read("sip_transport.cpp")
-    response = sip_cpp[
-        sip_cpp.index("bool SipTransport::handle_response_(") :
-        sip_cpp.index("\nvoid SipTransport::", sip_cpp.index("bool SipTransport::handle_response_("))
-    ]
+    response = cpp_method(sip_cpp, r"SipTransport::handle_response_")
 
     call_id_check = response.index("response_call_id != this->call_id_")
     cseq_check = response.index("response_cseq_number != this->invite_cseq_")
     retarget = response.index("this->remote_ip_v4_.store(src_ip")
     assert call_id_check < cseq_check < retarget
-    incompatible = response[response.index("if (!media_ok)") : response.index("this->open_media_session_()")]
+    incompatible = response[
+        response.index("if (!media_ok || !video_prepared)")
+        : response.index("this->open_media_session_()")
+    ]
     assert 'this->send_request_("ACK", "", options);' in response
-    assert 'this->send_request_("BYE");' in incompatible
+    assert "this->send_bye_unlocked_(this->call_id_)" in incompatible
     assert "signal.type = SipSignalType::MEDIA_INCOMPATIBLE;" in incompatible
+    assert "signal.terminal_transaction_pending = bye_pending;" in incompatible
     assert "this->reset_dialog_();" in incompatible
     assert "std::atomic<uint32_t> remote_rtp_ip_v4_{0};" in sip_h
     learn = sip_cpp[sip_cpp.index("bool SipTransport::learn_remote_rtp_from_sdp_") : sip_cpp.index("\nbool SipTransport::send_request_")]
@@ -1519,8 +2028,38 @@ def test_udp_listener_cannot_flip_an_active_tcp_dialog() -> None:
     assert "sip_tcp_client_socket_" in udp_receive
     assert "connecting_fd >= 0" in udp_receive
     assert "tcp_connect_requested_" in udp_receive
-    assert "const bool tcp_call_active" in udp_receive
+    assert "bool tcp_call_active" in udp_receive
+    assert "!this->call_id_.empty()" in udp_receive
+    assert "terminal_transaction_pending_locked_()" in udp_receive
     assert "close_tcp_client_from_sip_task_" in udp_receive
+
+
+def test_tcp_invite_can_be_cancelled_atomically_before_connect_flush() -> None:
+    sip_cpp = read("sip_transport.cpp")
+    cancel = cpp_method(sip_cpp, r"SipTransport::send_cancel_unlocked_")
+    promote = sip_cpp[
+        sip_cpp.index("auto promote_tcp_connect") :
+        sip_cpp.index("while (this->running_")
+    ]
+    reset = cpp_method(sip_cpp, r"SipTransport::reset_dialog_media_locked_")
+
+    assert "LockGuard send_lock(this->tcp_send_mutex_);" in cancel
+    assert "LockGuard pending_lock(this->tcp_tx_pending_mutex_);" in cancel
+    assert 'this->tcp_tx_pending_.rfind("INVITE ", 0) == 0' in cancel
+    assert 'header_value(this->tcp_tx_pending_, "Call-ID") == this->call_id_' in cancel
+    assert "this->tcp_tx_pending_.clear();" in cancel
+    assert "this->tcp_connect_requested_.store(false" in cancel
+    assert "this->sip_tcp_client_close_requested_.store(" in cancel
+    assert "if (cancelled_before_flush)" in cancel
+    assert "this->reset_dialog_();" in cancel
+    assert "return true;" in cancel
+
+    # Promotion and cancellation share the same outer lock: either the queued
+    # INVITE is retracted, or promotion owns and sends it before CANCEL.
+    assert "LockGuard send_lock(this->tcp_send_mutex_);" in promote
+    assert "pending.swap(this->tcp_tx_pending_);" in promote
+    assert "LockGuard send_lock(this->tcp_send_mutex_);" in reset
+    assert "abort_queued_tcp_record" in reset
 
 
 def test_schema_matches_rtp_implementation_limits() -> None:
@@ -1641,11 +2180,17 @@ def test_cancel_transactions_are_serialized_and_handle_crossed_200() -> None:
     sip_task = sip_cpp[sip_cpp.index("void SipTransport::sip_task_()") : sip_cpp.index("\nvoid SipTransport::rtp_task_()")]
     assert "include_txn(this->pending_cancel_);" in sip_task
     cancel = sip_cpp[sip_cpp.index("bool SipTransport::send_cancel(") : sip_cpp.index("\nbool SipTransport::send_bye(")]
-    assert "this->reset_dialog_();" not in cancel
+    early_cancel = cancel[
+        cancel.index("if (cancelled_before_flush)") :
+        cancel.index("\n  SipRequestOptions options;")
+    ]
+    wire_cancel = cancel[cancel.index("\n  SipRequestOptions options;") :]
+    assert "this->reset_dialog_();" in early_cancel
+    assert "this->reset_dialog_();" not in wire_cancel
     assert "this->clear_invite_transaction_();" in cancel
     response = sip_cpp[sip_cpp.index("bool SipTransport::handle_response_(") : sip_cpp.index("\nvoid SipTransport::handle_sip_datagram_")]
     assert "CANCEL crossed the final 2xx" in response
-    assert 'this->send_request_("BYE")' in response
+    assert "this->send_bye_unlocked_(this->call_id_)" in response
     datagram = sip_cpp[sip_cpp.index("void SipTransport::handle_sip_datagram_") : sip_cpp.index("\nbool SipTransport::reject_if_stale_dialog_")]
     assert "incoming_cseq_number != this->last_invite_cseq_number_" in datagram
     assert "incoming_branch == invite_branch" in datagram
@@ -1682,7 +2227,7 @@ def test_udp_invite_server_final_retransmits_until_matching_ack() -> None:
     ]
     assert "now + SIP_T1_MS" in remember
     assert "now + SIP_TRANSACTION_TIMEOUT_MS" in remember
-    assert 'method == "INVITE" && completed->udp' in remember
+    assert 'completed->awaiting_ack = method == "INVITE";' in remember
     assert "completed->call_id == this->call_id_" in remember
 
     retransmit = sip_cpp[
@@ -1695,6 +2240,7 @@ def test_udp_invite_server_final_retransmits_until_matching_ack() -> None:
     assert "SIP_T2_MS" in retransmit
     assert 'signal.reason = "ack_timeout";' in retransmit
     assert "active_2xx_dialog" in retransmit
+    assert "this->send_bye_unlocked_(timed_out_call_id)" in retransmit
 
     acknowledge = sip_cpp[
         sip_cpp.index("uint16_t SipTransport::acknowledge_completed_invite_(") :
@@ -1712,7 +2258,9 @@ def test_udp_invite_server_final_retransmits_until_matching_ack() -> None:
         sip_cpp.index("void SipTransport::handle_sip_datagram_") :
         sip_cpp.index("\nbool SipTransport::reject_if_stale_dialog_")
     ]
-    assert "acknowledge_completed_invite_(msg, src)" in datagram
+    assert "acknowledge_completed_invite_(msg, src," in datagram
+    assert "if (terminate_after_ack)" in datagram
+    assert "this->send_bye_unlocked_(call_id)" in datagram
     assert "if (completed_status >= 300) return;" in datagram
     assert "completed_status >= 200 && completed_status < 300" in datagram
 
@@ -1721,7 +2269,180 @@ def test_udp_invite_server_final_retransmits_until_matching_ack() -> None:
         sip_cpp.index("\nvoid SipTransport::rtp_task_()")
     ]
     assert "LockGuard lock(this->dialog_mutex_);" in sip_task
-    assert "include_at(this->completed_invite_.next_retransmit_ms);" in sip_task
+    assert "this->completed_invite_.next_retransmit_ms" in sip_task
+    assert "this->completed_invite_.deadline_ms" in sip_task
+
+
+def test_sip_transactions_keep_deadlines_on_tcp_and_ack_replay_is_transport_safe() -> None:
+    sip_h = read("sip_transport.h")
+    sip_cpp = read("sip_transport.cpp")
+
+    assert "bool udp{true};" in sip_h
+    remember = cpp_method(sip_cpp, r"SipTransport::remember_udp_transaction_")
+    assert "txn->udp = !this->remote_sip_tcp_" in remember
+    assert "remote_sip_tcp_" not in remember[: remember.index("UdpTransaction *txn")]
+
+    pump = cpp_method(sip_cpp, r"SipTransport::pump_udp_retransmits_")
+    assert "if (!txn.udp)" in pump
+    assert "txn.deadline_ms" in pump
+    assert "this->completed_invite_.status < 300" in pump
+    assert "this->send_bye_unlocked_(timed_out_call_id)" in pump
+
+    sip_task = cpp_method(sip_cpp, r"SipTransport::sip_task_")
+    assert "txn.udp && !txn.completed ? txn.next_ms" in sip_task
+    assert ": txn.deadline_ms" in sip_task
+
+    replay = cpp_method(
+        sip_cpp, r"SipTransport::replay_completed_invite_ack_"
+    )
+    assert "completed_invite_client_.udp" in replay
+    assert "transport_matches" in replay
+    assert "if (this->remote_sip_tcp_" not in replay
+
+    video_replay = cpp_method(
+        sip_cpp, r"SipTransport::replay_completed_video_direction_ack_"
+    )
+    assert "completed.udp" in video_replay
+    assert "transport_matches" in video_replay
+    assert "if (completed.empty()) return false;" in video_replay
+
+
+def test_reinvite_proposal_cannot_leak_temporary_audio_format_to_rtp() -> None:
+    sip_h = read("sip_transport.h")
+    sip_cpp = read("sip_transport.cpp")
+
+    assert "std::atomic<uint32_t> media_proposal_epoch_{0};" in sip_h
+    assert "class ScopedMediaProposal" in sip_cpp
+    send = cpp_method(sip_cpp, r"SipTransport::send_audio_frame")
+    receive = cpp_method(sip_cpp, r"SipTransport::rtp_task_")
+    assert send.count("media_proposal_epoch_.load") >= 3
+    assert "proposal_epoch & 1U" in send
+    assert receive.count("media_proposal_epoch_.load") >= 2
+    assert "proposal_epoch & 1U" in receive
+
+    apply_answer = cpp_method(
+        sip_cpp, r"SipTransport::apply_video_direction_answer_"
+    )
+    reinvite = cpp_method(sip_cpp, r"SipTransport::handle_reinvite_")
+    assert "ScopedMediaProposal proposal_scope" in apply_answer
+    assert "ScopedMediaProposal proposal_scope" in reinvite
+    assert '"audio_renegotiation_unsupported"' in reinvite
+
+
+def test_video_direction_changes_are_worker_owned_and_stop_mid_au_promptly() -> None:
+    video = read("video_rtp.cpp")
+    direction = cpp_method(
+        video, r"VideoRtpSession::request_media_direction"
+    )
+    worker = cpp_method(video, r"VideoRtpSession::task_")
+    sender = cpp_method(video, r"VideoRtpSession::sender_task_")
+    payload = cpp_method(video, r"VideoRtpSession::send_rtp_payload_")
+
+    assert "rx_reset_requested_.store(true" in direction
+    assert "reset_reassembly_()" not in direction
+    assert "rx_reset_requested_.exchange(false" in worker
+    assert "reset_reassembly_()" in worker
+    assert "tx_access_unit_state_.store(0" not in direction
+    assert "tx_access_unit_state_.store(0" in sender
+    assert payload.count("send_enabled_.load") >= 3
+    assert "xSemaphoreGive(this->audio_pacing_)" in direction
+    assert "LockGuard source_lock(this->source_control_mutex_)" in direction
+    assert "LockGuard direction_lock(this->direction_mutex_)" in direction
+    assert "LockGuard direction_lock(this->direction_mutex_)" in worker
+    assert "this->terminate_.load(std::memory_order_acquire)" in direction
+
+
+def test_reinvite_recovery_does_not_reenter_the_media_mutex() -> None:
+    sip_cpp = read("sip_transport.cpp")
+    reinvite = cpp_method(sip_cpp, r"SipTransport::handle_reinvite_")
+    failure = reinvite[
+        reinvite.index('"Prepared video direction failed after 200')
+        :
+    ]
+
+    assert "this->request_audio_path_stop_locked_();" in failure
+    assert "this->terminate_after_invite_ack_ = true;" in failure
+    assert "signal.terminal_transaction_pending = true;" in failure
+    assert "this->send_bye_unlocked_" not in failure
+    assert 'this->send_request_("BYE")' not in failure
+    assert "this->reset_dialog_();" not in failure
+
+
+def test_reinvite_retry_after_content_type_and_dialog_loss_are_standardized() -> None:
+    sip_cpp = read("sip_transport.cpp")
+    response = sip_cpp[
+        sip_cpp.index("std::string SipTransport::format_response_")
+        : sip_cpp.index("\nbool SipTransport::send_response_")
+    ]
+    reinvite = cpp_method(sip_cpp, r"SipTransport::handle_reinvite_")
+    video_response = cpp_method(
+        sip_cpp, r"SipTransport::handle_video_direction_response_"
+    )
+
+    assert '"Retry-After: "' in response
+    assert "std::tolower" in reinvite
+    assert 'media_type != "application/sdp"' in reinvite
+    assert 'message, src, 500, "Server Internal Error", "request_pending"' in reinvite
+    assert 'message, src, 491, "Request Pending"' in reinvite
+    assert reinvite.count("esp_random() % 11U") >= 2
+    terminal = video_response[video_response.index("if (status == 408 || status == 481)") :]
+    assert "this->send_bye_unlocked_(call_id)" in terminal
+    assert "if (!bye_pending) this->reset_dialog_();" in terminal
+
+
+def test_terminal_sip_transaction_remains_owned_until_peer_completion() -> None:
+    sip_types = read("sip_types.h")
+    transport_h = read("transport.h")
+    sip_cpp = read("sip_transport.cpp")
+    fsm = read("voip_fsm.cpp")
+
+    assert "bool terminal_transaction_pending{false};" in sip_types
+    assert "bool terminal_transaction_pending{false};" in transport_h
+
+    pending = cpp_method(
+        sip_cpp, r"SipTransport::terminal_transaction_pending_locked_"
+    )
+    for token in (
+        "pending_cancel_",
+        "pending_bye_",
+        "completed_invite_.awaiting_ack",
+        "terminate_after_invite_ack_",
+    ):
+        assert token in pending
+
+    invite = cpp_method(sip_cpp, r"SipTransport::send_invite")
+    assert (
+        invite.index("terminal_transaction_pending_locked_()")
+        < invite.index("this->reset_dialog_();")
+    )
+    disconnect = cpp_method(sip_cpp, r"SipTransport::disconnect")
+    assert "terminal_transaction_pending_locked_()" in disconnect
+    assert disconnect.index("return;") < disconnect.index("this->reset_dialog_();")
+
+    start = cpp_method(fsm, r"VoipStack::start")
+    assert "snapshot().terminal_transaction_pending" in start
+    terminal_signal = cpp_method(fsm, r"VoipStack::on_sip_signal_received_")
+    assert "!msg.terminal_transaction_pending" in terminal_signal
+
+    inbound = cpp_method(sip_cpp, r"SipTransport::handle_invite_")
+    gate = inbound[
+        inbound.index("terminal_transaction_pending_locked_()")
+        : inbound.index("std::string incoming_caller_name")
+    ]
+    assert 'same_dialog ? 500 : 503' in gate
+    assert '"transaction_pending", false, 1' in gate
+
+    datagram = cpp_method(sip_cpp, r"SipTransport::handle_sip_datagram_")
+    bye = datagram[datagram.index('} else if (method == "BYE")') :]
+    assert "const bool local_bye_pending = !this->pending_bye_.empty();" in bye
+    assert "!local_bye_pending" in bye
+    assert "signal.terminal_transaction_pending = local_bye_pending;" in bye
+    assert "if (!local_bye_pending) this->reset_dialog_();" in bye
+
+    worker = cpp_method(sip_cpp, r"SipTransport::rtp_task_")
+    worker_failure = worker[worker.index('signal.reason = "rtp_worker_failed"') :]
+    assert "this->send_bye_unlocked_(signal.call_id)" in worker_failure
+    assert "signal.terminal_transaction_pending" in worker_failure
 
 
 def test_dialog_strings_are_serialized_off_the_media_hot_path() -> None:

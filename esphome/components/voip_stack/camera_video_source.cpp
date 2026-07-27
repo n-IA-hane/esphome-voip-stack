@@ -32,6 +32,15 @@ VideoCapability CameraJpegVideoSource::get_video_capability() const {
   return capability;
 }
 
+bool CameraJpegVideoSource::prepare_video(
+    const VideoCapability &capability) {
+  LockGuard lock(this->callback_mutex_);
+  return this->camera_ != nullptr && this->listener_registered_ &&
+         !this->active_ && capability.valid() && capability.is_jpeg() &&
+         capability.width <= this->width_ &&
+         capability.height <= this->height_;
+}
+
 bool CameraJpegVideoSource::start_video(
     EncodedVideoAccessUnitCallback callback, void *ctx,
     const VideoCapability &capability) {

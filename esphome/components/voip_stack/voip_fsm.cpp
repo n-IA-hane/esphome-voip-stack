@@ -159,6 +159,12 @@ void VoipStack::start() {
     ESP_LOGW(TAG, "Cannot start call: already %s", this->get_call_state_str());
     return;
   }
+  if (this->transport_ != nullptr &&
+      this->transport_->snapshot().terminal_transaction_pending) {
+    ESP_LOGW(TAG,
+             "Cannot start call: prior SIP dialog is still terminating");
+    return;
+  }
 
   std::string dial_ip = this->get_current_contact_ip();
   uint16_t dial_port = this->get_current_contact_port();
@@ -737,67 +743,20 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
   switch (msg.type) {
     case SipSignalType::INVITE: {
       const std::string &incoming_cid = in_call_id;
-      const std::string active_cid = this->get_current_call_id_();
       const CallState state = this->call_state_.load(std::memory_order_acquire);
 
-      if (state == CallState::RINGING) {
-        if (incoming_cid == active_cid) {
-          ESP_LOGD(TAG, "INVITE retransmit while RINGING - re-sending 180");
-          this->send_sip_ringing_(active_cid);
-        } else {
-          ESP_LOGW(TAG, "%s: another caller while RINGING - 486 Busy Here",
-                   this->device_name_.c_str());
-          this->send_sip_final_response_(incoming_cid, kReasonBusy);
-        }
+      if (state != CallState::IDLE) {
+        // SipTransport owns transaction collisions, retransmissions, glare and
+        // in-dialog re-INVITEs and has already replied before emitting an
+        // application signal. Never let the UI FSM terminate or replace its
+        // current dialog in response to a second transaction authority.
+        ESP_LOGW(TAG,
+                 "%s: unexpected INVITE callback while state=%s; retaining "
+                 "the current dialog",
+                 this->device_name_.c_str(), call_state_to_str(state));
         break;
       }
-      if (state == CallState::IN_CALL) {
-        if (incoming_cid == active_cid) {
-          ESP_LOGD(TAG, "INVITE retransmit while IN_CALL - re-sending 200 OK");
-          this->send_sip_answer_(active_cid);
-        } else {
-          ESP_LOGW(TAG, "%s: another caller while IN_CALL - 486 Busy Here",
-                   this->device_name_.c_str());
-          this->send_sip_final_response_(incoming_cid, kReasonBusy);
-        }
-        break;
-      }
-      if (state == CallState::CALLING) {
-        if (incoming_cid == active_cid) {
-          ESP_LOGD(TAG, "INVITE echo of our own call_id while CALLING - ignored");
-          break;
-        }
-        // Glare: both ends dialed each other. Recognised when the
-        // inbound caller_name matches our current dest. Anything else is
-        // a third-party collision (486 Busy Here).
-        const auto active = this->snapshot_call_identity_();
-        const bool is_glare = !in_caller_name.empty() &&
-                              in_caller_name == active.dest_name;
-        if (!is_glare) {
-          ESP_LOGW(TAG, "%s: collision (we are CALLING) - sending 486 Busy Here",
-                   this->device_name_.c_str());
-          this->send_sip_final_response_(incoming_cid, kReasonBusy);
-          break;
-        }
-        // Tie-break: lexicographically lower device_name wins. Symmetric
-        // on both sides so exactly one peer survives.
-        const bool we_win = this->device_name_ < in_caller_name;
-        if (we_win) {
-          ESP_LOGW(TAG, "%s: glare with %s (we win), rejecting inbound INVITE",
-                   this->device_name_.c_str(), in_caller_name.c_str());
-          this->send_sip_final_response_(incoming_cid, "glare");
-          break;
-        }
-        ESP_LOGW(TAG, "%s: glare with %s (we lose), aborting CALLING and accepting inbound",
-                 this->device_name_.c_str(), in_caller_name.c_str());
-        // Retract silently. The peer never sees our 200 OK, so its
-        // outgoing leg dies on its own timeout; a final response here would
-        // just race the peer's success.
-        this->set_audio_devices_active_(false);
-        this->set_call_state_(CallState::IDLE);
-        goto handle_incoming_invite_in_idle;
-      }
-handle_incoming_invite_in_idle:
+
       std::string cached_cid, cached_reason;
       uint32_t cached_age_ms = UINT32_MAX;
       this->snapshot_terminal_response_(&cached_cid, &cached_reason, &cached_age_ms);
@@ -900,7 +859,8 @@ handle_incoming_invite_in_idle:
       this->end_call_(CallEndReason::REMOTE_HANGUP);
       this->set_in_call_(false);
       this->set_audio_devices_active_(false);
-      if (this->transport_) this->transport_->disconnect();
+      if (this->transport_ && !msg.terminal_transaction_pending)
+        this->transport_->disconnect();
       break;
     }
 
@@ -999,7 +959,7 @@ handle_incoming_invite_in_idle:
       // SipTransport has already ACKed it and owns a retransmitted BYE; do not
       // clear that transaction here. A non-2xx 488 was reset by the transport
       // before the signal was emitted, so leaving it alone is also safe.
-      if (this->transport_ && msg.type != SipSignalType::MEDIA_INCOMPATIBLE) {
+      if (this->transport_ && !msg.terminal_transaction_pending) {
         this->transport_->disconnect();
       }
       break;
@@ -1044,8 +1004,9 @@ void VoipStack::on_connection_change_(bool connected) {
 }
 
 bool VoipStack::can_accept_session_() const {
-  // Accept new TCP sessions only when IDLE or CALLING. CALLING covers
-  // the bridged-caller case where the dest connects back.
+  // This is only the coarse application-state gate. SipTransport separately
+  // freezes the selected signaling transport while it owns an INVITE/dialog
+  // or terminal transaction, so CALLING can never replace that session.
   CallState cs = this->call_state_.load(std::memory_order_acquire);
   return cs == CallState::IDLE || cs == CallState::CALLING;
 }

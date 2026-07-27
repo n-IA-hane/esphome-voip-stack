@@ -246,6 +246,17 @@ class VoipStack : public Component {
     return false;
 #endif
   }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  bool set_video_send(bool enabled);
+  bool get_video_send() const {
+    return this->transport_ != nullptr &&
+           this->transport_->snapshot().video_send_enabled;
+  }
+  bool is_video_send_change_pending() const {
+    return this->transport_ != nullptr &&
+           this->transport_->snapshot().video_send_change_pending;
+  }
+#endif
   // True when the selected contact name matches the configured HA peer.
   // Empty ha_peer_name_ disables the check (treated as "no HA configured").
   bool is_ha_destination() const {
@@ -300,6 +311,11 @@ class VoipStack : public Component {
   void register_auto_answer_switch(switch_::Switch *sw) { this->auto_answer_switch_ = sw; }
   void register_dnd_switch(switch_::Switch *sw) { this->dnd_switch_ = sw; }
   void register_conference_ring_switch(switch_::Switch *sw) { this->conference_ring_switch_ = sw; }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  void register_video_send_switch(switch_::Switch *sw) {
+    this->video_send_switch_ = sw;
+  }
+#endif
 #endif
 #ifdef USE_NUMBER
   // Optional number-platform registration.
@@ -431,6 +447,10 @@ class VoipStack : public Component {
   static void transport_connection_callback_(void *ctx, bool connected);
   static bool transport_accept_callback_(void *ctx);
   static bool transport_dialog_active_callback_(void *ctx);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  static void transport_video_send_state_callback_(void *ctx, bool enabled,
+                                                   bool pending);
+#endif
   void on_audio_received_(const TransportAudioFrame &frame);
   void on_sip_signal_received_(const SipSignal &signal);
   bool ignore_if_idle_or_stale_(const char *message_name, const std::string &call_id) const;
@@ -553,6 +573,9 @@ class VoipStack : public Component {
   switch_::Switch *auto_answer_switch_{nullptr};
   switch_::Switch *dnd_switch_{nullptr};
   switch_::Switch *conference_ring_switch_{nullptr};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  switch_::Switch *video_send_switch_{nullptr};
+#endif
 #endif
   bool entity_restore_applied_{false};
 #ifdef USE_NUMBER
@@ -644,11 +667,18 @@ class VoipStack : public Component {
   StackType_t *rx_task_stack_{nullptr};
 #endif
   bool task_stacks_in_psram_{false};
-  // Audio must pre-empt video encode/decode/RTP work. Espressif's own
-  // audio/video scheduler gives the audio source priority 15 and the H.264
-  // encoder priority 10; keeping the same ordering prevents camera bursts
-  // from draining the short realtime microphone queue too late.
-  static constexpr uint8_t kMediaTaskPriority = 15;
+  // Audio must pre-empt video encode/decode/RTP work. ESP-Hosted's four SDIO
+  // workers run at priority 23 and can stay runnable while bidirectional media
+  // is flowing. On that compile-time-gated path, priority 24 lets the short
+  // mic queue enqueue its complete audio batch first; blocking on the hosted
+  // queue immediately yields back to its priority-23 drain workers. Native
+  // network builds retain the established priority 15.
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
+  static constexpr uint8_t kTxTaskPriority = 24;
+#else
+  static constexpr uint8_t kTxTaskPriority = 15;
+#endif
+  static constexpr uint8_t kRxTaskPriority = 15;
 
   std::atomic<float> volume_{1.0f};
   bool audio_debug_{false};
@@ -817,6 +847,11 @@ class VoipStack : public Component {
   Trigger<std::string> destination_changed_trigger_;
   Trigger<std::string> phonebook_update_trigger_;
   CallbackManager<void(CallState)> state_callback_{};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  // Bit 0 marks a fresh transport event, bit 1 is the committed send state,
+  // bit 2 means an in-dialog direction transaction is still pending.
+  std::atomic<uint8_t> video_send_state_event_{0};
+#endif
 };
 
 #ifdef USE_SWITCH
@@ -852,6 +887,18 @@ class VoipStackConferenceRingSwitch : public switch_::Switch, public Parented<Vo
  public:
   void write_state(bool state) override { this->parent_->set_conference_ring(state); }
 };
+
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+class VoipStackVideoSendSwitch : public switch_::Switch,
+                                 public Parented<VoipStack> {
+ public:
+  void write_state(bool state) override {
+    if (!this->parent_->set_video_send(state)) {
+      this->publish_state(this->parent_->get_video_send());
+    }
+  }
+};
+#endif
 #endif
 
 #ifdef USE_NUMBER

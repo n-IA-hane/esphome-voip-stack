@@ -28,11 +28,20 @@ using TransportSipSignalCallback = void (*)(void *ctx, const SipSignal &signal);
 using TransportConnectionCallback = void (*)(void *ctx, bool connected);
 using TransportAcceptCallback = bool (*)(void *ctx);
 using TransportDialogActiveCallback = bool (*)(void *ctx);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+using TransportVideoSendStateCallback =
+    void (*)(void *ctx, bool enabled, bool pending);
+#endif
 
 struct SipTransportSnapshot {
   bool running{false};
   bool rtp_running{false};
   bool video_running{false};
+  bool terminal_transaction_pending{false};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  bool video_send_enabled{false};
+  bool video_send_change_pending{false};
+#endif
   bool call_active{false};
   bool pending_invite{false};
   bool sip_tcp{false};
@@ -124,6 +133,12 @@ class SipPhoneTransport {
     (void) offer_payload_type;
     (void) max_rtp_payload;
   }
+  /// Request a direction-only in-dialog SDP update. The SIP transport remains
+  /// the single owner of the INVITE transaction and media commit.
+  virtual bool request_video_send(bool enabled) {
+    (void) enabled;
+    return false;
+  }
 #endif
 
   /// Lazy audio path. UDP binds the audio socket and spawns recv_task
@@ -159,6 +174,14 @@ class SipPhoneTransport {
     this->dialog_active_cb_ = cb;
     this->dialog_active_ctx_ = ctx;
   }
+
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  void set_video_send_state_callback(TransportVideoSendStateCallback cb,
+                                     void *ctx) {
+    this->on_video_send_state_ = cb;
+    this->on_video_send_state_ctx_ = ctx;
+  }
+#endif
 
  protected:
   /// Buffer lifetime = callback duration only.
@@ -202,6 +225,15 @@ class SipPhoneTransport {
     return this->dialog_active_cb_ != nullptr && this->dialog_active_cb_(this->dialog_active_ctx_);
   }
 
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  void emit_video_send_state_(bool enabled, bool pending) {
+    if (this->on_video_send_state_ != nullptr) {
+      this->on_video_send_state_(this->on_video_send_state_ctx_, enabled,
+                                 pending);
+    }
+  }
+#endif
+
  private:
   TransportAudioCallback on_audio_frame_{nullptr};
   void *on_audio_frame_ctx_{nullptr};
@@ -213,6 +245,10 @@ class SipPhoneTransport {
   void *should_accept_session_ctx_{nullptr};
   TransportDialogActiveCallback dialog_active_cb_{nullptr};
   void *dialog_active_ctx_{nullptr};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  TransportVideoSendStateCallback on_video_send_state_{nullptr};
+  void *on_video_send_state_ctx_{nullptr};
+#endif
 };
 
 }  // namespace voip_stack

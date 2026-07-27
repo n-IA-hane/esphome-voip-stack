@@ -34,6 +34,23 @@ static constexpr uint32_t SIP_T1_MS = 500;
 static constexpr uint32_t SIP_T2_MS = 4000;
 static constexpr uint32_t SIP_TRANSACTION_TIMEOUT_MS = 64 * SIP_T1_MS;
 
+class ScopedMediaProposal {
+ public:
+  explicit ScopedMediaProposal(std::atomic<uint32_t> &epoch) : epoch_(epoch) {
+    this->epoch_.fetch_add(1, std::memory_order_acq_rel);
+  }
+  ~ScopedMediaProposal() { this->finish(); }
+  void finish() {
+    if (!this->active_) return;
+    this->epoch_.fetch_add(1, std::memory_order_acq_rel);
+    this->active_ = false;
+  }
+
+ private:
+  std::atomic<uint32_t> &epoch_;
+  bool active_{true};
+};
+
 std::string sip_header_token(const std::string &raw, size_t max_bytes = VOIP_STACK_MAX_REASON_LEN);
 
 std::string trim_copy(const std::string &s) {
@@ -791,10 +808,20 @@ SipTransportSnapshot SipTransport::snapshot() const {
   SipTransportSnapshot out;
   out.running = this->running_.load(std::memory_order_acquire);
   out.rtp_running = this->rtp_running_.load(std::memory_order_acquire);
+  {
+    LockGuard lock(this->dialog_mutex_);
+    out.terminal_transaction_pending =
+        this->terminal_transaction_pending_locked_();
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  out.video_running =
-      this->video_session_ != nullptr && this->video_session_->is_running();
+    out.video_running =
+        this->video_session_ != nullptr && this->video_session_->is_running() &&
+        this->video_negotiated_ &&
+        (this->video_send_enabled_ || this->video_receive_enabled_);
+    out.video_send_enabled = this->video_send_enabled_;
+    out.video_send_change_pending =
+        this->pending_video_direction_invite_.pending();
 #endif
+  }
   out.call_active = this->media_active_.load(std::memory_order_acquire);
   out.pending_invite = this->outgoing_invite_pending_.load(std::memory_order_acquire);
   out.sip_tcp = this->remote_sip_tcp_.load(std::memory_order_acquire);
@@ -892,6 +919,58 @@ VideoCapability SipTransport::local_video_receive_capability_() const {
   capability.packetization_mode = capability.is_h264() ? 1 : 0;
   capability.clock_rate = 90000;
   return capability;
+}
+
+VideoCapability SipTransport::local_video_direction_capability_(
+    const VideoCapability &negotiated, bool send) const {
+  VideoCapability capability =
+      send ? this->local_video_send_capability_()
+           : this->local_video_receive_capability_();
+  if (!capability.valid() ||
+      capability.encoding != negotiated.encoding ||
+      !negotiated.valid()) {
+    return {};
+  }
+  // PT, clock and codec parameters are the shared RTP contract. Dimensions
+  // stay directional: RFC 2435 carries each JPEG frame's actual width/height
+  // in-band, and an encoder need not have the same envelope as the decoder.
+  capability.payload_type = negotiated.payload_type;
+  capability.clock_rate = negotiated.clock_rate;
+  capability.packetization_mode = negotiated.packetization_mode;
+  capability.level_asymmetry_allowed =
+      negotiated.level_asymmetry_allowed;
+  capability.max_fps =
+      std::min(capability.max_fps, negotiated.max_fps);
+  return capability;
+}
+
+bool SipTransport::prepare_video_session_locked_() {
+  if (!this->video_negotiated_) return true;
+  if (this->video_session_ == nullptr) return false;
+  if (this->video_session_->is_running()) {
+    return this->video_session_->negotiation_matches(
+               this->negotiated_video_capability_,
+               this->local_video_direction_capability_(
+                   this->negotiated_video_capability_, true),
+               this->local_video_direction_capability_(
+                   this->negotiated_video_capability_, false),
+               this->remote_video_ip_v4_, this->remote_video_rtp_port_,
+               this->remote_video_rtcp_ip_v4_,
+               this->remote_video_rtcp_port_) &&
+           this->video_session_->can_request_media_direction(
+               this->video_send_enabled_, this->video_receive_enabled_);
+  }
+  return this->video_session_->set_negotiated(
+             this->negotiated_video_capability_,
+             this->local_video_direction_capability_(
+                 this->negotiated_video_capability_, true),
+             this->local_video_direction_capability_(
+                 this->negotiated_video_capability_, false),
+             this->remote_video_ip_v4_, this->remote_video_rtp_port_,
+             this->remote_video_rtcp_ip_v4_,
+             this->remote_video_rtcp_port_, this->video_send_enabled_,
+             this->video_receive_enabled_) &&
+         this->video_session_->start(false);
 }
 
 void SipTransport::reset_video_negotiation_() {
@@ -1113,8 +1192,32 @@ void SipTransport::handle_tcp_peer_loss_() {
     LockGuard lock(this->dialog_mutex_);
     dialog_lost = !this->call_id_.empty() ||
                   this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
-                  this->media_active_.load(std::memory_order_acquire);
+                  this->media_active_.load(std::memory_order_acquire) ||
+                  this->terminal_transaction_pending_locked_();
     this->close_tcp_client_from_sip_task_();
+    // Completed transactions intentionally survive an ordinary dialog reset
+    // so UDP retransmissions can still be answered. A dead TCP connection is
+    // different: records tied to that byte stream can neither be completed nor
+    // replayed, and retaining awaiting_ack would freeze the next call for 64*T1.
+    if (!this->completed_invite_.empty() &&
+        !this->completed_invite_.udp) {
+      this->completed_invite_.clear();
+      this->terminate_after_invite_ack_ = false;
+    }
+    if (!this->completed_control_.empty() &&
+        !this->completed_control_.udp) {
+      this->completed_control_.clear();
+    }
+    if (!this->completed_invite_client_.empty() &&
+        !this->completed_invite_client_.udp) {
+      this->completed_invite_client_.clear();
+    }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+    if (!this->completed_video_direction_invite_.empty() &&
+        !this->completed_video_direction_invite_.udp) {
+      this->completed_video_direction_invite_.clear();
+    }
+#endif
     this->remote_sip_tcp_.store(false, std::memory_order_release);
     if (dialog_lost) this->reset_dialog_();
   }
@@ -1228,6 +1331,11 @@ bool SipTransport::is_connected() const {
 
 void SipTransport::disconnect() {
   LockGuard lock(this->dialog_mutex_);
+  if (this->terminal_transaction_pending_locked_()) {
+    ESP_LOGD(TAG,
+             "SIP dialog reset deferred while terminal transaction is pending");
+    return;
+  }
   this->reset_dialog_();
 }
 
@@ -1264,6 +1372,12 @@ bool SipTransport::start_audio_path_locked_() {
   this->rtp_sequence_.store(static_cast<uint16_t>(esp_random()), std::memory_order_release);
   this->rtp_timestamp_.store(esp_random(), std::memory_order_release);
   this->rtp_ssrc_ = esp_random();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+  this->audio_tx_slow_send_calls_ = 0;
+  this->audio_tx_send_failures_ = 0;
+  this->audio_tx_max_send_us_ = 0;
+  this->audio_tx_last_debug_log_ms_ = millis();
+#endif
   if (!this->bind_udp_(&this->rtp_socket_, this->rtp_port_, "RTP")) return false;
   xSemaphoreTake(this->rtp_cleanup_done_, 0);
   this->rtp_task_quiesced_.store(false, std::memory_order_release);
@@ -1272,19 +1386,20 @@ bool SipTransport::start_audio_path_locked_() {
                                       std::memory_order_release);
   xTaskNotifyGive(this->rtp_task_handle_);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  if (this->video_negotiated_ && this->video_session_ != nullptr) {
-    if (!this->video_session_->set_negotiated(
-            this->negotiated_video_capability_, this->remote_video_ip_v4_,
-            this->remote_video_rtp_port_, this->remote_video_rtcp_ip_v4_,
-            this->remote_video_rtcp_port_, this->video_send_enabled_,
-            this->video_receive_enabled_) ||
-        !this->video_session_->start()) {
+  if (this->video_negotiated_) {
+    if (!this->prepare_video_session_locked_() ||
+        !this->video_session_->request_media_direction(
+            this->video_send_enabled_, this->video_receive_enabled_)) {
       // Video is subordinate media. A late PSRAM/codec failure must not tear
       // down a healthy SIP audio dialog.
       ESP_LOGE(TAG, "Negotiated video failed to start; keeping audio active");
+      if (this->video_session_ != nullptr)
+        this->video_session_->request_stop();
       this->video_negotiated_ = false;
     }
   }
+  this->emit_video_send_state_(
+      this->video_negotiated_ && this->video_send_enabled_, false);
 #endif
   return true;
 }
@@ -1304,7 +1419,17 @@ void SipTransport::request_audio_path_stop_locked_() {
   }
   const bool audio_was_running =
       this->rtp_running_.exchange(false, std::memory_order_acq_rel);
-  if (phase == MediaLifecyclePhase::IDLE && !audio_was_running) return;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  const bool video_was_running =
+      this->video_session_ != nullptr &&
+      this->video_session_->is_running();
+#else
+  constexpr bool video_was_running = false;
+#endif
+  if (phase == MediaLifecyclePhase::IDLE && !audio_was_running &&
+      !video_was_running) {
+    return;
+  }
   this->media_lifecycle_phase_.store(MediaLifecyclePhase::CLEANING,
                                       std::memory_order_release);
   if (this->rtp_task_handle_ == nullptr) {
@@ -1409,11 +1534,27 @@ void SipTransport::reset_dialog_() {
   // negotiated field is cleared prevents a deferred main-loop start from
   // observing the old video configuration after teardown has completed.
   LockGuard media_lock(this->media_lifecycle_mutex_);
+  this->reset_dialog_media_locked_();
+}
+
+void SipTransport::reset_dialog_media_locked_() {
   this->request_audio_path_stop_locked_();
+  bool abort_queued_tcp_record = false;
   {
-    LockGuard lock(this->tcp_tx_pending_mutex_);
+    // Serialize with promote_tcp_connect(): once that path swaps the queued
+    // record it owns transmission; before the swap a reset can still retract
+    // the record without leaving an orphan request at the peer.
+    LockGuard send_lock(this->tcp_send_mutex_);
+    LockGuard pending_lock(this->tcp_tx_pending_mutex_);
+    abort_queued_tcp_record = !this->tcp_tx_pending_.empty();
     this->tcp_tx_pending_.clear();
+    if (abort_queued_tcp_record) {
+      this->tcp_connect_requested_.store(false, std::memory_order_release);
+      this->sip_tcp_client_close_requested_.store(true,
+                                                   std::memory_order_release);
+    }
   }
+  if (abort_queued_tcp_record) this->wake_sip_task_();
   this->call_id_.clear();
   this->local_tag_.clear();
   this->remote_tag_.clear();
@@ -1427,6 +1568,8 @@ void SipTransport::reset_dialog_() {
   this->last_invite_cseq_.clear();
   this->last_invite_response_.clear();
   this->last_invite_cseq_number_ = 0;
+  this->last_invite_peer_ip_v4_ = 0;
+  this->last_invite_peer_port_ = 0;
   this->caller_route_.clear();
   this->caller_name_.clear();
   this->dest_route_.clear();
@@ -1438,16 +1581,29 @@ void SipTransport::reset_dialog_() {
   this->close_media_session_();
   this->outgoing_invite_pending_.store(false, std::memory_order_release);
   this->cancel_requested_.store(false, std::memory_order_release);
+  this->terminate_after_invite_ack_ = false;
   this->clear_udp_transactions_();
   this->reset_rtp_latch_();
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  this->pending_video_direction_invite_.clear();
+  this->confirmed_local_sdp_.clear();
+  this->dialog_originated_ = false;
   this->reset_video_negotiation_();
+  this->emit_video_send_state_(false, false);
 #endif
+  this->sdp_session_id_ = 0;
+  this->sdp_session_version_ = 0;
+}
+
+bool SipTransport::terminal_transaction_pending_locked_() const {
+  return !this->pending_cancel_.empty() || !this->pending_bye_.empty() ||
+         this->completed_invite_.awaiting_ack ||
+         this->terminate_after_invite_ack_;
 }
 
 void SipTransport::remember_udp_transaction_(const std::string &method, const std::string &message,
                                              uint32_t ip_v4, uint16_t port) {
-  if (this->remote_sip_tcp_.load(std::memory_order_acquire) || message.empty() || ip_v4 == 0 || port == 0) {
+  if (message.empty() || ip_v4 == 0 || port == 0) {
     return;
   }
   UdpTransaction *txn = nullptr;
@@ -1467,6 +1623,7 @@ void SipTransport::remember_udp_transaction_(const std::string &method, const st
   txn->next_ms = now + txn->interval_ms;
   txn->deadline_ms = now + SIP_TRANSACTION_TIMEOUT_MS;
   txn->retries = 0;
+  txn->udp = !this->remote_sip_tcp_.load(std::memory_order_acquire);
   txn->completed = false;
   this->wake_sip_task_();
 }
@@ -1478,17 +1635,12 @@ void SipTransport::pump_udp_retransmits_() {
   bool ack_timed_out = false;
   std::string timed_out_call_id;
   LockGuard lock(this->dialog_mutex_);
-  if (this->remote_sip_tcp_.load(std::memory_order_acquire)) {
-    // A cached UDP server transaction must never be replayed over a later TCP
-    // dialog. Reactive duplicate handling remains available in the cache.
-    if (this->completed_invite_.udp) this->completed_invite_.awaiting_ack = false;
-    return;
-  }
   auto pump = [this, now, &reset_terminal_dialog, &invite_timed_out,
                &timed_out_call_id](UdpTransaction &txn, const char *method) {
     if (txn.empty() || txn.ip_v4 == 0 || txn.port == 0) return;
     if (time_reached(now, txn.deadline_ms)) {
-      ESP_LOGW(TAG, "SIP UDP %s transaction timed out after %u ms", method,
+      ESP_LOGW(TAG, "SIP %s %s transaction timed out after %u ms",
+               txn.udp ? "UDP" : "TCP", method,
                (unsigned) SIP_TRANSACTION_TIMEOUT_MS);
       txn.clear();
       if (std::strcmp(method, "INVITE") == 0) {
@@ -1502,6 +1654,10 @@ void SipTransport::pump_udp_retransmits_() {
     }
     if (!time_reached(now, txn.next_ms)) return;
     if (txn.completed) {
+      txn.next_ms = txn.deadline_ms;
+      return;
+    }
+    if (!txn.udp) {
       txn.next_ms = txn.deadline_ms;
       return;
     }
@@ -1522,9 +1678,10 @@ void SipTransport::pump_udp_retransmits_() {
   }
   pump(this->pending_cancel_, "CANCEL");
   pump(this->pending_bye_, "BYE");
-  if (this->completed_invite_.udp && this->completed_invite_.awaiting_ack) {
+  if (this->completed_invite_.awaiting_ack) {
     if (time_reached(now, this->completed_invite_.deadline_ms)) {
-      ESP_LOGW(TAG, "SIP UDP INVITE final response timed out waiting for ACK after %u ms",
+      ESP_LOGW(TAG, "SIP %s INVITE final response timed out waiting for ACK after %u ms",
+               this->completed_invite_.udp ? "UDP" : "TCP",
                (unsigned) SIP_TRANSACTION_TIMEOUT_MS);
       this->completed_invite_.awaiting_ack = false;
       const bool active_2xx_dialog = this->completed_invite_.status < 300 &&
@@ -1532,10 +1689,13 @@ void SipTransport::pump_udp_retransmits_() {
                                      this->call_id_ == this->completed_invite_.call_id &&
                                      this->last_invite_cseq_number_ == this->completed_invite_.cseq;
       if (active_2xx_dialog) {
+        this->terminate_after_invite_ack_ = false;
         ack_timed_out = true;
         timed_out_call_id = this->call_id_;
       }
-    } else if (time_reached(now, this->completed_invite_.next_retransmit_ms)) {
+    } else if ((this->completed_invite_.udp ||
+                this->completed_invite_.status < 300) &&
+               time_reached(now, this->completed_invite_.next_retransmit_ms)) {
       const bool sent = this->send_sip_(this->completed_invite_.response,
                                         this->completed_invite_.peer_ip_v4,
                                         this->completed_invite_.peer_port);
@@ -1558,6 +1718,12 @@ void SipTransport::pump_udp_retransmits_() {
       }
     }
   }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  // This one in-dialog client transaction is also pumped for TCP: TCP does
+  // not retransmit, but its final-response timeout and 491 retry deadline must
+  // still wake the same event-driven SIP select loop.
+  this->pump_video_direction_transaction_();
+#endif
   if (reset_terminal_dialog) {
     this->reset_dialog_();
   }
@@ -1576,7 +1742,9 @@ void SipTransport::pump_udp_retransmits_() {
     signal.status_code = 408;
     signal.call_id = timed_out_call_id;
     signal.reason = "ack_timeout";
-    this->reset_dialog_();
+    const bool bye_pending = this->send_bye_unlocked_(timed_out_call_id);
+    signal.terminal_transaction_pending = bye_pending;
+    if (!bye_pending) this->reset_dialog_();
     this->emit_sip_signal_(signal);
   }
 }
@@ -1694,7 +1862,9 @@ std::string SipTransport::wrap_sdp_envelope_(const std::string &local_ip, const 
                                              const std::string &maps, const std::string &flows,
                                              uint8_t ptime) const {
   return "v=0\r\n"
-         "o=- 0 0 IN IP4 " + local_ip + "\r\n"
+         "o=- " + std::to_string(this->sdp_session_id_) + " " +
+         std::to_string(this->sdp_session_version_) + " IN IP4 " +
+         local_ip + "\r\n"
          "s=VoIP Stack\r\n"
          "c=IN IP4 " + local_ip + "\r\n"
          "t=0 0\r\n"
@@ -1781,7 +1951,8 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
       this->local_video_receive_capability_();
   const bool send =
       answer ? this->video_send_enabled_
-             : this->video_source_ != nullptr && local_send.valid() &&
+             : this->video_send_requested_.load(std::memory_order_acquire) &&
+                   this->video_source_ != nullptr && local_send.valid() &&
                    local_send.encoding == capability.encoding;
   const bool receive =
       answer ? this->video_receive_enabled_
@@ -2291,26 +2462,33 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
         h264 && level_asymmetry_allowed[pt] &&
         (!peer_sends || local_receive.level_asymmetry_allowed) &&
         (!peer_receives || local_send.level_asymmetry_allowed);
-    bool local_sends = peer_receives && this->video_source_ != nullptr &&
-                       local_send.valid() &&
-                       ((jpeg && local_send.is_jpeg()) ||
-                        (h264 && local_send.is_h264() &&
-                         h264_level_fits(local_send.profile_level_id,
-                                         peer_profile)));
-    const bool local_receives =
-        peer_sends && this->video_sink_ != nullptr && local_receive.valid() &&
+    const bool send_compatible =
+        this->video_source_ != nullptr && local_send.valid() &&
+        ((jpeg && local_send.is_jpeg()) ||
+         (h264 && local_send.is_h264() &&
+          h264_level_fits(local_send.profile_level_id, peer_profile)));
+    const bool receive_compatible =
+        this->video_sink_ != nullptr && local_receive.valid() &&
         ((jpeg && local_receive.is_jpeg()) ||
          (h264 && local_receive.is_h264() &&
           h264_same_subprofile(local_receive.profile_level_id, peer_profile)));
+    bool local_sends =
+        this->video_send_requested_.load(std::memory_order_acquire) &&
+        peer_receives && send_compatible;
+    const bool local_receives = peer_sends && receive_compatible;
     if (h264 && !bilateral_asymmetry && local_sends && local_receives &&
         !h264_level_fits(local_send.profile_level_id,
                          local_receive.profile_level_id))
       local_sends = false;
     if (!local_sends && !local_receives) continue;
 
+    // Keep the shared RTP capability stable across direction-only re-INVITEs.
+    // Endpoint dimensions remain directional local metadata (RFC 2435 carries
+    // JPEG frame dimensions in-band), so choose the same compatible endpoint
+    // whether or not that direction is active in the current offer.
     VideoCapability negotiated =
-        local_receives ? local_receive : local_send;
-    if (local_sends && local_receives) {
+        receive_compatible ? local_receive : local_send;
+    if (send_compatible && receive_compatible) {
       negotiated.max_fps =
           std::min(local_send.max_fps, local_receive.max_fps);
     }
@@ -2414,14 +2592,17 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
   if (!body.empty()) msg += "Content-Type: application/sdp\r\n";
   msg += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
   msg += body;
-  if (method == "ACK" && !this->remote_sip_tcp_.load(std::memory_order_acquire)) {
+  if (options.formatted_request != nullptr)
+    *options.formatted_request = msg;
+  if (method == "ACK" && options.remember_invite_ack) {
     this->remember_completed_invite_ack_(msg, ip, port);
   }
   const bool sent = this->send_sip_(msg, ip, port);
   if (sent) {
     const SipEvent event = sip_event_from_method_(method);
     if (event != SipEvent::NONE) this->mark_sip_event_(event);
-    if (method == "INVITE" || method == "CANCEL" || method == "BYE") {
+    if (options.remember_transaction &&
+        (method == "INVITE" || method == "CANCEL" || method == "BYE")) {
       this->remember_udp_transaction_(method, msg, ip, port);
     }
   }
@@ -2439,12 +2620,303 @@ bool SipTransport::send_invite_error_ack_() {
   return this->send_request_("ACK", "", options);
 }
 
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+std::string SipTransport::build_video_direction_offer_(
+    bool enabled, uint32_t session_version) const {
+  if (this->confirmed_local_sdp_.empty()) return "";
+  std::string offer = this->confirmed_local_sdp_;
+
+  const size_t origin = offer.find("o=- ");
+  const size_t origin_end =
+      origin == std::string::npos ? std::string::npos
+                                  : offer.find("\r\n", origin);
+  if (origin == std::string::npos || origin_end == std::string::npos)
+    return "";
+  const size_t network = offer.find(" IN IP4 ", origin);
+  if (network == std::string::npos || network >= origin_end) return "";
+  offer.replace(origin, origin_end - origin,
+                "o=- " + std::to_string(this->sdp_session_id_) + " " +
+                    std::to_string(session_version) +
+                    offer.substr(network, origin_end - network));
+
+  const size_t video = offer.find("m=video ");
+  if (video == std::string::npos) return "";
+  const size_t video_line_end = offer.find("\r\n", video);
+  if (video_line_end == std::string::npos ||
+      offer.compare(video, sizeof("m=video 0") - 1, "m=video 0") == 0) {
+    return "";
+  }
+  size_t video_end = offer.find("\r\nm=", video_line_end);
+  if (video_end == std::string::npos) video_end = offer.size();
+  const bool receive = this->video_receive_enabled_;
+  const char *direction =
+      enabled && receive ? "a=sendrecv"
+      : enabled          ? "a=sendonly"
+      : receive          ? "a=recvonly"
+                         : "a=inactive";
+  const char *directions[] = {
+      "a=sendrecv", "a=sendonly", "a=recvonly", "a=inactive"};
+  size_t direction_pos = std::string::npos;
+  size_t direction_len = 0;
+  for (const char *candidate : directions) {
+    const size_t found = offer.find(candidate, video_line_end);
+    if (found != std::string::npos && found < video_end) {
+      direction_pos = found;
+      direction_len = std::strlen(candidate);
+      break;
+    }
+  }
+  if (direction_pos != std::string::npos) {
+    offer.replace(direction_pos, direction_len, direction);
+  } else if (video_end == offer.size() && offer.size() >= 2 &&
+             offer.compare(offer.size() - 2, 2, "\r\n") == 0) {
+    offer.append(direction).append("\r\n");
+  } else {
+    offer.insert(video_end, std::string("\r\n") + direction);
+  }
+  return offer;
+}
+
+bool SipTransport::send_video_direction_reinvite_unlocked_(bool enabled,
+                                                           bool retry) {
+  if (!this->media_active_.load(std::memory_order_acquire) ||
+      !this->video_negotiated_ || this->video_source_ == nullptr ||
+      this->remote_tag_.empty()) {
+    return false;
+  }
+  const bool previous_send =
+      retry ? this->pending_video_direction_invite_.previous_send
+            : this->video_send_enabled_;
+  const uint8_t retry_count =
+      retry ? this->pending_video_direction_invite_.retry_count : 0;
+  const uint32_t session_version =
+      retry ? this->pending_video_direction_invite_.session_version
+            : this->sdp_session_version_ + 1;
+  const std::string offer =
+      retry ? this->pending_video_direction_invite_.offered_sdp
+            : this->build_video_direction_offer_(enabled, session_version);
+  if (offer.empty()) return false;
+
+  const uint32_t cseq = this->cseq_++;
+  const std::string branch = "z9hG4bK" + make_token("");
+  std::string request;
+  SipRequestOptions options;
+  options.cseq_number = cseq;
+  options.branch_override = branch;
+  options.remember_transaction = false;
+  options.remember_invite_ack = false;
+  options.formatted_request = &request;
+  this->video_send_requested_.store(enabled, std::memory_order_release);
+  if (!this->send_request_("INVITE", offer, options)) {
+    this->video_send_requested_.store(previous_send,
+                                      std::memory_order_release);
+    this->emit_video_send_state_(previous_send, false);
+    return false;
+  }
+
+  uint32_t target_ip =
+      this->remote_ip_v4_.load(std::memory_order_acquire);
+  uint16_t target_port =
+      this->remote_sip_port_.load(std::memory_order_acquire);
+  if (!this->remote_sip_tcp_.load(std::memory_order_acquire)) {
+    uint32_t contact_ip = 0;
+    uint16_t contact_port = 0;
+    if (sip_uri_ipv4_target(this->remote_target_uri_, &contact_ip,
+                            &contact_port)) {
+      target_ip = contact_ip;
+      target_port = contact_port;
+    }
+  }
+  const uint32_t now = millis();
+  auto &pending = this->pending_video_direction_invite_;
+  pending.clear();
+  pending.branch = branch;
+  pending.offered_sdp = offer;
+  pending.cseq = cseq;
+  pending.session_version = session_version;
+  pending.response_deadline_ms = now + SIP_TRANSACTION_TIMEOUT_MS;
+  pending.target_send = enabled;
+  pending.previous_send = previous_send;
+  pending.retry_count = retry_count;
+  pending.transaction.request = request;
+  pending.transaction.ip_v4 = target_ip;
+  pending.transaction.port = target_port;
+  pending.transaction.interval_ms = SIP_T1_MS;
+  pending.transaction.next_ms = now + SIP_T1_MS;
+  pending.transaction.deadline_ms = pending.response_deadline_ms;
+  pending.transaction.udp =
+      !this->remote_sip_tcp_.load(std::memory_order_acquire);
+  pending.transaction.completed = false;
+  ESP_LOGI(TAG,
+           "SIP video direction re-INVITE sent cseq=%u target=%s retry=%u",
+           (unsigned) cseq, enabled ? "send" : "receive-only",
+           (unsigned) retry_count);
+  this->emit_video_send_state_(previous_send, true);
+  this->wake_sip_task_();
+  return true;
+}
+
+bool SipTransport::request_video_send(bool enabled) {
+  LockGuard lock(this->dialog_mutex_);
+  if (!this->running_.load(std::memory_order_acquire) ||
+      this->transport_stopping_.load(std::memory_order_acquire) ||
+      !this->media_active_.load(std::memory_order_acquire) ||
+      !this->video_negotiated_ || this->video_source_ == nullptr) {
+    ESP_LOGW(TAG,
+             "Video send direction rejected: no active negotiated video dialog");
+    return false;
+  }
+  if (this->pending_video_direction_invite_.pending() ||
+      this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
+      this->completed_invite_.awaiting_ack) {
+    ESP_LOGW(TAG, "Video send direction rejected: INVITE transaction pending");
+    return false;
+  }
+  if (enabled == this->video_send_enabled_) {
+    this->video_send_requested_.store(enabled, std::memory_order_release);
+    this->emit_video_send_state_(enabled, false);
+    return true;
+  }
+  return this->send_video_direction_reinvite_unlocked_(enabled);
+}
+
+bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
+                                                 uint32_t default_ip,
+                                                 bool *accepted_send) {
+  if (accepted_send == nullptr || sdp.empty()) return false;
+  AudioFormat old_tx;
+  AudioFormat old_rx;
+  uint8_t old_tx_pt = 0;
+  uint8_t old_rx_pt = 0;
+  this->get_media_config_(&old_tx, &old_rx, &old_tx_pt, &old_rx_pt);
+  const uint32_t old_audio_ip =
+      this->remote_rtp_ip_v4_.load(std::memory_order_acquire);
+  const uint16_t old_audio_port =
+      this->remote_rtp_port_.load(std::memory_order_acquire);
+  const auto old_media_lines = this->remote_offer_media_lines_;
+  const int8_t old_audio_index = this->remote_audio_media_index_;
+  const int8_t old_video_index = this->remote_video_media_index_;
+  const bool old_shape_overflow = this->remote_media_shape_overflow_;
+  const bool old_video_offered = this->video_offered_;
+  const bool old_video_negotiated = this->video_negotiated_;
+  const bool old_video_send = this->video_send_enabled_;
+  const bool old_video_receive = this->video_receive_enabled_;
+  const uint32_t old_video_ip = this->remote_video_ip_v4_;
+  const uint16_t old_video_port = this->remote_video_rtp_port_;
+  const uint32_t old_video_rtcp_ip = this->remote_video_rtcp_ip_v4_;
+  const uint16_t old_video_rtcp_port = this->remote_video_rtcp_port_;
+  const VideoCapability old_capability =
+      this->negotiated_video_capability_;
+
+  ScopedMediaProposal proposal_scope(this->media_proposal_epoch_);
+  const bool parsed =
+      this->learn_remote_rtp_from_sdp_(sdp, default_ip, true);
+  AudioFormat new_tx;
+  AudioFormat new_rx;
+  uint8_t new_tx_pt = 0;
+  uint8_t new_rx_pt = 0;
+  this->get_media_config_(&new_tx, &new_rx, &new_tx_pt, &new_rx_pt);
+  const uint32_t new_audio_ip =
+      this->remote_rtp_ip_v4_.load(std::memory_order_acquire);
+  const uint16_t new_audio_port =
+      this->remote_rtp_port_.load(std::memory_order_acquire);
+  const bool new_video_negotiated = this->video_negotiated_;
+  const bool new_video_send = this->video_send_enabled_;
+  const bool new_video_receive = this->video_receive_enabled_;
+  const uint32_t new_video_ip = this->remote_video_ip_v4_;
+  const uint16_t new_video_port = this->remote_video_rtp_port_;
+  const uint32_t new_video_rtcp_ip = this->remote_video_rtcp_ip_v4_;
+  const uint16_t new_video_rtcp_port = this->remote_video_rtcp_port_;
+  const VideoCapability new_capability =
+      this->negotiated_video_capability_;
+
+  this->set_media_config_(old_tx, old_rx, old_tx_pt, old_rx_pt);
+  this->remote_rtp_ip_v4_.store(old_audio_ip, std::memory_order_release);
+  this->remote_rtp_port_.store(old_audio_port, std::memory_order_release);
+  this->remote_offer_media_lines_ = old_media_lines;
+  this->remote_audio_media_index_ = old_audio_index;
+  this->remote_video_media_index_ = old_video_index;
+  this->remote_media_shape_overflow_ = old_shape_overflow;
+  this->video_offered_ = old_video_offered;
+  this->video_negotiated_ = old_video_negotiated;
+  this->video_send_enabled_ = old_video_send;
+  this->video_receive_enabled_ = old_video_receive;
+  this->remote_video_ip_v4_ = old_video_ip;
+  this->remote_video_rtp_port_ = old_video_port;
+  this->remote_video_rtcp_ip_v4_ = old_video_rtcp_ip;
+  this->remote_video_rtcp_port_ = old_video_rtcp_port;
+  this->negotiated_video_capability_ = old_capability;
+  proposal_scope.finish();
+
+  const bool same_audio =
+      parsed && new_tx == old_tx && new_rx == old_rx &&
+      new_tx_pt == old_tx_pt && new_rx_pt == old_rx_pt &&
+      new_audio_ip == old_audio_ip && new_audio_port == old_audio_port;
+  const bool same_video =
+      new_video_negotiated &&
+      new_capability.payload_type == old_capability.payload_type &&
+      new_capability.clock_rate == old_capability.clock_rate &&
+      new_capability.packetization_mode ==
+          old_capability.packetization_mode &&
+      new_capability.encoding == old_capability.encoding &&
+      new_capability.profile_level_id == old_capability.profile_level_id &&
+      new_capability.max_fps == old_capability.max_fps &&
+      new_capability.level_asymmetry_allowed ==
+          old_capability.level_asymmetry_allowed &&
+      new_video_ip == old_video_ip && new_video_port == old_video_port &&
+      new_video_rtcp_ip == old_video_rtcp_ip &&
+      new_video_rtcp_port == old_video_rtcp_port &&
+      new_video_receive == old_video_receive;
+  if (!same_audio || !same_video) return false;
+  if (new_video_send != old_video_send &&
+      (this->video_session_ == nullptr ||
+       !this->video_session_->request_send_direction(new_video_send))) {
+    return false;
+  }
+  this->video_send_enabled_ = new_video_send;
+  this->video_send_requested_.store(new_video_send,
+                                    std::memory_order_release);
+  *accepted_send = new_video_send;
+  return true;
+}
+
+bool SipTransport::replay_completed_video_direction_ack_(
+    const std::string &response, const sockaddr_in &src) {
+  auto &completed = this->completed_video_direction_invite_;
+  if (completed.empty()) return false;
+  if (millis() - completed.completed_ms > SIP_TRANSACTION_TIMEOUT_MS) {
+    completed.clear();
+    return false;
+  }
+  const std::string cseq = header_value(response, "CSeq");
+  const bool transport_matches =
+      completed.udp ==
+      !this->remote_sip_tcp_.load(std::memory_order_acquire);
+  if (response.rfind("SIP/2.0 ", 0) != 0 ||
+      cseq_method(cseq) != "INVITE" ||
+      header_value(response, "Call-ID") != completed.call_id ||
+      cseq_number(cseq) != completed.cseq ||
+      ntohl(src.sin_addr.s_addr) != completed.response_ip_v4 ||
+      !transport_matches ||
+      via_branch(header_value(response, "Via")) != completed.branch) {
+    return false;
+  }
+  ESP_LOGI(TAG,
+           "SIP video re-INVITE final retransmission replaying ACK cseq=%u",
+           (unsigned) completed.cseq);
+  this->send_sip_(completed.ack, completed.ack_ip_v4,
+                  completed.ack_port);
+  return true;
+}
+#endif
+
 std::string SipTransport::format_response_(uint16_t status, const char *reason,
                                             const std::string &via, const std::string &from,
                                             const std::string &to, const std::string &call_id,
                                             const std::string &cseq, const std::string &app_reason,
                                             const std::string &body, bool add_contact_ua,
-                                            bool add_to_tag, bool stateless) {
+                                            bool add_to_tag, bool stateless,
+                                            int retry_after_seconds) {
   std::string msg = "SIP/2.0 " + std::to_string(status) + " " + reason + "\r\n";
   msg += "Via: " + via + "\r\n";
   msg += "From: " + from + "\r\n";
@@ -2468,6 +2940,9 @@ std::string SipTransport::format_response_(uint16_t status, const char *reason,
   if (status == 405) {
     msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS\r\n";
   }
+  if (retry_after_seconds >= 0) {
+    msg += "Retry-After: " + std::to_string(retry_after_seconds) + "\r\n";
+  }
   if (!body.empty()) msg += "Content-Type: application/sdp\r\n";
   msg += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
   msg += body;
@@ -2476,13 +2951,13 @@ std::string SipTransport::format_response_(uint16_t status, const char *reason,
 
 bool SipTransport::send_response_(uint16_t status, const char *reason, const std::string &body,
                                   const std::string &app_reason) {
-  const uint32_t ip = this->remote_ip_v4_.load(std::memory_order_acquire);
-  const uint16_t port = this->remote_sip_port_.load(std::memory_order_acquire);
+  const uint32_t ip = this->last_invite_peer_ip_v4_;
+  const uint16_t port = this->last_invite_peer_port_;
   if (ip == 0 || port == 0 || this->last_invite_via_.empty()) return false;
   const std::string msg = this->format_response_(
       status, reason, response_via_with_rport(this->last_invite_via_, ip, port),
       this->last_invite_from_, this->last_invite_to_, this->call_id_,
-      this->last_invite_cseq_, app_reason, body, true, true, false);
+      this->last_invite_cseq_, app_reason, body, true, true, false, -1);
   const bool sent = this->send_sip_(msg, ip, port);
   if (!sent) return false;
   this->last_invite_response_ = msg;
@@ -2498,7 +2973,8 @@ bool SipTransport::send_response_(uint16_t status, const char *reason, const std
 bool SipTransport::send_stateless_response_(const std::string &request, const sockaddr_in &src,
                                             uint16_t status, const char *reason,
                                             const std::string &app_reason,
-                                            bool cache_transaction) {
+                                            bool cache_transaction,
+                                            int retry_after_seconds) {
   const uint32_t ip = ntohl(src.sin_addr.s_addr);
   const uint16_t port = ntohs(src.sin_port);
   const std::string via = header_values(request, "Via");
@@ -2517,7 +2993,9 @@ bool SipTransport::send_stateless_response_(const std::string &request, const so
   }
   const std::string msg = this->format_response_(
       status, reason, response_via_with_rport(via, ip, port),
-      from, response_to, call_id, cseq, app_reason, "", false, false, true);
+      from, response_to, call_id, cseq, app_reason, "", false, false, true,
+      retry_after_seconds);
+
   const bool sent = this->send_sip_(msg, ip, port);
   if (!sent) return false;
   if (cache_transaction && status >= 200) {
@@ -2537,6 +3015,11 @@ bool SipTransport::send_invite(const std::string &call_id,
       this->transport_stopping_.load(std::memory_order_acquire)) {
     return false;
   }
+  if (this->terminal_transaction_pending_locked_()) {
+    ESP_LOGW(TAG,
+             "SIP INVITE deferred: prior terminal transaction is pending");
+    return false;
+  }
   {
     LockGuard media_lock(this->media_lifecycle_mutex_);
     if (this->media_lifecycle_phase_.load(std::memory_order_acquire) !=
@@ -2549,6 +3032,12 @@ bool SipTransport::send_invite(const std::string &call_id,
   // cancelled dialog whose final response was lost.
   this->reset_dialog_();
   this->call_id_ = call_id;
+  this->sdp_session_id_ = esp_random();
+  if (this->sdp_session_id_ == 0) this->sdp_session_id_ = 1;
+  this->sdp_session_version_ = 0;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  this->dialog_originated_ = true;
+#endif
   this->caller_route_ = caller_route;
   this->caller_name_ = caller_name;
   this->dest_route_ = dest_route;
@@ -2586,6 +3075,9 @@ bool SipTransport::send_invite(const std::string &call_id,
     this->reset_dialog_();
     return false;
   }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  this->confirmed_local_sdp_ = sdp;
+#endif
   SipRequestOptions options;
   options.cseq_number = this->invite_cseq_;
   const bool sent = this->send_request_("INVITE", sdp, options);
@@ -2600,6 +3092,9 @@ bool SipTransport::send_invite(const std::string &call_id,
 
 void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
   if (!this->rtp_running_.load(std::memory_order_acquire) || pcm == nullptr || bytes == 0) return;
+  const uint32_t proposal_epoch =
+      this->media_proposal_epoch_.load(std::memory_order_acquire);
+  if ((proposal_epoch & 1U) != 0) return;
   // PCM conversion is the expensive part. Keep it outside the socket mutex;
   // teardown flips rtp_running_ first and the short final critical section
   // below prevents close-vs-send without delaying the media loop.
@@ -2619,11 +3114,21 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
     this->rtp_timestamp_.fetch_add(samples, std::memory_order_acq_rel);
     return;
   }
+  if (this->media_proposal_epoch_.load(std::memory_order_acquire) !=
+      proposal_epoch) {
+    this->rtp_timestamp_.fetch_add(samples, std::memory_order_acq_rel);
+    return;
+  }
   LockGuard socket_lock(this->rtp_socket_mutex_);
   if (!this->rtp_running_.load(std::memory_order_acquire) || this->rtp_socket_ < 0) return;
   const uint32_t ip = this->remote_rtp_ip_v4_.load(std::memory_order_acquire);
   const uint16_t port = this->remote_rtp_port_.load(std::memory_order_acquire);
   if (ip == 0 || port == 0) return;
+  if (this->media_proposal_epoch_.load(std::memory_order_acquire) !=
+      proposal_epoch) {
+    this->rtp_timestamp_.fetch_add(samples, std::memory_order_acq_rel);
+    return;
+  }
   packet[0] = 0x80;
   packet[1] = tx_payload_type & 0x7F;
   const uint16_t seq = this->rtp_sequence_.fetch_add(1, std::memory_order_acq_rel);
@@ -2643,11 +3148,37 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
   dest.sin_addr.s_addr = htonl(ip);
   dest.sin_port = htons(port);
   if (!this->rtp_running_.load(std::memory_order_acquire)) return;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+  const uint32_t send_started_us = micros();
+#endif
   const int sent = sendto(this->rtp_socket_, packet, 12 + bytes, 0,
                           reinterpret_cast<struct sockaddr *>(&dest), sizeof(dest));
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+  const uint32_t send_elapsed_us = micros() - send_started_us;
+  this->audio_tx_max_send_us_ =
+      std::max(this->audio_tx_max_send_us_, send_elapsed_us);
+  if (send_elapsed_us >= 5000U) this->audio_tx_slow_send_calls_++;
+  if (sent <= 0) this->audio_tx_send_failures_++;
+  const uint32_t now = millis();
+  if (now - this->audio_tx_last_debug_log_ms_ >= 5000U) {
+    this->audio_tx_last_debug_log_ms_ = now;
+    ESP_LOGI(TAG,
+             "Audio RTP TX: packets=%u slow_send=%u send_fail=%u "
+             "max_send_us=%u",
+             (unsigned) this->rtp_tx_packets_.load(
+                 std::memory_order_acquire),
+             (unsigned) this->audio_tx_slow_send_calls_,
+             (unsigned) this->audio_tx_send_failures_,
+             (unsigned) this->audio_tx_max_send_us_);
+  }
+#endif
   if (sent > 0) {
     this->rtp_tx_packets_.fetch_add(1, std::memory_order_acq_rel);
     this->rtp_tx_bytes_.fetch_add(static_cast<uint32_t>(sent), std::memory_order_acq_rel);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
+    if (this->video_session_ != nullptr)
+      this->video_session_->notify_audio_packet_sent();
+#endif
   }
 }
 
@@ -2689,7 +3220,12 @@ bool SipTransport::send_answer(const std::string &call_id,
     return sent;
   }
   const bool sent = this->send_response_(200, "OK", answer);
-  if (sent) this->open_media_session_();
+  if (sent) {
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+    this->confirmed_local_sdp_ = answer;
+#endif
+    this->open_media_session_();
+  }
   return sent;
 }
 
@@ -2702,6 +3238,32 @@ bool SipTransport::send_cancel_unlocked_(const std::string &call_id) {
   if (!call_id.empty()) this->call_id_ = call_id;
   if (!this->outgoing_invite_pending_.load(std::memory_order_acquire)) {
     return this->send_bye_unlocked_(call_id);
+  }
+  if (this->remote_sip_tcp_.load(std::memory_order_acquire)) {
+    bool cancelled_before_flush = false;
+    {
+      // This lock is shared with promote_tcp_connect(). If the INVITE still
+      // occupies the one pre-connect slot, it has not reached the wire and
+      // must be retracted rather than followed by a meaningless CANCEL. If
+      // promotion already owns/sent it, release the lock and send a real
+      // CANCEL on the established stream below.
+      LockGuard send_lock(this->tcp_send_mutex_);
+      LockGuard pending_lock(this->tcp_tx_pending_mutex_);
+      if (this->tcp_tx_pending_.rfind("INVITE ", 0) == 0 &&
+          header_value(this->tcp_tx_pending_, "Call-ID") == this->call_id_) {
+        this->tcp_tx_pending_.clear();
+        this->tcp_connect_requested_.store(false, std::memory_order_release);
+        this->sip_tcp_client_close_requested_.store(
+            true, std::memory_order_release);
+        cancelled_before_flush = true;
+      }
+    }
+    if (cancelled_before_flush) {
+      ESP_LOGI(TAG, "SIP TCP INVITE cancelled before first byte was sent");
+      this->reset_dialog_();
+      this->wake_sip_task_();
+      return true;
+    }
   }
   SipRequestOptions options;
   options.cseq_number = this->invite_cseq_;
@@ -2819,12 +3381,17 @@ void SipTransport::remember_completed_response_(const std::string &request, uint
   completed->retransmit_interval_ms = SIP_T1_MS;
   completed->retransmits = 0;
   completed->udp = !this->remote_sip_tcp_.load(std::memory_order_acquire);
-  completed->awaiting_ack = method == "INVITE" && completed->udp;
+  // Every final INVITE response is completed by ACK. UDP retransmits every
+  // final response; 2xx is retransmitted by the UAS core even on TCP because
+  // its ACK is a separate transaction.
+  completed->awaiting_ack = method == "INVITE";
   if (completed->awaiting_ack) this->wake_sip_task_();
 }
 
-uint16_t SipTransport::acknowledge_completed_invite_(const std::string &request,
-                                                     const sockaddr_in &src) {
+uint16_t SipTransport::acknowledge_completed_invite_(
+    const std::string &request, const sockaddr_in &src,
+    bool *terminate_after_ack) {
+  if (terminate_after_ack != nullptr) *terminate_after_ack = false;
   if (this->completed_invite_.empty()) return 0;
   const uint32_t now = millis();
   if (time_reached(now, this->completed_invite_.completed_ms + SIP_TRANSACTION_TIMEOUT_MS)) {
@@ -2846,6 +3413,11 @@ uint16_t SipTransport::acknowledge_completed_invite_(const std::string &request,
        this->completed_invite_.branch.empty() || branch == this->completed_invite_.branch);
   if (!transaction_matches) return 0;
   this->completed_invite_.awaiting_ack = false;
+  if (this->completed_invite_.status < 300 &&
+      this->terminate_after_invite_ack_) {
+    this->terminate_after_invite_ack_ = false;
+    if (terminate_after_ack != nullptr) *terminate_after_ack = true;
+  }
   ESP_LOGI(TAG, "SIP ACK completed cached INVITE server transaction call_id=%s",
            this->completed_invite_.call_id.c_str());
   return this->completed_invite_.status;
@@ -2854,7 +3426,6 @@ uint16_t SipTransport::acknowledge_completed_invite_(const std::string &request,
 bool SipTransport::replay_completed_invite_ack_(const std::string &response,
                                                 const sockaddr_in &src) {
   if (this->completed_invite_client_.empty()) return false;
-  if (this->remote_sip_tcp_.load(std::memory_order_acquire)) return false;
   if (millis() - this->completed_invite_client_.completed_ms > SIP_TRANSACTION_TIMEOUT_MS) {
     this->completed_invite_client_.clear();
     return false;
@@ -2863,10 +3434,14 @@ bool SipTransport::replay_completed_invite_ack_(const std::string &response,
   const int status = std::atoi(response.substr(8, 3).c_str());
   const std::string cseq = header_value(response, "CSeq");
   const uint32_t peer_ip = ntohl(src.sin_addr.s_addr);
+  const bool transport_matches =
+      this->completed_invite_client_.udp ==
+      !this->remote_sip_tcp_.load(std::memory_order_acquire);
   if (status < 200 || cseq_method(cseq) != "INVITE" ||
       header_value(response, "Call-ID") != this->completed_invite_client_.call_id ||
       cseq_number(cseq) != this->completed_invite_client_.cseq ||
       peer_ip != this->completed_invite_client_.response_ip_v4 ||
+      !transport_matches ||
       (!this->completed_invite_client_.branch.empty() &&
        via_branch(header_value(response, "Via")) != this->completed_invite_client_.branch)) {
     return false;
@@ -2892,6 +3467,8 @@ void SipTransport::remember_completed_invite_ack_(const std::string &request,
   this->completed_invite_client_.ack_ip_v4 = target_ip_v4;
   this->completed_invite_client_.ack_port = target_port;
   this->completed_invite_client_.completed_ms = millis();
+  this->completed_invite_client_.udp =
+      !this->remote_sip_tcp_.load(std::memory_order_acquire);
 }
 
 bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in &src) {
@@ -2912,6 +3489,15 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   if (this->replay_completed_response_(message, src, "INVITE")) {
     return true;
   }
+  if (this->terminal_transaction_pending_locked_()) {
+    const bool same_dialog = incoming_call_id == this->call_id_;
+    ESP_LOGW(TAG,
+             "SIP INVITE deferred while prior dialog transaction completes");
+    return this->send_stateless_response_(
+        message, src, same_dialog ? 500 : 503,
+        same_dialog ? "Server Internal Error" : "Service Unavailable",
+        "transaction_pending", false, 1);
+  }
   std::string incoming_caller_name =
       sip_header_token(header_value(message, "X-Voip-Stack-Caller-Name"), VOIP_STACK_MAX_NAME_LEN);
   std::string incoming_dest_name =
@@ -2921,15 +3507,6 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   }
   if (incoming_dest_name.empty()) {
     incoming_dest_name = sip_header_token(sip_user_from_header(incoming_to), VOIP_STACK_MAX_NAME_LEN);
-  }
-  if (!incoming_call_id.empty() && !this->call_id_.empty() && incoming_call_id != this->call_id_ &&
-      this->last_invite_cseq_number_ == 0 &&
-      !this->media_active_.load(std::memory_order_acquire) && !this->dialog_active_()) {
-    // The FSM has already ended an outbound call, but its CANCEL/BYE client
-    // transaction may still be waiting for a response. Prefer a real new
-    // inbound call over keeping that terminal dialog as a false busy lock.
-    ESP_LOGI(TAG, "SIP releasing terminal outbound dialog for new inbound INVITE");
-    this->reset_dialog_();
   }
   if (!incoming_call_id.empty() && !this->call_id_.empty() && incoming_call_id != this->call_id_) {
     const uint32_t active_peer_ip = this->remote_ip_v4_.load(std::memory_order_acquire);
@@ -2941,16 +3518,14 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
                this->call_id_.c_str(), incoming_call_id.c_str());
       return this->send_stateless_response_(message, src, 486, "Busy Here", "busy", true);
     }
-    const bool local_invite_wins = this->caller_name_ < incoming_caller_name ||
-                                   (this->caller_name_ == incoming_caller_name &&
-                                    this->call_id_ < incoming_call_id);
-    if (local_invite_wins) {
-      ESP_LOGW(TAG, "SIP glare with %s: retaining local INVITE", incoming_caller_name.c_str());
-      return this->send_stateless_response_(message, src, 486, "Busy Here", "glare", true);
-    }
-    ESP_LOGW(TAG, "SIP glare with %s: cancelling local INVITE", incoming_caller_name.c_str());
-    this->send_cancel_unlocked_(this->call_id_);
-    this->reset_dialog_();
+    // One transport owns one dialog. Do not destroy the active client INVITE
+    // (and its CANCEL/ACK lifetime) to accept a crossed initial INVITE in the
+    // same storage. Ask the peer to retry after this transaction completes.
+    ESP_LOGW(TAG, "SIP glare with %s: retaining local INVITE",
+             incoming_caller_name.c_str());
+    return this->send_stateless_response_(
+        message, src, 491, "Request Pending", "glare", true,
+        static_cast<int>(esp_random() % 3U));
   }
   const uint32_t active_peer_ip = this->remote_ip_v4_.load(std::memory_order_acquire);
   if (!this->call_id_.empty() && incoming_call_id == this->call_id_ && active_peer_ip != 0 &&
@@ -2960,9 +3535,21 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
     return this->send_stateless_response_(message, src, 481,
                                           "Call/Transaction Does Not Exist");
   }
-  if (!incoming_call_id.empty() && incoming_call_id == this->call_id_ &&
-      this->last_invite_cseq_number_ != 0 &&
-      incoming_cseq_number != this->last_invite_cseq_number_) {
+  const bool in_dialog_invite =
+      !incoming_call_id.empty() && incoming_call_id == this->call_id_ &&
+      this->media_active_.load(std::memory_order_acquire) &&
+      !this->remote_tag_.empty() && !this->local_tag_.empty() &&
+      tag_from_header(incoming_from) == this->remote_tag_ &&
+      tag_from_header(incoming_to) == this->local_tag_;
+  if (in_dialog_invite &&
+      incoming_cseq_number == this->last_invite_cseq_number_ &&
+      via_branch(incoming_via) != via_branch(this->last_invite_via_)) {
+    ESP_LOGW(TAG, "SIP merged in-dialog INVITE rejected for call_id=%s",
+             incoming_call_id.c_str());
+    return this->send_stateless_response_(message, src, 482,
+                                          "Loop Detected");
+  }
+  if (in_dialog_invite) {
     return this->handle_reinvite_(message, src);
   }
   if (!incoming_call_id.empty() && incoming_call_id == this->call_id_ &&
@@ -2995,11 +3582,19 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   this->remote_ip_v4_.store(src_ip, std::memory_order_release);
   this->remote_sip_port_.store(ntohs(src.sin_port), std::memory_order_release);
   this->call_id_ = incoming_call_id;
+  this->sdp_session_id_ = esp_random();
+  if (this->sdp_session_id_ == 0) this->sdp_session_id_ = 1;
+  this->sdp_session_version_ = 0;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  this->dialog_originated_ = false;
+#endif
   this->last_invite_via_ = incoming_via;
   this->last_invite_from_ = incoming_from;
   this->last_invite_to_ = incoming_to;
   this->last_invite_cseq_ = incoming_cseq;
   this->last_invite_cseq_number_ = incoming_cseq_number;
+  this->last_invite_peer_ip_v4_ = src_ip;
+  this->last_invite_peer_port_ = ntohs(src.sin_port);
   this->remote_tag_ = tag_from_header(this->last_invite_from_);
   if (this->local_tag_.empty()) this->local_tag_ = make_token("tag");
   const std::string remote_identity_uri = strip_angle_uri(this->last_invite_from_);
@@ -3074,8 +3669,11 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   const std::string content_type =
       trim_copy(header_value(message, "Content-Type"));
   const size_t content_type_end = content_type.find(';');
-  const std::string media_type =
-      content_type.substr(0, content_type_end);
+  std::string media_type = content_type.substr(0, content_type_end);
+  for (char &ch : media_type) {
+    ch = static_cast<char>(
+        std::tolower(static_cast<unsigned char>(ch)));
+  }
 
   // RFC 3261 section 14: a re-INVITE belongs to the existing dialog and must
   // not create a second call lifecycle. Reject stale/cross-dialog requests
@@ -3088,16 +3686,24 @@ bool SipTransport::handle_reinvite_(const std::string &message,
         message, src, 481, "Call/Transaction Does Not Exist", "", true);
   }
   if (this->completed_invite_.awaiting_ack) {
-    // This transport intentionally owns one INVITE server transaction. Do not
-    // let a new in-dialog offer evict the final response before the peer ACKs
-    // it. 491 is the interoperable bounded response for this overlap and is
-    // deliberately not cached in the occupied transaction slot.
+    // RFC 3261 section 14.2: a UAS that receives another INVITE before the
+    // prior INVITE transaction is ACKed answers 500 with randomized
+    // Retry-After. The occupied transaction cache must not be replaced.
+    return this->send_stateless_response_(
+        message, src, 500, "Server Internal Error", "request_pending",
+        false, static_cast<int>(esp_random() % 11U));
+  }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  if (this->pending_video_direction_invite_.pending()) {
+    // 491 is reserved for glare with our own outstanding in-dialog INVITE.
     return this->send_stateless_response_(
         message, src, 491, "Request Pending");
   }
+#endif
   if (incoming_cseq <= this->last_invite_cseq_number_) {
     return this->send_stateless_response_(
-        message, src, 500, "Server Internal Error", "stale_cseq", true);
+        message, src, 500, "Server Internal Error", "stale_cseq", true,
+        static_cast<int>(esp_random() % 11U));
   }
   if (media_type != "application/sdp" || message_body(message).empty()) {
     return this->send_stateless_response_(
@@ -3126,6 +3732,10 @@ bool SipTransport::handle_reinvite_(const std::string &message,
       this->remote_rtp_ip_v4_.load(std::memory_order_acquire);
   const uint16_t old_audio_port =
       this->remote_rtp_port_.load(std::memory_order_acquire);
+  const auto old_media_lines = this->remote_offer_media_lines_;
+  const int8_t old_audio_index = this->remote_audio_media_index_;
+  const int8_t old_video_index = this->remote_video_media_index_;
+  const bool old_shape_overflow = this->remote_media_shape_overflow_;
   const std::string old_last_invite_via = this->last_invite_via_;
   const std::string old_last_invite_from = this->last_invite_from_;
   const std::string old_last_invite_to = this->last_invite_to_;
@@ -3134,6 +3744,10 @@ bool SipTransport::handle_reinvite_(const std::string &message,
       this->last_invite_response_;
   const uint32_t old_last_invite_cseq_number =
       this->last_invite_cseq_number_;
+  const uint32_t old_last_invite_peer_ip =
+      this->last_invite_peer_ip_v4_;
+  const uint16_t old_last_invite_peer_port =
+      this->last_invite_peer_port_;
   const std::string old_remote_target_uri = this->remote_target_uri_;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   const bool old_video_offered = this->video_offered_;
@@ -3152,6 +3766,10 @@ bool SipTransport::handle_reinvite_(const std::string &message,
     this->set_media_config_(old_tx, old_rx, old_tx_pt, old_rx_pt);
     this->remote_rtp_ip_v4_.store(old_audio_ip, std::memory_order_release);
     this->remote_rtp_port_.store(old_audio_port, std::memory_order_release);
+    this->remote_offer_media_lines_ = old_media_lines;
+    this->remote_audio_media_index_ = old_audio_index;
+    this->remote_video_media_index_ = old_video_index;
+    this->remote_media_shape_overflow_ = old_shape_overflow;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
     this->video_offered_ = old_video_offered;
     this->video_negotiated_ = old_video_negotiated;
@@ -3171,9 +3789,12 @@ bool SipTransport::handle_reinvite_(const std::string &message,
     this->last_invite_cseq_ = old_last_invite_cseq;
     this->last_invite_response_ = old_last_invite_response;
     this->last_invite_cseq_number_ = old_last_invite_cseq_number;
+    this->last_invite_peer_ip_v4_ = old_last_invite_peer_ip;
+    this->last_invite_peer_port_ = old_last_invite_peer_port;
     this->remote_target_uri_ = old_remote_target_uri;
   };
 
+  ScopedMediaProposal proposal_scope(this->media_proposal_epoch_);
   if (!this->learn_remote_rtp_from_sdp_(message_body(message), src_ip)) {
     restore_old_media();
     return this->send_stateless_response_(
@@ -3181,7 +3802,14 @@ bool SipTransport::handle_reinvite_(const std::string &message,
         true);
   }
 
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  const uint32_t proposed_sdp_version = this->sdp_session_version_ + 1;
+  this->sdp_session_version_ = proposed_sdp_version;
+#endif
   const std::string answer = this->build_sdp_answer_();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  this->sdp_session_version_ = proposed_sdp_version - 1;
+#endif
   if (answer.empty()) {
     restore_old_media();
     return this->send_stateless_response_(
@@ -3214,6 +3842,17 @@ bool SipTransport::handle_reinvite_(const std::string &message,
       this->negotiated_video_capability_;
 #endif
   restore_old_media();
+  proposal_scope.finish();
+
+  const bool same_audio =
+      new_tx == old_tx && new_rx == old_rx &&
+      new_tx_pt == old_tx_pt && new_rx_pt == old_rx_pt &&
+      new_audio_ip == old_audio_ip && new_audio_port == old_audio_port;
+  if (!same_audio) {
+    return this->send_stateless_response_(
+        message, src, 488, "Not Acceptable Here",
+        "audio_renegotiation_unsupported", true);
+  }
 
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   // Keep one authoritative media child. A video attachment can be admitted
@@ -3224,8 +3863,11 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   const bool same_video_media =
       old_video_capability.payload_type == new_video_capability.payload_type &&
       old_video_capability.clock_rate == new_video_capability.clock_rate &&
+      old_video_capability.max_fps == new_video_capability.max_fps &&
       old_video_capability.packetization_mode ==
           new_video_capability.packetization_mode &&
+      old_video_capability.level_asymmetry_allowed ==
+          new_video_capability.level_asymmetry_allowed &&
       old_video_capability.encoding == new_video_capability.encoding &&
       old_video_capability.profile_level_id ==
           new_video_capability.profile_level_id &&
@@ -3244,37 +3886,71 @@ bool SipTransport::handle_reinvite_(const std::string &message,
         "video_renegotiation_unsupported", true);
   }
 
-  bool new_video_prestarted = false;
+  bool new_video_prepared = false;
+  bool video_direction_requested = false;
+  bool video_remove_requested = false;
   const bool replace_video_direction =
       old_video_negotiated && new_video_negotiated &&
       !same_video_direction;
-  if ((!old_video_negotiated && new_video_negotiated) ||
-      replace_video_direction) {
-    if (replace_video_direction && this->video_session_ != nullptr)
-      this->video_session_->stop();
-    if (this->video_session_ == nullptr ||
-        !this->video_session_->set_negotiated(
-            new_video_capability, new_video_ip, new_video_port,
-            new_video_rtcp_ip, new_video_rtcp_port, new_video_send,
-            new_video_receive) ||
-        !this->video_session_->start()) {
-      if (this->video_session_ != nullptr) this->video_session_->stop();
-      if (replace_video_direction && this->video_session_ != nullptr &&
-          (!this->video_session_->set_negotiated(
-               old_video_capability, old_video_ip, old_video_port,
-               old_video_rtcp_ip, old_video_rtcp_port, old_video_send,
-               old_video_receive) ||
-           !this->video_session_->start())) {
-        ESP_LOGE(TAG,
-                 "Video direction re-INVITE rollback failed; retaining the "
-                 "established audio dialog");
-      }
+  if (!old_video_negotiated && new_video_negotiated) {
+    if (this->video_session_ == nullptr) {
       restore_old_media();
       return this->send_stateless_response_(
           message, src, 488, "Not Acceptable Here",
           "video_resources_unavailable", true);
     }
-    new_video_prestarted = true;
+    if (this->video_session_->is_running()) {
+      if (!this->video_session_->negotiation_matches(
+              new_video_capability,
+              this->local_video_direction_capability_(
+                  new_video_capability, true),
+              this->local_video_direction_capability_(
+                  new_video_capability, false),
+              new_video_ip, new_video_port,
+              new_video_rtcp_ip, new_video_rtcp_port) ||
+          !this->video_session_->can_request_media_direction(
+              new_video_send, new_video_receive)) {
+        restore_old_media();
+        return this->send_stateless_response_(
+            message, src, 488, "Not Acceptable Here",
+            "video_renegotiation_unsupported", true);
+      }
+      video_direction_requested = true;
+    } else if (!this->video_session_->set_negotiated(
+                   new_video_capability,
+                   this->local_video_direction_capability_(
+                       new_video_capability, true),
+                   this->local_video_direction_capability_(
+                       new_video_capability, false),
+                   new_video_ip, new_video_port,
+                   new_video_rtcp_ip, new_video_rtcp_port, new_video_send,
+                   new_video_receive) ||
+               !this->video_session_->start(false)) {
+      if (this->video_session_ != nullptr)
+        this->video_session_->request_stop();
+      restore_old_media();
+      return this->send_stateless_response_(
+          message, src, 488, "Not Acceptable Here",
+          "video_resources_unavailable", true);
+    } else {
+      new_video_prepared = true;
+    }
+    video_direction_requested = true;
+  } else if ((replace_video_direction ||
+              (old_video_negotiated && !new_video_negotiated)) &&
+             (this->video_session_ == nullptr ||
+              !this->video_session_->can_request_media_direction(
+                  new_video_negotiated && new_video_send,
+                  new_video_negotiated && new_video_receive))) {
+    restore_old_media();
+    return this->send_stateless_response_(
+        message, src, 488, "Not Acceptable Here",
+        "video_resources_unavailable", true);
+  } else if (replace_video_direction ||
+             (old_video_negotiated && !new_video_negotiated)) {
+    video_remove_requested =
+        old_video_negotiated && !new_video_negotiated;
+    video_direction_requested = !video_remove_requested;
   }
 #endif
 
@@ -3283,6 +3959,8 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   this->last_invite_to_ = incoming_to;
   this->last_invite_cseq_ = header_value(message, "CSeq");
   this->last_invite_cseq_number_ = incoming_cseq;
+  this->last_invite_peer_ip_v4_ = src_ip;
+  this->last_invite_peer_port_ = ntohs(src.sin_port);
   const std::string refreshed_target =
       strip_angle_uri(header_value(message, "Contact"));
   if (!refreshed_target.empty())
@@ -3293,23 +3971,40 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   // media is left untouched until this offer/answer commits.
   if (!this->send_response_(200, "OK", answer)) {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-    if (new_video_prestarted && this->video_session_ != nullptr) {
-      this->video_session_->stop();
-      if (old_video_negotiated &&
-          (!this->video_session_->set_negotiated(
-               old_video_capability, old_video_ip, old_video_port,
-               old_video_rtcp_ip, old_video_rtcp_port, old_video_send,
-               old_video_receive) ||
-           !this->video_session_->start())) {
-        ESP_LOGE(TAG,
-                 "Video media rollback failed after SIP response failure");
-      }
-    }
+    if (new_video_prepared && this->video_session_ != nullptr)
+      this->video_session_->request_stop();
 #endif
     restore_old_media();
     restore_old_dialog_metadata();
     return false;
   }
+
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  // The final response commits offer/answer. Only now may the prepared camera
+  // producer or receive presentation become active.
+  if (video_remove_requested) {
+    this->video_session_->request_stop();
+  } else if (video_direction_requested &&
+      !this->video_session_->request_media_direction(
+          new_video_negotiated && new_video_send,
+          new_video_negotiated && new_video_receive)) {
+    ESP_LOGE(TAG,
+             "Prepared video direction failed after 200; terminating dialog");
+    // A UAS must not originate BYE before the ACK for its 2xx response. Gate
+    // media now and let the ACK path (or its timeout) terminate the dialog.
+    // media_lifecycle_mutex_ is already held, so use the lock-aware primitive.
+    this->request_audio_path_stop_locked_();
+    this->terminate_after_invite_ack_ = true;
+    SipSignal signal;
+    signal.type = SipSignalType::MEDIA_INCOMPATIBLE;
+    signal.status_code = 500;
+    signal.call_id = this->call_id_;
+    signal.reason = "video_activation_failed";
+    signal.terminal_transaction_pending = true;
+    this->emit_sip_signal_(signal);
+    return true;
+  }
+#endif
 
   this->set_media_config_(new_tx, new_rx, new_tx_pt, new_rx_pt);
   this->remote_rtp_ip_v4_.store(new_audio_ip, std::memory_order_release);
@@ -3325,15 +4020,242 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   this->remote_video_rtcp_ip_v4_ = new_video_rtcp_ip;
   this->remote_video_rtcp_port_ = new_video_rtcp_port;
   this->negotiated_video_capability_ = new_video_capability;
-  if (this->video_session_ != nullptr && old_video_negotiated &&
-      !new_video_negotiated) {
-    this->video_session_->stop();
-  }
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  this->sdp_session_version_ = proposed_sdp_version;
+  this->confirmed_local_sdp_ = answer;
+  this->emit_video_send_state_(
+      this->video_negotiated_ && this->video_send_enabled_, false);
 #endif
   ESP_LOGI(TAG, "SIP re-INVITE accepted in existing dialog call_id=%s cseq=%u",
            this->call_id_.c_str(), (unsigned) incoming_cseq);
   return true;
 }
+
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+bool SipTransport::handle_video_direction_response_(
+    const std::string &message, const sockaddr_in &src, uint16_t status,
+    uint32_t response_cseq) {
+  auto &pending = this->pending_video_direction_invite_;
+  if (!pending.pending() || pending.waiting_retry ||
+      response_cseq != pending.cseq) {
+    return false;
+  }
+  const uint32_t src_ip = ntohl(src.sin_addr.s_addr);
+  const bool tcp = !pending.transaction.udp;
+  const uint32_t expected_response_ip =
+      tcp ? this->remote_ip_v4_.load(std::memory_order_acquire)
+          : pending.transaction.ip_v4;
+  if (header_value(message, "Call-ID") != this->call_id_ ||
+      src_ip != expected_response_ip ||
+      via_branch(header_value(message, "Via")) != pending.branch ||
+      tag_from_header(header_value(message, "From")) != this->local_tag_ ||
+      tag_from_header(header_value(message, "To")) != this->remote_tag_) {
+    ESP_LOGD(TAG, "SIP video re-INVITE response ignored: transaction mismatch");
+    return true;
+  }
+
+  this->mark_sip_event_(SipEvent::RESPONSE, status);
+  if (status < 200) {
+    pending.transaction.completed = true;
+    pending.transaction.next_ms = pending.response_deadline_ms;
+    return true;
+  }
+
+  if (status < 300) {
+    const std::string contact =
+        strip_angle_uri(header_value(message, "Contact"));
+    if (!contact.empty()) this->remote_target_uri_ = contact;
+  }
+  std::string ack;
+  SipRequestOptions ack_options;
+  ack_options.cseq_number = pending.cseq;
+  ack_options.cseq_method = "ACK";
+  ack_options.branch_override =
+      status < 300 ? "z9hG4bK" + make_token("") : pending.branch;
+  ack_options.remember_transaction = false;
+  ack_options.remember_invite_ack = false;
+  ack_options.formatted_request = &ack;
+  const bool ack_sent = this->send_request_("ACK", "", ack_options);
+  if (!ack_sent) {
+    ESP_LOGW(TAG,
+             "SIP video re-INVITE ACK initial send failed; retaining it for "
+             "a retransmitted final response");
+  }
+  if (!ack.empty()) {
+    auto &completed = this->completed_video_direction_invite_;
+    completed.clear();
+    completed.call_id = this->call_id_;
+    completed.cseq = pending.cseq;
+    completed.branch = pending.branch;
+    completed.ack = ack;
+    completed.response_ip_v4 = src_ip;
+    uint32_t ack_ip =
+        this->remote_ip_v4_.load(std::memory_order_acquire);
+    uint16_t ack_port =
+        this->remote_sip_port_.load(std::memory_order_acquire);
+    uint32_t contact_ip = 0;
+    uint16_t contact_port = 0;
+    if (sip_uri_ipv4_target(this->remote_target_uri_, &contact_ip,
+                            &contact_port)) {
+      ack_ip = contact_ip;
+      ack_port = contact_port;
+    }
+    completed.ack_ip_v4 = ack_ip;
+    completed.ack_port = ack_port;
+    completed.completed_ms = millis();
+    completed.udp =
+        !this->remote_sip_tcp_.load(std::memory_order_acquire);
+  }
+
+  const bool previous_send = pending.previous_send;
+  const bool target_send = pending.target_send;
+  const uint32_t accepted_version = pending.session_version;
+  const std::string accepted_offer = pending.offered_sdp;
+  const uint8_t retry_count = pending.retry_count;
+  if (status >= 200 && status < 300) {
+    bool accepted_send = previous_send;
+    bool media_ok = false;
+    {
+      LockGuard media_lock(this->media_lifecycle_mutex_);
+      media_ok = this->apply_video_direction_answer_(
+          message_body(message), src_ip, &accepted_send);
+    }
+    if (!media_ok) {
+      ESP_LOGE(TAG,
+               "SIP video re-INVITE 2xx changed established media; "
+               "terminating the invalid dialog");
+      pending.clear();
+      this->video_send_requested_.store(previous_send,
+                                        std::memory_order_release);
+      this->emit_video_send_state_(previous_send, false);
+      const bool bye_sent = this->send_bye_unlocked_(this->call_id_);
+      SipSignal signal;
+      signal.type = SipSignalType::MEDIA_INCOMPATIBLE;
+      signal.status_code = 488;
+      signal.call_id = this->call_id_;
+      signal.reason = "video_reinvite_answer_incompatible";
+      signal.terminal_transaction_pending = bye_sent;
+      if (!bye_sent) this->reset_dialog_();
+      this->emit_sip_signal_(signal);
+      return true;
+    }
+    this->sdp_session_version_ = accepted_version;
+    this->confirmed_local_sdp_ = accepted_offer;
+    pending.clear();
+    this->emit_video_send_state_(accepted_send, false);
+    ESP_LOGI(TAG,
+             "SIP video direction committed cseq=%u requested=%s accepted=%s",
+             (unsigned) response_cseq, target_send ? "send" : "receive-only",
+             accepted_send ? "send" : "receive-only");
+    return true;
+  }
+
+  if (status == 491 && retry_count == 0) {
+    const uint32_t retry_delay =
+        this->dialog_originated_ ? 2100U + (esp_random() % 1901U)
+                                 : esp_random() % 2001U;
+    pending.transaction.clear();
+    pending.cseq = 0;
+    pending.branch.clear();
+    pending.response_deadline_ms = 0;
+    pending.waiting_retry = true;
+    pending.retry_count = 1;
+    pending.retry_at_ms = millis() + retry_delay;
+    ESP_LOGI(TAG,
+             "SIP video direction glare; one retry scheduled in %u ms",
+             (unsigned) retry_delay);
+    this->wake_sip_task_();
+    return true;
+  }
+
+  pending.clear();
+  this->video_send_requested_.store(previous_send,
+                                    std::memory_order_release);
+  this->emit_video_send_state_(previous_send, false);
+  ESP_LOGW(TAG,
+           "SIP video direction rejected status=%u; established media retained",
+           (unsigned) status);
+  if (status == 408 || status == 481) {
+    const std::string call_id = this->call_id_;
+    SipSignal signal;
+    signal.type = SipSignalType::PROTOCOL_ERROR;
+    signal.status_code = status;
+    signal.call_id = call_id;
+    signal.reason =
+        status == 481 ? "dialog_not_found" : "video_reinvite_timeout";
+    // RFC 3261 section 12.2.1.2: a 408/481 to an in-dialog request means the
+    // dialog is no longer usable. Attempt a standards-based BYE first and
+    // fall back to local cleanup only if it cannot be put on the wire.
+    const bool bye_pending = this->send_bye_unlocked_(call_id);
+    signal.terminal_transaction_pending = bye_pending;
+    if (!bye_pending) this->reset_dialog_();
+    this->emit_sip_signal_(signal);
+  }
+  return true;
+}
+
+void SipTransport::pump_video_direction_transaction_() {
+  auto &pending = this->pending_video_direction_invite_;
+  if (!pending.pending()) return;
+  const uint32_t now = millis();
+  if (pending.waiting_retry) {
+    if (!time_reached(now, pending.retry_at_ms)) return;
+    const bool target = pending.target_send;
+    if (!this->send_video_direction_reinvite_unlocked_(target, true)) {
+      const bool previous = pending.previous_send;
+      pending.clear();
+      this->video_send_requested_.store(previous,
+                                        std::memory_order_release);
+      this->emit_video_send_state_(previous, false);
+      ESP_LOGW(TAG, "SIP video direction retry could not be sent");
+    }
+    return;
+  }
+  if (time_reached(now, pending.response_deadline_ms)) {
+    const bool previous = pending.previous_send;
+    const std::string call_id = this->call_id_;
+    pending.clear();
+    this->video_send_requested_.store(previous,
+                                      std::memory_order_release);
+    this->emit_video_send_state_(previous, false);
+    ESP_LOGE(TAG, "SIP video direction re-INVITE timed out");
+    const bool bye_sent = this->send_bye_unlocked_(call_id);
+    SipSignal signal;
+    signal.type = SipSignalType::PROTOCOL_ERROR;
+    signal.status_code = 408;
+    signal.call_id = call_id;
+    signal.reason = "video_reinvite_timeout";
+    signal.terminal_transaction_pending = bye_sent;
+    if (!bye_sent) this->reset_dialog_();
+    this->emit_sip_signal_(signal);
+    return;
+  }
+  if (!pending.transaction.udp ||
+      pending.transaction.completed ||
+      !time_reached(now, pending.transaction.next_ms)) {
+    return;
+  }
+  const bool sent =
+      this->send_sip_(pending.transaction.request,
+                      pending.transaction.ip_v4,
+                      pending.transaction.port);
+  pending.transaction.retries++;
+  ESP_LOGD(TAG, "SIP UDP video re-INVITE retransmit #%u%s",
+           (unsigned) pending.transaction.retries,
+           sent ? "" : " failed");
+  pending.transaction.interval_ms =
+      std::min<uint16_t>(
+          static_cast<uint16_t>(pending.transaction.interval_ms * 2),
+          SIP_T2_MS);
+  pending.transaction.next_ms =
+      now + pending.transaction.interval_ms;
+  if (time_reached(pending.transaction.next_ms,
+                   pending.response_deadline_ms)) {
+    pending.transaction.next_ms = pending.response_deadline_ms;
+  }
+}
+#endif
 
 bool SipTransport::handle_response_(const std::string &message, const sockaddr_in &src) {
   const uint32_t src_ip = ntohl(src.sin_addr.s_addr);
@@ -3345,6 +4267,9 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
   }
   const int status = std::atoi(message.substr(8, 3).c_str());
   if (status < 100 || status > 699) return false;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  if (this->replay_completed_video_direction_ack_(message, src)) return true;
+#endif
   if (this->replay_completed_invite_ack_(message, src)) return true;
   const std::string response_call_id = header_value(message, "Call-ID");
   if (response_call_id.empty() || this->call_id_.empty() || response_call_id != this->call_id_) {
@@ -3360,6 +4285,14 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
     ESP_LOGD(TAG, "SIP response ignored without a valid CSeq");
     return true;
   }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  if (method == "INVITE" &&
+      this->handle_video_direction_response_(
+          message, src, static_cast<uint16_t>(status),
+          response_cseq_number)) {
+    return true;
+  }
+#endif
   if ((method == "INVITE" || method == "CANCEL") && response_cseq_number != this->invite_cseq_) {
     ESP_LOGD(TAG, "SIP response ignored for stale CSeq %u %s (active INVITE CSeq=%u)",
              (unsigned) response_cseq_number, method.c_str(), (unsigned) this->invite_cseq_);
@@ -3374,7 +4307,7 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
     ESP_LOGD(TAG, "SIP response ignored for mismatched local From tag");
     return true;
   }
-  if (method == "BYE" && !this->remote_sip_tcp_.load(std::memory_order_acquire)) {
+  if (method == "BYE") {
     if (this->pending_bye_.empty() ||
         response_cseq_number != cseq_number(header_value(this->pending_bye_.request, "CSeq")) ||
         via_branch(header_value(message, "Via")) != via_branch(header_value(this->pending_bye_.request, "Via"))) {
@@ -3474,28 +4407,35 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
       return true;
     }
     bool media_ok = false;
+    bool video_prepared = true;
     {
       LockGuard media_lock(this->media_lifecycle_mutex_);
       media_ok = this->learn_remote_rtp_from_sdp_(
           message_body(message), src_ip, true);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+      if (media_ok)
+        video_prepared = this->prepare_video_session_locked_();
+#endif
     }
     if (this->cancel_requested_.load(std::memory_order_acquire)) {
       // CANCEL crossed the final 2xx. The dialog is confirmed despite the
       // cancellation, so ACK it and immediately terminate it with BYE.
-      if (!this->send_request_("BYE")) {
+      if (!this->send_bye_unlocked_(this->call_id_)) {
         this->reset_dialog_();
       }
       return true;
     }
-    if (!media_ok) {
+    if (!media_ok || !video_prepared) {
       // A 2xx INVITE response still requires ACK. Terminate the confirmed SIP
-      // dialog immediately instead of opening RTP with stale/default media.
-      const bool bye_pending = this->send_request_("BYE");
+      // dialog instead of promising media whose negotiated resources could
+      // not be admitted locally.
+      const bool bye_pending = this->send_bye_unlocked_(this->call_id_);
       SipSignal signal;
       signal.type = SipSignalType::MEDIA_INCOMPATIBLE;
       signal.status_code = 488;
       signal.call_id = this->call_id_;
       signal.reason = "media_incompatible";
+      signal.terminal_transaction_pending = bye_pending;
       if (!bye_pending) this->reset_dialog_();
       this->emit_sip_signal_(signal);
       return true;
@@ -3576,7 +4516,15 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
   if (method == "INVITE") {
     this->handle_invite_(msg, src);
   } else if (method == "ACK") {
-    const uint16_t completed_status = this->acknowledge_completed_invite_(msg, src);
+    bool terminate_after_ack = false;
+    const uint16_t completed_status =
+        this->acknowledge_completed_invite_(msg, src,
+                                            &terminate_after_ack);
+    if (terminate_after_ack) {
+      const std::string call_id = this->call_id_;
+      if (!this->send_bye_unlocked_(call_id)) this->reset_dialog_();
+      return;
+    }
     if (completed_status >= 300) return;
     const std::string request_call_id = header_value(msg, "Call-ID");
     const uint32_t expected_ip = this->remote_ip_v4_.load(std::memory_order_acquire);
@@ -3600,7 +4548,9 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
     this->open_media_session_();
   } else if (method == "BYE") {
     if (this->reject_if_stale_dialog_(msg, src, "BYE")) return;
-    if (!this->media_active_.load(std::memory_order_acquire)) {
+    const bool local_bye_pending = !this->pending_bye_.empty();
+    if (!this->media_active_.load(std::memory_order_acquire) &&
+        !local_bye_pending) {
       this->send_stateless_response_(msg, src, 481, "Call/Transaction Does Not Exist");
       return;
     }
@@ -3608,8 +4558,9 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
     SipSignal signal;
     signal.type = SipSignalType::BYE;
     signal.call_id = this->call_id_;
+    signal.terminal_transaction_pending = local_bye_pending;
     this->emit_sip_signal_(signal);
-    this->reset_dialog_();
+    if (!local_bye_pending) this->reset_dialog_();
   } else if (method == "CANCEL") {
     if (this->reject_if_stale_dialog_(msg, src, "CANCEL")) return;
     const uint32_t incoming_cseq_number = cseq_number(header_value(msg, "CSeq"));
@@ -3884,37 +4835,67 @@ void SipTransport::sip_task_() {
       have_timeout = true;
       timeout_ptr = &timeout;
     }
-    if (!this->remote_sip_tcp_.load(std::memory_order_acquire)) {
+    {
       const uint32_t now = millis();
       uint32_t next_ms = 0;
-      bool have_udp_timeout = false;
-      auto include_at = [now, &next_ms, &have_udp_timeout](uint32_t deadline) {
+      bool have_sip_timeout = false;
+      auto include_at = [now, &next_ms, &have_sip_timeout](uint32_t deadline) {
         const uint32_t delta = time_reached(now, deadline) ? 0 : deadline - now;
-        if (!have_udp_timeout || delta < next_ms) {
+        if (!have_sip_timeout || delta < next_ms) {
           next_ms = delta;
-          have_udp_timeout = true;
+          have_sip_timeout = true;
         }
       };
       {
         LockGuard lock(this->dialog_mutex_);
         auto include_txn = [&include_at](const UdpTransaction &txn) {
-          if (!txn.empty()) include_at(txn.next_ms);
+          if (txn.empty()) return;
+          include_at(txn.udp && !txn.completed ? txn.next_ms
+                                               : txn.deadline_ms);
         };
         if (this->outgoing_invite_pending_.load(std::memory_order_acquire)) {
           include_txn(this->pending_invite_);
         }
         include_txn(this->pending_cancel_);
         include_txn(this->pending_bye_);
-        if (this->completed_invite_.udp && this->completed_invite_.awaiting_ack) {
-          include_at(this->completed_invite_.next_retransmit_ms);
+        if (this->completed_invite_.awaiting_ack) {
+          const bool retransmits =
+              this->completed_invite_.udp ||
+              this->completed_invite_.status < 300;
+          include_at(retransmits
+                         ? this->completed_invite_.next_retransmit_ms
+                         : this->completed_invite_.deadline_ms);
         }
       }
-      if (have_udp_timeout && (!have_timeout || next_ms < timeout_ms)) {
+      if (have_sip_timeout && (!have_timeout || next_ms < timeout_ms)) {
         timeout_ms = next_ms;
         have_timeout = true;
         timeout_ptr = &timeout;
       }
     }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+    {
+      const uint32_t now = millis();
+      LockGuard lock(this->dialog_mutex_);
+      const auto &pending = this->pending_video_direction_invite_;
+      if (pending.pending()) {
+        const uint32_t deadline =
+            pending.waiting_retry
+                ? pending.retry_at_ms
+                : (pending.transaction.udp &&
+                           !pending.transaction.completed
+                       ? pending.transaction.next_ms
+                       : pending.response_deadline_ms);
+        const uint32_t delta =
+            time_reached(now, deadline) ? 0 : deadline - now;
+        if (!have_timeout || delta < timeout_ms) {
+          timeout_ms = delta;
+          have_timeout = true;
+          timeout_ptr = &timeout;
+        }
+      }
+    }
+#endif
     if (timeout_ptr != nullptr) {
       timeout.tv_sec = timeout_ms / 1000;
       timeout.tv_usec = (timeout_ms % 1000) * 1000;
@@ -3959,10 +4940,36 @@ void SipTransport::sip_task_() {
         const uint32_t accepted_ip_v4 = ntohl(src.sin_addr.s_addr);
         const int active_client = this->sip_tcp_client_socket_.load(std::memory_order_acquire);
         const uint32_t active_ip_v4 = this->sip_tcp_client_ip_v4_.load(std::memory_order_acquire);
-        if (this->dialog_active_() && active_client >= 0 && active_ip_v4 != 0 && active_ip_v4 != accepted_ip_v4) {
+        bool signaling_owned = false;
+        bool signaling_uses_tcp = false;
+        {
+          LockGuard lock(this->dialog_mutex_);
+          signaling_owned =
+              !this->call_id_.empty() ||
+              this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
+              this->media_active_.load(std::memory_order_acquire) ||
+              this->terminal_transaction_pending_locked_();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+          signaling_owned =
+              signaling_owned ||
+              this->pending_video_direction_invite_.pending();
+#endif
+          signaling_uses_tcp =
+              this->remote_sip_tcp_.load(std::memory_order_acquire);
+        }
+        const bool replaces_owned_transport =
+            signaling_owned &&
+            (!signaling_uses_tcp || active_client >= 0 ||
+             connecting_fd >= 0 ||
+             this->tcp_connect_requested_.load(std::memory_order_acquire));
+        if (replaces_owned_transport ||
+            (this->dialog_active_() && active_client >= 0 &&
+             active_ip_v4 != 0 && active_ip_v4 != accepted_ip_v4)) {
           char ip[16];
           inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
-          ESP_LOGW(TAG, "SIP TCP accept rejected: dialog active with different peer %s", ip);
+          ESP_LOGW(TAG,
+                   "SIP TCP accept rejected: signaling transport owned by %s",
+                   ip);
           close(client);
           continue;
         }
@@ -3988,9 +4995,20 @@ void SipTransport::sip_task_() {
       int n = recvfrom(this->sip_socket_, buf, sizeof(buf) - 1, 0,
                        reinterpret_cast<struct sockaddr *>(&src), &slen);
       if (n > 0) {
-        const bool tcp_call_active =
-            this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
-            this->media_active_.load(std::memory_order_acquire) || this->dialog_active_();
+        bool tcp_call_active = false;
+        {
+          LockGuard lock(this->dialog_mutex_);
+          tcp_call_active =
+              !this->call_id_.empty() ||
+              this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
+              this->media_active_.load(std::memory_order_acquire) ||
+              this->terminal_transaction_pending_locked_();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+          tcp_call_active =
+              tcp_call_active ||
+              this->pending_video_direction_invite_.pending();
+#endif
+        }
         const bool tcp_session_active =
             tcp_call_active && this->remote_sip_tcp_.load(std::memory_order_acquire) &&
             (this->sip_tcp_client_socket_.load(std::memory_order_acquire) >= 0 || connecting_fd >= 0 ||
@@ -4070,6 +5088,9 @@ void SipTransport::rtp_task_() {
       if (!this->media_active_.load(std::memory_order_acquire)) {
         continue;
       }
+      const uint32_t proposal_epoch =
+          this->media_proposal_epoch_.load(std::memory_order_acquire);
+      if ((proposal_epoch & 1U) != 0) continue;
       const uint32_t src_ip = ntohl(src.sin_addr.s_addr);
       const uint16_t src_port = ntohs(src.sin_port);
       const uint32_t expected_ip = this->remote_rtp_ip_v4_.load(std::memory_order_acquire);
@@ -4109,6 +5130,10 @@ void SipTransport::rtp_task_() {
                             static_cast<uint32_t>(buf[11]);
       const size_t out_len = rtp_payload_to_pcm(payload, payload_len, rx_format, pcm, sizeof(pcm));
       if (out_len == 0 || out_len != rx_format.nominal_frame_bytes()) continue;
+      if (this->media_proposal_epoch_.load(std::memory_order_acquire) !=
+          proposal_epoch) {
+        continue;
+      }
       const bool ssrc_latched =
           this->rtp_ssrc_latched_.load(std::memory_order_acquire);
       bool source_changed = false;
@@ -4202,6 +5227,12 @@ void SipTransport::rtp_task_() {
       {
         LockGuard dialog_lock(this->dialog_mutex_);
         signal.call_id = this->call_id_;
+        if (!signal.call_id.empty()) {
+          signal.terminal_transaction_pending =
+              this->send_bye_unlocked_(signal.call_id);
+          if (!signal.terminal_transaction_pending)
+            this->reset_dialog_();
+        }
       }
       if (!signal.call_id.empty()) this->emit_sip_signal_(signal);
     }

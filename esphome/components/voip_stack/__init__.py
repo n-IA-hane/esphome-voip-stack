@@ -471,6 +471,7 @@ PublishEntityStatesAction = voip_stack_ns.class_("PublishEntityStatesAction", au
 # Parameterized actions
 SetVolumeAction = voip_stack_ns.class_("SetVolumeAction", automation.Action)
 SetMicGainDbAction = voip_stack_ns.class_("SetMicGainDbAction", automation.Action)
+SetVideoSendAction = voip_stack_ns.class_("SetVideoSendAction", automation.Action)
 SetContactsAction = voip_stack_ns.class_("SetContactsAction", automation.Action)
 SetContactAction = voip_stack_ns.class_("SetContactAction", automation.Action)
 CallAction = voip_stack_ns.class_("CallAction", automation.Action)
@@ -668,8 +669,9 @@ def _consume_voip_sockets(config):
     socket.consume_sockets(2, "voip_stack_sip_tcp")(config)
     socket.consume_sockets(1, "voip_stack_sip", socket.SocketType.TCP_LISTEN)(config)
     if CONF_VIDEO in config:
-        # Separate RTP and RTCP UDP sockets. They exist only in video builds.
-        socket.consume_sockets(2, "voip_stack_video", socket.SocketType.UDP)(config)
+        # Separate RTP/RTCP sockets plus a private event-driven wake socket.
+        # They exist only in video builds; audio-only firmware pays nothing.
+        socket.consume_sockets(3, "voip_stack_video", socket.SocketType.UDP)(config)
     extra = config.get(CONF_NETWORK_SOCKET_HEADROOM, 0)
     if extra:
         socket.consume_sockets(extra, "voip_stack_headroom")(config)
@@ -873,8 +875,26 @@ async def _add_core_settings(var, config):
         cg.add(var.set_video_rtp_port(video[CONF_RTP_PORT]))
         cg.add(var.set_video_offer_payload_type(video[CONF_OFFER_PAYLOAD_TYPE]))
         cg.add(var.set_video_max_rtp_payload(video[CONF_MAX_RTP_PAYLOAD]))
+        if "esp32_hosted" in (CORE.config or {}):
+            # ESP-Hosted routes audio and video through one bounded blocking
+            # SDIO queue. Let each successfully queued audio RTP packet release
+            # one video packet so camera bursts cannot starve realtime audio.
+            # Native-WiFi video builds do not carry this scheduler or semaphore.
+            cg.add_define(
+                "USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING"
+            )
         if config[CONF_VIDEO_DEBUG]:
             cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG")
+            if "esp32_hosted" in (CORE.config or {}):
+                # Reuse the same explicit debug gate for Espressif's own SDIO
+                # counters. Production video builds incur no reporting task or
+                # periodic wakeup when video_debug is disabled.
+                esp32.add_idf_sdkconfig_option(
+                    "CONFIG_ESP_HOSTED_PKT_STATS", True
+                )
+                esp32.add_idf_sdkconfig_option(
+                    "CONFIG_ESP_HOSTED_PKT_STATS_INTERVAL_SEC", 5
+                )
     cg.add(var.set_extension(config[CONF_EXTENSION]))
     cg.add(var.set_conference_groups(config[CONF_CONFERENCE_GROUPS]))
     cg.add(var.set_conference_ring(config[CONF_CONFERENCE_RING]))
@@ -1110,6 +1130,7 @@ _register_simple_action("voip_stack.publish_entity_states", PublishEntityStatesA
 
 CONF_VOLUME = "volume"
 CONF_GAIN_DB = "gain_db"
+CONF_ENABLED = "enabled"
 CONF_CONTACTS_CSV = "contacts_csv"
 CONF_ROSTER_JSON = "roster_json"
 CONF_TARGET = "target"
@@ -1151,6 +1172,29 @@ _register_templated_action(
     float,
     lambda var, value: var.set_gain_db(value),
 )
+
+
+@automation.register_action(
+    "voip_stack.set_video_send",
+    SetVideoSendAction,
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.use_id(VoipStack),
+            cv.Required(CONF_ENABLED): cv.templatable(cv.boolean),
+        }
+    ),
+    synchronous=True,
+)
+async def set_video_send_action_to_code(config, action_id, template_arg, args):
+    voip_config = (CORE.config or {}).get("voip_stack")
+    if not isinstance(voip_config, dict) or CONF_VIDEO not in voip_config:
+        raise cv.Invalid(
+            "voip_stack.set_video_send requires voip_stack.video."
+        )
+    var = await _new_parented_action(config, action_id, template_arg)
+    templ = await cg.templatable(config[CONF_ENABLED], args, cg.bool_)
+    cg.add(var.set_enabled(templ))
+    return var
 _register_templated_action(
     "voip_stack.set_contacts",
     SetContactsAction,
