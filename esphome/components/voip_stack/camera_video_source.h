@@ -3,6 +3,7 @@
 #include "esphome/core/defines.h"
 
 #if defined(USE_ESPHOME_VOIP_STACK_VIDEO) && \
+    defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
     defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
 
 #include "video.h"

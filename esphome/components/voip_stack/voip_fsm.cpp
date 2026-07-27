@@ -295,23 +295,33 @@ void VoipStack::answer_call() {
   const std::string call_id = this->get_current_call_id_();
   ESP_LOGI(TAG, "%s: answering call (call_id=%s)",
            this->device_name_.c_str(), call_id.c_str());
-  this->set_audio_devices_active_(true);
-  if (this->transport_ && !this->transport_->start_audio_path()) {
-    ESP_LOGE(TAG, "%s: RTP start failed while answering call", this->device_name_.c_str());
+  if (this->transport_ && !this->transport_->prepare_media_path()) {
+    ESP_LOGE(TAG, "%s: RTP prepare failed while answering call",
+             this->device_name_.c_str());
     this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
-    this->set_audio_devices_active_(false);
     this->transport_->disconnect();
     return;
   }
+  this->set_audio_devices_active_(true);
   this->set_call_state_(CallState::CONNECTING);
   if (this->transport_ && !call_id.empty()) {
     if (!this->send_sip_answer_(call_id)) {
       ESP_LOGE(TAG, "%s: failed to send SIP answer", this->device_name_.c_str());
+      this->transport_->abort_media_path();
       this->end_call_(CallEndReason::PROTOCOL_ERROR);
       this->set_audio_devices_active_(false);
       this->transport_->disconnect();
       return;
     }
+  }
+  if (this->transport_ && !this->transport_->commit_media_path()) {
+    ESP_LOGE(TAG, "%s: RTP commit failed after SIP answer",
+             this->device_name_.c_str());
+    this->transport_->abort_media_path();
+    this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
+    this->set_audio_devices_active_(false);
+    this->transport_->disconnect();
+    return;
   }
   this->set_in_call_(true);  // also publishes IN_CALL state
 }
@@ -819,20 +829,30 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
       });
 
       if (this->auto_answer_) {
-        this->set_audio_devices_active_(true);
-        if (this->transport_ && !this->transport_->start_audio_path()) {
-          ESP_LOGE(TAG, "%s: RTP start failed while auto-answering call", this->device_name_.c_str());
+        if (this->transport_ && !this->transport_->prepare_media_path()) {
+          ESP_LOGE(TAG, "%s: RTP prepare failed while auto-answering call",
+                   this->device_name_.c_str());
           this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
+          if (this->transport_) this->transport_->disconnect();
+          break;
+        }
+        this->set_audio_devices_active_(true);
+        this->set_call_state_(CallState::CONNECTING);
+        if (!this->send_sip_answer_(incoming_cid)) {
+          ESP_LOGE(TAG, "%s: failed to send automatic SIP answer", this->device_name_.c_str());
+          if (this->transport_) this->transport_->abort_media_path();
+          this->end_call_(CallEndReason::PROTOCOL_ERROR);
           this->set_audio_devices_active_(false);
           if (this->transport_) this->transport_->disconnect();
           break;
         }
-        this->set_call_state_(CallState::CONNECTING);
-        if (!this->send_sip_answer_(incoming_cid)) {
-          ESP_LOGE(TAG, "%s: failed to send automatic SIP answer", this->device_name_.c_str());
-          this->end_call_(CallEndReason::PROTOCOL_ERROR);
+        if (this->transport_ && !this->transport_->commit_media_path()) {
+          ESP_LOGE(TAG, "%s: RTP commit failed after automatic SIP answer",
+                   this->device_name_.c_str());
+          this->transport_->abort_media_path();
+          this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
           this->set_audio_devices_active_(false);
-          if (this->transport_) this->transport_->disconnect();
+          this->transport_->disconnect();
           break;
         }
         this->set_in_call_(true);

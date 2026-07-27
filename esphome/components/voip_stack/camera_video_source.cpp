@@ -1,6 +1,7 @@
 #include "camera_video_source.h"
 
 #if defined(USE_ESPHOME_VOIP_STACK_VIDEO) && \
+    defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
     defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
 
 #include "esphome/core/hal.h"

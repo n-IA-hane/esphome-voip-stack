@@ -623,6 +623,40 @@ bool parse_video_rtpmap(const std::string &line, uint8_t *payload_type,
   return true;
 }
 
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+bool parse_video_rtcp_feedback(const std::string &line, bool payloads[128],
+                               bool *pli, bool *fir) {
+  if (payloads == nullptr || pli == nullptr || fir == nullptr ||
+      line.rfind("a=rtcp-fb:", 0) != 0) {
+    return false;
+  }
+  const size_t space = line.find(' ', 10);
+  if (space == std::string::npos) return false;
+  const std::string selector = trim_copy(line.substr(10, space - 10));
+  uint32_t parsed_pt = 0;
+  const bool wildcard = selector == "*";
+  if (!wildcard &&
+      !parse_decimal_u32(selector, 127, &parsed_pt)) {
+    return false;
+  }
+  std::string feedback = trim_copy(line.substr(space + 1));
+  for (char &ch : feedback) {
+    ch = static_cast<char>(
+        std::tolower(static_cast<unsigned char>(ch)));
+  }
+  const bool is_pli = feedback == "nack pli";
+  const bool is_fir = feedback == "ccm fir";
+  if (!is_pli && !is_fir) return false;
+  for (size_t pt = 0; pt < 128; pt++) {
+    if ((wildcard || pt == parsed_pt) && payloads[pt]) {
+      if (is_pli) pli[pt] = true;
+      if (is_fir) fir[pt] = true;
+    }
+  }
+  return true;
+}
+#endif
+
 bool parse_rtcp_attribute(const std::string &line, uint16_t *port,
                           uint32_t *ip_v4, bool *has_address) {
   if (port == nullptr || ip_v4 == nullptr || has_address == nullptr ||
@@ -659,6 +693,7 @@ bool parse_rtcp_attribute(const std::string &line, uint16_t *port,
   return true;
 }
 
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
 std::string fmtp_parameter(const std::string &line, const char *name,
                            uint8_t *payload_type) {
   if (payload_type == nullptr || line.rfind("a=fmtp:", 0) != 0) return "";
@@ -691,6 +726,7 @@ std::string fmtp_parameter(const std::string &line, const char *name,
   }
   return "";
 }
+#endif
 #endif
 
 size_t pcm_to_rtp_payload(const uint8_t *pcm, size_t bytes, const AudioFormat &format,
@@ -820,6 +856,16 @@ SipTransportSnapshot SipTransport::snapshot() const {
     out.video_send_enabled = this->video_send_enabled_;
     out.video_send_change_pending =
         this->pending_video_direction_invite_.pending();
+    if (this->video_session_ != nullptr) {
+      out.video_tx_packets = this->video_session_->tx_packets();
+      out.video_rx_packets = this->video_session_->rx_packets();
+      out.video_tx_access_units =
+          this->video_session_->tx_access_units();
+      out.video_rx_access_units =
+          this->video_session_->rx_access_units();
+    }
+    out.media_lifecycle_phase = static_cast<uint8_t>(
+        this->media_lifecycle_phase_.load(std::memory_order_acquire));
 #endif
   }
   out.call_active = this->media_active_.load(std::memory_order_acquire);
@@ -879,9 +925,19 @@ void SipTransport::set_video_endpoints(EncodedVideoSource *source,
   }
 }
 
-void SipTransport::set_video_config(uint16_t rtp_port,
+void SipTransport::set_video_config(VideoCodec codec, uint16_t rtp_port,
                                     uint8_t offer_payload_type,
                                     size_t max_rtp_payload) {
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  if (codec != VideoCodec::JPEG || offer_payload_type != 26) {
+    ESP_LOGE(TAG, "JPEG video build requires codec JPEG and static PT 26");
+  }
+#else
+  if (codec != VideoCodec::H264 || offer_payload_type < 96) {
+    ESP_LOGE(TAG, "H.264 video build requires codec H264 and a dynamic PT");
+  }
+#endif
+  this->video_codec_ = codec;
   this->video_rtp_port_ = rtp_port;
   this->video_offer_payload_type_ = offer_payload_type;
   this->video_max_rtp_payload_ = max_rtp_payload;
@@ -902,8 +958,16 @@ VideoCapability SipTransport::local_video_send_capability_() const {
     return capability;
   }
   capability = this->video_source_->get_video_capability();
-  capability.payload_type = this->video_offer_payload_type_;
+  if ((this->video_codec_ == VideoCodec::JPEG && !capability.is_jpeg()) ||
+      (this->video_codec_ == VideoCodec::H264 && !capability.is_h264())) {
+    ESP_LOGE(TAG, "Configured video codec does not match the source capability");
+    return {};
+  }
+  capability.payload_type =
+      capability.is_jpeg() ? 26 : this->video_offer_payload_type_;
   capability.packetization_mode = capability.is_h264() ? 1 : 0;
+  capability.rtcp_feedback_pli = capability.is_h264();
+  capability.rtcp_feedback_fir = capability.is_h264();
   capability.clock_rate = 90000;
   return capability;
 }
@@ -915,8 +979,16 @@ VideoCapability SipTransport::local_video_receive_capability_() const {
     return capability;
   }
   capability = this->video_sink_->get_receive_video_capability();
-  capability.payload_type = this->video_offer_payload_type_;
+  if ((this->video_codec_ == VideoCodec::JPEG && !capability.is_jpeg()) ||
+      (this->video_codec_ == VideoCodec::H264 && !capability.is_h264())) {
+    ESP_LOGE(TAG, "Configured video codec does not match the sink capability");
+    return {};
+  }
+  capability.payload_type =
+      capability.is_jpeg() ? 26 : this->video_offer_payload_type_;
   capability.packetization_mode = capability.is_h264() ? 1 : 0;
+  capability.rtcp_feedback_pli = capability.is_h264();
+  capability.rtcp_feedback_fir = capability.is_h264();
   capability.clock_rate = 90000;
   return capability;
 }
@@ -939,6 +1011,15 @@ VideoCapability SipTransport::local_video_direction_capability_(
   capability.packetization_mode = negotiated.packetization_mode;
   capability.level_asymmetry_allowed =
       negotiated.level_asymmetry_allowed;
+  capability.rtcp_feedback_pli =
+      capability.rtcp_feedback_pli && negotiated.rtcp_feedback_pli;
+  capability.rtcp_feedback_fir =
+      capability.rtcp_feedback_fir && negotiated.rtcp_feedback_fir;
+  if (negotiated.max_bitrate_bps != 0 &&
+      (capability.max_bitrate_bps == 0 ||
+       negotiated.max_bitrate_bps < capability.max_bitrate_bps)) {
+    capability.max_bitrate_bps = negotiated.max_bitrate_bps;
+  }
   capability.max_fps =
       std::min(capability.max_fps, negotiated.max_fps);
   return capability;
@@ -1353,17 +1434,45 @@ bool SipTransport::start_audio_path() {
     ESP_LOGW(TAG, "Media lifecycle is not ready for a new session");
     return false;
   }
-  return this->start_audio_path_locked_();
+  return this->prepare_media_path_locked_() &&
+         this->commit_media_path_locked_();
 }
 
-bool SipTransport::start_audio_path_locked_() {
-  if (this->rtp_running_.load(std::memory_order_acquire)) return true;
-  if (this->media_lifecycle_phase_.load(std::memory_order_acquire) !=
-      MediaLifecyclePhase::IDLE) {
+bool SipTransport::prepare_media_path() {
+  LockGuard media_lock(this->media_lifecycle_mutex_);
+  if (!this->running_.load(std::memory_order_acquire) ||
+      this->transport_stopping_.load(std::memory_order_acquire)) {
+    ESP_LOGW(TAG, "Transport is stopping; media prepare rejected");
+    return false;
+  }
+  const MediaLifecyclePhase phase =
+      this->media_lifecycle_phase_.load(std::memory_order_acquire);
+  if (phase == MediaLifecyclePhase::PREPARED ||
+      (phase == MediaLifecyclePhase::ACTIVE &&
+       this->rtp_running_.load(std::memory_order_acquire))) {
+    return true;
+  }
+  if (phase != MediaLifecyclePhase::IDLE) {
+    ESP_LOGW(TAG, "Media lifecycle is not ready for preparation");
+    return false;
+  }
+  return this->prepare_media_path_locked_();
+}
+
+bool SipTransport::prepare_media_path_locked_() {
+  const MediaLifecyclePhase phase =
+      this->media_lifecycle_phase_.load(std::memory_order_acquire);
+  if (phase == MediaLifecyclePhase::PREPARED ||
+      (phase == MediaLifecyclePhase::ACTIVE &&
+       this->rtp_running_.load(std::memory_order_acquire))) {
+    return true;
+  }
+  if (phase != MediaLifecyclePhase::IDLE) {
     ESP_LOGE(TAG, "Media lifecycle is not idle");
     return false;
   }
-  if (this->rtp_task_handle_ == nullptr || this->rtp_task_terminate_.load(std::memory_order_acquire) ||
+  if (this->rtp_task_handle_ == nullptr ||
+      this->rtp_task_terminate_.load(std::memory_order_acquire) ||
       !this->rtp_task_quiesced_.load(std::memory_order_acquire)) {
     ESP_LOGE(TAG, "RTP task is unavailable for a new media session");
     return false;
@@ -1380,28 +1489,114 @@ bool SipTransport::start_audio_path_locked_() {
 #endif
   if (!this->bind_udp_(&this->rtp_socket_, this->rtp_port_, "RTP")) return false;
   xSemaphoreTake(this->rtp_cleanup_done_, 0);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  if (this->video_negotiated_) {
+    if (!this->prepare_video_session_locked_()) {
+      // Video is subordinate media. A late PSRAM/codec failure must not reject
+      // an otherwise healthy SIP audio answer.
+      ESP_LOGE(TAG,
+               "Negotiated video failed to prepare; answering audio-only");
+      if (this->video_session_ != nullptr)
+        this->video_session_->request_stop();
+      this->video_negotiated_ = false;
+    }
+  }
+#endif
+  // PREPARED owns the bound sockets and dormant codec resources, but the RTP
+  // worker, camera source and renderer direction remain inactive until the
+  // final SIP answer has been sent successfully.
+  this->media_lifecycle_phase_.store(MediaLifecyclePhase::PREPARED,
+                                      std::memory_order_release);
+  return true;
+}
+
+bool SipTransport::commit_media_path() {
+  bool committed = false;
+  {
+    LockGuard media_lock(this->media_lifecycle_mutex_);
+    if (!this->running_.load(std::memory_order_acquire) ||
+        this->transport_stopping_.load(std::memory_order_acquire)) {
+      ESP_LOGW(TAG, "Transport is stopping; media commit rejected");
+    } else {
+      committed = this->commit_media_path_locked_();
+    }
+  }
+  if (!committed)
+    this->terminate_dialog_after_media_commit_failure_();
+  return committed;
+}
+
+bool SipTransport::commit_media_path_locked_() {
+  const MediaLifecyclePhase phase =
+      this->media_lifecycle_phase_.load(std::memory_order_acquire);
+  if (phase == MediaLifecyclePhase::ACTIVE &&
+      this->rtp_running_.load(std::memory_order_acquire)) {
+    return true;
+  }
+  if (phase != MediaLifecyclePhase::PREPARED) {
+    ESP_LOGE(TAG, "Media lifecycle is not prepared");
+    return false;
+  }
+  if (this->rtp_task_handle_ == nullptr ||
+      this->rtp_task_terminate_.load(std::memory_order_acquire) ||
+      !this->rtp_task_quiesced_.load(std::memory_order_acquire) ||
+      this->rtp_socket_ < 0) {
+    ESP_LOGE(TAG, "Prepared RTP resources are unavailable");
+    return false;
+  }
+
   this->rtp_task_quiesced_.store(false, std::memory_order_release);
   this->rtp_running_.store(true, std::memory_order_release);
   this->media_lifecycle_phase_.store(MediaLifecyclePhase::ACTIVE,
                                       std::memory_order_release);
   xTaskNotifyGive(this->rtp_task_handle_);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  if (this->video_negotiated_) {
-    if (!this->prepare_video_session_locked_() ||
-        !this->video_session_->request_media_direction(
-            this->video_send_enabled_, this->video_receive_enabled_)) {
-      // Video is subordinate media. A late PSRAM/codec failure must not tear
-      // down a healthy SIP audio dialog.
-      ESP_LOGE(TAG, "Negotiated video failed to start; keeping audio active");
-      if (this->video_session_ != nullptr)
-        this->video_session_->request_stop();
-      this->video_negotiated_ = false;
-    }
+  if (this->video_negotiated_ &&
+      !this->video_session_->request_media_direction(
+          this->video_send_enabled_, this->video_receive_enabled_)) {
+    // Video remains subordinate after the SIP transaction commits.
+    ESP_LOGE(TAG, "Negotiated video failed to activate; keeping audio active");
+    this->video_session_->request_stop();
+    this->video_negotiated_ = false;
   }
   this->emit_video_send_state_(
       this->video_negotiated_ && this->video_send_enabled_, false);
 #endif
   return true;
+}
+
+void SipTransport::terminate_dialog_after_media_commit_failure_() {
+  // commit_media_path() is the UAS post-200 path. Observe the server
+  // transaction under its owning mutex only after releasing the media mutex,
+  // preserving the established dialog->media lock order.
+  LockGuard dialog_lock(this->dialog_mutex_);
+  const bool accepted_dialog =
+      !this->call_id_.empty() && !this->completed_invite_.empty() &&
+      this->completed_invite_.status >= 200 &&
+      this->completed_invite_.status < 300 &&
+      this->completed_invite_.call_id == this->call_id_;
+  if (!accepted_dialog) return;
+
+  if (this->completed_invite_.awaiting_ack) {
+    // RFC 3261: a UAS cannot originate BYE until the ACK for its 2xx arrives.
+    // The existing ACK/timeout owner performs that BYE and keeps disconnect()
+    // from silently erasing the confirmed dialog meanwhile.
+    this->terminate_after_invite_ack_ = true;
+    this->wake_sip_task_();
+    return;
+  }
+
+  // The ACK may have raced the main-loop commit. In that case the dialog is
+  // already confirmed and can be terminated immediately with the normal BYE
+  // transaction rather than being reset locally.
+  if (!this->send_bye_unlocked_(this->call_id_)) {
+    ESP_LOGE(TAG,
+             "Failed to send BYE after post-answer media commit failure");
+  }
+}
+
+void SipTransport::abort_media_path() {
+  this->stop_audio_path();
 }
 
 void SipTransport::stop_audio_path() {
@@ -1965,11 +2160,15 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
   out += "m=video " + std::to_string(this->video_rtp_port_) +
          " RTP/AVP " + std::to_string(capability.payload_type) + "\r\n";
   out += "c=IN IP4 " + local_ip + "\r\n";
+  if (capability.max_bitrate_bps != 0) {
+    out += "b=TIAS:" + std::to_string(capability.max_bitrate_bps) + "\r\n";
+  }
   out += "a=rtcp:" +
          std::to_string(static_cast<uint16_t>(this->video_rtp_port_ + 1)) +
          " IN IP4 " + local_ip + "\r\n";
   out += "a=rtpmap:" + std::to_string(capability.payload_type) +
          " " + capability.encoding + "/90000\r\n";
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
   if (capability.is_h264()) {
     out += "a=fmtp:" + std::to_string(capability.payload_type) +
            " packetization-mode=1;profile-level-id=" +
@@ -1977,7 +2176,16 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
     if (capability.level_asymmetry_allowed)
       out += ";level-asymmetry-allowed=1";
     out += "\r\n";
+    if (capability.rtcp_feedback_pli) {
+      out += "a=rtcp-fb:" + std::to_string(capability.payload_type) +
+             " nack pli\r\n";
+    }
+    if (capability.rtcp_feedback_fir) {
+      out += "a=rtcp-fb:" + std::to_string(capability.payload_type) +
+             " ccm fir\r\n";
+    }
   }
+#endif
   // RFC 8866 media-level recommendation. A software video sink can advertise
   // a lower receive budget than the hardware encoder without a private fmtp.
   out += "a=framerate:" + std::to_string(capability.max_fps) + "\r\n";
@@ -2280,14 +2488,23 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
   bool offered_payloads[128]{};
   uint8_t offered_payload_order[128]{};
   size_t offered_payload_count = 0;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
   bool h264_payloads[128]{};
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   bool jpeg_payloads[128]{};
+#endif
   bool rtpmap_seen[128]{};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
   char profiles[128][7]{};
   bool profile_valid[128]{};
   uint8_t packetization_modes[128]{};
   bool level_asymmetry_allowed[128]{};
+  bool rtcp_feedback_pli[128]{};
+  bool rtcp_feedback_fir[128]{};
+#endif
   uint8_t media_max_fps = 0;
+  uint32_t media_max_bitrate_bps = 0;
   uint16_t media_port = 0;
   uint32_t media_ip = default_ip;
   uint32_t session_ip = default_ip;
@@ -2396,9 +2613,14 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
       if (parse_video_rtpmap(line, &payload_type, &encoding) &&
           offered_payloads[payload_type]) {
         rtpmap_seen[payload_type] = true;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
         h264_payloads[payload_type] = encoding == "H264/90000";
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
         jpeg_payloads[payload_type] = encoding == "JPEG/90000";
+#endif
       }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
     } else if (in_video && line.rfind("a=fmtp:", 0) == 0) {
       uint8_t payload_type = 0;
       const std::string profile =
@@ -2418,6 +2640,18 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
                          &asymmetry_payload);
       if (offered_payloads[asymmetry_payload] && asymmetry == "1")
         level_asymmetry_allowed[asymmetry_payload] = true;
+    } else if (in_video && line.rfind("a=rtcp-fb:", 0) == 0) {
+      parse_video_rtcp_feedback(line, offered_payloads,
+                                rtcp_feedback_pli,
+                                rtcp_feedback_fir);
+#endif
+    } else if (in_video && line.rfind("b=TIAS:", 0) == 0) {
+      uint32_t parsed_bitrate = 0;
+      if (parse_decimal_u32(trim_copy(line.substr(7)), UINT32_MAX,
+                            &parsed_bitrate) &&
+          parsed_bitrate > 0) {
+        media_max_bitrate_bps = parsed_bitrate;
+      }
     } else if (in_video && line.rfind("a=framerate:", 0) == 0) {
       uint32_t parsed_fps = 0;
       if (parse_decimal_u32(trim_copy(line.substr(12)), UINT8_MAX,
@@ -2441,8 +2675,10 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
   }
   // RFC 3551 statically assigns PT 26 to JPEG/90000, so rtpmap is optional.
   // An explicit conflicting rtpmap always wins and makes PT 26 incompatible.
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   if (offered_payloads[26] && !rtpmap_seen[26])
     jpeg_payloads[26] = true;
+#endif
 
   const VideoCapability local_send = this->local_video_send_capability_();
   const VideoCapability local_receive =
@@ -2451,35 +2687,57 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
        payload_index++) {
     const uint8_t pt = offered_payload_order[payload_index];
     if (remote_is_answer && pt != this->video_offer_payload_type_) continue;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
     const bool jpeg = jpeg_payloads[pt] && pt == 26;
+    const bool h264 = false;
+#else
+    const bool jpeg = false;
     const bool h264 = h264_payloads[pt] &&
                       packetization_modes[pt] == 1 && profile_valid[pt];
+#endif
     if (!jpeg && !h264) continue;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
     const std::string peer_profile(profiles[pt], 6);
+#else
+    const std::string peer_profile;
+#endif
     const bool peer_sends = (media_direction & 0x01) != 0;
     const bool peer_receives = (media_direction & 0x02) != 0;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
     const bool bilateral_asymmetry =
-        h264 && level_asymmetry_allowed[pt] &&
+        level_asymmetry_allowed[pt] &&
         (!peer_sends || local_receive.level_asymmetry_allowed) &&
         (!peer_receives || local_send.level_asymmetry_allowed);
+#else
+    const bool bilateral_asymmetry = false;
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
     const bool send_compatible =
-        this->video_source_ != nullptr && local_send.valid() &&
-        ((jpeg && local_send.is_jpeg()) ||
-         (h264 && local_send.is_h264() &&
-          h264_level_fits(local_send.profile_level_id, peer_profile)));
+        this->video_source_ != nullptr && local_send.valid() && jpeg &&
+        local_send.is_jpeg();
     const bool receive_compatible =
-        this->video_sink_ != nullptr && local_receive.valid() &&
-        ((jpeg && local_receive.is_jpeg()) ||
-         (h264 && local_receive.is_h264() &&
-          h264_same_subprofile(local_receive.profile_level_id, peer_profile)));
+        this->video_sink_ != nullptr && local_receive.valid() && jpeg &&
+        local_receive.is_jpeg();
+#else
+    const bool send_compatible =
+        this->video_source_ != nullptr && local_send.valid() && h264 &&
+        local_send.is_h264() &&
+        h264_level_fits(local_send.profile_level_id, peer_profile);
+    const bool receive_compatible =
+        this->video_sink_ != nullptr && local_receive.valid() && h264 &&
+        local_receive.is_h264() &&
+        h264_same_subprofile(local_receive.profile_level_id, peer_profile);
+#endif
     bool local_sends =
         this->video_send_requested_.load(std::memory_order_acquire) &&
         peer_receives && send_compatible;
     const bool local_receives = peer_sends && receive_compatible;
-    if (h264 && !bilateral_asymmetry && local_sends && local_receives &&
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+    if (!bilateral_asymmetry && local_sends && local_receives &&
         !h264_level_fits(local_send.profile_level_id,
                          local_receive.profile_level_id))
       local_sends = false;
+#endif
     if (!local_sends && !local_receives) continue;
 
     // Keep the shared RTP capability stable across direction-only re-INVITEs.
@@ -2491,18 +2749,37 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
     if (send_compatible && receive_compatible) {
       negotiated.max_fps =
           std::min(local_send.max_fps, local_receive.max_fps);
+      if (local_send.max_bitrate_bps != 0 &&
+          (negotiated.max_bitrate_bps == 0 ||
+           local_send.max_bitrate_bps < negotiated.max_bitrate_bps)) {
+        negotiated.max_bitrate_bps = local_send.max_bitrate_bps;
+      }
     }
     if (media_max_fps > 0)
       negotiated.max_fps = std::min(negotiated.max_fps, media_max_fps);
     negotiated.payload_type = static_cast<uint8_t>(pt);
     negotiated.level_asymmetry_allowed =
         h264 && bilateral_asymmetry;
-    if (h264 && !bilateral_asymmetry &&
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+    negotiated.rtcp_feedback_pli = rtcp_feedback_pli[pt];
+    negotiated.rtcp_feedback_fir = rtcp_feedback_fir[pt];
+#else
+    negotiated.rtcp_feedback_pli = false;
+    negotiated.rtcp_feedback_fir = false;
+#endif
+    if (media_max_bitrate_bps != 0 &&
+        (negotiated.max_bitrate_bps == 0 ||
+         media_max_bitrate_bps < negotiated.max_bitrate_bps)) {
+      negotiated.max_bitrate_bps = media_max_bitrate_bps;
+    }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+    if (!bilateral_asymmetry &&
         h264_level_fits(peer_profile, negotiated.profile_level_id)) {
       // Lowering a decoder advertisement is safe; lowering the encoder SPS is
       // not. Preserve our profile_idc/profile_iop and select the common level.
       negotiated.profile_level_id.replace(4, 2, peer_profile.substr(4, 2));
     }
+#endif
     this->negotiated_video_capability_ = negotiated;
     this->remote_video_ip_v4_ = media_ip;
     this->remote_video_rtp_port_ = media_port;
@@ -2863,6 +3140,12 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
       new_capability.max_fps == old_capability.max_fps &&
       new_capability.level_asymmetry_allowed ==
           old_capability.level_asymmetry_allowed &&
+      new_capability.max_bitrate_bps ==
+          old_capability.max_bitrate_bps &&
+      new_capability.rtcp_feedback_pli ==
+          old_capability.rtcp_feedback_pli &&
+      new_capability.rtcp_feedback_fir ==
+          old_capability.rtcp_feedback_fir &&
       new_video_ip == old_video_ip && new_video_port == old_video_port &&
       new_video_rtcp_ip == old_video_rtcp_ip &&
       new_video_rtcp_port == old_video_rtcp_port &&
@@ -3871,6 +4154,12 @@ bool SipTransport::handle_reinvite_(const std::string &message,
       old_video_capability.encoding == new_video_capability.encoding &&
       old_video_capability.profile_level_id ==
           new_video_capability.profile_level_id &&
+      old_video_capability.max_bitrate_bps ==
+          new_video_capability.max_bitrate_bps &&
+      old_video_capability.rtcp_feedback_pli ==
+          new_video_capability.rtcp_feedback_pli &&
+      old_video_capability.rtcp_feedback_fir ==
+          new_video_capability.rtcp_feedback_fir &&
       old_video_ip == new_video_ip &&
       old_video_port == new_video_port &&
       old_video_rtcp_ip == new_video_rtcp_ip &&

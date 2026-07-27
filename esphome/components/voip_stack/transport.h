@@ -41,6 +41,11 @@ struct SipTransportSnapshot {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   bool video_send_enabled{false};
   bool video_send_change_pending{false};
+  uint32_t video_tx_packets{0};
+  uint32_t video_rx_packets{0};
+  uint32_t video_tx_access_units{0};
+  uint32_t video_rx_access_units{0};
+  uint8_t media_lifecycle_phase{0};
 #endif
   bool call_active{false};
   bool pending_invite{false};
@@ -127,8 +132,10 @@ class SipPhoneTransport {
     (void) source;
     (void) sink;
   }
-  virtual void set_video_config(uint16_t rtp_port, uint8_t offer_payload_type,
+  virtual void set_video_config(VideoCodec codec, uint16_t rtp_port,
+                                uint8_t offer_payload_type,
                                 size_t max_rtp_payload) {
+    (void) codec;
     (void) rtp_port;
     (void) offer_payload_type;
     (void) max_rtp_payload;
@@ -141,8 +148,14 @@ class SipPhoneTransport {
   }
 #endif
 
-  /// Lazy audio path. UDP binds the audio socket and spawns recv_task
-  /// only here so an idle device isn't a passive PCM listener. TCP no-op.
+  /// Reserve/bind negotiated media without admitting RTP. A UAS uses this
+  /// before serialising its SDP answer.
+  virtual bool prepare_media_path() { return true; }
+  /// Admit media only after the final SIP answer has reached the wire.
+  virtual bool commit_media_path() { return this->start_audio_path(); }
+  /// Cancel a prepared path through the normal event-driven teardown owner.
+  virtual void abort_media_path() { this->stop_audio_path(); }
+  /// Compatibility one-shot used by the already-confirmed outgoing call path.
   virtual bool start_audio_path() { return true; }
   virtual void stop_audio_path() {}
 

@@ -351,6 +351,25 @@ The core component does not auto-load primary entity platforms. The maintained
 YAML packages provide explicit `switch:`, `number:`, `button:`, `text:` and
 `text_sensor:` entries with stable names and UI layout.
 
+## Optional SIP Video
+
+One encoded video codec is compiled into each firmware:
+
+```yaml
+voip_stack:
+  video:
+    codec: jpeg
+    camera_id: p4_camera
+    sink: p4_video
+    rtp_port: 40002
+```
+
+`jpeg` uses ESPHome's standard camera platform and static RTP payload type 26.
+An H.264 build instead declares `codec: h264` with an encoded `source` and/or
+`sink`; its offer payload type defaults to dynamic PT 103. Codec-specific RTP
+code and camera adapters are compile-time gated, so an audio-only or JPEG
+firmware does not link the H.264 path.
+
 ## Resource Notes
 
 - Mic ring buffer and TX chunk are allocated only when a mic path is configured.
@@ -358,8 +377,10 @@ YAML packages provide explicit `switch:`, `number:`, `button:`, `text:` and
   `voip_stack`.
 - Incoming audio is written directly to the configured ESPHome speaker.
 - `buffers_in_psram: true` affects only VoIP-owned staging buffers.
-- `task_stacks_in_psram: true` applies to the VoIP TX task and transport
-  tasks where supported by the transport.
+- `task_stacks_in_psram: true` applies to signaling and media transport tasks
+  where supported by the transport.
+- `audio_task_stacks_in_psram` independently controls the realtime
+  `voip_tx`/`voip_rx` stacks and defaults to `false`.
 
 ## Experimental Native Dual-Bus Test
 

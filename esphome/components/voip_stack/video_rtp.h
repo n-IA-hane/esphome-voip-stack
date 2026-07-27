@@ -5,7 +5,9 @@
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_STACK_VIDEO)
 
 #include "audio_core_task_utils.h"
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
 #include "rtp_jpeg.h"
+#endif
 #include "video.h"
 
 #include "esphome/core/helpers.h"
@@ -32,10 +34,10 @@ class VideoRtpSession {
   static constexpr uint8_t kReceiveTaskPriority = 7;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
   // ESP-Hosted funnels every network packet through the same blocking SDIO
-  // queue. Keep the video producer below the priority-23 hosted drain workers
-  // and lwIP, while the priority-24 audio TX remains the realtime owner. The
-  // binary audio credit still releases exactly one packet without polling.
-  static constexpr uint8_t kSenderTaskPriority = 15;
+  // queue. Keep the video producer below the priority-9 audio RTP worker and
+  // the priority-24 audio TX task. One binary audio event releases a bounded
+  // local burst; no counting backlog or recurring timer can build up.
+  static constexpr uint8_t kSenderTaskPriority = 8;
   static constexpr BaseType_t kSenderTaskCore = 1;
 #else
   static constexpr uint8_t kSenderTaskPriority = 7;
@@ -48,7 +50,11 @@ class VideoRtpSession {
   // audio is flowing, ESP-Hosted video is strictly released by successful
   // audio sends and has no periodic pacing wakeup.
   static constexpr uint32_t kAudioPacingStartupWaitMs = 40;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
+  static constexpr uint8_t kVideoPacketsPerAudioCredit = 4;
+#endif
   static constexpr uint32_t kTxBackpressureWaitMs = 3;
+  static constexpr uint32_t kWorkerStopBudgetMs = 1000;
 
   explicit VideoRtpSession(bool task_stack_in_psram);
   ~VideoRtpSession();
@@ -93,6 +99,12 @@ class VideoRtpSession {
 
   uint32_t tx_packets() const { return this->tx_packets_.load(std::memory_order_acquire); }
   uint32_t rx_packets() const { return this->rx_packets_.load(std::memory_order_acquire); }
+  uint32_t tx_access_units() const {
+    return this->tx_access_units_ok_.load(std::memory_order_acquire);
+  }
+  uint32_t rx_access_units() const {
+    return this->rx_access_units_ok_.load(std::memory_order_acquire);
+  }
   uint32_t dropped_access_units() const {
     return this->dropped_access_units_.load(std::memory_order_acquire);
   }
@@ -107,31 +119,46 @@ class VideoRtpSession {
   void task_();
   void sender_task_();
   bool start_sender_task_();
-  bool stop_sender_task_();
-  bool stop_receive_task_();
+  bool stop_sender_task_(TickType_t stop_started,
+                         TickType_t stop_budget);
+  bool stop_receive_task_(TickType_t stop_started,
+                          TickType_t stop_budget);
   bool reap_sender_task_();
   bool reap_receive_task_();
   void quiesce_tasks_();
   void close_sockets_();
   void queue_access_unit_(const EncodedVideoAccessUnit &access_unit);
   void send_access_unit_(const EncodedVideoAccessUnit &access_unit);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
   void send_h264_access_unit_(const EncodedVideoAccessUnit &access_unit);
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   void send_jpeg_access_unit_(const EncodedVideoAccessUnit &access_unit);
+#endif
   bool send_rtp_payload_(const uint8_t *payload, size_t size, bool marker,
                          uint32_t timestamp);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
   bool wait_for_audio_pacing_();
+  void reset_audio_pacing_burst_();
 #endif
   bool handle_rtp_packet_(const uint8_t *packet, size_t size);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+  static constexpr size_t kH264ParameterSetBytes = 1024;
   bool handle_h264_payload_(const uint8_t *payload, size_t payload_size,
                             bool marker, uint32_t timestamp,
                             bool sequence_gap);
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   bool handle_jpeg_payload_(const uint8_t *payload, size_t payload_size,
                             bool marker, uint32_t timestamp);
   bool ensure_jpeg_quantization_cache_();
+#endif
   void reset_reassembly_();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
   bool append_annex_b_nal_(const uint8_t *nal, size_t size);
   void finish_access_unit_(uint32_t timestamp);
+  void reset_h264_parameter_sets_();
+#endif
   bool handle_rtcp_packet_(const uint8_t *packet, size_t size,
                            bool *request_key_frame);
   size_t build_rtcp_report_sdes_(uint8_t *packet, size_t capacity) const;
@@ -211,6 +238,8 @@ class VideoRtpSession {
   SemaphoreHandle_t audio_pacing_{nullptr};
   StaticSemaphore_t audio_pacing_storage_{};
   std::atomic<bool> audio_pacing_started_{false};
+  std::atomic<bool> audio_pacing_startup_fallback_used_{false};
+  std::atomic<uint8_t> audio_pacing_burst_remaining_{0};
 #endif
 
   // One bounded PSRAM access-unit slot decouples the hardware encoder from
@@ -221,7 +250,9 @@ class VideoRtpSession {
   uint32_t tx_access_unit_timestamp_{0};
   bool tx_access_unit_key_frame_{false};
   std::atomic<uint8_t> tx_access_unit_state_{0};  // 0=free, 1=ready, 2=owned
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
   std::atomic<bool> tx_resync_needed_{false};
+#endif
 
   uint8_t *reassembly_{nullptr};
   size_t reassembly_size_{0};
@@ -232,9 +263,21 @@ class VideoRtpSession {
   uint8_t fu_nal_type_{0};
   uint16_t expected_sequence_{0};
   bool sequence_valid_{false};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+  // RFC 6184 senders may transmit SPS/PPS only at stream bootstrap. Keep the
+  // last complete sets for this RTP session and prepend them to a later IDR
+  // after local loss/reset, matching the browser-side depacketizer.
+  uint8_t h264_sps_[kH264ParameterSetBytes]{};
+  size_t h264_sps_size_{0};
+  uint8_t h264_pps_[kH264ParameterSetBytes]{};
+  size_t h264_pps_size_{0};
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   uint8_t *jpeg_quantization_cache_{nullptr};
   bool jpeg_quantization_cache_allocation_failed_{false};
   RtpJpegDepacketizer jpeg_depacketizer_{};
+  bool jpeg_parse_warning_emitted_{false};
+#endif
   std::atomic<uint16_t> tx_sequence_{0};
   uint32_t tx_timestamp_offset_{0};
   uint32_t tx_ssrc_{0};
@@ -244,11 +287,15 @@ class VideoRtpSession {
   std::atomic<uint16_t> latched_remote_rtcp_port_{0};
   std::atomic<uint32_t> tx_packets_{0};
   std::atomic<uint32_t> rx_packets_{0};
+  std::atomic<uint32_t> tx_access_units_ok_{0};
+  std::atomic<uint32_t> rx_access_units_ok_{0};
   std::atomic<uint32_t> tx_octets_{0};
   std::atomic<uint32_t> last_tx_rtp_timestamp_{0};
   std::atomic<uint32_t> last_tx_rtp_ms_{0};
   std::atomic<uint32_t> dropped_access_units_{0};
-  bool rtcp_feedback_enabled_{false};
+  bool accept_remote_pli_{false};
+  bool accept_remote_fir_{false};
+  bool send_remote_pli_{false};
   uint32_t last_rtcp_ms_{0};
   uint32_t last_pli_ms_{0};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
@@ -261,6 +308,8 @@ class VideoRtpSession {
   uint32_t tx_last_debug_log_ms_{0};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
   uint32_t tx_audio_pacing_startup_fallbacks_{0};
+  uint32_t tx_audio_pacing_credit_waits_{0};
+  uint32_t tx_audio_pacing_max_wait_us_{0};
 #endif
 #endif
 };

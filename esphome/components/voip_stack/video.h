@@ -4,12 +4,22 @@
 
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 
+#if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) == \
+    defined(USE_ESPHOME_VOIP_STACK_VIDEO_H264)
+#error "voip_stack video builds require exactly one codec backend"
+#endif
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
 
 namespace esphome {
 namespace voip_stack {
+
+enum class VideoCodec : uint8_t {
+  JPEG = 0,
+  H264,
+};
 
 /// One complete encoded video access unit.
 ///
@@ -33,6 +43,9 @@ struct VideoCapability {
   uint8_t max_fps{0};
   uint8_t packetization_mode{0};
   bool level_asymmetry_allowed{false};
+  uint32_t max_bitrate_bps{0};
+  bool rtcp_feedback_pli{false};
+  bool rtcp_feedback_fir{false};
   std::string encoding;
   std::string profile_level_id;
 
@@ -44,14 +57,20 @@ struct VideoCapability {
         this->width == 0 || this->height == 0 || this->max_fps == 0) {
       return false;
     }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
     if (this->is_jpeg()) {
       // JPEG has a static RTP/AVP assignment. Refuse private remappings so an
       // SDP answer can never silently disagree with RFC 3551 section 6.
       return this->payload_type == 26;
     }
-    return this->is_h264() && this->payload_type >= 96 &&
-           this->packetization_mode == 1 &&
-           this->profile_level_id.size() == 6;
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+    if (this->is_h264()) {
+      return this->payload_type >= 96 && this->packetization_mode == 1 &&
+             this->profile_level_id.size() == 6;
+    }
+#endif
+    return false;
   }
 };
 
@@ -100,6 +119,7 @@ class EncodedVideoSink {
 
 /// Derive RFC 6184 profile-level-id from the first SPS in an Annex-B AU.
 /// Returns false when the AU has no complete SPS or is malformed.
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
 bool h264_profile_level_id_from_annex_b(const uint8_t *data, size_t size,
                                         std::string *profile_level_id);
 
@@ -111,6 +131,7 @@ bool h264_same_subprofile(const std::string &left, const std::string &right);
 /// True when both IDs are the same RFC 6184 sub-profile and the source level
 /// does not exceed the receiver's advertised level.
 bool h264_level_fits(const std::string &source, const std::string &receiver);
+#endif
 
 }  // namespace voip_stack
 }  // namespace esphome

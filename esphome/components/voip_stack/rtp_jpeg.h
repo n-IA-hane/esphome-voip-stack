@@ -2,7 +2,8 @@
 
 #include "esphome/core/defines.h"
 
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+#if defined(USE_ESPHOME_VOIP_STACK_VIDEO) && \
+    defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG)
 
 #include <array>
 #include <cstddef>
@@ -23,11 +24,23 @@ struct RtpJpegFrameView {
   uint8_t type{0};
 };
 
+enum class RtpJpegParseError : uint8_t {
+  NONE = 0,
+  MALFORMED,
+  UNSUPPORTED_PRECISION,
+  UNSUPPORTED_SAMPLING,
+  NONSTANDARD_HUFFMAN,
+  UNSUPPORTED_PROCESS,
+};
+
+const char *rtp_jpeg_parse_error_name(RtpJpegParseError error);
+
 /// Parse one complete baseline JFIF frame without allocating or copying it.
 /// Returns false for progressive/multi-scan/custom-layout JPEG frames that
 /// RFC 2435 types 0/1 cannot describe.
 bool parse_jpeg_for_rtp(const uint8_t *data, size_t size,
-                        RtpJpegFrameView *frame);
+                        RtpJpegFrameView *frame,
+                        RtpJpegParseError *error = nullptr);
 
 /// Build the RFC 2435 headers for one fragment. The returned size excludes
 /// entropy data, which the caller appends directly from RtpJpegFrameView.

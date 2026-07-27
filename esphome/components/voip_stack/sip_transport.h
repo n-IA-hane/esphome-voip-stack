@@ -65,6 +65,9 @@ class SipTransport : public SipPhoneTransport {
                            uint16_t status,
                            const std::string &reason) override;
   const char *transport_name() const override { return "sip"; }
+  bool prepare_media_path() override;
+  bool commit_media_path() override;
+  void abort_media_path() override;
   bool start_audio_path() override;
   void stop_audio_path() override;
   bool originate(const std::string &host, uint16_t port) override;
@@ -74,7 +77,8 @@ class SipTransport : public SipPhoneTransport {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   void set_video_endpoints(EncodedVideoSource *source,
                            EncodedVideoSink *sink) override;
-  void set_video_config(uint16_t rtp_port, uint8_t offer_payload_type,
+  void set_video_config(VideoCodec codec, uint16_t rtp_port,
+                        uint8_t offer_payload_type,
                         size_t max_rtp_payload) override;
   bool request_video_send(bool enabled) override;
 #endif
@@ -93,9 +97,12 @@ class SipTransport : public SipPhoneTransport {
 
   enum class MediaLifecyclePhase : uint8_t {
     IDLE = 0,
-    ACTIVE,
-    CLEANING,
-    SHUTTING_DOWN,
+    ACTIVE = 1,
+    CLEANING = 2,
+    SHUTTING_DOWN = 3,
+    // Preserve the existing diagnostic values above. PREPARED owns bound
+    // resources but has not admitted a packet or activated a codec direction.
+    PREPARED = 4,
   };
 
   struct SipRequestOptions {
@@ -195,7 +202,9 @@ class SipTransport : public SipPhoneTransport {
   void handle_tcp_peer_loss_();
   void wake_sip_task_();
   void wake_rtp_task_();
-  bool start_audio_path_locked_();
+  bool prepare_media_path_locked_();
+  bool commit_media_path_locked_();
+  void terminate_dialog_after_media_commit_failure_();
   void request_audio_path_stop_locked_();
   void finish_audio_path_stop_();
   void reset_dialog_();
@@ -404,6 +413,7 @@ class SipTransport : public SipPhoneTransport {
   EncodedVideoSource *video_source_{nullptr};
   EncodedVideoSink *video_sink_{nullptr};
   std::unique_ptr<VideoRtpSession> video_session_;
+  VideoCodec video_codec_{VideoCodec::JPEG};
   uint16_t video_rtp_port_{40002};
   uint8_t video_offer_payload_type_{103};
   size_t video_max_rtp_payload_{1200};

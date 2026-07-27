@@ -479,7 +479,12 @@ button:
 | `dc_offset_removal` | `false` | Remove DC bias on TX. |
 | `audio_debug` | `false` | Verbose audio-path diagnostics. |
 | `buffers_in_psram` | `false` | Place VoIP-owned buffers in PSRAM. |
-| `task_stacks_in_psram` | `false` | Place TX/transport task stacks in PSRAM where supported. |
+| `task_stacks_in_psram` | `false` | Place signaling and media-transport task stacks in PSRAM where supported. |
+| `audio_task_stacks_in_psram` | `false` | Independently place the realtime `voip_tx`/`voip_rx` task stacks in PSRAM. |
+| `video.codec` | required with `video:` | Compile exactly one video backend: `jpeg` or `h264`. |
+| `video.camera_id` | none | Standard ESPHome camera JPEG source; valid only with `codec: jpeg`. |
+| `video.source` / `video.sink` | none | Encoded source and/or sink matching the selected codec. |
+| `video.offer_payload_type` | `26` / `103` | Static PT 26 for JPEG; dynamic PT 103 by default for H.264. |
 | `network_socket_headroom` | `0` | Extra lwIP sockets reserved at validation. |
 
 Removed options rejected with migration guidance: `processor_id`, `aec_reference_delay_ms`, and the old `aec:` switch platform. Software audio processing belongs to `esp_audio_stack`.

@@ -1,6 +1,7 @@
 #include "rtp_jpeg.h"
 
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+#if defined(USE_ESPHOME_VOIP_STACK_VIDEO) && \
+    defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG)
 
 #include <algorithm>
 #include <cstring>
@@ -230,8 +231,28 @@ bool valid_quantizers(const uint8_t *quantizers, size_t size) {
 
 }  // namespace
 
+const char *rtp_jpeg_parse_error_name(RtpJpegParseError error) {
+  switch (error) {
+    case RtpJpegParseError::NONE:
+      return "none";
+    case RtpJpegParseError::UNSUPPORTED_PRECISION:
+      return "precision";
+    case RtpJpegParseError::UNSUPPORTED_SAMPLING:
+      return "sampling";
+    case RtpJpegParseError::NONSTANDARD_HUFFMAN:
+      return "huffman";
+    case RtpJpegParseError::UNSUPPORTED_PROCESS:
+      return "process";
+    case RtpJpegParseError::MALFORMED:
+    default:
+      return "malformed";
+  }
+}
+
 bool parse_jpeg_for_rtp(const uint8_t *data, size_t size,
-                        RtpJpegFrameView *frame) {
+                        RtpJpegFrameView *frame,
+                        RtpJpegParseError *error) {
+  if (error != nullptr) *error = RtpJpegParseError::MALFORMED;
   if (data == nullptr || frame == nullptr || size < 4 || data[0] != 0xFF ||
       data[1] != 0xD8) {
     return false;
@@ -266,7 +287,12 @@ bool parse_jpeg_for_rtp(const uint8_t *data, size_t size,
         const uint8_t descriptor = segment[offset++];
         const uint8_t precision = descriptor >> 4;
         const uint8_t table = descriptor & 0x0F;
-        if (precision != 0 || table > 1 || quantizer_present[table] ||
+        if (precision != 0) {
+          if (error != nullptr)
+            *error = RtpJpegParseError::UNSUPPORTED_PRECISION;
+          return false;
+        }
+        if (table > 1 || quantizer_present[table] ||
             offset + 64 > payload_size)
           return false;
         memcpy(frame->quantizers.data() + table * 64, segment + offset, 64);
@@ -276,12 +302,19 @@ bool parse_jpeg_for_rtp(const uint8_t *data, size_t size,
     } else if (marker == 0xC4) {
       if (!consume_standard_huffman_tables(
               segment, payload_size, &huffman_table_mask)) {
+        if (error != nullptr)
+          *error = RtpJpegParseError::NONSTANDARD_HUFFMAN;
         return false;
       }
       saw_dht = true;
     } else if (marker == 0xC0) {
-      if (payload_size != 15 || segment[0] != 8 || segment[5] != 3)
+      if (payload_size != 15 || segment[5] != 3)
         return false;
+      if (segment[0] != 8) {
+        if (error != nullptr)
+          *error = RtpJpegParseError::UNSUPPORTED_PRECISION;
+        return false;
+      }
       frame->height = read_be16(segment + 1);
       frame->width = read_be16(segment + 3);
       if (frame->width == 0 || frame->height == 0 || frame->width > 2040 ||
@@ -293,14 +326,19 @@ bool parse_jpeg_for_rtp(const uint8_t *data, size_t size,
           components[3] != 2 || components[4] != 0x11 ||
           components[5] != 1 || components[6] != 3 ||
           components[7] != 0x11 || components[8] != 1) {
+        if (error != nullptr)
+          *error = RtpJpegParseError::UNSUPPORTED_SAMPLING;
         return false;
       }
       if (components[1] == 0x21)
         frame->type = 0;
       else if (components[1] == 0x22)
         frame->type = 1;
-      else
+      else {
+        if (error != nullptr)
+          *error = RtpJpegParseError::UNSUPPORTED_SAMPLING;
         return false;
+      }
       saw_sof = true;
     } else if (marker == 0xDD) {
       if (payload_size != 2) return false;
@@ -308,10 +346,14 @@ bool parse_jpeg_for_rtp(const uint8_t *data, size_t size,
       if (frame->restart_interval == 0) return false;
     } else if (marker == 0xDA) {
       if (!saw_sof || !quantizer_present[0] || !quantizer_present[1] ||
-          (saw_dht && huffman_table_mask != 0x0F) ||
           payload_size != 10 || segment[0] != 3 ||
           memcmp(segment + 1, "\x01\x00\x02\x11\x03\x11\x00\x3f\x00",
                  9) != 0) {
+        return false;
+      }
+      if (saw_dht && huffman_table_mask != 0x0F) {
+        if (error != nullptr)
+          *error = RtpJpegParseError::NONSTANDARD_HUFFMAN;
         return false;
       }
       const size_t scan_start = position + segment_length;
@@ -328,11 +370,14 @@ bool parse_jpeg_for_rtp(const uint8_t *data, size_t size,
       if (!found_eoi || scan_end <= scan_start) return false;
       frame->scan = data + scan_start;
       frame->scan_size = scan_end - scan_start;
+      if (error != nullptr) *error = RtpJpegParseError::NONE;
       return true;
     } else if (marker >= 0xC1 && marker <= 0xCF && marker != 0xC4 &&
                marker != 0xC8 && marker != 0xCC) {
       // Progressive, lossless and hierarchical SOF markers cannot be mapped
       // to RFC 2435's fixed baseline types.
+      if (error != nullptr)
+        *error = RtpJpegParseError::UNSUPPORTED_PROCESS;
       return false;
     }
     position += segment_length;

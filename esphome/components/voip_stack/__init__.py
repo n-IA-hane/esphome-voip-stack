@@ -26,6 +26,7 @@ _LOGGER = logging.getLogger(__name__)
 CONF_VOIP_STACK_ID = "voip_stack_id"
 CONF_DC_OFFSET_REMOVAL = "dc_offset_removal"
 CONF_TASK_STACKS_IN_PSRAM = "task_stacks_in_psram"
+CONF_AUDIO_TASK_STACKS_IN_PSRAM = "audio_task_stacks_in_psram"
 CONF_BUFFERS_IN_PSRAM = "buffers_in_psram"
 CONF_MICROPHONE_SOURCE = "microphone_source"
 
@@ -64,6 +65,7 @@ CONF_AUDIO_DEBUG = "audio_debug"
 CONF_AUDIO = "audio"
 CONF_VIDEO = "video"
 CONF_VIDEO_DEBUG = "video_debug"
+CONF_CODEC = "codec"
 CONF_SOURCE = "source"
 CONF_SINK = "sink"
 CONF_CAMERA_ID = "camera_id"
@@ -97,6 +99,8 @@ CONF_TX_USES_ESP_AUDIO_STACK = "_tx_uses_esp_audio_stack"
 
 TRANSPORT_TCP = "tcp"
 TRANSPORT_UDP = "udp"
+VIDEO_CODEC_JPEG = "jpeg"
+VIDEO_CODEC_H264 = "h264"
 
 voip_stack_ns = cg.esphome_ns.namespace("voip_stack")
 VoipStack = voip_stack_ns.class_("VoipStack", cg.Component)
@@ -104,6 +108,7 @@ TransportType = voip_stack_ns.enum("TransportType", is_class=True)
 PcmFormat = voip_stack_ns.enum("PcmFormat", is_class=True)
 EncodedVideoSource = voip_stack_ns.class_("EncodedVideoSource")
 EncodedVideoSink = voip_stack_ns.class_("EncodedVideoSink")
+VideoCodec = voip_stack_ns.enum("VideoCodec", is_class=True)
 Camera = cg.esphome_ns.namespace("camera").class_("Camera", cg.Component)
 
 PCM_FORMAT_IDS = {
@@ -234,18 +239,33 @@ def _validate_video_payload_type(value):
 
 
 def _validate_video_config(value):
+    codec = value[CONF_CODEC]
     if CONF_SOURCE in value and CONF_CAMERA_ID in value:
         raise cv.Invalid(
             "Use only one of voip_stack.video.source or voip_stack.video.camera_id."
         )
-    if CONF_OFFER_PAYLOAD_TYPE not in value:
-        value[CONF_OFFER_PAYLOAD_TYPE] = 26 if CONF_CAMERA_ID in value else 103
-    if CONF_CAMERA_ID in value and value[CONF_OFFER_PAYLOAD_TYPE] != 26:
+    if codec == VIDEO_CODEC_H264 and CONF_CAMERA_ID in value:
         raise cv.Invalid(
-            "voip_stack.video.camera_id publishes standard RTP/JPEG and requires "
+            "voip_stack.video.codec: h264 requires an encoded source; camera_id "
+            "is the standard JPEG camera adapter."
+        )
+    if CONF_OFFER_PAYLOAD_TYPE not in value:
+        value[CONF_OFFER_PAYLOAD_TYPE] = (
+            26 if codec == VIDEO_CODEC_JPEG else 103
+        )
+    if codec == VIDEO_CODEC_JPEG and value[CONF_OFFER_PAYLOAD_TYPE] != 26:
+        raise cv.Invalid(
+            "voip_stack.video.codec: jpeg uses the static RTP/JPEG assignment and requires "
             "offer_payload_type: 26."
         )
-    if value[CONF_OFFER_PAYLOAD_TYPE] == 26 and (
+    if codec == VIDEO_CODEC_H264 and not (
+        96 <= value[CONF_OFFER_PAYLOAD_TYPE] <= 127
+    ):
+        raise cv.Invalid(
+            "voip_stack.video.codec: h264 requires a dynamic offer_payload_type "
+            "from 96 to 127."
+        )
+    if codec == VIDEO_CODEC_JPEG and (
         value[CONF_WIDTH] > 2040 or value[CONF_HEIGHT] > 2040
     ):
         raise cv.Invalid(
@@ -257,6 +277,9 @@ def _validate_video_config(value):
 
 PHONE_VIDEO_SCHEMA = cv.All(cv.Schema(
     {
+        cv.Required(CONF_CODEC): cv.one_of(
+            VIDEO_CODEC_JPEG, VIDEO_CODEC_H264, lower=True
+        ),
         cv.Optional(CONF_SOURCE): cv.use_id(EncodedVideoSource),
         # ESPHome's camera base currently has no Python codegen declaration,
         # but it is a stable C++ platform interface. Declare that exact base
@@ -591,6 +614,10 @@ CONFIG_SCHEMA = cv.Schema(
         # required on plain ESP32 boards without PSRAM. Set true on heavy S3/P4
         # builds when PSRAM stacks are enabled in sdkconfig.
         cv.Optional(CONF_TASK_STACKS_IN_PSRAM, default=False): cv.boolean,
+        # Realtime audio task stacks can remain in internal RAM while the
+        # signaling/video workers follow task_stacks_in_psram. Realtime audio
+        # defaults to internal RAM even when the other task stacks use PSRAM.
+        cv.Optional(CONF_AUDIO_TASK_STACKS_IN_PSRAM, default=False): cv.boolean,
         # Standalone VoIP DSP/AEC was removed. Use native ESPHome mic/speaker
         # directly, or put software AEC/AFE on esp_audio_stack and pass its
         # microphone/speaker facade here.
@@ -681,12 +708,15 @@ def _consume_voip_sockets(config):
 def _final_validate(config):
     """Cross-component validation + socket reservation."""
     protocol = config.get(CONF_TRANSPORT, TRANSPORT_UDP)
-    if config[CONF_TASK_STACKS_IN_PSRAM]:
+    audio_task_stacks_in_psram = config[CONF_AUDIO_TASK_STACKS_IN_PSRAM]
+    if config[CONF_TASK_STACKS_IN_PSRAM] or audio_task_stacks_in_psram:
         if "psram" not in fv.full_config.get():
-            raise cv.Invalid("voip_stack.task_stacks_in_psram requires the psram component")
+            raise cv.Invalid(
+                "voip_stack task stacks in PSRAM require the psram component"
+            )
         if esp32.get_esp32_variant() == esp32.VARIANT_ESP32:
             raise cv.Invalid(
-                "voip_stack.task_stacks_in_psram is unsafe on the original ESP32 because "
+                "voip_stack task stacks in PSRAM are unsafe on the original ESP32 because "
                 "the SIP/RTP tasks call Wi-Fi/lwIP code while flash cache can be disabled. "
                 "Keep task stacks in internal RAM on ESP32; ESP32-S3/P4 are supported."
             )
@@ -846,10 +876,23 @@ async def _add_core_settings(var, config):
 
     cg.add(var.set_dc_offset_removal(config[CONF_DC_OFFSET_REMOVAL]))
     cg.add(var.set_task_stacks_in_psram(config[CONF_TASK_STACKS_IN_PSRAM]))
+    cg.add(
+        var.set_audio_task_stacks_in_psram(
+            config[CONF_AUDIO_TASK_STACKS_IN_PSRAM]
+        )
+    )
     cg.add(var.set_buffers_in_psram(config[CONF_BUFFERS_IN_PSRAM]))
     if CONF_VIDEO in config:
         video = config[CONF_VIDEO]
         cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO")
+        codec = video[CONF_CODEC]
+        if codec == VIDEO_CODEC_JPEG:
+            cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_JPEG")
+            codec_enum = VideoCodec.JPEG
+        else:
+            cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_H264")
+            codec_enum = VideoCodec.H264
+        cg.add(var.set_video_codec(codec_enum))
         # H.264 keyframes arrive as short RTP bursts. ESP-IDF's default
         # six-entry UDP mailbox can drop FU-A fragments before the video task
         # is scheduled, making every recovery IDR unusable. Keep the larger

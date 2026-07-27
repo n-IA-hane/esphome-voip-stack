@@ -39,7 +39,8 @@
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 #include "video.h"
 #endif
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA
+#if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
+    defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
 #include "camera_video_source.h"
 #endif
 #include "sip_types.h"
@@ -121,6 +122,9 @@ class VoipStack : public Component {
 
   void set_dc_offset_removal(bool enabled) { this->dc_offset_removal_ = enabled; }
   void set_task_stacks_in_psram(bool enabled) { this->task_stacks_in_psram_ = enabled; }
+  void set_audio_task_stacks_in_psram(bool enabled) {
+    this->audio_task_stacks_in_psram_ = enabled;
+  }
   void set_buffers_in_psram(bool enabled) { this->buffers_in_psram_ = enabled; }
   void set_device_name(const std::string &name) { this->device_name_ = name; }
   void set_extension(const std::string &extension);
@@ -153,9 +157,11 @@ class VoipStack : public Component {
   void set_sip_port(uint16_t port) { this->sip_port_ = port; }
   void set_rtp_port(uint16_t port) { this->rtp_port_ = port; }
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  void set_video_codec(VideoCodec codec) { this->video_codec_ = codec; }
   void set_video_source(EncodedVideoSource *source) { this->video_source_ = source; }
   void set_video_sink(EncodedVideoSink *sink) { this->video_sink_ = sink; }
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA
+#if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
+    defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
   void set_video_camera(camera::Camera *camera, uint16_t width,
                         uint16_t height, uint8_t max_fps) {
     this->video_camera_source_.set_camera(camera);
@@ -533,11 +539,13 @@ class VoipStack : public Component {
   uint16_t sip_port_{5060};
   uint16_t rtp_port_{40000};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA
+#if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
+    defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
   CameraJpegVideoSource video_camera_source_{};
 #endif
   EncodedVideoSource *video_source_{nullptr};
   EncodedVideoSink *video_sink_{nullptr};
+  VideoCodec video_codec_{VideoCodec::JPEG};
   uint16_t video_rtp_port_{40002};
   uint8_t video_offer_payload_type_{103};
   size_t video_max_rtp_payload_{1200};
@@ -667,6 +675,7 @@ class VoipStack : public Component {
   StackType_t *rx_task_stack_{nullptr};
 #endif
   bool task_stacks_in_psram_{false};
+  bool audio_task_stacks_in_psram_{false};
   // Audio must pre-empt video encode/decode/RTP work. ESP-Hosted's four SDIO
   // workers run at priority 23 and can stay runnable while bidirectional media
   // is flowing. On that compile-time-gated path, priority 24 lets the short

@@ -242,6 +242,24 @@ bool VoipStack::setup_audio_helpers_() {
 }
 
 bool VoipStack::setup_transport_() {
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  const auto endpoint_matches_codec = [this](const VideoCapability &capability) {
+    return capability.valid() &&
+           ((this->video_codec_ == VideoCodec::JPEG && capability.is_jpeg()) ||
+            (this->video_codec_ == VideoCodec::H264 && capability.is_h264()));
+  };
+  if (this->video_source_ != nullptr &&
+      !endpoint_matches_codec(this->video_source_->get_video_capability())) {
+    ESP_LOGE(TAG, "Configured video codec does not match the source capability");
+    return false;
+  }
+  if (this->video_sink_ != nullptr &&
+      !endpoint_matches_codec(
+          this->video_sink_->get_receive_video_capability())) {
+    ESP_LOGE(TAG, "Configured video codec does not match the sink capability");
+    return false;
+  }
+#endif
 #ifdef USE_ESPHOME_VOIP_SIP_TRANSPORT
   this->transport_ = std::make_unique<SipTransport>(
       this->sip_port_, this->rtp_port_, this->udp_max_payload_, "",
@@ -260,7 +278,8 @@ bool VoipStack::setup_transport_() {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->transport_->set_video_endpoints(this->video_source_, this->video_sink_);
   this->transport_->set_video_config(
-      this->video_rtp_port_, this->video_offer_payload_type_,
+      this->video_codec_, this->video_rtp_port_,
+      this->video_offer_payload_type_,
       this->video_max_rtp_payload_);
   this->transport_->set_video_send_state_callback(
       VoipStack::transport_video_send_state_callback_, this);
@@ -322,7 +341,7 @@ bool VoipStack::start_runtime_tasks_() {
   if (this->has_microphone_()) {
     if (!voip_audio_core::start_pinned_task(VoipStack::tx_task, "voip_tx",
                                              VoipStack::kTxTaskStackBytes, this, VoipStack::kTxTaskPriority, 0,
-                                             this->task_stacks_in_psram_, TAG,
+                                             this->audio_task_stacks_in_psram_, TAG,
                                              &this->tx_task_handle_, &this->tx_task_tcb_,
                                              &this->tx_task_stack_)) {
       return false;
@@ -333,7 +352,7 @@ bool VoipStack::start_runtime_tasks_() {
   if (this->has_speaker_()) {
     if (!voip_audio_core::start_pinned_task(VoipStack::rx_task, "voip_rx",
                                              VoipStack::kRxTaskStackBytes, this, VoipStack::kRxTaskPriority, 0,
-                                             this->task_stacks_in_psram_, TAG,
+                                             this->audio_task_stacks_in_psram_, TAG,
                                              &this->rx_task_handle_, &this->rx_task_tcb_,
                                              &this->rx_task_stack_)) {
       return false;
@@ -362,7 +381,8 @@ void VoipStack::fail_setup_() {
 void VoipStack::setup() {
   ESP_LOGI(TAG, "Setting up VoIP Stack...");
 
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA
+#if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
+    defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
   this->video_camera_source_.register_listener();
 #endif
 
@@ -765,6 +785,13 @@ std::string VoipStack::build_sip_snapshot_string_() const {
   }
   uint32_t rtp_tx_packets = 0;
   uint32_t rtp_rx_packets = 0;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  uint32_t video_tx_packets = 0;
+  uint32_t video_rx_packets = 0;
+  uint32_t video_tx_access_units = 0;
+  uint32_t video_rx_access_units = 0;
+  uint8_t media_lifecycle_phase = 0;
+#endif
   uint16_t sip_status = 0;
   const char *last_event = "";
   const CurrentMediaFormats current_formats = this->snapshot_current_media_formats_();
@@ -779,6 +806,13 @@ std::string VoipStack::build_sip_snapshot_string_() const {
     const SipTransportSnapshot snap = this->transport_->snapshot();
     rtp_tx_packets = snap.rtp_tx_packets;
     rtp_rx_packets = snap.rtp_rx_packets;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+    video_tx_packets = snap.video_tx_packets;
+    video_rx_packets = snap.video_rx_packets;
+    video_tx_access_units = snap.video_tx_access_units;
+    video_rx_access_units = snap.video_rx_access_units;
+    media_lifecycle_phase = snap.media_lifecycle_phase;
+#endif
     sip_status = snap.last_sip_status_code;
     last_event = snap.last_sip_event;
     if (this->call_state_.load(std::memory_order_acquire) != CallState::IDLE || this->last_reason_.empty()) {
@@ -810,16 +844,27 @@ std::string VoipStack::build_sip_snapshot_string_() const {
            (unsigned) this->media_rx_queue_drops_.load(std::memory_order_relaxed),
            field_escape(this->last_reason_, 22).c_str(),
            field_escape(last_event, 22).c_str());
+  std::string result(out);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  char video[72];
+  snprintf(video, sizeof(video),
+           "; vt=%u; vr=%u; vat=%u; var=%u; mlp=%u",
+           (unsigned) video_tx_packets, (unsigned) video_rx_packets,
+           (unsigned) video_tx_access_units,
+           (unsigned) video_rx_access_units,
+           (unsigned) media_lifecycle_phase);
+  result += video;
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
   if (this->audio_debug_) {
     char debug[48];
     snprintf(debug, sizeof(debug), "; rsil=%u; spkshort=%u",
              (unsigned) this->audio_debug_rx_silence_frames_.load(std::memory_order_relaxed),
              (unsigned) this->audio_debug_speaker_short_writes_.load(std::memory_order_relaxed));
-    return std::string(out) + debug;
+    result += debug;
   }
 #endif
-  return out;
+  return result;
 }
 
 void VoipStack::publish_sip_snapshot_() {

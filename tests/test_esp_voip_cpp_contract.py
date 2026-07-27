@@ -146,6 +146,148 @@ def test_video_rtp_burst_capacity_is_compile_time_gated() -> None:
     assert re.search(r"recvfrom\(\s*this->rtp_socket_", video_rtp)
 
 
+def test_video_codec_schema_and_codegen_are_one_codec_per_build() -> None:
+    init_path = VOIP / "__init__.py"
+    spec = importlib.util.spec_from_file_location("voip_stack_codec_init", init_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    jpeg = module._validate_video_config(
+        {
+            module.CONF_CODEC: module.VIDEO_CODEC_JPEG,
+            module.CONF_WIDTH: 640,
+            module.CONF_HEIGHT: 480,
+        }
+    )
+    assert jpeg[module.CONF_OFFER_PAYLOAD_TYPE] == 26
+    with pytest.raises(cv.Invalid, match="static RTP/JPEG"):
+        module._validate_video_config(
+            {
+                module.CONF_CODEC: module.VIDEO_CODEC_JPEG,
+                module.CONF_WIDTH: 640,
+                module.CONF_HEIGHT: 480,
+                module.CONF_OFFER_PAYLOAD_TYPE: 103,
+            }
+        )
+
+    h264 = module._validate_video_config(
+        {
+            module.CONF_CODEC: module.VIDEO_CODEC_H264,
+            module.CONF_WIDTH: 640,
+            module.CONF_HEIGHT: 480,
+        }
+    )
+    assert h264[module.CONF_OFFER_PAYLOAD_TYPE] == 103
+    with pytest.raises(cv.Invalid, match="requires an encoded source"):
+        module._validate_video_config(
+            {
+                module.CONF_CODEC: module.VIDEO_CODEC_H264,
+                module.CONF_CAMERA_ID: object(),
+                module.CONF_WIDTH: 640,
+                module.CONF_HEIGHT: 480,
+            }
+        )
+    with pytest.raises(cv.Invalid, match="dynamic offer_payload_type"):
+        module._validate_video_config(
+            {
+                module.CONF_CODEC: module.VIDEO_CODEC_H264,
+                module.CONF_WIDTH: 640,
+                module.CONF_HEIGHT: 480,
+                module.CONF_OFFER_PAYLOAD_TYPE: 26,
+            }
+        )
+
+    init_py = read("__init__.py")
+    assert "cv.Required(CONF_CODEC)" in init_py
+    assert 'cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_JPEG")' in init_py
+    assert 'cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_H264")' in init_py
+    assert "cg.add(var.set_video_codec(codec_enum))" in init_py
+    assert "defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG)" in read(
+        "rtp_jpeg.cpp"
+    )
+    assert "defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG)" in read(
+        "camera_video_source.cpp"
+    )
+    video_header = read("video_rtp.h")
+    assert "#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG" in video_header
+    assert "#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264" in video_header
+    capability_header = read("video.h")
+    assert (
+        '#error "voip_stack video builds require exactly one codec backend"'
+        in capability_header
+    )
+
+    stack = read("voip_stack.cpp")
+    setup_transport = cpp_method(stack, r"VoipStack::setup_transport_")
+    assert "this->video_source_ != nullptr" in setup_transport
+    assert "this->video_sink_ != nullptr" in setup_transport
+    assert "endpoint_matches_codec" in setup_transport
+    assert "capability.valid() &&" in setup_transport
+    assert "return false;" in setup_transport
+    assert (
+        setup_transport.index("endpoint_matches_codec")
+        < setup_transport.index("std::make_unique<SipTransport>")
+    )
+
+
+def test_realtime_audio_task_stack_policy_defaults_to_internal_ram() -> None:
+    init_py = read("__init__.py")
+    header = read("voip_stack.h")
+    source = read("voip_stack.cpp")
+
+    assert (
+        "cv.Optional(CONF_AUDIO_TASK_STACKS_IN_PSRAM, default=False): cv.boolean"
+        in init_py
+    )
+    assert (
+        "config[CONF_AUDIO_TASK_STACKS_IN_PSRAM]"
+        in init_py
+    )
+    assert "set_audio_task_stacks_in_psram" in header
+    assert "bool audio_task_stacks_in_psram_{false};" in header
+    assert source.count("this->audio_task_stacks_in_psram_, TAG") == 2
+    assert "this->task_stacks_in_psram_, TAG" not in source[
+        source.index("bool VoipStack::start_runtime_tasks_()") :
+        source.index("\nvoid VoipStack::", source.index("bool VoipStack::start_runtime_tasks_()"))
+    ]
+
+
+def test_video_rtcp_feedback_and_snapshot_are_directional_and_compile_gated() -> None:
+    capability = read("video.h")
+    rtp_header = read("video_rtp.h")
+    rtp = read("video_rtp.cpp")
+    transport = read("sip_transport.cpp")
+    snapshot = read("transport.h")
+    stack = read("voip_stack.cpp")
+
+    assert "bool rtcp_feedback_pli{false};" in capability
+    assert "bool rtcp_feedback_fir{false};" in capability
+    assert "bool accept_remote_pli_{false};" in rtp_header
+    assert "bool accept_remote_fir_{false};" in rtp_header
+    assert "bool send_remote_pli_{false};" in rtp_header
+    assert "rtcp_feedback_enabled_" not in rtp_header
+    assert "count == 1 && this->accept_remote_pli_" in rtp
+    assert "count == 4 && this->accept_remote_fir_" in rtp
+    assert "!this->send_remote_pli_" in rtp
+    assert '" nack pli\\r\\n"' in transport
+    assert '" ccm fir\\r\\n"' in transport
+    assert '"b=TIAS:"' in transport
+    assert "parse_video_rtcp_feedback" in transport
+
+    for field in (
+        "video_tx_packets",
+        "video_rx_packets",
+        "video_tx_access_units",
+        "video_rx_access_units",
+        "media_lifecycle_phase",
+    ):
+        assert field in snapshot
+    assert "std::atomic<uint32_t> tx_access_units_ok_{0};" in rtp_header
+    assert "std::atomic<uint32_t> rx_access_units_ok_{0};" in rtp_header
+    assert '"; vt=%u; vr=%u; vat=%u; var=%u; mlp=%u"' in stack
+
+
 def test_video_debug_gates_hosted_and_media_send_timing() -> None:
     init_py = read("__init__.py")
     video_header = read("video_rtp.h")
@@ -320,6 +462,7 @@ def test_rtp_jpeg_dimension_limit_matches_rfc2435_encoding() -> None:
     spec.loader.exec_module(module)
 
     jpeg = {
+        module.CONF_CODEC: module.VIDEO_CODEC_JPEG,
         module.CONF_OFFER_PAYLOAD_TYPE: 26,
         module.CONF_WIDTH: 2040,
         module.CONF_HEIGHT: 2040,
@@ -333,6 +476,7 @@ def test_rtp_jpeg_dimension_limit_matches_rfc2435_encoding() -> None:
     # The schema keeps the wider generic bound available to custom H.264
     # sources; only RFC 2435's static JPEG format uses the 8-bit block fields.
     h264 = {
+        module.CONF_CODEC: module.VIDEO_CODEC_H264,
         module.CONF_OFFER_PAYLOAD_TYPE: 103,
         module.CONF_WIDTH: 2048,
         module.CONF_HEIGHT: 2048,
@@ -603,6 +747,7 @@ def test_rtp_jpeg_host_behavioral_contract(tmp_path: Path) -> None:
             "-Wextra",
             "-Werror",
             "-DUSE_ESPHOME_VOIP_STACK_VIDEO",
+            "-DUSE_ESPHOME_VOIP_STACK_VIDEO_JPEG",
             f"-I{tmp_path}",
             f"-I{ROOT}",
             str(probe),
@@ -629,7 +774,10 @@ def test_rejected_video_answer_preserves_the_first_offered_payload_type() -> Non
     sip_cpp = read("sip_transport.cpp")
     learn = sip_cpp[
         sip_cpp.index("bool SipTransport::learn_remote_video_from_sdp_") :
-        sip_cpp.index("\n#endif", sip_cpp.index("bool SipTransport::learn_remote_video_from_sdp_"))
+        sip_cpp.index(
+            "\nbool SipTransport::send_request_",
+            sip_cpp.index("bool SipTransport::learn_remote_video_from_sdp_"),
+        )
     ]
 
     preserve = learn.index(
@@ -1038,13 +1186,18 @@ def test_video_sender_completes_owned_au_and_bounds_udp_backpressure() -> None:
     assert "DSCP AF41" in video
 
     # ESP-Hosted has one blocking SDIO queue for both flows. Its compile-time
-    # gated scheduler gives video one binary credit only after audio has
-    # successfully entered that queue; native-WiFi builds carry none of it.
+    # gated scheduler collapses audio completions into one binary event and
+    # admits only a bounded local burst; native-WiFi builds carry none of it.
     assert "USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING" in codegen
     assert '"esp32_hosted" in (CORE.config or {})' in codegen
     assert "xSemaphoreCreateBinaryStatic(&this->audio_pacing_storage_)" in video
+    assert "xSemaphoreCreateCounting" not in video
     assert "xSemaphoreTake(this->audio_pacing_, portMAX_DELAY)" in video
     assert "xSemaphoreGive(this->audio_pacing_)" in video
+    assert "kVideoPacketsPerAudioCredit = 4" in header
+    assert "kVideoPacketsPerAudioCredit - 1" in video
+    assert "audio_pacing_burst_remaining_" in header
+    assert "pdMS_TO_TICKS(100)" not in video
     assert "this->video_session_->notify_audio_packet_sent();" in sip
 
     voip_header = read("voip_stack.h")
@@ -1052,7 +1205,7 @@ def test_video_sender_completes_owned_au_and_bounds_udp_backpressure() -> None:
     assert "static constexpr uint8_t kTxTaskPriority = 24;" in voip_header
     assert "static constexpr uint8_t kTxTaskPriority = 15;" in voip_header
     assert "static constexpr uint8_t kRxTaskPriority = 15;" in voip_header
-    assert "static constexpr uint8_t kSenderTaskPriority = 15;" in header
+    assert "static constexpr uint8_t kSenderTaskPriority = 8;" in header
     assert "static constexpr uint8_t kSenderTaskPriority = 7;" in header
     assert "static constexpr BaseType_t kSenderTaskCore = 1;" in header
     assert "static constexpr BaseType_t kSenderTaskCore = 0;" in header
@@ -1130,6 +1283,107 @@ def test_media_lifecycle_is_serialized_across_fsm_and_sip_tasks() -> None:
         section = source[source.index(begin) : source.index(end)]
         assert lock in section
         assert section.index(lock) < section.index(operation)
+
+
+def test_incoming_answer_prepares_before_200_and_commits_after_send() -> None:
+    transport = read("transport.h")
+    header = read("sip_transport.h")
+    source = read("sip_transport.cpp")
+    fsm = read("voip_fsm.cpp")
+
+    for method in (
+        "prepare_media_path()",
+        "commit_media_path()",
+        "abort_media_path()",
+    ):
+        assert method in transport
+        assert method in header
+    assert "PREPARED = 4" in header
+
+    prepare = cpp_method(source, r"SipTransport::prepare_media_path_locked_")
+    commit_public = cpp_method(source, r"SipTransport::commit_media_path")
+    commit = cpp_method(source, r"SipTransport::commit_media_path_locked_")
+    commit_failure = cpp_method(
+        source, r"SipTransport::terminate_dialog_after_media_commit_failure_"
+    )
+    abort = cpp_method(source, r"SipTransport::abort_media_path")
+    assert "this->bind_udp_(&this->rtp_socket_" in prepare
+    assert "this->prepare_video_session_locked_()" in prepare
+    assert "MediaLifecyclePhase::PREPARED" in prepare
+    assert "this->rtp_running_.store(true" not in prepare
+    assert "xTaskNotifyGive(this->rtp_task_handle_)" not in prepare
+    assert "request_media_direction(" not in prepare
+
+    assert "MediaLifecyclePhase::ACTIVE" in commit
+    assert "this->rtp_running_.store(true" in commit
+    assert "xTaskNotifyGive(this->rtp_task_handle_)" in commit
+    assert "request_media_direction(" in commit
+    assert commit.index("MediaLifecyclePhase::ACTIVE") < commit.index(
+        "MediaLifecyclePhase::PREPARED"
+    )
+    assert "terminate_dialog_after_media_commit_failure_();" in commit_public
+    assert "this->completed_invite_.awaiting_ack" in commit_failure
+    assert "this->terminate_after_invite_ack_ = true;" in commit_failure
+    assert "this->wake_sip_task_();" in commit_failure
+    assert "this->send_bye_unlocked_(this->call_id_)" in commit_failure
+    assert "this->reset_dialog_();" not in commit_failure
+    acknowledge = source[
+        source.index("uint16_t SipTransport::acknowledge_completed_invite_") :
+        source.index("\nbool SipTransport::replay_completed_invite_ack_")
+    ]
+    datagram = cpp_method(source, r"SipTransport::handle_sip_datagram_")
+    assert "this->terminate_after_invite_ack_" in acknowledge
+    assert "if (terminate_after_ack)" in datagram
+    assert "this->send_bye_unlocked_(call_id)" in datagram
+    assert "this->stop_audio_path();" in abort
+
+    manual = cpp_method(fsm, r"VoipStack::answer_call")
+    assert manual.index("prepare_media_path()") < manual.index(
+        "set_audio_devices_active_(true)"
+    ) < manual.index("send_sip_answer_") < manual.index(
+        "commit_media_path()"
+    )
+    assert manual.count("abort_media_path()") == 2
+
+    auto_start = fsm.index("      if (this->auto_answer_)")
+    auto_end = fsm.index("      } else {", auto_start)
+    auto_answer = fsm[auto_start:auto_end]
+    assert auto_answer.index("prepare_media_path()") < auto_answer.index(
+        "set_audio_devices_active_(true)"
+    ) < auto_answer.index("send_sip_answer_") < auto_answer.index(
+        "commit_media_path()"
+    )
+    assert auto_answer.count("abort_media_path()") == 2
+
+    outbound = fsm[
+        fsm.index("case SipSignalType::STATUS_200_OK") :
+        fsm.index("case SipSignalType::CANCEL")
+    ]
+    assert "this->transport_->start_audio_path()" in outbound
+
+
+def test_video_workers_share_one_bounded_stop_deadline_without_forced_delete() -> None:
+    header = read("video_rtp.h")
+    video = read("video_rtp.cpp")
+    stop = cpp_method(video, r"VideoRtpSession::stop")
+    sender_stop = cpp_method(video, r"VideoRtpSession::stop_sender_task_")
+    receiver_stop = cpp_method(video, r"VideoRtpSession::stop_receive_task_")
+    destructor = video[
+        video.index("VideoRtpSession::~VideoRtpSession()") :
+        video.index("\nbool VideoRtpSession::set_negotiated")
+    ]
+
+    assert "kWorkerStopBudgetMs = 1000" in header
+    assert "const TickType_t stop_started = xTaskGetTickCount();" in stop
+    assert "const TickType_t stop_budget" in stop
+    assert "stop_sender_task_(stop_started, stop_budget)" in stop
+    assert "stop_receive_task_(stop_started, stop_budget)" in stop
+    for worker_stop in (sender_stop, receiver_stop):
+        assert "xTaskGetTickCount() - stop_started" in worker_stop
+        assert "elapsed < stop_budget ? stop_budget - elapsed : 0" in worker_stop
+        assert "pdMS_TO_TICKS(1000)" not in worker_stop
+    assert "force" not in stop.lower()
+    assert "this->quiesce_tasks_();" in destructor
 
 
 def test_call_teardown_is_deferred_to_the_event_driven_rtp_worker() -> None:
@@ -2071,7 +2325,7 @@ def test_schema_matches_rtp_implementation_limits() -> None:
     assert 'if fmt[CONF_PCM_FORMAT] == "s32le":' in init_py
     assert "fmt.channels != 1" not in sip_types
     assert "cv.Optional(CONF_IP): cv.ipv4address" in init_py
-    assert "voip_stack.task_stacks_in_psram requires the psram component" in init_py
+    assert "voip_stack task stacks in PSRAM require the psram component" in init_py
     assert "esp32.get_esp32_variant() == esp32.VARIANT_ESP32" in init_py
 
 
