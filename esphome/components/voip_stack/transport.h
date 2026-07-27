@@ -20,6 +20,7 @@ struct TransportAudioFrame {
   uint16_t sequence{0};
   uint32_t timestamp{0};
   bool has_rtp_metadata{false};
+  bool source_changed{false};
 };
 
 using TransportAudioCallback = void (*)(void *ctx, const TransportAudioFrame &frame);
@@ -168,13 +169,15 @@ class SipPhoneTransport {
     if (this->on_audio_frame_ != nullptr) this->on_audio_frame_(this->on_audio_frame_ctx_, frame);
   }
 
-  void emit_audio_frame_(const uint8_t *pcm, size_t bytes, uint16_t sequence, uint32_t timestamp) {
+  void emit_audio_frame_(const uint8_t *pcm, size_t bytes, uint16_t sequence,
+                         uint32_t timestamp, bool source_changed = false) {
     TransportAudioFrame frame;
     frame.pcm = pcm;
     frame.bytes = bytes;
     frame.sequence = sequence;
     frame.timestamp = timestamp;
     frame.has_rtp_metadata = true;
+    frame.source_changed = source_changed;
     if (this->on_audio_frame_ != nullptr) this->on_audio_frame_(this->on_audio_frame_ctx_, frame);
   }
 

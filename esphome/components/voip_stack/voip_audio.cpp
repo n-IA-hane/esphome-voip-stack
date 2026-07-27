@@ -255,6 +255,9 @@ void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
   const size_t expected = this->get_current_rx_audio_format_().nominal_frame_bytes();
   if (frame.bytes != expected || frame.bytes > this->rx_audio_chunk_alloc_bytes_)
     return;
+  if (frame.source_changed) {
+    this->rx_jitter_buffer_->reset();
+  }
 
   const auto before = this->rx_jitter_buffer_->counters();
   RtpJitterBuffer::Frame jitter_frame;

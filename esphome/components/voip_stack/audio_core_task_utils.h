@@ -6,7 +6,12 @@
 #include "esphome/core/log.h"
 
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
+#ifdef USE_ESP_IDF
+#include <freertos/idf_additions.h>
+#include <esp_heap_caps.h>
+#endif
 
 namespace esphome {
 namespace voip_audio_core {
@@ -131,6 +136,71 @@ inline void cleanup_pinned_task(TaskHandle_t *handle, StackType_t **stack, uint3
     alloc.deallocate(*stack, stack_words);
     *stack = nullptr;
   }
+}
+
+/// Start a task whose steady-state teardown is owned by another task.
+///
+/// On ESP-IDF, PSRAM stacks use the framework's WithCaps API instead of a
+/// hand-managed static stack. The worker must finish with
+/// finish_managed_pinned_task(); after its done semaphore is observed, the
+/// owner must call cleanup_managed_pinned_task(). This keeps task deletion and
+/// stack release synchronous without polling the scheduler or racing the IDLE
+/// task's deferred cleanup.
+inline bool start_managed_pinned_task(
+    TaskFunction_t fn, const char *name, uint32_t stack_bytes, void *param,
+    UBaseType_t prio, BaseType_t core, bool psram_stack, const char *log_tag,
+    TaskHandle_t *handle_out, StaticTask_t *tcb_out,
+    StackType_t **stack_out, bool *with_caps_out) {
+  *handle_out = nullptr;
+  *with_caps_out = false;
+#ifdef USE_ESP_IDF
+  if (psram_stack) {
+    *stack_out = nullptr;
+    const BaseType_t result = xTaskCreatePinnedToCoreWithCaps(
+        fn, name, stack_bytes, param, prio, handle_out, core,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (result != pdPASS || *handle_out == nullptr) {
+      *handle_out = nullptr;
+      ESP_LOGE(log_tag, "Failed to create PSRAM-stack %s task", name);
+      return false;
+    }
+    *with_caps_out = true;
+    return true;
+  }
+#endif
+  return start_pinned_task(fn, name, stack_bytes, param, prio, core,
+                           psram_stack, log_tag, handle_out, tcb_out,
+                           stack_out);
+}
+
+/// Publish worker completion and park until the owning task deletes us.
+///
+/// Once the semaphore is visible the worker has left every codec/socket API
+/// and no longer touches its owner. Deletion from the owner is therefore safe,
+/// including when this final instruction has not yet run on the other core.
+[[noreturn]] inline void finish_managed_pinned_task(
+    SemaphoreHandle_t done) {
+  xSemaphoreGive(done);
+  vTaskSuspend(nullptr);
+  abort();
+}
+
+/// Delete a completed managed task and release its stack synchronously.
+inline void cleanup_managed_pinned_task(
+    TaskHandle_t *handle, StackType_t **stack, uint32_t stack_bytes,
+    bool with_caps) {
+  if (handle == nullptr || *handle == nullptr) return;
+#ifdef USE_ESP_IDF
+  if (with_caps) {
+    vTaskDeleteWithCaps(*handle);
+    *handle = nullptr;
+    return;
+  }
+#endif
+  // A done semaphore from finish_managed_pinned_task() guarantees that the
+  // worker is past all upstream calls. It is safe to delete even if the remote
+  // core has not executed vTaskSuspend(nullptr) yet.
+  force_delete_pinned_task(handle, stack, stack_bytes);
 }
 
 }  // namespace voip_audio_core

@@ -63,8 +63,13 @@ CONF_USE_HA_AS_FIRST_CONTACT = "use_ha_as_first_contact"
 CONF_AUDIO_DEBUG = "audio_debug"
 CONF_AUDIO = "audio"
 CONF_VIDEO = "video"
+CONF_VIDEO_DEBUG = "video_debug"
 CONF_SOURCE = "source"
 CONF_SINK = "sink"
+CONF_CAMERA_ID = "camera_id"
+CONF_WIDTH = "width"
+CONF_HEIGHT = "height"
+CONF_FRAMERATE = "framerate"
 CONF_OFFER_PAYLOAD_TYPE = "offer_payload_type"
 CONF_MAX_RTP_PAYLOAD = "max_rtp_payload"
 CONF_TX = "tx"
@@ -99,6 +104,7 @@ TransportType = voip_stack_ns.enum("TransportType", is_class=True)
 PcmFormat = voip_stack_ns.enum("PcmFormat", is_class=True)
 EncodedVideoSource = voip_stack_ns.class_("EncodedVideoSource")
 EncodedVideoSink = voip_stack_ns.class_("EncodedVideoSink")
+Camera = cg.esphome_ns.namespace("camera").class_("Camera", cg.Component)
 
 PCM_FORMAT_IDS = {
     "s16le": 1,
@@ -220,19 +226,53 @@ PHONE_AUDIO_FORMAT_SCHEMA = cv.All(cv.Any(cv.one_of(CONF_AUTO, lower=True), cv.S
     }
 )), _validate_voip_audio_format)
 
-PHONE_VIDEO_SCHEMA = cv.Schema(
+def _validate_video_payload_type(value):
+    value = cv.int_(value)
+    if value == 26 or 96 <= value <= 127:
+        return value
+    raise cv.Invalid("must be RTP/JPEG static payload type 26 or a dynamic payload type from 96 to 127")
+
+
+def _validate_video_config(value):
+    if CONF_SOURCE in value and CONF_CAMERA_ID in value:
+        raise cv.Invalid(
+            "Use only one of voip_stack.video.source or voip_stack.video.camera_id."
+        )
+    if CONF_OFFER_PAYLOAD_TYPE not in value:
+        value[CONF_OFFER_PAYLOAD_TYPE] = 26 if CONF_CAMERA_ID in value else 103
+    if CONF_CAMERA_ID in value and value[CONF_OFFER_PAYLOAD_TYPE] != 26:
+        raise cv.Invalid(
+            "voip_stack.video.camera_id publishes standard RTP/JPEG and requires "
+            "offer_payload_type: 26."
+        )
+    if value[CONF_OFFER_PAYLOAD_TYPE] == 26 and (
+        value[CONF_WIDTH] > 2040 or value[CONF_HEIGHT] > 2040
+    ):
+        raise cv.Invalid(
+            "RTP/JPEG dimensions are encoded in 8-pixel blocks and cannot "
+            "exceed 2040x2040."
+        )
+    return value
+
+
+PHONE_VIDEO_SCHEMA = cv.All(cv.Schema(
     {
         cv.Optional(CONF_SOURCE): cv.use_id(EncodedVideoSource),
+        # ESPHome's camera base currently has no Python codegen declaration,
+        # but it is a stable C++ platform interface. Declare that exact base
+        # type locally so schema validation accepts camera entities only.
+        cv.Optional(CONF_CAMERA_ID): cv.use_id(Camera),
         cv.Optional(CONF_SINK): cv.use_id(EncodedVideoSink),
+        cv.Optional(CONF_WIDTH, default=640): cv.int_range(min=8, max=2048),
+        cv.Optional(CONF_HEIGHT, default=480): cv.int_range(min=8, max=2048),
+        cv.Optional(CONF_FRAMERATE, default=10): cv.int_range(min=1, max=60),
         cv.Optional(CONF_RTP_PORT, default=40002): cv.port,
-        cv.Optional(CONF_OFFER_PAYLOAD_TYPE, default=103): cv.int_range(
-            min=96, max=127
-        ),
+        cv.Optional(CONF_OFFER_PAYLOAD_TYPE): _validate_video_payload_type,
         cv.Optional(CONF_MAX_RTP_PAYLOAD, default=1200): cv.int_range(
             min=576, max=1400
         ),
     }
-)
+), _validate_video_config)
 
 
 def _format_container_bits(fmt: dict) -> int:
@@ -526,6 +566,9 @@ CONFIG_SCHEMA = cv.Schema(
             }
         ), _validate_voip_audio_config),
         cv.Optional(CONF_VIDEO): PHONE_VIDEO_SCHEMA,
+        # Compile-time gate for per-frame/packet diagnostics. Disabled builds
+        # contain neither hot-path log branches nor their format strings.
+        cv.Optional(CONF_VIDEO_DEBUG, default=False): cv.boolean,
         # Preferred path: use the native ESPHome microphone directly. Maintained
         # esp_audio_stack profiles already expose 16 kHz / 16-bit / mono audio,
         # so MicrophoneSource would only add an avoidable copy/conversion pass.
@@ -618,8 +661,10 @@ def _consume_voip_sockets(config):
     """
     from esphome.components import socket
 
-    # SIP signaling can be UDP or TCP; audio remains RTP/UDP.
-    socket.consume_sockets(2, "voip_stack_sip", socket.SocketType.UDP)(config)
+    # SIP signaling can be UDP or TCP; audio remains RTP/UDP. The third UDP
+    # socket is a private event-driven wake channel included in the SIP
+    # select() set, so command handling never needs a polling timeout.
+    socket.consume_sockets(3, "voip_stack_sip", socket.SocketType.UDP)(config)
     socket.consume_sockets(2, "voip_stack_sip_tcp")(config)
     socket.consume_sockets(1, "voip_stack_sip", socket.SocketType.TCP_LISTEN)(config)
     if CONF_VIDEO in config:
@@ -660,9 +705,13 @@ def _final_validate(config):
         )
     if CONF_VIDEO in config:
         video = config[CONF_VIDEO]
-        if CONF_SOURCE not in video and CONF_SINK not in video:
+        if (
+            CONF_SOURCE not in video
+            and CONF_CAMERA_ID not in video
+            and CONF_SINK not in video
+        ):
             raise cv.Invalid(
-                "voip_stack.video requires at least one of source or sink."
+                "voip_stack.video requires at least one of source, camera_id or sink."
             )
         if video[CONF_RTP_PORT] == config[CONF_RTP_PORT]:
             raise cv.Invalid(
@@ -672,6 +721,13 @@ def _final_validate(config):
             raise cv.Invalid(
                 "voip_stack.video RTCP port overlaps the audio RTP port."
             )
+        if video[CONF_RTP_PORT] >= 65535:
+            raise cv.Invalid(
+                "voip_stack.video.rtp_port must leave the following UDP port "
+                "available for RTCP."
+            )
+    elif config[CONF_VIDEO_DEBUG]:
+        raise cv.Invalid("voip_stack.video_debug requires voip_stack.video.")
 
     audio_cfg = config[CONF_AUDIO]
     audio_cfg[CONF_TX] = _resolve_audio_format(config, CONF_TX, audio_cfg[CONF_TX])
@@ -800,12 +856,25 @@ async def _add_core_settings(var, config):
         if CONF_SOURCE in video:
             source = await cg.get_variable(video[CONF_SOURCE])
             cg.add(var.set_video_source(source))
+        if CONF_CAMERA_ID in video:
+            cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA")
+            video_camera = await cg.get_variable(video[CONF_CAMERA_ID])
+            cg.add(
+                var.set_video_camera(
+                    video_camera,
+                    video[CONF_WIDTH],
+                    video[CONF_HEIGHT],
+                    video[CONF_FRAMERATE],
+                )
+            )
         if CONF_SINK in video:
             sink = await cg.get_variable(video[CONF_SINK])
             cg.add(var.set_video_sink(sink))
         cg.add(var.set_video_rtp_port(video[CONF_RTP_PORT]))
         cg.add(var.set_video_offer_payload_type(video[CONF_OFFER_PAYLOAD_TYPE]))
         cg.add(var.set_video_max_rtp_payload(video[CONF_MAX_RTP_PAYLOAD]))
+        if config[CONF_VIDEO_DEBUG]:
+            cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG")
     cg.add(var.set_extension(config[CONF_EXTENSION]))
     cg.add(var.set_conference_groups(config[CONF_CONFERENCE_GROUPS]))
     cg.add(var.set_conference_ring(config[CONF_CONFERENCE_RING]))

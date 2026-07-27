@@ -23,20 +23,34 @@ struct EncodedVideoAccessUnit {
 };
 
 struct VideoCapability {
-  uint8_t payload_type{103};
+  // Default construction is intentionally invalid. A source/sink must declare
+  // its real codec contract (and H.264 must derive profile-level-id from the
+  // encoder SPS) instead of inheriting a plausible but fabricated profile.
+  uint8_t payload_type{0};
   uint32_t clock_rate{90000};
-  uint16_t width{640};
-  uint16_t height{480};
-  uint8_t max_fps{10};
-  uint8_t packetization_mode{1};
-  bool level_asymmetry_allowed{true};
-  std::string encoding{"H264"};
-  std::string profile_level_id{"42c01e"};
+  uint16_t width{0};
+  uint16_t height{0};
+  uint8_t max_fps{0};
+  uint8_t packetization_mode{0};
+  bool level_asymmetry_allowed{false};
+  std::string encoding;
+  std::string profile_level_id;
+
+  bool is_h264() const { return this->encoding == "H264"; }
+  bool is_jpeg() const { return this->encoding == "JPEG"; }
 
   bool valid() const {
-    return this->payload_type <= 127 && this->clock_rate == 90000 &&
-           this->width > 0 && this->height > 0 && this->max_fps > 0 &&
-           this->encoding == "H264" && this->packetization_mode == 1 &&
+    if (this->payload_type > 127 || this->clock_rate != 90000 ||
+        this->width == 0 || this->height == 0 || this->max_fps == 0) {
+      return false;
+    }
+    if (this->is_jpeg()) {
+      // JPEG has a static RTP/AVP assignment. Refuse private remappings so an
+      // SDP answer can never silently disagree with RFC 3551 section 6.
+      return this->payload_type == 26;
+    }
+    return this->is_h264() && this->payload_type >= 96 &&
+           this->packetization_mode == 1 &&
            this->profile_level_id.size() == 6;
   }
 };
@@ -49,7 +63,11 @@ class EncodedVideoSource {
  public:
   virtual ~EncodedVideoSource() = default;
   virtual VideoCapability get_video_capability() const = 0;
-  virtual bool start_video(EncodedVideoAccessUnitCallback callback, void *ctx) = 0;
+  /// Start the producer with the codec/dimensions/rate committed by SDP.
+  /// Sources that can reconfigure an encoder do so here; adapters for a fixed
+  /// source must at least enforce the negotiated maximum frame rate.
+  virtual bool start_video(EncodedVideoAccessUnitCallback callback, void *ctx,
+                           const VideoCapability &capability) = 0;
   virtual void stop_video() = 0;
   virtual void request_key_frame() {}
 };

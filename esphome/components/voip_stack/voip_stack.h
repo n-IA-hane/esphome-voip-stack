@@ -39,6 +39,9 @@
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 #include "video.h"
 #endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA
+#include "camera_video_source.h"
+#endif
 #include "sip_types.h"
 #include "transport.h"
 #include "voip_fsm.h"
@@ -152,6 +155,15 @@ class VoipStack : public Component {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   void set_video_source(EncodedVideoSource *source) { this->video_source_ = source; }
   void set_video_sink(EncodedVideoSink *sink) { this->video_sink_ = sink; }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA
+  void set_video_camera(camera::Camera *camera, uint16_t width,
+                        uint16_t height, uint8_t max_fps) {
+    this->video_camera_source_.set_camera(camera);
+    this->video_camera_source_.set_dimensions(width, height);
+    this->video_camera_source_.set_max_fps(max_fps);
+    this->video_source_ = &this->video_camera_source_;
+  }
+#endif
   void set_video_rtp_port(uint16_t port) { this->video_rtp_port_ = port; }
   void set_video_offer_payload_type(uint8_t payload_type) {
     this->video_offer_payload_type_ = payload_type;
@@ -501,6 +513,9 @@ class VoipStack : public Component {
   uint16_t sip_port_{5060};
   uint16_t rtp_port_{40000};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA
+  CameraJpegVideoSource video_camera_source_{};
+#endif
   EncodedVideoSource *video_source_{nullptr};
   EncodedVideoSink *video_sink_{nullptr};
   uint16_t video_rtp_port_{40002};

@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Static contract checks for the ESP VoIP C++ endpoint.
+"""Contract and host-side behavior checks for the ESP VoIP C++ endpoint.
 
 These tests do not replace hardware/audio validation. They guard the core
 invariants that caused real regressions: no timer-paced media TX, explicit RTP
-source latching, no zombie calls when media disappears, and minimal SIP
-transaction behavior for UDP.
+source latching, bounded RFC media parsing, no zombie calls when media
+disappears, and minimal SIP transaction behavior for UDP.
 """
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 import re
+import subprocess
+import textwrap
+
+import esphome.config_validation as cv
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,13 +73,36 @@ def test_video_rtp_burst_capacity_is_compile_time_gated() -> None:
     )
     assert "this->sequence_valid_ = false;" in video_rtp
     assert "batch++ < kMaxReceiveBatchPackets" in video_rtp
-    assert re.search(r"recv\(\s*this->rtp_socket_", video_rtp)
+    assert re.search(r"recvfrom\(\s*this->rtp_socket_", video_rtp)
+
+
+def test_same_tuple_rtp_source_restart_resets_audio_and_video_state() -> None:
+    transport = read("transport.h")
+    audio = read("sip_transport.cpp")
+    playout = read("voip_audio.cpp")
+    video = read("video_rtp.cpp")
+
+    assert "bool source_changed{false};" in transport
+    assert "latched_rtp_port_" in audio
+    assert "source_changed = true;" in audio
+    assert audio.index("rtp_payload_to_pcm(") < audio.index(
+        "RTP source changed SSRC"
+    )
+    assert "frame.source_changed" in playout
+    assert "this->rx_jitter_buffer_->reset();" in playout
+
+    assert "latched_remote_rtp_port_" in video
+    assert "Video RTP source changed SSRC" in video
+    assert "this->reset_reassembly_();" in video
+    assert "this->jpeg_depacketizer_.reset_session();" in video
+    assert "this->sequence_valid_ = false;" in video
 
 
 def test_video_media_tasks_are_event_driven_and_bounded() -> None:
     header = read("video_rtp.h")
     video = read("video.h")
     video_rtp = read("video_rtp.cpp")
+    camera_source = read("camera_video_source.cpp")
 
     assert "queue_access_unit_(access_unit);" in video_rtp
     assert "source_callback_" in video_rtp
@@ -84,6 +113,637 @@ def test_video_media_tasks_are_event_driven_and_bounded() -> None:
     assert "pdMS_TO_TICKS(100)" not in video_rtp
     assert "virtual bool consume_video_access_unit(" in video
     assert "rx_drop_current_timestamp_" not in header
+    assert "image->was_requested_by(camera::WEB_REQUESTER)" in camera_source
+    assert "start_stream(camera::WEB_REQUESTER)" not in camera_source
+
+
+def test_video_rtp_latches_only_codec_valid_media_packets() -> None:
+    header = read("video_rtp.h")
+    source = read("video_rtp.cpp")
+
+    assert "bool handle_h264_payload_(" in header
+    assert "bool handle_jpeg_payload_(" in header
+    packet_handler = source[
+        source.index("bool VideoRtpSession::handle_rtp_packet_(") :
+        source.index("bool VideoRtpSession::handle_h264_payload_(")
+    ]
+    rejected = packet_handler.index("if (!payload_accepted)")
+    assert packet_handler.index("handle_jpeg_payload_(") < rejected
+    assert packet_handler.index("handle_h264_payload_(") < rejected
+    assert rejected < packet_handler.index("this->expected_sequence_ =")
+    assert rejected < packet_handler.index("this->rx_packets_.fetch_add(")
+
+    h264_handler = source[
+        source.index("bool VideoRtpSession::handle_h264_payload_(") :
+        source.index("bool VideoRtpSession::handle_jpeg_payload_(")
+    ]
+    assert "payload_size < 2" in h264_handler
+    assert "(payload[1] & 0x20)" not in h264_handler
+    assert "timestamp != this->reassembly_timestamp_" in h264_handler
+    assert "fragment_type == 0 || fragment_type > 23" in h264_handler
+    negotiation = source[
+        source.index("bool VideoRtpSession::set_negotiated(") :
+        source.index("bool VideoRtpSession::bind_socket_(")
+    ]
+    assert negotiation.index("this->reset_reassembly_();") < negotiation.index(
+        "this->jpeg_depacketizer_.reset_session();"
+    )
+
+
+def test_rtp_jpeg_dimension_limit_matches_rfc2435_encoding() -> None:
+    init_path = VOIP / "__init__.py"
+    spec = importlib.util.spec_from_file_location("voip_stack_local_init", init_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    jpeg = {
+        module.CONF_OFFER_PAYLOAD_TYPE: 26,
+        module.CONF_WIDTH: 2040,
+        module.CONF_HEIGHT: 2040,
+    }
+    assert module._validate_video_config(dict(jpeg))[
+        module.CONF_OFFER_PAYLOAD_TYPE
+    ] == 26
+    with pytest.raises(cv.Invalid, match="cannot exceed 2040x2040"):
+        module._validate_video_config({**jpeg, module.CONF_WIDTH: 2048})
+
+    # The schema keeps the wider generic bound available to custom H.264
+    # sources; only RFC 2435's static JPEG format uses the 8-bit block fields.
+    h264 = {
+        module.CONF_OFFER_PAYLOAD_TYPE: 103,
+        module.CONF_WIDTH: 2048,
+        module.CONF_HEIGHT: 2048,
+    }
+    assert module._validate_video_config(dict(h264))[
+        module.CONF_OFFER_PAYLOAD_TYPE
+    ] == 103
+
+
+def test_rtp_jpeg_host_behavioral_contract(tmp_path: Path) -> None:
+    """Compile the real allocation-free depacketizer and exercise RFC 2435."""
+
+    stub = tmp_path / "esphome" / "core"
+    stub.mkdir(parents=True)
+    (stub / "defines.h").write_text("#pragma once\n", encoding="utf-8")
+    probe = tmp_path / "rtp_jpeg_behavior.cpp"
+    probe.write_text(
+        textwrap.dedent(
+            r"""
+            #include "esphome/components/voip_stack/rtp_jpeg.h"
+
+            #include <array>
+            #include <cstdint>
+            #include <cstring>
+            #include <vector>
+
+            using esphome::voip_stack::RtpJpegDepacketizer;
+            using esphome::voip_stack::RtpJpegFrameView;
+            using esphome::voip_stack::RtpJpegPushResult;
+            using esphome::voip_stack::build_rtp_jpeg_fragment_header;
+            using esphome::voip_stack::parse_jpeg_for_rtp;
+
+            namespace {
+
+            std::array<uint8_t, 64> make_table(uint8_t seed) {
+              std::array<uint8_t, 64> table{};
+              for (size_t index = 0; index < table.size(); index++) {
+                table[index] =
+                    static_cast<uint8_t>(1 + ((seed + index) % 255));
+              }
+              return table;
+            }
+
+            std::array<uint8_t, 128> make_table_pair(uint8_t first_seed,
+                                                     uint8_t second_seed) {
+              const auto first = make_table(first_seed);
+              const auto second = make_table(second_seed);
+              std::array<uint8_t, 128> tables{};
+              std::memcpy(tables.data(), first.data(), first.size());
+              std::memcpy(tables.data() + first.size(), second.data(),
+                          second.size());
+              return tables;
+            }
+
+            std::vector<uint8_t> make_payload(
+                uint8_t quality, const uint8_t *quantizers,
+                size_t quantizer_size) {
+              static constexpr uint8_t SCAN[]{0x12, 0x34, 0x56, 0x78};
+              std::vector<uint8_t> payload(8 + 4 + quantizer_size +
+                                           sizeof(SCAN));
+              payload[4] = 0;   // RFC 2435 type 0 (4:2:2).
+              payload[5] = quality;
+              payload[6] = 40;  // 320 pixels.
+              payload[7] = 23;  // 184 pixels.
+              payload[8] = 0;   // MBZ.
+              payload[9] = 0;   // 8-bit precision.
+              payload[10] = static_cast<uint8_t>(quantizer_size >> 8);
+              payload[11] = static_cast<uint8_t>(quantizer_size);
+              if (quantizer_size != 0) {
+                std::memcpy(payload.data() + 12, quantizers, quantizer_size);
+              }
+              std::memcpy(payload.data() + 12 + quantizer_size, SCAN,
+                          sizeof(SCAN));
+              return payload;
+            }
+
+            RtpJpegPushResult push_frame(RtpJpegDepacketizer &depacketizer,
+                                         const std::vector<uint8_t> &payload,
+                                         uint32_t timestamp,
+                                         std::array<uint8_t, 4096> &output,
+                                         size_t *output_size,
+                                         bool marker = true) {
+              return depacketizer.push(
+                  payload.data(), payload.size(), marker, timestamp,
+                  output.data(), output.size(), output_size);
+            }
+
+            bool output_has_tables(const uint8_t *jpeg, size_t size,
+                                   const uint8_t *first,
+                                   const uint8_t *second) {
+              for (size_t index = 0; index + 134 <= size; index++) {
+                if (jpeg[index] != 0xFF || jpeg[index + 1] != 0xDB) continue;
+                if (jpeg[index + 2] != 0 || jpeg[index + 3] != 132 ||
+                    jpeg[index + 4] != 0 || jpeg[index + 69] != 1) {
+                  return false;
+                }
+                return std::memcmp(jpeg + index + 5, first, 64) == 0 &&
+                       std::memcmp(jpeg + index + 70, second, 64) == 0;
+              }
+              return false;
+            }
+
+            }  // namespace
+
+            int main() {
+              std::array<uint8_t,
+                         RtpJpegDepacketizer::kQuantizationCacheBytes>
+                  cache{};
+              RtpJpegDepacketizer depacketizer;
+              depacketizer.set_quantization_cache(cache.data(), cache.size());
+              std::array<uint8_t, 4096> output{};
+              size_t output_size = 0;
+              uint32_t timestamp = 90000;
+
+              // FFmpeg commonly emits one 64-byte table for PT 26. RX expands
+              // it to both JPEG components; the rebuilt frame remains valid.
+              const auto single = make_table(3);
+              auto payload =
+                  make_payload(255, single.data(), single.size());
+              payload.resize(payload.size() - 2);
+              if (push_frame(depacketizer, payload, timestamp, output,
+                             &output_size, false) !=
+                  RtpJpegPushResult::INCOMPLETE) {
+                return 1;
+              }
+              std::vector<uint8_t> final_fragment{
+                  0, 0, 0, 2, 0, 255, 40, 23, 0x56, 0x78};
+              if (push_frame(depacketizer, final_fragment, timestamp++, output,
+                             &output_size) != RtpJpegPushResult::COMPLETE) {
+                return 2;
+              }
+              if (!output_has_tables(output.data(), output_size, single.data(),
+                                     single.data())) {
+                return 3;
+              }
+              RtpJpegFrameView rebuilt{};
+              if (!parse_jpeg_for_rtp(output.data(), output_size, &rebuilt) ||
+                  std::memcmp(rebuilt.quantizers.data(), single.data(), 64) !=
+                      0 ||
+                  std::memcmp(rebuilt.quantizers.data() + 64, single.data(),
+                              64) != 0) {
+                return 4;
+              }
+
+              // TX stays strict RFC 2435: two explicit tables, Length=128.
+              const auto pair_a = make_table_pair(7, 41);
+              RtpJpegFrameView tx{};
+              static constexpr uint8_t TX_SCAN[]{1, 2, 3};
+              tx.scan = TX_SCAN;
+              tx.scan_size = sizeof(TX_SCAN);
+              tx.quantizers = pair_a;
+              tx.width = 320;
+              tx.height = 184;
+              tx.type = 0;
+              std::array<uint8_t, 160> tx_header{};
+              const size_t tx_header_size = build_rtp_jpeg_fragment_header(
+                  tx, 0, tx_header.data(), tx_header.size());
+              if (tx_header_size != 140 || tx_header[5] != 255 ||
+                  tx_header[10] != 0 || tx_header[11] != 128 ||
+                  std::memcmp(tx_header.data() + 12, pair_a.data(),
+                              pair_a.size()) != 0) {
+                return 5;
+              }
+
+              // A zero in either an abbreviated or full table is invalid and
+              // must never reach the decoder.
+              auto invalid_single = single;
+              invalid_single[17] = 0;
+              payload =
+                  make_payload(255, invalid_single.data(), invalid_single.size());
+              if (push_frame(depacketizer, payload, timestamp++, output,
+                             &output_size) != RtpJpegPushResult::DROPPED) {
+                return 6;
+              }
+              auto invalid_pair = pair_a;
+              invalid_pair[97] = 0;
+              payload =
+                  make_payload(255, invalid_pair.data(), invalid_pair.size());
+              if (push_frame(depacketizer, payload, timestamp++, output,
+                             &output_size) != RtpJpegPushResult::DROPPED) {
+                return 7;
+              }
+
+              // Q=128..254 mappings are independent and immutable for the RTP
+              // session. Interleaving another Q must not evict the first.
+              payload = make_payload(128, pair_a.data(), pair_a.size());
+              if (push_frame(depacketizer, payload, timestamp++, output,
+                             &output_size) != RtpJpegPushResult::COMPLETE) {
+                return 8;
+              }
+              const auto pair_b = make_table_pair(19, 83);
+              payload = make_payload(129, pair_b.data(), pair_b.size());
+              if (push_frame(depacketizer, payload, timestamp++, output,
+                             &output_size) != RtpJpegPushResult::COMPLETE) {
+                return 9;
+              }
+              payload = make_payload(128, nullptr, 0);
+              if (push_frame(depacketizer, payload, timestamp++, output,
+                             &output_size) != RtpJpegPushResult::COMPLETE ||
+                  !output_has_tables(output.data(), output_size, pair_a.data(),
+                                     pair_a.data() + 64)) {
+                return 10;
+              }
+              payload = make_payload(128, pair_a.data(), pair_a.size());
+              if (push_frame(depacketizer, payload, timestamp++, output,
+                             &output_size) != RtpJpegPushResult::COMPLETE) {
+                return 11;
+              }
+              payload = make_payload(128, pair_b.data(), pair_b.size());
+              if (push_frame(depacketizer, payload, timestamp++, output,
+                             &output_size) != RtpJpegPushResult::DROPPED) {
+                return 12;
+              }
+              payload = make_payload(128, nullptr, 0);
+              if (push_frame(depacketizer, payload, timestamp++, output,
+                             &output_size) != RtpJpegPushResult::COMPLETE ||
+                  !output_has_tables(output.data(), output_size, pair_a.data(),
+                                     pair_a.data() + 64)) {
+                return 13;
+              }
+
+              // A frame reset retains session mappings; an RTP-session reset
+              // explicitly invalidates every cached Q value.
+              depacketizer.reset();
+              if (push_frame(depacketizer, payload, timestamp++, output,
+                             &output_size) != RtpJpegPushResult::COMPLETE) {
+                return 14;
+              }
+              depacketizer.reset_session();
+              if (push_frame(depacketizer, payload, timestamp++, output,
+                             &output_size) != RtpJpegPushResult::DROPPED) {
+                return 15;
+              }
+
+              const auto single_last = make_table(29);
+              payload =
+                  make_payload(254, single_last.data(), single_last.size());
+              if (push_frame(depacketizer, payload, timestamp++, output,
+                             &output_size) != RtpJpegPushResult::COMPLETE) {
+                return 16;
+              }
+              payload = make_payload(254, nullptr, 0);
+              if (push_frame(depacketizer, payload, timestamp++, output,
+                             &output_size) != RtpJpegPushResult::COMPLETE ||
+                  !output_has_tables(output.data(), output_size,
+                                     single_last.data(), single_last.data())) {
+                return 17;
+              }
+
+              // Q=255 is explicitly non-cacheable.
+              payload = make_payload(255, nullptr, 0);
+              if (push_frame(depacketizer, payload, timestamp++, output,
+                             &output_size) != RtpJpegPushResult::DROPPED) {
+                return 18;
+              }
+              return 0;
+            }
+            """
+        ),
+        encoding="utf-8",
+    )
+    executable = tmp_path / "rtp_jpeg_behavior"
+    subprocess.run(
+        [
+            "g++",
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-DUSE_ESPHOME_VOIP_STACK_VIDEO",
+            f"-I{tmp_path}",
+            f"-I{ROOT}",
+            str(probe),
+            str(VOIP / "rtp_jpeg.cpp"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+        cwd=ROOT,
+    )
+    subprocess.run([str(executable)], check=True, cwd=ROOT)
+    video_rtp = read("video_rtp.cpp")
+    negotiation = video_rtp[
+        video_rtp.index("bool VideoRtpSession::set_negotiated") :
+        video_rtp.index(
+            "\nbool VideoRtpSession::bind_socket_",
+            video_rtp.index("bool VideoRtpSession::set_negotiated"),
+        )
+    ]
+    assert "this->jpeg_depacketizer_.reset_session();" in negotiation
+
+
+def test_rejected_video_answer_preserves_the_first_offered_payload_type() -> None:
+    sip_cpp = read("sip_transport.cpp")
+    learn = sip_cpp[
+        sip_cpp.index("bool SipTransport::learn_remote_video_from_sdp_") :
+        sip_cpp.index("\n#endif", sip_cpp.index("bool SipTransport::learn_remote_video_from_sdp_"))
+    ]
+
+    preserve = learn.index(
+        "this->negotiated_video_capability_.payload_type ="
+    )
+    disabled = learn.index("if (media_port == 0) return true;")
+    rejected_rtcp = learn.index("if (rtcp_mux_only")
+    assert preserve < disabled < rejected_rtcp
+    assert "candidate_order[0]" in learn[preserve : preserve + 180]
+
+
+def test_video_reinvite_admits_resources_before_success_and_rolls_back() -> None:
+    sip_cpp = read("sip_transport.cpp")
+    reinvite = sip_cpp[
+        sip_cpp.index("bool SipTransport::handle_reinvite_") :
+        sip_cpp.index("\nbool SipTransport::handle_response_")
+    ]
+
+    prestart = reinvite.index("this->video_session_->start()")
+    success = reinvite.index('this->send_response_(200, "OK", answer)')
+    assert prestart < success
+    assert '"video_resources_unavailable"' in reinvite
+    assert '"video_renegotiation_unsupported"' in reinvite
+    assert "Video direction re-INVITE rollback failed" in reinvite
+
+
+def test_reinvite_waits_for_prior_invite_ack_without_mutating_dialog() -> None:
+    sip_cpp = read("sip_transport.cpp")
+    reinvite = sip_cpp[
+        sip_cpp.index("bool SipTransport::handle_reinvite_") :
+        sip_cpp.index("\nbool SipTransport::handle_response_")
+    ]
+
+    pending = reinvite.index("this->completed_invite_.awaiting_ack")
+    parse_media = reinvite.index("this->learn_remote_rtp_from_sdp_")
+    mutate_dialog = reinvite.index(
+        'this->last_invite_via_ = header_values(message, "Via");'
+    )
+    assert pending < parse_media < mutate_dialog
+    pending_response = reinvite[pending:parse_media]
+    assert 'message, src, 491, "Request Pending"' in pending_response
+    assert "cache_transaction" not in pending_response
+
+
+def test_failed_reinvite_response_restores_dialog_and_is_not_cached() -> None:
+    sip_cpp = read("sip_transport.cpp")
+    response = sip_cpp[
+        sip_cpp.index("bool SipTransport::send_response_") :
+        sip_cpp.index("\nbool SipTransport::send_stateless_response_")
+    ]
+    assert response.index("this->send_sip_(msg, ip, port)") < response.index(
+        "this->last_invite_response_ = msg;"
+    )
+    assert response.index("this->send_sip_(msg, ip, port)") < response.index(
+        "this->remember_completed_response_"
+    )
+
+    stateless_start = sip_cpp.index(
+        "bool SipTransport::send_stateless_response_"
+    )
+    stateless = sip_cpp[
+        stateless_start :
+        sip_cpp.index("\nbool SipTransport::send_invite(", stateless_start)
+    ]
+    assert stateless.index("this->send_sip_(msg, ip, port)") < stateless.index(
+        "this->remember_completed_response_"
+    )
+
+    reinvite = sip_cpp[
+        sip_cpp.index("bool SipTransport::handle_reinvite_") :
+        sip_cpp.index("\nbool SipTransport::handle_response_")
+    ]
+    failure = reinvite[
+        reinvite.index('if (!this->send_response_(200, "OK", answer))') :
+        reinvite.index(
+            "\n  this->set_media_config_",
+            reinvite.index('if (!this->send_response_(200, "OK", answer))'),
+        )
+    ]
+    assert "restore_old_media();" in failure
+    assert "restore_old_dialog_metadata();" in failure
+    restore = reinvite[
+        reinvite.index("const auto restore_old_dialog_metadata") :
+        reinvite.index(
+            "\n  };",
+            reinvite.index("const auto restore_old_dialog_metadata"),
+        )
+    ]
+    for field in (
+        "last_invite_via",
+        "last_invite_from",
+        "last_invite_to",
+        "last_invite_cseq",
+        "last_invite_response",
+        "last_invite_cseq_number",
+        "remote_target_uri",
+    ):
+        assert f"this->{field}_ = old_{field};" in restore
+
+
+def test_h264_tx_failure_aborts_the_au_and_requests_resynchronization() -> None:
+    video = read("video_rtp.cpp")
+    packetizer = video[
+        video.index("void VideoRtpSession::send_h264_access_unit_") :
+        video.index("\nvoid VideoRtpSession::send_jpeg_access_unit_")
+    ]
+
+    assert "const auto fail_access_unit" in packetizer
+    assert "this->tx_resync_needed_.store(true" in packetizer
+    assert packetizer.count("fail_access_unit();") >= 4
+    assert "sent_any |= this->send_rtp_payload_" not in packetizer
+    assert re.search(
+        r"if \(!this->send_rtp_payload_\([^;]+\)\) \{\s*"
+        r"fail_access_unit\(\);\s*return;",
+        packetizer,
+        re.DOTALL,
+    )
+
+
+def test_video_sender_completes_owned_au_and_bounds_udp_backpressure() -> None:
+    header = read("video_rtp.h")
+    video = read("video_rtp.cpp")
+    sender = video[
+        video.index("void VideoRtpSession::send_access_unit_") :
+        video.index("\nvoid VideoRtpSession::task_trampoline_")
+    ]
+    payload = sender[
+        sender.index("bool VideoRtpSession::send_rtp_payload_") :
+    ]
+
+    # Once transmission starts, finish the AU: deliberately aborting it after
+    # spending bandwidth on most fragments guarantees an undecodable frame.
+    # The one-slot latest-wins queue drops newer source frames while the owned
+    # AU is paced, and each individual UDP retry remains bounded.
+    assert "tx_access_unit_deadline_ms_" not in header
+    assert "tx_access_unit_deadline_expired_" not in payload
+    assert "kTxPacketPacingMs" in header
+    assert "pdMS_TO_TICKS(kTxPacketPacingMs)" in payload
+    for transient_error in ("EAGAIN", "EWOULDBLOCK", "ENOBUFS", "ENOMEM"):
+        assert transient_error in payload
+    assert "attempt < 2" in payload
+    assert "FD_SET(this->rtp_socket_, &writefds)" in payload
+    assert "select(this->rtp_socket_ + 1" in payload
+    assert "pdMS_TO_TICKS(20)" not in payload
+    assert "DSCP AF41" in video
+
+
+def test_video_offer_does_not_invent_a_missing_endpoint_capability() -> None:
+    sip_cpp = read("sip_transport.cpp")
+    capabilities = sip_cpp[
+        sip_cpp.index("VideoCapability SipTransport::local_video_send_capability_") :
+        sip_cpp.index("\nvoid SipTransport::reset_video_negotiation_")
+    ]
+
+    assert "if (this->video_source_ == nullptr)" in capabilities
+    assert "if (this->video_sink_ == nullptr)" in capabilities
+    assert capabilities.count("capability.max_fps = 0;") == 2
+    assert "else if (this->video_source_ != nullptr)" not in capabilities
+
+    append = sip_cpp[
+        sip_cpp.index("std::string SipTransport::append_video_sdp_") :
+        sip_cpp.index("\nstd::string SipTransport::build_sdp_offer_")
+    ]
+    assert "capability = this->local_video_receive_capability_();" in append
+    assert 'const char *direction =' in append
+    assert '"sendrecv" : send ? "sendonly" : "recvonly"' in append
+
+
+def test_media_lifecycle_is_serialized_across_fsm_and_sip_tasks() -> None:
+    header = read("sip_transport.h")
+    source = read("sip_transport.cpp")
+
+    assert "mutable Mutex media_lifecycle_mutex_;" in header
+    start = source[
+        source.index("bool SipTransport::start_audio_path()") :
+        source.index("\nvoid SipTransport::stop_audio_path()")
+    ]
+    stop = source[
+        source.index("void SipTransport::stop_audio_path()") :
+        source.index("\nbool SipTransport::originate")
+    ]
+    reinvite = source[
+        source.index("bool SipTransport::handle_reinvite_") :
+        source.index("\nbool SipTransport::handle_response_")
+    ]
+    lock = "LockGuard media_lock(this->media_lifecycle_mutex_);"
+    assert lock in start
+    assert lock in stop
+    assert lock in reinvite
+    assert reinvite.index(lock) < reinvite.index("this->video_session_->start()")
+    reset = source[
+        source.index("void SipTransport::reset_dialog_()") :
+        source.index("\nvoid SipTransport::remember_udp_transaction_")
+    ]
+    assert lock in reset
+    assert "this->request_audio_path_stop_locked_();" in reset
+    assert reset.index(lock) < reset.index("this->reset_video_negotiation_();")
+    disconnect = source[
+        source.index("void SipTransport::disconnect()") :
+        source.index("\nbool SipTransport::start_audio_path()")
+    ]
+    assert "this->stop_audio_path();" not in disconnect
+    for begin, end, operation in (
+        ("bool SipTransport::send_invite(", "\nvoid SipTransport::send_audio_frame", "this->build_sdp_offer_()"),
+        ("bool SipTransport::send_answer(", "\nbool SipTransport::send_cancel", "this->build_sdp_answer_()"),
+        ("bool SipTransport::handle_invite_(", "\nbool SipTransport::handle_reinvite_", "this->learn_remote_rtp_from_sdp_(body, src_ip)"),
+        ("bool SipTransport::handle_response_(", "\nvoid SipTransport::handle_sip_datagram_", "this->learn_remote_rtp_from_sdp_"),
+    ):
+        section = source[source.index(begin) : source.index(end)]
+        assert lock in section
+        assert section.index(lock) < section.index(operation)
+
+
+def test_call_teardown_is_deferred_to_the_event_driven_rtp_worker() -> None:
+    header = read("sip_transport.h")
+    source = read("sip_transport.cpp")
+    video = read("video_rtp.cpp")
+
+    assert "enum class MediaLifecyclePhase" in header
+    assert "MediaLifecyclePhase::CLEANING" in source
+    assert "SemaphoreHandle_t rtp_cleanup_done_{nullptr};" in header
+    assert "SemaphoreHandle_t rtp_task_done_{nullptr};" in header
+    public_stop = source[
+        source.index("void SipTransport::stop_audio_path()") :
+        source.index("\nvoid SipTransport::request_audio_path_stop_locked_")
+    ]
+    request_stop = source[
+        source.index("void SipTransport::request_audio_path_stop_locked_") :
+        source.index("\nvoid SipTransport::finish_audio_path_stop_")
+    ]
+    worker = source[
+        source.index("void SipTransport::rtp_task_()") :
+        source.index("\n}  // namespace voip_stack")
+    ]
+
+    assert "this->request_audio_path_stop_locked_();" in public_stop
+    assert "xSemaphoreTake" not in public_stop
+    assert "this->video_session_->request_stop();" in request_stop
+    assert "MediaLifecyclePhase::CLEANING" in request_stop
+    assert "this->finish_audio_path_stop_();" in worker
+    assert "ulTaskNotifyTake(pdTRUE, portMAX_DELAY);" in worker
+    assert "xSemaphoreGive(this->rtp_cleanup_done_);" in worker
+    assert "xSemaphoreGive(this->rtp_task_done_);" in worker
+
+    video_request = video[
+        video.index("void VideoRtpSession::request_stop()") :
+        video.index("\nvoid VideoRtpSession::stop()")
+    ]
+    video_stop = video[
+        video.index("void VideoRtpSession::stop()") :
+        video.index("\nbool VideoRtpSession::reap_receive_task_")
+    ]
+    assert "source_->stop_video()" not in video_request
+    assert "send_rtcp_bye_()" not in video_request
+    assert "source_->stop_video()" in video_stop
+    assert "send_rtcp_bye_()" in video_stop
+
+    shutdown = source[
+        source.index("void SipTransport::stop()") :
+        source.index("\nbool SipTransport::is_connected()")
+    ]
+    assert "xSemaphoreTake(this->rtp_cleanup_done_, portMAX_DELAY);" in shutdown
+    assert "xSemaphoreTake(this->rtp_task_done_, portMAX_DELAY);" in shutdown
+    assert "pdMS_TO_TICKS" not in shutdown
+
+    invite = source[
+        source.index("bool SipTransport::handle_invite_(") :
+        source.index("\nbool SipTransport::handle_reinvite_(")
+    ]
+    reinvite = source[
+        source.index("bool SipTransport::handle_reinvite_(") :
+        source.index("\nbool SipTransport::handle_response_(")
+    ]
+    assert 'message, src, 503, "Service Unavailable", "media_cleanup"' in invite
+    assert "MediaLifecyclePhase::CLEANING" in reinvite
+    assert 'message, src, 491, "Request Pending"' in reinvite
 
 
 def test_endpoint_requires_at_least_one_audio_direction() -> None:
@@ -933,6 +1593,39 @@ def test_sip_compact_headers_and_tcp_close_are_centralized() -> None:
     assert "LockGuard lock(this->dialog_mutex_);" in peer_loss
     assert "this->reset_dialog_();" in peer_loss
     assert "this->emit_connection_change_(false);" in peer_loss
+
+
+def test_sip_worker_uses_a_dedicated_event_driven_wake_socket() -> None:
+    init_py = read("__init__.py")
+    sip_h = read("sip_transport.h")
+    sip_cpp = read("sip_transport.cpp")
+
+    assert 'socket.consume_sockets(3, "voip_stack_sip", socket.SocketType.UDP)' in init_py
+    assert "int sip_wake_socket_{-1};" in sip_h
+    assert "uint16_t sip_wake_port_{0};" in sip_h
+
+    start = sip_cpp[
+        sip_cpp.index("bool SipTransport::start()") :
+        sip_cpp.index("\nvoid SipTransport::request_tcp_client_close_")
+    ]
+    assert 'this->bind_udp_(&this->sip_wake_socket_, 0, "SIP wake")' in start
+    assert "getsockname(this->sip_wake_socket_" in start
+
+    wake = sip_cpp[
+        sip_cpp.index("void SipTransport::wake_sip_task_()") :
+        sip_cpp.index("\nvoid SipTransport::wake_rtp_task_()")
+    ]
+    assert "this->sip_wake_socket_" in wake
+    assert "this->sip_wake_port_" in wake
+    assert "this->sip_socket_" not in wake
+
+    sip_task = sip_cpp[
+        sip_cpp.index("void SipTransport::sip_task_()") :
+        sip_cpp.index("\nvoid SipTransport::rtp_task_()")
+    ]
+    assert "FD_SET(this->sip_wake_socket_, &readfds)" in sip_task
+    assert "recv(this->sip_wake_socket_" in sip_task
+    assert "select(max_fd + 1, &readfds, &writefds, nullptr, timeout_ptr)" in sip_task
 
 
 def test_cancel_transactions_are_serialized_and_handle_crossed_200() -> None:

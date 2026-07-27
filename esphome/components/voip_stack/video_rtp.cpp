@@ -9,9 +9,11 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <inttypes.h>
 #include <fcntl.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 
 #include <esp_heap_caps.h>
 #include <esp_system.h>
@@ -174,6 +176,16 @@ VideoRtpSession::VideoRtpSession(bool task_stack_in_psram)
 
 VideoRtpSession::~VideoRtpSession() {
   this->stop();
+  // A timed stop deliberately retains task-owned memory instead of forcing a
+  // delete through lwIP or a codec call. Destruction has no such escape hatch:
+  // wait for both workers to self-delete before releasing anything they can
+  // still reference.
+  this->quiesce_tasks_();
+  if (this->sink_started_.exchange(false, std::memory_order_acq_rel) &&
+      this->sink_ != nullptr) {
+    this->sink_->stop_video();
+  }
+  this->close_sockets_();
   if (this->reassembly_ != nullptr) {
     heap_caps_free(this->reassembly_);
     this->reassembly_ = nullptr;
@@ -182,18 +194,53 @@ VideoRtpSession::~VideoRtpSession() {
     heap_caps_free(this->tx_access_unit_);
     this->tx_access_unit_ = nullptr;
   }
+  if (this->jpeg_quantization_cache_ != nullptr) {
+    this->jpeg_depacketizer_.set_quantization_cache(nullptr, 0);
+    heap_caps_free(this->jpeg_quantization_cache_);
+    this->jpeg_quantization_cache_ = nullptr;
+  }
 }
 
-void VideoRtpSession::set_negotiated(const VideoCapability &capability,
+bool VideoRtpSession::set_negotiated(const VideoCapability &capability,
                                      uint32_t remote_ip_v4,
                                      uint16_t remote_rtp_port,
+                                     uint32_t remote_rtcp_ip_v4,
+                                     uint16_t remote_rtcp_port,
                                      bool send_enabled,
                                      bool receive_enabled) {
+  if (this->running_.load(std::memory_order_acquire) ||
+      this->source_started_ || !this->reap_sender_task_() ||
+      !this->reap_receive_task_()) {
+    ESP_LOGE(TAG, "Refusing to replace video negotiation while media is owned");
+    return false;
+  }
+  if (this->sink_started_ && this->sink_ != nullptr) {
+    this->sink_->stop_video();
+    this->sink_started_ = false;
+  }
+  this->close_sockets_();
+  // This is an RTP session boundary, including recovery after a worker that
+  // exceeded the stop deadline and exited later. Never carry an incomplete
+  // H.264 FU/STAP access unit into the replacement negotiation.
+  this->reset_reassembly_();
+  // Dynamic RFC 2435 Q mappings belong to one negotiated RTP session and
+  // must never leak into a later call.
+  this->jpeg_depacketizer_.reset_session();
+  this->jpeg_quantization_cache_allocation_failed_ = false;
   this->capability_ = capability;
   this->remote_ip_v4_.store(remote_ip_v4, std::memory_order_release);
   this->remote_rtp_port_.store(remote_rtp_port, std::memory_order_release);
+  this->remote_rtcp_ip_v4_.store(
+      remote_rtcp_ip_v4 != 0 ? remote_rtcp_ip_v4 : remote_ip_v4,
+      std::memory_order_release);
+  this->remote_rtcp_port_.store(
+      remote_rtcp_port != 0
+          ? remote_rtcp_port
+          : static_cast<uint16_t>(remote_rtp_port + 1),
+      std::memory_order_release);
   this->send_enabled_ = send_enabled;
   this->receive_enabled_ = receive_enabled;
+  return true;
 }
 
 bool VideoRtpSession::bind_socket_(int *fd, uint16_t port, const char *label) {
@@ -204,6 +251,14 @@ bool VideoRtpSession::bind_socket_(int *fd, uint16_t port, const char *label) {
   }
   const int flags = fcntl(*fd, F_GETFL, 0);
   if (flags >= 0) fcntl(*fd, F_SETFL, flags | O_NONBLOCK);
+  // RFC 8837's interactive-video marking keeps audio (EF) ahead of video
+  // while still allowing Wi-Fi/WMM implementations to classify this flow.
+  const int tos = 0x88;  // DSCP AF41, ECN not set.
+  if (setsockopt(*fd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos)) != 0) {
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+    ESP_LOGW(TAG, "%s could not set AF41 DSCP: %d", label, errno);
+#endif
+  }
   struct sockaddr_in local{};
   local.sin_family = AF_INET;
   local.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -219,6 +274,18 @@ bool VideoRtpSession::bind_socket_(int *fd, uint16_t port, const char *label) {
 
 bool VideoRtpSession::start() {
   if (this->running_.load(std::memory_order_acquire)) return true;
+  // A timed-out teardown retains every object a worker could still touch.
+  // Reap a worker that subsequently exited, or refuse to reuse its static
+  // TCB/stack and sockets while it is still alive.
+  if (!this->reap_sender_task_() || !this->reap_receive_task_()) {
+    ESP_LOGE(TAG, "Video media worker from prior session is still active");
+    return false;
+  }
+  if (this->sink_started_ && this->sink_ != nullptr) {
+    this->sink_->stop_video();
+    this->sink_started_ = false;
+  }
+  this->close_sockets_();
   if (!this->capability_.valid() || this->remote_ip_v4_.load() == 0 ||
       this->remote_rtp_port_.load() == 0) {
     ESP_LOGW(TAG, "Video media not started: incomplete negotiation");
@@ -249,17 +316,45 @@ bool VideoRtpSession::start() {
     this->stop();
     return false;
   }
+  if (this->receive_enabled_ && !this->sink_->start_video(this->capability_)) {
+    this->stop();
+    return false;
+  }
+  this->sink_started_.store(this->receive_enabled_,
+                            std::memory_order_release);
   this->tx_sequence_.store(static_cast<uint16_t>(esp_random()), std::memory_order_release);
+  this->tx_timestamp_offset_ = esp_random();
   this->tx_ssrc_ = esp_random();
+  this->remote_ssrc_.store(0, std::memory_order_release);
+  this->remote_ssrc_latched_.store(false, std::memory_order_release);
+  this->latched_remote_rtp_port_.store(0, std::memory_order_release);
+  this->latched_remote_rtcp_port_.store(0, std::memory_order_release);
   this->sequence_valid_ = false;
+  this->tx_packets_.store(0, std::memory_order_release);
+  this->rx_packets_.store(0, std::memory_order_release);
+  this->tx_octets_.store(0, std::memory_order_release);
+  this->last_tx_rtp_timestamp_.store(0, std::memory_order_release);
+  this->last_tx_rtp_ms_.store(0, std::memory_order_release);
+  this->dropped_access_units_.store(0, std::memory_order_release);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+  this->tx_access_units_completed_ = 0;
+  this->tx_backpressure_events_ = 0;
+  this->tx_send_failures_ = 0;
+  this->tx_max_access_unit_ms_ = 0;
+  this->tx_last_debug_log_ms_ = millis();
+#endif
+  this->last_pli_ms_ = 0;
+  this->stop_had_active_session_.store(false, std::memory_order_release);
   this->terminate_.store(false, std::memory_order_release);
   this->last_rtcp_ms_ = millis();
   this->running_.store(true, std::memory_order_release);
   xSemaphoreTake(this->task_done_, 0);
-  if (!voip_audio_core::start_pinned_task(
+  this->task_done_observed_ = false;
+  if (!voip_audio_core::start_managed_pinned_task(
           VideoRtpSession::task_trampoline_, "voip_video_rtp", kTaskStackBytes,
           this, kTaskPriority, 0, this->task_stack_in_psram_, TAG,
-          &this->task_handle_, &this->task_tcb_, &this->task_stack_)) {
+          &this->task_handle_, &this->task_tcb_, &this->task_stack_,
+          &this->task_with_caps_)) {
     this->running_.store(false, std::memory_order_release);
     this->stop();
     return false;
@@ -268,55 +363,126 @@ bool VideoRtpSession::start() {
     this->stop();
     return false;
   }
-  if (this->receive_enabled_ && !this->sink_->start_video(this->capability_)) {
-    this->stop();
-    return false;
-  }
   if (this->send_enabled_ &&
-      !this->source_->start_video(VideoRtpSession::source_callback_, this)) {
+      !this->source_->start_video(VideoRtpSession::source_callback_, this,
+                                  this->capability_)) {
     this->stop();
     return false;
   }
-  ESP_LOGI(TAG, "Video RTP started local=%u remote=%u PT=%u profile=%s dir=%s%s",
+  this->source_started_.store(this->send_enabled_,
+                              std::memory_order_release);
+  ESP_LOGI(TAG, "Video RTP started local=%u remote=%u PT=%u codec=%s dir=%s%s",
            (unsigned) this->local_rtp_port_,
            (unsigned) this->remote_rtp_port_.load(),
            (unsigned) this->capability_.payload_type,
-           this->capability_.profile_level_id.c_str(),
+           this->capability_.encoding.c_str(),
            this->send_enabled_ ? "send" : "",
            this->receive_enabled_ ? "recv" : "");
   return true;
 }
 
-void VideoRtpSession::stop() {
-  LockGuard stop_lock(this->stop_mutex_);
+void VideoRtpSession::request_stop() {
   const bool was_running = this->running_.exchange(false, std::memory_order_acq_rel);
-  if (was_running && this->send_enabled_ && this->source_ != nullptr) {
-    this->source_->stop_video();
-  }
-  this->stop_sender_task_();
-  if (was_running) this->send_rtcp_bye_();
+  if (was_running)
+    this->stop_had_active_session_.store(true, std::memory_order_release);
+  this->sender_running_.store(false, std::memory_order_release);
+  if (this->sender_task_handle_ != nullptr)
+    xTaskNotifyGive(this->sender_task_handle_);
   this->terminate_.store(true, std::memory_order_release);
   this->wake_task_();
-  if (this->task_handle_ != nullptr && this->task_done_ != nullptr &&
-      xSemaphoreTake(this->task_done_, pdMS_TO_TICKS(1000)) == pdTRUE) {
-    voip_audio_core::cleanup_pinned_task(&this->task_handle_, &this->task_stack_,
-                                          kTaskStackBytes);
+}
+
+void VideoRtpSession::stop() {
+  LockGuard stop_lock(this->stop_mutex_);
+  this->request_stop();
+  // Everything below may wait for a camera callback, renderer task or socket
+  // worker. SipTransport invokes it only from its lifecycle worker, after
+  // BYE/CANCEL has already gated the public call path.
+  if (this->stop_had_active_session_.load(std::memory_order_acquire))
+    this->send_rtcp_bye_();
+  if (this->source_started_.exchange(false, std::memory_order_acq_rel) &&
+      this->source_ != nullptr) {
+    this->source_->stop_video();
   }
-  {
-    LockGuard lock(this->socket_mutex_);
-    if (this->rtp_socket_ >= 0) close(this->rtp_socket_);
-    if (this->rtcp_socket_ >= 0) close(this->rtcp_socket_);
-    this->rtp_socket_ = -1;
-    this->rtcp_socket_ = -1;
-  }
-  if (was_running && this->receive_enabled_ && this->sink_ != nullptr) {
+  const bool sender_stopped = this->stop_sender_task_();
+  const bool receiver_stopped = this->stop_receive_task_();
+  if (receiver_stopped &&
+      this->sink_started_.exchange(false, std::memory_order_acq_rel) &&
+      this->sink_ != nullptr) {
     this->sink_->stop_video();
   }
-  this->reset_reassembly_();
+  if (sender_stopped && receiver_stopped) {
+    this->close_sockets_();
+  } else {
+    ESP_LOGE(TAG,
+             "Video worker did not stop cleanly; retaining sockets and owned "
+             "buffers to avoid use-after-free");
+  }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+  if (this->stop_had_active_session_.exchange(
+          false, std::memory_order_acq_rel)) {
+    ESP_LOGI(TAG,
+             "Video session totals: tx=%u rx=%u completed_au=%u "
+             "dropped_au=%u backpressure=%u send_fail=%u "
+             "max_au_ms=%u",
+             (unsigned) this->tx_packets_.load(std::memory_order_acquire),
+             (unsigned) this->rx_packets_.load(std::memory_order_acquire),
+             (unsigned) this->tx_access_units_completed_,
+             (unsigned) this->dropped_access_units_.load(
+                 std::memory_order_acquire),
+             (unsigned) this->tx_backpressure_events_,
+             (unsigned) this->tx_send_failures_,
+             (unsigned) this->tx_max_access_unit_ms_);
+  }
+#endif
+  if (receiver_stopped) this->reset_reassembly_();
+}
+
+bool VideoRtpSession::reap_receive_task_() {
+  if (this->task_handle_ == nullptr) {
+    this->task_done_observed_ = false;
+    return true;
+  }
+  if (!this->task_done_observed_) {
+    if (this->task_done_ == nullptr ||
+        xSemaphoreTake(this->task_done_, 0) != pdTRUE) {
+      return false;
+    }
+    this->task_done_observed_ = true;
+  }
+  voip_audio_core::cleanup_managed_pinned_task(
+      &this->task_handle_, &this->task_stack_, kTaskStackBytes,
+      this->task_with_caps_);
+  if (this->task_handle_ == nullptr) {
+    this->task_done_observed_ = false;
+    return true;
+  }
+  return false;
+}
+
+bool VideoRtpSession::stop_receive_task_() {
+  this->terminate_.store(true, std::memory_order_release);
+  this->wake_task_();
+  if (this->reap_receive_task_()) return true;
+  if (!this->task_done_observed_ && this->task_done_ != nullptr &&
+      xSemaphoreTake(this->task_done_, pdMS_TO_TICKS(1000)) == pdTRUE) {
+    this->task_done_observed_ = true;
+    this->reap_receive_task_();
+  }
+  return this->task_handle_ == nullptr;
+}
+
+void VideoRtpSession::close_sockets_() {
+  LockGuard lock(this->socket_mutex_);
+  if (this->rtp_socket_ >= 0) close(this->rtp_socket_);
+  if (this->rtcp_socket_ >= 0) close(this->rtcp_socket_);
+  this->rtp_socket_ = -1;
+  this->rtcp_socket_ = -1;
 }
 
 void VideoRtpSession::source_callback_(void *ctx,
                                        const EncodedVideoAccessUnit &access_unit) {
+  if (ctx == nullptr) return;
   static_cast<VideoRtpSession *>(ctx)->queue_access_unit_(access_unit);
 }
 
@@ -325,8 +491,16 @@ void VideoRtpSession::queue_access_unit_(
   if (!this->running_.load(std::memory_order_acquire) ||
       !this->sender_running_.load(std::memory_order_acquire) ||
       !this->send_enabled_ || this->tx_access_unit_ == nullptr ||
-      access_unit.data == nullptr || access_unit.size == 0 ||
-      access_unit.size > kMaxAccessUnitBytes) {
+      access_unit.data == nullptr || access_unit.size == 0) {
+    return;
+  }
+  if (access_unit.size > kMaxAccessUnitBytes) {
+    if (this->capability_.is_h264()) {
+      this->tx_resync_needed_.store(true, std::memory_order_release);
+      if (this->sender_task_handle_ != nullptr)
+        xTaskNotifyGive(this->sender_task_handle_);
+    }
+    this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
     return;
   }
   if (this->tx_resync_needed_.load(std::memory_order_acquire) &&
@@ -337,7 +511,8 @@ void VideoRtpSession::queue_access_unit_(
   uint8_t expected = 0;
   if (!this->tx_access_unit_state_.compare_exchange_strong(
           expected, 2, std::memory_order_acq_rel)) {
-    this->tx_resync_needed_.store(true, std::memory_order_release);
+    if (this->capability_.is_h264())
+      this->tx_resync_needed_.store(true, std::memory_order_release);
     this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
     return;
   }
@@ -353,35 +528,91 @@ void VideoRtpSession::queue_access_unit_(
 }
 
 bool VideoRtpSession::start_sender_task_() {
+  if (!this->reap_sender_task_()) return false;
   this->tx_access_unit_state_.store(0, std::memory_order_release);
   this->tx_resync_needed_.store(false, std::memory_order_release);
   this->sender_running_.store(true, std::memory_order_release);
   xSemaphoreTake(this->sender_task_done_, 0);
-  if (voip_audio_core::start_pinned_task(
+  this->sender_task_done_observed_ = false;
+  if (voip_audio_core::start_managed_pinned_task(
           VideoRtpSession::sender_task_trampoline_, "voip_video_tx",
           kSenderTaskStackBytes, this, kTaskPriority, 0,
           this->task_stack_in_psram_, TAG, &this->sender_task_handle_,
-          &this->sender_task_tcb_, &this->sender_task_stack_)) {
+          &this->sender_task_tcb_, &this->sender_task_stack_,
+          &this->sender_task_with_caps_)) {
     return true;
   }
   this->sender_running_.store(false, std::memory_order_release);
   return false;
 }
 
-void VideoRtpSession::stop_sender_task_() {
+bool VideoRtpSession::reap_sender_task_() {
+  if (this->sender_task_handle_ == nullptr) {
+    this->sender_task_done_observed_ = false;
+    return true;
+  }
+  if (!this->sender_task_done_observed_) {
+    if (this->sender_task_done_ == nullptr ||
+        xSemaphoreTake(this->sender_task_done_, 0) != pdTRUE) {
+      return false;
+    }
+    this->sender_task_done_observed_ = true;
+  }
+  voip_audio_core::cleanup_managed_pinned_task(
+      &this->sender_task_handle_, &this->sender_task_stack_,
+      kSenderTaskStackBytes, this->sender_task_with_caps_);
+  if (this->sender_task_handle_ == nullptr) {
+    this->sender_task_done_observed_ = false;
+    return true;
+  }
+  return false;
+}
+
+bool VideoRtpSession::stop_sender_task_() {
   const bool was_running =
       this->sender_running_.exchange(false, std::memory_order_acq_rel);
   if (was_running && this->sender_task_handle_ != nullptr)
     xTaskNotifyGive(this->sender_task_handle_);
-  if (this->sender_task_handle_ != nullptr &&
+  if (!this->reap_sender_task_() && !this->sender_task_done_observed_ &&
       this->sender_task_done_ != nullptr &&
       xSemaphoreTake(this->sender_task_done_, pdMS_TO_TICKS(1000)) ==
           pdTRUE) {
-    voip_audio_core::cleanup_pinned_task(
-        &this->sender_task_handle_, &this->sender_task_stack_,
-        kSenderTaskStackBytes);
+    this->sender_task_done_observed_ = true;
+    this->reap_sender_task_();
   }
-  this->tx_access_unit_state_.store(0, std::memory_order_release);
+  const bool stopped = this->sender_task_handle_ == nullptr;
+  if (stopped)
+    this->tx_access_unit_state_.store(0, std::memory_order_release);
+  return stopped;
+}
+
+void VideoRtpSession::quiesce_tasks_() {
+  this->sender_running_.store(false, std::memory_order_release);
+  this->terminate_.store(true, std::memory_order_release);
+  if (this->sender_task_handle_ != nullptr)
+    xTaskNotifyGive(this->sender_task_handle_);
+  this->wake_task_();
+
+  if (this->sender_task_handle_ != nullptr &&
+      !this->sender_task_done_observed_ &&
+      this->sender_task_done_ != nullptr) {
+    xSemaphoreTake(this->sender_task_done_, portMAX_DELAY);
+    this->sender_task_done_observed_ = true;
+  }
+  while (this->sender_task_handle_ != nullptr) {
+    this->reap_sender_task_();
+    if (this->sender_task_handle_ != nullptr) taskYIELD();
+  }
+
+  if (this->task_handle_ != nullptr && !this->task_done_observed_ &&
+      this->task_done_ != nullptr) {
+    xSemaphoreTake(this->task_done_, portMAX_DELAY);
+    this->task_done_observed_ = true;
+  }
+  while (this->task_handle_ != nullptr) {
+    this->reap_receive_task_();
+    if (this->task_handle_ != nullptr) taskYIELD();
+  }
 }
 
 void VideoRtpSession::sender_task_trampoline_(void *ctx) {
@@ -395,6 +626,11 @@ void VideoRtpSession::sender_task_() {
     uint8_t expected = 1;
     if (!this->tx_access_unit_state_.compare_exchange_strong(
             expected, 2, std::memory_order_acq_rel)) {
+      if (this->capability_.is_h264() &&
+          this->tx_resync_needed_.load(std::memory_order_acquire) &&
+          this->source_ != nullptr) {
+        this->source_->request_key_frame();
+      }
       continue;
     }
     const EncodedVideoAccessUnit access_unit{
@@ -402,13 +638,13 @@ void VideoRtpSession::sender_task_() {
         this->tx_access_unit_timestamp_, this->tx_access_unit_key_frame_};
     this->send_access_unit_(access_unit);
     this->tx_access_unit_state_.store(0, std::memory_order_release);
-    if (this->tx_resync_needed_.load(std::memory_order_acquire) &&
+    if (this->capability_.is_h264() &&
+        this->tx_resync_needed_.load(std::memory_order_acquire) &&
         this->source_ != nullptr) {
       this->source_->request_key_frame();
     }
   }
-  xSemaphoreGive(this->sender_task_done_);
-  vTaskDelete(nullptr);
+  voip_audio_core::finish_managed_pinned_task(this->sender_task_done_);
 }
 
 void VideoRtpSession::send_access_unit_(
@@ -417,6 +653,50 @@ void VideoRtpSession::send_access_unit_(
       access_unit.data == nullptr || access_unit.size == 0) {
     return;
   }
+  const uint32_t started_ms = millis();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+  const uint32_t packets_before =
+      this->tx_packets_.load(std::memory_order_acquire);
+  const uint32_t drops_before =
+      this->dropped_access_units_.load(std::memory_order_acquire);
+#endif
+  if (this->capability_.is_jpeg()) {
+    this->send_jpeg_access_unit_(access_unit);
+  } else {
+    this->send_h264_access_unit_(access_unit);
+  }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+  const uint32_t elapsed_ms = millis() - started_ms;
+  this->tx_max_access_unit_ms_ =
+      std::max(this->tx_max_access_unit_ms_, elapsed_ms);
+  if (this->dropped_access_units_.load(std::memory_order_acquire) ==
+          drops_before &&
+      this->tx_packets_.load(std::memory_order_acquire) > packets_before) {
+    this->tx_access_units_completed_++;
+  }
+  const uint32_t now = millis();
+  if (now - this->tx_last_debug_log_ms_ >= 5000U) {
+    this->tx_last_debug_log_ms_ = now;
+    ESP_LOGI(TAG,
+             "Video TX: au=%u packets=%u dropped=%u backpressure=%u "
+             "send_fail=%u last_ms=%u max_ms=%u",
+             (unsigned) this->tx_access_units_completed_,
+             (unsigned) this->tx_packets_.load(std::memory_order_acquire),
+             (unsigned) this->dropped_access_units_.load(
+                 std::memory_order_acquire),
+             (unsigned) this->tx_backpressure_events_,
+             (unsigned) this->tx_send_failures_, (unsigned) elapsed_ms,
+             (unsigned) this->tx_max_access_unit_ms_);
+  }
+#endif
+}
+
+void VideoRtpSession::send_h264_access_unit_(
+    const EncodedVideoAccessUnit &access_unit) {
+  const auto fail_access_unit = [this]() {
+    this->tx_resync_needed_.store(true, std::memory_order_release);
+    this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+  };
   size_t cursor = 0;
   const uint8_t *nal = nullptr;
   size_t nal_size = 0;
@@ -430,12 +710,16 @@ void VideoRtpSession::send_access_unit_(
                                         &cursor, &next_nal, &next_size);
     cursor = next_cursor;
     if (nal_size <= this->max_payload_) {
-      sent_any |= this->send_rtp_payload_(nal, nal_size, last,
-                                          access_unit.timestamp_90khz);
+      if (!this->send_rtp_payload_(nal, nal_size, last,
+                                   access_unit.timestamp_90khz)) {
+        fail_access_unit();
+        return;
+      }
+      sent_any = true;
       continue;
     }
     if (nal_size < 2 || this->max_payload_ <= 2) {
-      this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+      fail_access_unit();
       return;
     }
     const uint8_t fu_indicator = static_cast<uint8_t>((nal[0] & 0xE0) | 28);
@@ -453,7 +737,7 @@ void VideoRtpSession::send_access_unit_(
       const bool marker = last && offset + chunk == nal_size;
       if (!this->send_rtp_payload_(packet, chunk + 2, marker,
                                    access_unit.timestamp_90khz)) {
-        this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+        fail_access_unit();
         return;
       }
       sent_any = true;
@@ -461,8 +745,41 @@ void VideoRtpSession::send_access_unit_(
       offset += chunk;
     }
   }
-  if (!sent_any)
+  if (!sent_any) fail_access_unit();
+}
+
+void VideoRtpSession::send_jpeg_access_unit_(
+    const EncodedVideoAccessUnit &access_unit) {
+  RtpJpegFrameView frame;
+  if (!parse_jpeg_for_rtp(access_unit.data, access_unit.size, &frame)) {
     this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+    ESP_LOGW(TAG, "Dropping JPEG frame outside the RFC 2435 baseline subset");
+#endif
+    return;
+  }
+  size_t scan_offset = 0;
+  while (scan_offset < frame.scan_size) {
+    uint8_t payload[kMaxRtpPacketBytes];
+    const size_t header_size = build_rtp_jpeg_fragment_header(
+        frame, scan_offset, payload,
+        std::min(sizeof(payload), this->max_payload_));
+    if (header_size == 0 || header_size >= this->max_payload_) {
+      this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+      return;
+    }
+    const size_t fragment_size =
+        std::min(this->max_payload_ - header_size,
+                 frame.scan_size - scan_offset);
+    memcpy(payload + header_size, frame.scan + scan_offset, fragment_size);
+    const bool marker = scan_offset + fragment_size == frame.scan_size;
+    if (!this->send_rtp_payload_(payload, header_size + fragment_size, marker,
+                                 access_unit.timestamp_90khz)) {
+      this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+      return;
+    }
+    scan_offset += fragment_size;
+  }
 }
 
 bool VideoRtpSession::send_rtp_payload_(const uint8_t *payload, size_t size,
@@ -476,26 +793,71 @@ bool VideoRtpSession::send_rtp_payload_(const uint8_t *payload, size_t size,
   const uint16_t sequence =
       this->tx_sequence_.fetch_add(1, std::memory_order_acq_rel);
   write_be16(packet + 2, sequence);
-  write_be32(packet + 4, timestamp);
+  const uint32_t wire_timestamp = timestamp + this->tx_timestamp_offset_;
+  write_be32(packet + 4, wire_timestamp);
   write_be32(packet + 8, this->tx_ssrc_);
   memcpy(packet + 12, payload, size);
   const uint32_t ip = this->remote_ip_v4_.load(std::memory_order_acquire);
-  const uint16_t port = this->remote_rtp_port_.load(std::memory_order_acquire);
+  const uint16_t latched_port =
+      this->latched_remote_rtp_port_.load(std::memory_order_acquire);
+  const uint16_t port =
+      latched_port != 0
+          ? latched_port
+          : this->remote_rtp_port_.load(std::memory_order_acquire);
   struct sockaddr_in remote{};
   remote.sin_family = AF_INET;
   remote.sin_addr.s_addr = htonl(ip);
   remote.sin_port = htons(port);
-  LockGuard lock(this->socket_mutex_);
-  if (!this->running_.load(std::memory_order_acquire) ||
-      this->rtp_socket_ < 0) {
+  int sent = -1;
+  {
+    LockGuard lock(this->socket_mutex_);
+    if (!this->running_.load(std::memory_order_acquire) ||
+        this->rtp_socket_ < 0) {
+      return false;
+    }
+    for (uint8_t attempt = 0; attempt < 2; attempt++) {
+      sent = sendto(this->rtp_socket_, packet, size + 12, 0,
+                    reinterpret_cast<struct sockaddr *>(&remote),
+                    sizeof(remote));
+      if (sent > 0) break;
+      const int error = errno;
+      if (error != EAGAIN && error != EWOULDBLOCK && error != ENOBUFS &&
+          error != ENOMEM) {
+        break;
+      }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+      this->tx_backpressure_events_++;
+#endif
+      if (attempt + 1 >= 2) break;
+      // Wait for writability only while an active access unit still has
+      // realtime value. Idle calls stay blocked on the sender notification.
+      fd_set writefds;
+      FD_ZERO(&writefds);
+      FD_SET(this->rtp_socket_, &writefds);
+      struct timeval timeout{
+          0, static_cast<suseconds_t>(kTxBackpressureWaitMs * 1000U)};
+      const int ready =
+          select(this->rtp_socket_ + 1, nullptr, &writefds, nullptr, &timeout);
+      if (ready < 0 && errno != EINTR) break;
+    }
+  }
+  if (sent <= 0) {
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+    this->tx_send_failures_++;
+#endif
     return false;
   }
-  const int sent =
-      sendto(this->rtp_socket_, packet, size + 12, 0,
-             reinterpret_cast<struct sockaddr *>(&remote), sizeof(remote));
-  if (sent <= 0) return false;
   this->tx_packets_.fetch_add(1, std::memory_order_acq_rel);
   this->tx_octets_.fetch_add(size, std::memory_order_acq_rel);
+  this->last_tx_rtp_timestamp_.store(wire_timestamp,
+                                     std::memory_order_release);
+  this->last_tx_rtp_ms_.store(millis(), std::memory_order_release);
+  if (!marker && this->running_.load(std::memory_order_acquire)) {
+    // RTP video packet pacing prevents one large frame from filling a shared
+    // Wi-Fi/SDIO queue ahead of audio. It runs only inside an active AU.
+    vTaskDelay(std::max<TickType_t>(
+        1, pdMS_TO_TICKS(kTxPacketPacingMs)));
+  }
   return true;
 }
 
@@ -505,6 +867,7 @@ void VideoRtpSession::task_trampoline_(void *ctx) {
 
 void VideoRtpSession::task_() {
   uint8_t packet[kMaxRtpPacketBytes];
+  bool worker_failed = false;
   while (!this->terminate_.load(std::memory_order_acquire)) {
     fd_set readfds;
     FD_ZERO(&readfds);
@@ -523,28 +886,100 @@ void VideoRtpSession::task_() {
     const uint32_t wait_ms = elapsed >= 5000 ? 0 : 5000 - elapsed;
     struct timeval timeout{static_cast<time_t>(wait_ms / 1000),
                            static_cast<suseconds_t>((wait_ms % 1000) * 1000)};
-    const int ready = maxfd >= 0
-                          ? select(maxfd + 1, &readfds, nullptr, nullptr, &timeout)
-                          : 0;
+    if (maxfd < 0) {
+      worker_failed = true;
+      break;
+    }
+    const int ready =
+        select(maxfd + 1, &readfds, nullptr, nullptr, &timeout);
+    if (ready < 0) {
+      if (errno == EINTR) continue;
+      ESP_LOGW(TAG, "Video RTP select failed: %d", errno);
+      worker_failed = true;
+      break;
+    }
     if (ready > 0 && this->rtp_socket_ >= 0 &&
         FD_ISSET(this->rtp_socket_, &readfds)) {
       int received = 0;
       size_t batch = 0;
-      while (batch++ < kMaxReceiveBatchPackets &&
-             (received =
-                  recv(this->rtp_socket_, packet, sizeof(packet), 0)) > 0) {
-        this->handle_rtp_packet_(packet, static_cast<size_t>(received));
+      while (batch++ < kMaxReceiveBatchPackets) {
+        struct sockaddr_in source{};
+        socklen_t source_size = sizeof(source);
+        received = recvfrom(
+            this->rtp_socket_, packet, sizeof(packet), 0,
+            reinterpret_cast<struct sockaddr *>(&source), &source_size);
+        if (received <= 0) break;
+        if (received < 12 || (packet[0] >> 6) != 2 ||
+            (packet[1] & 0x7F) != this->capability_.payload_type) {
+          continue;
+        }
+        const uint32_t source_ip = ntohl(source.sin_addr.s_addr);
+        const uint16_t source_port = ntohs(source.sin_port);
+        if (source_ip !=
+            this->remote_ip_v4_.load(std::memory_order_acquire)) {
+          continue;
+        }
+        const uint32_t source_ssrc = read_be32(packet + 8);
+        const bool ssrc_latched =
+            this->remote_ssrc_latched_.load(std::memory_order_acquire);
+        bool source_changed = false;
+        if (ssrc_latched &&
+            source_ssrc !=
+                this->remote_ssrc_.load(std::memory_order_acquire)) {
+          // A browser/media process restart may replace its SSRC without
+          // renegotiating SDP. Only the already-latched RTP tuple may do so.
+          if (source_port !=
+              this->latched_remote_rtp_port_.load(
+                  std::memory_order_acquire)) {
+            continue;
+          }
+          this->reset_reassembly_();
+          this->jpeg_depacketizer_.reset_session();
+          this->sequence_valid_ = false;
+          source_changed = true;
+        }
+        if (!this->handle_rtp_packet_(packet,
+                                      static_cast<size_t>(received))) {
+          continue;
+        }
+        if (!ssrc_latched || source_changed) {
+          const uint32_t previous_ssrc =
+              this->remote_ssrc_.load(std::memory_order_acquire);
+          this->remote_ssrc_.store(source_ssrc, std::memory_order_release);
+          this->remote_ssrc_latched_.store(true, std::memory_order_release);
+          if (source_changed) {
+            ESP_LOGI(TAG,
+                     "Video RTP source changed SSRC %08" PRIx32
+                     " -> %08" PRIx32,
+                     previous_ssrc, source_ssrc);
+            if (this->capability_.is_h264()) this->send_rtcp_pli_();
+          }
+        }
+        // Mirror the audio RTP symmetric-latch policy: the negotiated address
+        // remains authoritative, while a valid same-SSRC NAT port rebind is
+        // followed for subsequent outgoing RTP.
+        this->latched_remote_rtp_port_.store(source_port,
+                                             std::memory_order_release);
       }
     }
     if (ready > 0 && this->rtcp_socket_ >= 0 &&
         FD_ISSET(this->rtcp_socket_, &readfds)) {
-      const int received = recv(this->rtcp_socket_, packet, sizeof(packet), 0);
-      if (received >= 12 && packet[1] == 206) {
-        const uint8_t feedback_type = packet[0] & 0x1F;
-        if ((feedback_type == 1 || feedback_type == 4) &&
-            this->source_ != nullptr) {
+      struct sockaddr_in source{};
+      socklen_t source_size = sizeof(source);
+      const int received = recvfrom(
+          this->rtcp_socket_, packet, sizeof(packet), 0,
+          reinterpret_cast<struct sockaddr *>(&source), &source_size);
+      const uint32_t source_ip = ntohl(source.sin_addr.s_addr);
+      bool request_key_frame = false;
+      if (received > 0 &&
+          source_ip ==
+              this->remote_rtcp_ip_v4_.load(std::memory_order_acquire) &&
+          this->handle_rtcp_packet_(
+              packet, static_cast<size_t>(received), &request_key_frame)) {
+        this->latched_remote_rtcp_port_.store(
+            ntohs(source.sin_port), std::memory_order_release);
+        if (request_key_frame && this->source_ != nullptr)
           this->source_->request_key_frame();
-        }
       }
     }
     if (millis() - this->last_rtcp_ms_ >= 5000) {
@@ -552,53 +987,138 @@ void VideoRtpSession::task_() {
       this->last_rtcp_ms_ = millis();
     }
   }
-  xSemaphoreGive(this->task_done_);
-  vTaskDelete(nullptr);
+  if (worker_failed &&
+      !this->terminate_.load(std::memory_order_acquire)) {
+    ESP_LOGE(TAG, "Video RTP worker failed; quiescing video media");
+    if (this->running_.exchange(false, std::memory_order_acq_rel)) {
+      this->stop_had_active_session_.store(true,
+                                           std::memory_order_release);
+      this->send_rtcp_bye_();
+    }
+    this->sender_running_.store(false, std::memory_order_release);
+    if (this->sender_task_handle_ != nullptr)
+      xTaskNotifyGive(this->sender_task_handle_);
+    if (this->source_started_.exchange(false,
+                                       std::memory_order_acq_rel) &&
+        this->source_ != nullptr) {
+      this->source_->stop_video();
+    }
+    if (this->sink_started_.exchange(false, std::memory_order_acq_rel) &&
+        this->sink_ != nullptr) {
+      this->sink_->stop_video();
+    }
+  }
+  voip_audio_core::finish_managed_pinned_task(this->task_done_);
 }
 
-void VideoRtpSession::handle_rtp_packet_(const uint8_t *packet, size_t size) {
+bool VideoRtpSession::handle_rtp_packet_(const uint8_t *packet, size_t size) {
   if (!this->receive_enabled_ || packet == nullptr || size < 12 ||
       (packet[0] >> 6) != 2) {
-    return;
+    return false;
   }
   const bool padding = (packet[0] & 0x20) != 0;
   if (padding) {
     const size_t padding_bytes = packet[size - 1];
-    if (padding_bytes == 0 || padding_bytes > size - 12) return;
+    if (padding_bytes == 0 || padding_bytes > size - 12) return false;
     size -= padding_bytes;
   }
   const size_t csrc_bytes = (packet[0] & 0x0F) * 4;
   const bool extension = (packet[0] & 0x10) != 0;
   size_t offset = 12 + csrc_bytes;
-  if (offset > size) return;
+  if (offset > size) return false;
   if (extension) {
-    if (offset + 4 > size) return;
+    if (offset + 4 > size) return false;
     const size_t words =
         (static_cast<size_t>(packet[offset + 2]) << 8) | packet[offset + 3];
     offset += 4 + words * 4;
-    if (offset > size) return;
+    if (offset > size) return false;
   }
   const uint8_t payload_type = packet[1] & 0x7F;
-  if (payload_type != this->capability_.payload_type || offset >= size) return;
+  if (payload_type != this->capability_.payload_type || offset >= size)
+    return false;
   const bool marker = (packet[1] & 0x80) != 0;
   const uint16_t sequence =
       static_cast<uint16_t>((packet[2] << 8) | packet[3]);
   const uint32_t timestamp = read_be32(packet + 4);
-  this->remote_ssrc_.store(read_be32(packet + 8), std::memory_order_release);
-  if (this->sequence_valid_ && sequence != this->expected_sequence_) {
+  const bool sequence_gap =
+      this->sequence_valid_ && sequence != this->expected_sequence_;
+  if (sequence_gap && this->capability_.is_jpeg()) {
     this->reassembly_damaged_ = true;
+  }
+
+  const uint8_t *payload = packet + offset;
+  const size_t payload_size = size - offset;
+  bool payload_accepted = false;
+  if (this->capability_.is_jpeg()) {
+    payload_accepted =
+        this->handle_jpeg_payload_(payload, payload_size, marker, timestamp);
+  } else {
+    payload_accepted =
+        this->handle_h264_payload_(payload, payload_size, marker, timestamp,
+                                   sequence_gap);
+  }
+  if (!payload_accepted) {
+    // A packet with only a valid RTP envelope is not enough to establish the
+    // symmetric RTP peer. In particular, a malformed first packet must not
+    // latch an attacker-controlled SSRC/port and exclude the real stream.
+    this->reset_reassembly_();
+    return false;
   }
   this->expected_sequence_ = static_cast<uint16_t>(sequence + 1);
   this->sequence_valid_ = true;
   this->rx_packets_.fetch_add(1, std::memory_order_acq_rel);
+  return true;
+}
 
-  const uint8_t *payload = packet + offset;
-  const size_t payload_size = size - offset;
+bool VideoRtpSession::handle_h264_payload_(const uint8_t *payload,
+                                           size_t payload_size, bool marker,
+                                           uint32_t timestamp,
+                                           bool sequence_gap) {
+  if (payload == nullptr || payload_size == 0) return false;
   const uint8_t nal_type = payload[0] & 0x1F;
+  if (nal_type == 24) {
+    // Validate the complete STAP-A before mutating reassembly state. A
+    // truncated aggregate is not a valid media packet and cannot latch the
+    // symmetric RTP source.
+    size_t pos = 1;
+    bool saw_nal = false;
+    while (pos + 2 <= payload_size) {
+      const size_t nal_size =
+          (static_cast<size_t>(payload[pos]) << 8) | payload[pos + 1];
+      pos += 2;
+      if (nal_size == 0 || pos + nal_size > payload_size) return false;
+      const uint8_t aggregated_type = payload[pos] & 0x1F;
+      if (aggregated_type == 0 || aggregated_type > 23) return false;
+      saw_nal = true;
+      pos += nal_size;
+    }
+    if (!saw_nal || pos != payload_size) return false;
+  } else if (nal_type == 28) {
+    // RFC 6184 permits an empty FU payload, and receivers must ignore the
+    // reserved bit even though conforming senders set it to zero.
+    if (payload_size < 2) return false;
+    const bool start = (payload[1] & 0x80) != 0;
+    const bool end = (payload[1] & 0x40) != 0;
+    const uint8_t fragment_type = payload[1] & 0x1F;
+    if ((start && end) || fragment_type == 0 || fragment_type > 23)
+      return false;
+    if (!start &&
+        (!this->reassembly_active_ ||
+         timestamp != this->reassembly_timestamp_ || !this->fu_active_ ||
+         this->fu_nal_type_ != fragment_type)) {
+      return false;
+    }
+  } else if (nal_type == 0 || nal_type > 23) {
+    return false;
+  }
+
   if (!this->reassembly_active_ || timestamp != this->reassembly_timestamp_) {
     if (this->reassembly_active_) this->reset_reassembly_();
     this->reassembly_active_ = true;
     this->reassembly_timestamp_ = timestamp;
+    this->reassembly_damaged_ = sequence_gap;
+  } else if (sequence_gap) {
+    this->reassembly_damaged_ = true;
   }
 
   if (nal_type >= 1 && nal_type <= 23) {
@@ -620,7 +1140,7 @@ void VideoRtpSession::handle_rtp_packet_(const uint8_t *packet, size_t size) {
       pos += nal_size;
     }
     if (pos != payload_size) this->reassembly_damaged_ = true;
-  } else if (nal_type == 28 && payload_size >= 2) {
+  } else if (nal_type == 28) {
     const bool start = (payload[1] & 0x80) != 0;
     const bool end = (payload[1] & 0x40) != 0;
     const uint8_t fragment_type = payload[1] & 0x1F;
@@ -639,8 +1159,6 @@ void VideoRtpSession::handle_rtp_packet_(const uint8_t *packet, size_t size) {
                sizeof(prefix_and_header));
         this->reassembly_size_ += sizeof(prefix_and_header);
       }
-    } else if (!this->fu_active_ || this->fu_nal_type_ != fragment_type) {
-      this->reassembly_damaged_ = true;
     }
     if (!this->reassembly_damaged_) {
       const size_t fragment = payload_size - 2;
@@ -657,13 +1175,77 @@ void VideoRtpSession::handle_rtp_packet_(const uint8_t *packet, size_t size) {
       this->fu_active_ = false;
       this->fu_nal_type_ = 0;
     }
-  } else {
-    this->reassembly_damaged_ = true;
   }
+  bool accepted = true;
   if (marker) {
-    if (this->fu_active_) this->reassembly_damaged_ = true;
+    if (this->fu_active_) {
+      this->reassembly_damaged_ = true;
+      accepted = false;
+    }
     this->finish_access_unit_(timestamp);
   }
+  return accepted;
+}
+
+bool VideoRtpSession::handle_jpeg_payload_(const uint8_t *payload,
+                                           size_t payload_size, bool marker,
+                                           uint32_t timestamp) {
+  if (payload_size >= 8 && payload[1] == 0 && payload[2] == 0 &&
+      payload[3] == 0 &&
+      payload[5] >= RtpJpegDepacketizer::kFirstCachedQuality &&
+      payload[5] <= RtpJpegDepacketizer::kLastCachedQuality &&
+      !this->ensure_jpeg_quantization_cache_()) {
+    this->jpeg_depacketizer_.reset();
+    this->reassembly_damaged_ = false;
+    this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+    return false;
+  }
+  if (payload_size >= 4 && payload[1] == 0 && payload[2] == 0 &&
+      payload[3] == 0) {
+    // Every JPEG is independently decodable. A sequence gap before a fresh
+    // fragment-offset zero must not poison the new frame.
+    this->reassembly_damaged_ = false;
+  }
+  size_t access_unit_size = 0;
+  const RtpJpegPushResult result = this->jpeg_depacketizer_.push(
+      payload, payload_size, marker, timestamp, this->reassembly_,
+      kMaxAccessUnitBytes, &access_unit_size);
+  if (result == RtpJpegPushResult::DROPPED) {
+    this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+    this->reassembly_damaged_ = false;
+    return false;
+  }
+  if (result == RtpJpegPushResult::INCOMPLETE) return true;
+  if (this->reassembly_damaged_ || access_unit_size == 0) {
+    this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+    this->reassembly_damaged_ = false;
+    return true;
+  }
+  if (this->sink_ != nullptr) {
+    const EncodedVideoAccessUnit access_unit{
+        this->reassembly_, access_unit_size, timestamp, true};
+    if (!this->sink_->consume_video_access_unit(access_unit))
+      this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+  }
+  this->reassembly_damaged_ = false;
+  return true;
+}
+
+bool VideoRtpSession::ensure_jpeg_quantization_cache_() {
+  if (this->jpeg_quantization_cache_ != nullptr) return true;
+  if (this->jpeg_quantization_cache_allocation_failed_) return false;
+  this->jpeg_quantization_cache_ = static_cast<uint8_t *>(heap_caps_malloc(
+      RtpJpegDepacketizer::kQuantizationCacheBytes,
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (this->jpeg_quantization_cache_ == nullptr) {
+    this->jpeg_quantization_cache_allocation_failed_ = true;
+    ESP_LOGE(TAG, "JPEG quantization cache PSRAM allocation failed");
+    return false;
+  }
+  this->jpeg_depacketizer_.set_quantization_cache(
+      this->jpeg_quantization_cache_,
+      RtpJpegDepacketizer::kQuantizationCacheBytes);
+  return true;
 }
 
 bool VideoRtpSession::append_annex_b_nal_(const uint8_t *nal, size_t size) {
@@ -716,10 +1298,81 @@ void VideoRtpSession::reset_reassembly_() {
   this->reassembly_damaged_ = false;
   this->fu_active_ = false;
   this->fu_nal_type_ = 0;
+  this->jpeg_depacketizer_.reset();
 }
 
-void VideoRtpSession::send_rtcp_report_() {
-  uint8_t packet[64]{};
+bool VideoRtpSession::handle_rtcp_packet_(const uint8_t *packet, size_t size,
+                                          bool *request_key_frame) {
+  if (packet == nullptr || request_key_frame == nullptr || size < 8)
+    return false;
+  *request_key_frame = false;
+  bool saw_report = false;
+  bool saw_sdes = false;
+  size_t offset = 0;
+  while (offset < size) {
+    if (size - offset < 4 || (packet[offset] >> 6) != 2) return false;
+    const bool padding = (packet[offset] & 0x20) != 0;
+    const uint8_t count = packet[offset] & 0x1F;
+    const uint8_t type = packet[offset + 1];
+    const size_t subpacket_size =
+        (static_cast<size_t>(
+             (static_cast<uint16_t>(packet[offset + 2]) << 8) |
+             packet[offset + 3]) +
+         1) *
+        4;
+    if (subpacket_size < 4 || subpacket_size > size - offset) return false;
+    const bool final = offset + subpacket_size == size;
+    if (padding && !final) return false;
+    size_t content_size = subpacket_size;
+    if (padding) {
+      const size_t padding_size = packet[offset + subpacket_size - 1];
+      if (padding_size == 0 || padding_size > subpacket_size - 4)
+        return false;
+      content_size -= padding_size;
+    }
+    const uint8_t *subpacket = packet + offset;
+    if (offset == 0 && type != 200 && type != 201) return false;
+    if (type == 200) {
+      if (content_size < 28 + static_cast<size_t>(count) * 24)
+        return false;
+      saw_report = true;
+    } else if (type == 201) {
+      if (content_size < 8 + static_cast<size_t>(count) * 24)
+        return false;
+      saw_report = true;
+    } else if (type == 202) {
+      if (content_size < 8) return false;
+      saw_sdes = true;
+    } else if (type == 203) {
+      if (content_size < 4 + static_cast<size_t>(count) * 4)
+        return false;
+    } else if (type == 206) {
+      if (content_size < 12) return false;
+      // Feedback is meaningful only when the SDP explicitly negotiated it.
+      // RTP/AVP without rtcp-fb relies on periodic key frames instead.
+      if (this->rtcp_feedback_enabled_) {
+        bool targets_local_stream =
+            count == 1 && read_be32(subpacket + 8) == this->tx_ssrc_;
+        if (count == 4) {
+          for (size_t fir = 12; fir + 8 <= content_size; fir += 8) {
+            if (read_be32(subpacket + fir) == this->tx_ssrc_) {
+              targets_local_stream = true;
+              break;
+            }
+          }
+        }
+        *request_key_frame |= targets_local_stream;
+      }
+    }
+    offset += subpacket_size;
+  }
+  return offset == size && saw_report && saw_sdes;
+}
+
+size_t VideoRtpSession::build_rtcp_report_sdes_(uint8_t *packet,
+                                                size_t capacity) const {
+  if (packet == nullptr || capacity < 64) return 0;
+  memset(packet, 0, capacity);
   const bool sender = this->tx_packets_.load(std::memory_order_acquire) > 0;
   packet[0] = 0x80;
   packet[1] = sender ? 200 : 201;
@@ -727,85 +1380,108 @@ void VideoRtpSession::send_rtcp_report_() {
   write_be32(packet + 4, this->tx_ssrc_);
   size_t size = 8;
   if (sender) {
-    const uint64_t unix_us = static_cast<uint64_t>(millis()) * 1000ULL;
-    const uint64_t ntp_seconds = unix_us / 1000000ULL + 2208988800ULL;
+    struct timeval now{};
+    gettimeofday(&now, nullptr);
+    const uint64_t unix_seconds =
+        now.tv_sec > 0 ? static_cast<uint64_t>(now.tv_sec) : 0;
+    const uint64_t ntp_seconds = unix_seconds + 2208988800ULL;
     const uint64_t ntp_fraction =
-        ((unix_us % 1000000ULL) << 32) / 1000000ULL;
+        (static_cast<uint64_t>(now.tv_usec) << 32) / 1000000ULL;
     write_be32(packet + 8, static_cast<uint32_t>(ntp_seconds));
     write_be32(packet + 12, static_cast<uint32_t>(ntp_fraction));
-    write_be32(packet + 16, 0);
+    const uint32_t last_timestamp =
+        this->last_tx_rtp_timestamp_.load(std::memory_order_acquire);
+    const uint32_t last_timestamp_ms =
+        this->last_tx_rtp_ms_.load(std::memory_order_acquire);
+    const uint32_t elapsed_ms =
+        last_timestamp_ms == 0 ? 0 : millis() - last_timestamp_ms;
+    write_be32(packet + 16, last_timestamp + elapsed_ms * 90U);
     write_be32(packet + 20, this->tx_packets_.load());
     write_be32(packet + 24, this->tx_octets_.load());
     size = 28;
   }
   // RFC 3550 compound reports carry one SDES CNAME so the SSRC remains
   // identifiable even when the video child is receive-only.
-  static constexpr char CNAME[] = "esp-video";
+  char cname[24];
+  const int cname_length =
+      snprintf(cname, sizeof(cname), "esp-video-%08x",
+               static_cast<unsigned>(this->tx_ssrc_));
+  if (cname_length <= 0 ||
+      static_cast<size_t>(cname_length) >= sizeof(cname))
+    return 0;
   const size_t sdes = size;
   packet[sdes] = 0x81;
   packet[sdes + 1] = 202;
   write_be32(packet + sdes + 4, this->tx_ssrc_);
   packet[sdes + 8] = 1;
-  packet[sdes + 9] = sizeof(CNAME) - 1;
-  memcpy(packet + sdes + 10, CNAME, sizeof(CNAME) - 1);
-  packet[sdes + 10 + sizeof(CNAME) - 1] = 0;
-  size_t sdes_size = 11 + sizeof(CNAME) - 1;
+  packet[sdes + 9] = static_cast<uint8_t>(cname_length);
+  memcpy(packet + sdes + 10, cname, static_cast<size_t>(cname_length));
+  packet[sdes + 10 + cname_length] = 0;
+  size_t sdes_size = 11 + static_cast<size_t>(cname_length);
   while ((sdes_size & 3U) != 0) packet[sdes + sdes_size++] = 0;
   write_be16(packet + sdes + 2,
              static_cast<uint16_t>(sdes_size / 4 - 1));
   size += sdes_size;
-  const uint32_t ip = this->remote_ip_v4_.load();
-  const uint16_t port = this->remote_rtp_port_.load();
+  return size;
+}
+
+void VideoRtpSession::send_rtcp_packet_(const uint8_t *packet, size_t size) {
+  if (packet == nullptr || size == 0) return;
+  const uint32_t ip =
+      this->remote_rtcp_ip_v4_.load(std::memory_order_acquire);
+  const uint16_t latched_port =
+      this->latched_remote_rtcp_port_.load(std::memory_order_acquire);
+  const uint16_t port =
+      latched_port != 0
+          ? latched_port
+          : this->remote_rtcp_port_.load(std::memory_order_acquire);
   if (ip == 0 || port == 0) return;
   struct sockaddr_in remote{};
   remote.sin_family = AF_INET;
   remote.sin_addr.s_addr = htonl(ip);
-  remote.sin_port = htons(port + 1);
+  remote.sin_port = htons(port);
   LockGuard lock(this->socket_mutex_);
   if (this->rtcp_socket_ >= 0)
     sendto(this->rtcp_socket_, packet, size, 0,
            reinterpret_cast<struct sockaddr *>(&remote), sizeof(remote));
 }
 
+void VideoRtpSession::send_rtcp_report_() {
+  uint8_t packet[96]{};
+  const size_t size =
+      this->build_rtcp_report_sdes_(packet, sizeof(packet));
+  this->send_rtcp_packet_(packet, size);
+}
+
 void VideoRtpSession::send_rtcp_pli_() {
+  if (!this->rtcp_feedback_enabled_ || this->capability_.is_jpeg()) return;
   const uint32_t now = millis();
   const uint32_t media_ssrc =
       this->remote_ssrc_.load(std::memory_order_acquire);
   if (media_ssrc == 0 || now - this->last_pli_ms_ < 500) return;
   this->last_pli_ms_ = now;
-  uint8_t packet[12]{0x81, 206, 0, 2};
-  write_be32(packet + 4, this->tx_ssrc_);
-  write_be32(packet + 8, media_ssrc);
-  const uint32_t ip = this->remote_ip_v4_.load(std::memory_order_acquire);
-  const uint16_t port =
-      this->remote_rtp_port_.load(std::memory_order_acquire);
-  if (ip == 0 || port == 0) return;
-  struct sockaddr_in remote{};
-  remote.sin_family = AF_INET;
-  remote.sin_addr.s_addr = htonl(ip);
-  remote.sin_port = htons(port + 1);
-  LockGuard lock(this->socket_mutex_);
-  if (this->running_.load(std::memory_order_acquire) &&
-      this->rtcp_socket_ >= 0) {
-    sendto(this->rtcp_socket_, packet, sizeof(packet), 0,
-           reinterpret_cast<struct sockaddr *>(&remote), sizeof(remote));
-  }
+  uint8_t packet[112]{};
+  size_t size = this->build_rtcp_report_sdes_(packet, sizeof(packet));
+  if (size == 0 || size + 12 > sizeof(packet)) return;
+  packet[size] = 0x81;
+  packet[size + 1] = 206;
+  write_be16(packet + size + 2, 2);
+  write_be32(packet + size + 4, this->tx_ssrc_);
+  write_be32(packet + size + 8, media_ssrc);
+  size += 12;
+  this->send_rtcp_packet_(packet, size);
 }
 
 void VideoRtpSession::send_rtcp_bye_() {
-  uint8_t packet[8]{0x81, 203, 0, 1};
-  write_be32(packet + 4, this->tx_ssrc_);
-  const uint32_t ip = this->remote_ip_v4_.load();
-  const uint16_t port = this->remote_rtp_port_.load();
-  if (ip == 0 || port == 0) return;
-  struct sockaddr_in remote{};
-  remote.sin_family = AF_INET;
-  remote.sin_addr.s_addr = htonl(ip);
-  remote.sin_port = htons(port + 1);
-  LockGuard lock(this->socket_mutex_);
-  if (this->rtcp_socket_ >= 0)
-    sendto(this->rtcp_socket_, packet, sizeof(packet), 0,
-           reinterpret_cast<struct sockaddr *>(&remote), sizeof(remote));
+  uint8_t packet[104]{};
+  size_t size = this->build_rtcp_report_sdes_(packet, sizeof(packet));
+  if (size == 0 || size + 8 > sizeof(packet)) return;
+  packet[size] = 0x81;
+  packet[size + 1] = 203;
+  write_be16(packet + size + 2, 1);
+  write_be32(packet + size + 4, this->tx_ssrc_);
+  size += 8;
+  this->send_rtcp_packet_(packet, size);
 }
 
 void VideoRtpSession::wake_task_() {
@@ -819,8 +1495,12 @@ void VideoRtpSession::wake_task_() {
   local.sin_family = AF_INET;
   local.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   local.sin_port = htons(this->local_rtp_port_);
-  sendto(this->rtp_socket_, &byte, sizeof(byte), 0,
-         reinterpret_cast<struct sockaddr *>(&local), sizeof(local));
+  if (sendto(this->rtp_socket_, &byte, sizeof(byte), 0,
+             reinterpret_cast<struct sockaddr *>(&local), sizeof(local)) < 0) {
+    // A full loopback queue must not turn teardown into a polling timeout.
+    // shutdown wakes select(); the lifecycle worker closes the socket.
+    shutdown(this->rtp_socket_, SHUT_RDWR);
+  }
 }
 
 }  // namespace voip_stack

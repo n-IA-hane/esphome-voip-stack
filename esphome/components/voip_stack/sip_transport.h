@@ -90,6 +90,13 @@ class SipTransport : public SipPhoneTransport {
     RESPONSE,
   };
 
+  enum class MediaLifecyclePhase : uint8_t {
+    IDLE = 0,
+    ACTIVE,
+    CLEANING,
+    SHUTTING_DOWN,
+  };
+
   struct SipRequestOptions {
     uint32_t cseq_number{0};
     std::string cseq_method;
@@ -134,10 +141,15 @@ class SipTransport : public SipPhoneTransport {
   std::string wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
                                  const std::string &maps, const std::string &flows,
                                  uint8_t ptime) const;
-  bool learn_remote_rtp_from_sdp_(const std::string &sdp, uint32_t default_ip);
+  bool learn_remote_rtp_from_sdp_(const std::string &sdp,
+                                  uint32_t default_ip,
+                                  bool remote_is_answer = false);
+  void capture_remote_media_shape_(const std::string &sdp);
+  std::string rejected_media_answer_(const std::string &media_line) const;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   bool learn_remote_video_from_sdp_(const std::string &sdp,
-                                    uint32_t default_ip);
+                                    uint32_t default_ip,
+                                    bool remote_is_answer);
   std::string append_video_sdp_(const std::string &sdp,
                                 const std::string &local_ip,
                                 bool answer) const;
@@ -160,6 +172,9 @@ class SipTransport : public SipPhoneTransport {
   void handle_tcp_peer_loss_();
   void wake_sip_task_();
   void wake_rtp_task_();
+  bool start_audio_path_locked_();
+  void request_audio_path_stop_locked_();
+  void finish_audio_path_stop_();
   void reset_dialog_();
   bool replay_completed_response_(const std::string &request, const sockaddr_in &src,
                                   const std::string &method);
@@ -305,6 +320,14 @@ class SipTransport : public SipPhoneTransport {
   uint8_t rtp_tx_payload_type_{96};
   uint8_t rtp_rx_payload_type_{96};
   mutable portMUX_TYPE media_config_lock_ = portMUX_INITIALIZER_UNLOCKED;
+  // RFC 3264 matches media streams by m-line position. Keep only the bounded
+  // original m-lines while answering an offer; media payload buffers remain
+  // owned by their dedicated audio/video paths.
+  static constexpr size_t kMaxSdpMediaLines = 8;
+  std::vector<std::string> remote_offer_media_lines_;
+  int8_t remote_audio_media_index_{-1};
+  int8_t remote_video_media_index_{-1};
+  bool remote_media_shape_overflow_{false};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   EncodedVideoSource *video_source_{nullptr};
   EncodedVideoSink *video_sink_{nullptr};
@@ -318,6 +341,8 @@ class SipTransport : public SipPhoneTransport {
   bool video_receive_enabled_{false};
   uint32_t remote_video_ip_v4_{0};
   uint16_t remote_video_rtp_port_{0};
+  uint32_t remote_video_rtcp_ip_v4_{0};
+  uint16_t remote_video_rtcp_port_{0};
   VideoCapability negotiated_video_capability_{};
 #endif
   uint32_t cseq_{1};
@@ -327,6 +352,11 @@ class SipTransport : public SipPhoneTransport {
   UdpTransaction pending_bye_;
 
   int sip_socket_{-1};
+  // A private loopback datagram socket is part of the SIP select set. It is a
+  // self-pipe equivalent for cross-task commands: no polling and no synthetic
+  // packet ever enters the real SIP listener.
+  int sip_wake_socket_{-1};
+  uint16_t sip_wake_port_{0};
   int sip_tcp_listener_socket_{-1};
   std::atomic<int> sip_tcp_client_socket_{-1};
   std::atomic<uint32_t> sip_tcp_client_ip_v4_{0};
@@ -337,6 +367,11 @@ class SipTransport : public SipPhoneTransport {
   std::string tcp_tx_pending_;
   mutable Mutex tcp_send_mutex_;
   mutable Mutex dialog_mutex_;
+  // The main-loop FSM starts media after deferred SIP signals, while the SIP
+  // task can tear it down immediately on CANCEL/BYE. Keep configure/start/stop
+  // of the shared audio and optional video children under one lifecycle lock.
+  // Lock order, when both are needed, is dialog_mutex_ -> media_lifecycle_mutex_.
+  mutable Mutex media_lifecycle_mutex_;
   mutable Mutex rtp_socket_mutex_;
   int rtp_socket_{-1};
   TaskHandle_t sip_task_handle_{nullptr};
@@ -347,12 +382,23 @@ class SipTransport : public SipPhoneTransport {
   TaskHandle_t rtp_task_handle_{nullptr};
   StaticTask_t rtp_task_tcb_{};
   StackType_t *rtp_task_stack_{nullptr};
+  // Distinct signals are mandatory: call cleanup completion must never be
+  // mistaken for final worker exit during component destruction.
+  SemaphoreHandle_t rtp_cleanup_done_{nullptr};
+  StaticSemaphore_t rtp_cleanup_done_storage_{};
   SemaphoreHandle_t rtp_task_done_{nullptr};
   StaticSemaphore_t rtp_task_done_storage_{};
   std::atomic<bool> running_{false};
+  std::atomic<bool> transport_stopping_{false};
   std::atomic<bool> rtp_running_{false};
   std::atomic<bool> rtp_task_quiesced_{true};
   std::atomic<bool> rtp_task_terminate_{false};
+  // Teardown is executed by the already-persistent RTP worker after the
+  // call-path run flag is gated off. CLEANING remains visible until every
+  // subordinate worker has actually joined, preventing a re-INVITE from
+  // resurrecting the same VideoRtpSession concurrently.
+  std::atomic<MediaLifecyclePhase> media_lifecycle_phase_{
+      MediaLifecyclePhase::IDLE};
   std::atomic<bool> media_active_{false};
   std::atomic<bool> outgoing_invite_pending_{false};
   std::atomic<bool> cancel_requested_{false};

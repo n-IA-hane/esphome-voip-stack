@@ -349,6 +349,10 @@ void VoipStack::fail_setup_() {
 void VoipStack::setup() {
   ESP_LOGI(TAG, "Setting up VoIP Stack...");
 
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA
+  this->video_camera_source_.register_listener();
+#endif
+
   ESP_LOGI(TAG, "Audio capability: %s (SIP/%s, tasks: %s)",
            this->audio_capability_(),
            this->protocol_ == TransportType::TCP ? "TCP" : "UDP",
