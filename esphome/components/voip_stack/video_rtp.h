@@ -51,7 +51,7 @@ class VideoRtpSession {
   // audio sends and has no periodic pacing wakeup.
   static constexpr uint32_t kAudioPacingStartupWaitMs = 40;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
-  static constexpr uint8_t kVideoPacketsPerAudioCredit = 4;
+  static constexpr uint8_t kVideoPacketsPerAudioCredit = 12;
 #endif
   static constexpr uint32_t kTxBackpressureWaitMs = 3;
   static constexpr uint32_t kWorkerStopBudgetMs = 1000;
@@ -299,7 +299,6 @@ class VideoRtpSession {
   uint32_t last_rtcp_ms_{0};
   uint32_t last_pli_ms_{0};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
-  uint32_t tx_access_units_completed_{0};
   uint32_t tx_backpressure_events_{0};
   uint32_t tx_send_failures_{0};
   uint32_t tx_max_access_unit_ms_{0};

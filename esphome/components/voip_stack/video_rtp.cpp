@@ -476,7 +476,6 @@ bool VideoRtpSession::start(bool activate) {
   xSemaphoreTake(this->audio_pacing_, 0);
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
-  this->tx_access_units_completed_ = 0;
   this->tx_backpressure_events_ = 0;
   this->tx_send_failures_ = 0;
   this->tx_max_access_unit_ms_ = 0;
@@ -745,7 +744,8 @@ void VideoRtpSession::stop() {
              "slow_send=%u max_send_us=%u max_au_ms=%u",
              (unsigned) this->tx_packets_.load(std::memory_order_acquire),
              (unsigned) this->rx_packets_.load(std::memory_order_acquire),
-             (unsigned) this->tx_access_units_completed_,
+             (unsigned) this->tx_access_units_ok_.load(
+                 std::memory_order_acquire),
              (unsigned) this->dropped_access_units_.load(
                  std::memory_order_acquire),
              (unsigned) this->tx_backpressure_events_,
@@ -1098,12 +1098,8 @@ void VideoRtpSession::send_access_unit_(
 #endif
     return;
   }
-  const uint32_t started_ms = millis();
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
-  const uint32_t packets_before =
-      this->tx_packets_.load(std::memory_order_acquire);
-  const uint32_t drops_before =
-      this->dropped_access_units_.load(std::memory_order_acquire);
+  const uint32_t started_ms = millis();
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   this->send_jpeg_access_unit_(access_unit);
@@ -1114,11 +1110,6 @@ void VideoRtpSession::send_access_unit_(
   const uint32_t elapsed_ms = millis() - started_ms;
   this->tx_max_access_unit_ms_ =
       std::max(this->tx_max_access_unit_ms_, elapsed_ms);
-  if (this->dropped_access_units_.load(std::memory_order_acquire) ==
-          drops_before &&
-      this->tx_packets_.load(std::memory_order_acquire) > packets_before) {
-    this->tx_access_units_completed_++;
-  }
   const uint32_t now = millis();
   if (now - this->tx_last_debug_log_ms_ >= 5000U) {
     this->tx_last_debug_log_ms_ = now;
@@ -1126,7 +1117,8 @@ void VideoRtpSession::send_access_unit_(
              "Video TX: au=%u packets=%u dropped=%u backpressure=%u "
              "send_fail=%u slow_send=%u max_send_us=%u "
              "last_ms=%u max_ms=%u",
-             (unsigned) this->tx_access_units_completed_,
+             (unsigned) this->tx_access_units_ok_.load(
+                 std::memory_order_acquire),
              (unsigned) this->tx_packets_.load(std::memory_order_acquire),
              (unsigned) this->dropped_access_units_.load(
                  std::memory_order_acquire),

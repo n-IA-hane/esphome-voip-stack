@@ -1194,7 +1194,7 @@ def test_video_sender_completes_owned_au_and_bounds_udp_backpressure() -> None:
     assert "xSemaphoreCreateCounting" not in video
     assert "xSemaphoreTake(this->audio_pacing_, portMAX_DELAY)" in video
     assert "xSemaphoreGive(this->audio_pacing_)" in video
-    assert "kVideoPacketsPerAudioCredit = 4" in header
+    assert "kVideoPacketsPerAudioCredit = 12" in header
     assert "kVideoPacketsPerAudioCredit - 1" in video
     assert "audio_pacing_burst_remaining_" in header
     assert "pdMS_TO_TICKS(100)" not in video
