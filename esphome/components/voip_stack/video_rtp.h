@@ -43,18 +43,32 @@ class VideoRtpSession {
   static constexpr uint8_t kSenderTaskPriority = 7;
   static constexpr BaseType_t kSenderTaskCore = 0;
 #endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+  // The local P4 encoder itself publishes through a 128 KiB output envelope,
+  // and the negotiated browser receive profile stays well below it.
+  static constexpr size_t kMaxAccessUnitBytes = 128 * 1024;
+#else
+  // RFC 2435 frames are independent but substantially larger.
   static constexpr size_t kMaxAccessUnitBytes = 512 * 1024;
+#endif
   static constexpr size_t kMaxRtpPacketBytes = 1500;
   // One 800x800 RTP/JPEG access unit commonly spans 40-60 datagrams. Drain a
   // complete standards-compliant burst per wake while higher-priority audio
   // workers remain able to preempt this task.
   static constexpr size_t kMaxReceiveBatchPackets = 64;
-  // Before the first audio packet arrives, keep video startup bounded. Once
-  // audio is flowing, ESP-Hosted video is strictly released by successful
-  // audio sends and has no periodic pacing wakeup.
-  static constexpr uint32_t kAudioPacingStartupWaitMs = 40;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
-  static constexpr uint8_t kVideoPacketsPerAudioCredit = 12;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  static constexpr uint8_t kVideoPacketsPerAudioCredit = 16;
+  static constexpr uint8_t kTxAccessUnitSlots = 2;
+#else
+  // AU-level pacing sends a complete H.264 frame in a few milliseconds.
+  // Two slots decouple the encoder callback without retaining a dependent
+  // backlog or spending PSRAM on queue capacity that measured calls did not
+  // use.
+  static constexpr uint8_t kTxAccessUnitSlots = 2;
+#endif
+#else
+  static constexpr uint8_t kTxAccessUnitSlots = 1;
 #endif
   static constexpr uint32_t kTxBackpressureWaitMs = 3;
   static constexpr uint32_t kWorkerStopBudgetMs = 1000;
@@ -241,18 +255,25 @@ class VideoRtpSession {
   SemaphoreHandle_t audio_pacing_{nullptr};
   StaticSemaphore_t audio_pacing_storage_{};
   std::atomic<bool> audio_pacing_started_{false};
-  std::atomic<bool> audio_pacing_startup_fallback_used_{false};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   std::atomic<uint8_t> audio_pacing_burst_remaining_{0};
 #endif
+#endif
 
-  // One bounded PSRAM access-unit slot decouples the hardware encoder from
-  // UDP packetisation. A slow network drops a GOP and requests a fresh IDR;
-  // it can never block camera capture, audio, SIP teardown or the main loop.
-  uint8_t *tx_access_unit_{nullptr};
-  size_t tx_access_unit_size_{0};
-  uint32_t tx_access_unit_timestamp_{0};
-  bool tx_access_unit_key_frame_{false};
-  std::atomic<uint8_t> tx_access_unit_state_{0};  // 0=free, 1=ready, 2=owned
+  // A bounded PSRAM queue decouples the hardware encoder from UDP
+  // packetisation. ESP-Hosted uses two codec-sized slots and native Wi-Fi
+  // retains one. No path can block camera capture, audio, SIP teardown or the
+  // main loop.
+  struct TxAccessUnitSlot {
+    uint8_t *data{nullptr};
+    size_t size{0};
+    uint32_t timestamp{0};
+    bool key_frame{false};
+    std::atomic<uint8_t> state{0};  // 0=free, 1=ready, 2=owned
+  };
+  TxAccessUnitSlot tx_access_units_[kTxAccessUnitSlots]{};
+  uint8_t tx_write_slot_{0};
+  uint8_t tx_read_slot_{0};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
   std::atomic<bool> tx_resync_needed_{false};
 #endif
@@ -309,7 +330,6 @@ class VideoRtpSession {
   uint32_t tx_max_send_us_{0};
   uint32_t tx_last_debug_log_ms_{0};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
-  uint32_t tx_audio_pacing_startup_fallbacks_{0};
   uint32_t tx_audio_pacing_credit_waits_{0};
   uint32_t tx_audio_pacing_max_wait_us_{0};
 #endif

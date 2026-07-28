@@ -1170,12 +1170,18 @@ def test_video_sender_completes_owned_au_and_bounds_udp_backpressure() -> None:
 
     # Once transmission starts, finish the AU: deliberately aborting it after
     # spending bandwidth on most fragments guarantees an undecodable frame.
-    # The one-slot latest-wins queue drops newer source frames while the owned
-    # AU is paced, and each individual UDP retry remains bounded.
+    # A bounded hosted queue lets the encoder finish several small H.264 frames
+    # while the sender starts, and each individual UDP retry remains bounded.
     assert "tx_access_unit_deadline_ms_" not in header
     assert "tx_access_unit_deadline_expired_" not in payload
     assert "kTxPacketPacingMs" not in header
-    assert "wait_for_audio_pacing_()" in payload
+    assert (
+        "#if defined(USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING) && \\\n"
+        "    defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG)\n"
+        "  if (!this->wait_for_audio_pacing_()) return abort_payload();"
+        in payload
+    )
+    assert "if (!this->wait_for_audio_pacing_()) return;" in sender
     assert "vTaskDelay" not in payload
     for transient_error in ("EAGAIN", "EWOULDBLOCK", "ENOBUFS", "ENOMEM"):
         assert transient_error in payload
@@ -1186,18 +1192,26 @@ def test_video_sender_completes_owned_au_and_bounds_udp_backpressure() -> None:
     assert "DSCP AF41" in video
 
     # ESP-Hosted has one blocking SDIO queue for both flows. Its compile-time
-    # gated scheduler collapses audio completions into one binary event and
-    # admits only a bounded local burst; native-WiFi builds carry none of it.
+    # gated scheduler collapses audio completions into one binary event. H.264
+    # consumes one event per complete dependency unit, while JPEG retains a
+    # bounded packet burst; native-WiFi builds carry none of it.
     assert "USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING" in codegen
     assert '"esp32_hosted" in (CORE.config or {})' in codegen
     assert "xSemaphoreCreateBinaryStatic(&this->audio_pacing_storage_)" in video
     assert "xSemaphoreCreateCounting" not in video
     assert "xSemaphoreTake(this->audio_pacing_, portMAX_DELAY)" in video
     assert "xSemaphoreGive(this->audio_pacing_)" in video
-    assert "kVideoPacketsPerAudioCredit = 12" in header
+    assert "kVideoPacketsPerAudioCredit = 16" in header
+    assert "kMaxAccessUnitBytes = 128 * 1024" in header
+    assert "kMaxAccessUnitBytes = 512 * 1024" in header
+    assert header.count("kTxAccessUnitSlots = 2") == 2
+    assert "TxAccessUnitSlot tx_access_units_[kTxAccessUnitSlots]" in header
     assert "kMaxReceiveBatchPackets = 64" in header
     assert "kVideoPacketsPerAudioCredit - 1" in video
     assert "audio_pacing_burst_remaining_" in header
+    assert "kAudioPacingStartupWaitMs" not in header
+    assert "audio_pacing_startup_fallback" not in video
+    assert "pdMS_TO_TICKS(kAudioPacingStartupWaitMs)" not in video
     assert "pdMS_TO_TICKS(100)" not in video
     assert "this->video_session_->notify_audio_packet_sent();" in sip
 
@@ -2600,8 +2614,8 @@ def test_video_direction_changes_are_worker_owned_and_stop_mid_au_promptly() -> 
     assert "reset_reassembly_()" not in direction
     assert "rx_reset_requested_.exchange(false" in worker
     assert "reset_reassembly_()" in worker
-    assert "tx_access_unit_state_.store(0" not in direction
-    assert "tx_access_unit_state_.store(0" in sender
+    assert "slot.state.store(0" not in direction
+    assert "slot.state.store(0" in sender
     assert payload.count("send_enabled_.load") >= 3
     assert "xSemaphoreGive(this->audio_pacing_)" in direction
     assert "LockGuard source_lock(this->source_control_mutex_)" in direction

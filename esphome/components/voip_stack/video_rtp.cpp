@@ -198,9 +198,11 @@ VideoRtpSession::~VideoRtpSession() {
     heap_caps_free(this->reassembly_);
     this->reassembly_ = nullptr;
   }
-  if (this->tx_access_unit_ != nullptr) {
-    heap_caps_free(this->tx_access_unit_);
-    this->tx_access_unit_ = nullptr;
+  for (auto &slot : this->tx_access_units_) {
+    if (slot.data != nullptr) {
+      heap_caps_free(slot.data);
+      slot.data = nullptr;
+    }
   }
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   if (this->jpeg_quantization_cache_ != nullptr) {
@@ -417,13 +419,16 @@ bool VideoRtpSession::start(bool activate) {
       return false;
     }
   }
-  if (this->tx_access_unit_ == nullptr && source_compatible) {
-    this->tx_access_unit_ = static_cast<uint8_t *>(
-        heap_caps_malloc(kMaxAccessUnitBytes,
-                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (this->tx_access_unit_ == nullptr && negotiated_send) {
-      ESP_LOGE(TAG, "Video TX access-unit PSRAM allocation failed");
-      return false;
+  if (source_compatible) {
+    for (auto &slot : this->tx_access_units_) {
+      if (slot.data == nullptr) {
+        slot.data = static_cast<uint8_t *>(heap_caps_malloc(
+            kMaxAccessUnitBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      }
+      if (slot.data == nullptr && negotiated_send) {
+        ESP_LOGE(TAG, "Video TX access-unit PSRAM allocation failed");
+        return false;
+      }
     }
   }
   if (!this->bind_socket_(&this->rtp_socket_, this->local_rtp_port_, "video RTP") ||
@@ -470,9 +475,7 @@ bool VideoRtpSession::start(bool activate) {
   this->dropped_access_units_.store(0, std::memory_order_release);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
   this->audio_pacing_started_.store(false, std::memory_order_release);
-  this->audio_pacing_startup_fallback_used_.store(
-      false, std::memory_order_release);
-  this->audio_pacing_burst_remaining_.store(0, std::memory_order_release);
+  this->reset_audio_pacing_burst_();
   xSemaphoreTake(this->audio_pacing_, 0);
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
@@ -483,7 +486,6 @@ bool VideoRtpSession::start(bool activate) {
   this->tx_max_send_us_ = 0;
   this->tx_last_debug_log_ms_ = millis();
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
-  this->tx_audio_pacing_startup_fallbacks_ = 0;
   this->tx_audio_pacing_credit_waits_ = 0;
   this->tx_audio_pacing_max_wait_us_ = 0;
 #endif
@@ -521,8 +523,10 @@ bool VideoRtpSession::start(bool activate) {
     return false;
   }
 
-  bool send_prepared =
-      source_prepared && this->tx_access_unit_ != nullptr;
+  bool tx_queue_prepared = true;
+  for (const auto &slot : this->tx_access_units_)
+    tx_queue_prepared = tx_queue_prepared && slot.data != nullptr;
+  bool send_prepared = source_prepared && tx_queue_prepared;
   if (send_prepared && !this->start_sender_task_()) {
     send_prepared = false;
     if (negotiated_send) {
@@ -576,8 +580,6 @@ bool VideoRtpSession::request_media_direction(bool send_enabled,
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
   if (send_enabled != send_was_enabled) {
     this->audio_pacing_started_.store(false, std::memory_order_release);
-    this->audio_pacing_startup_fallback_used_.store(
-        false, std::memory_order_release);
     this->reset_audio_pacing_burst_();
     if (this->audio_pacing_ != nullptr)
       xSemaphoreTake(this->audio_pacing_, 0);
@@ -686,8 +688,6 @@ void VideoRtpSession::request_stop() {
   this->sender_running_.store(false, std::memory_order_release);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
   this->audio_pacing_started_.store(false, std::memory_order_release);
-  this->audio_pacing_startup_fallback_used_.store(
-      false, std::memory_order_release);
   this->reset_audio_pacing_burst_();
   if (this->audio_pacing_ != nullptr)
     xSemaphoreTake(this->audio_pacing_, 0);
@@ -755,9 +755,7 @@ void VideoRtpSession::stop() {
              (unsigned) this->tx_max_access_unit_ms_);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
     ESP_LOGI(TAG,
-             "Video audio-first pacing: startup_fallbacks=%u "
-             "credit_waits=%u max_wait_us=%u",
-             (unsigned) this->tx_audio_pacing_startup_fallbacks_,
+             "Video audio-first pacing: credit_waits=%u max_wait_us=%u",
              (unsigned) this->tx_audio_pacing_credit_waits_,
              (unsigned) this->tx_audio_pacing_max_wait_us_);
 #endif
@@ -838,11 +836,14 @@ void VideoRtpSession::notify_audio_packet_sent() {
 }
 
 void VideoRtpSession::reset_audio_pacing_burst_() {
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   this->audio_pacing_burst_remaining_.store(0, std::memory_order_release);
+#endif
 }
 
 bool VideoRtpSession::wait_for_audio_pacing_() {
   if (this->audio_pacing_ == nullptr) return false;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   uint8_t remaining =
       this->audio_pacing_burst_remaining_.load(std::memory_order_acquire);
   while (remaining > 0) {
@@ -854,40 +855,32 @@ bool VideoRtpSession::wait_for_audio_pacing_() {
              this->send_enabled_.load(std::memory_order_acquire);
     }
   }
+#endif
+
+  // Before the first successful microphone RTP send there is no competing
+  // uplink flow to protect. Let the lower-priority video worker send complete
+  // startup media without a timer. Once audio starts, every H.264 access unit
+  // (or bounded JPEG packet burst) consumes one collapsed audio completion.
+  // This follows Espressif's audio-first media loop while never splitting an
+  // H.264 dependency unit across an artificial pacing wait.
+  if (!this->audio_pacing_started_.load(std::memory_order_acquire)) {
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+    this->audio_pacing_burst_remaining_.store(
+        kVideoPacketsPerAudioCredit - 1, std::memory_order_release);
+#endif
+    return this->running_.load(std::memory_order_acquire) &&
+           this->sender_running_.load(std::memory_order_acquire) &&
+           this->send_enabled_.load(std::memory_order_acquire);
+  }
 
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   const uint32_t wait_started_us = micros();
   this->tx_audio_pacing_credit_waits_++;
 #endif
-  BaseType_t acquired = pdFALSE;
-  const bool audio_started =
-      this->audio_pacing_started_.load(std::memory_order_acquire);
-  const bool startup_fallback_used =
-      this->audio_pacing_startup_fallback_used_.load(
-          std::memory_order_acquire);
-  if (!audio_started && !startup_fallback_used) {
-    acquired = xSemaphoreTake(
-        this->audio_pacing_, pdMS_TO_TICKS(kAudioPacingStartupWaitMs));
-    if (acquired != pdTRUE) {
-      this->audio_pacing_startup_fallback_used_.store(
-          true, std::memory_order_release);
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
-      this->tx_audio_pacing_startup_fallbacks_++;
-      const uint32_t waited_us = micros() - wait_started_us;
-      this->tx_audio_pacing_max_wait_us_ =
-          std::max(this->tx_audio_pacing_max_wait_us_, waited_us);
-#endif
-      // Admit one startup packet only. If audio still has not started, the
-      // next packet blocks on the binary event instead of polling on a timer.
-      return this->running_.load(std::memory_order_acquire) &&
-             this->sender_running_.load(std::memory_order_acquire) &&
-             this->send_enabled_.load(std::memory_order_acquire);
-    }
-  } else {
-    // After audio starts, there is no timer-based polling: the next successful
-    // audio RTP enqueue or request_stop() wakes the video sender.
-    acquired = xSemaphoreTake(this->audio_pacing_, portMAX_DELAY);
-  }
+  // No periodic timer or polling: the next successful audio RTP enqueue or
+  // request_stop() wakes the video sender.
+  const BaseType_t acquired =
+      xSemaphoreTake(this->audio_pacing_, portMAX_DELAY);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   const uint32_t waited_us = micros() - wait_started_us;
   this->tx_audio_pacing_max_wait_us_ =
@@ -902,8 +895,10 @@ bool VideoRtpSession::wait_for_audio_pacing_() {
     this->reset_audio_pacing_burst_();
     return false;
   }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   this->audio_pacing_burst_remaining_.store(
       kVideoPacketsPerAudioCredit - 1, std::memory_order_release);
+#endif
   return true;
 }
 #endif
@@ -912,7 +907,7 @@ void VideoRtpSession::queue_access_unit_(
     const EncodedVideoAccessUnit &access_unit) {
   if (!this->running_.load(std::memory_order_acquire) ||
       !this->sender_running_.load(std::memory_order_acquire) ||
-      !this->send_enabled_ || this->tx_access_unit_ == nullptr ||
+      !this->send_enabled_ ||
       access_unit.data == nullptr || access_unit.size == 0) {
     return;
   }
@@ -934,8 +929,10 @@ void VideoRtpSession::queue_access_unit_(
     return;
   }
 #endif
+  auto &slot = this->tx_access_units_[this->tx_write_slot_];
+  if (slot.data == nullptr) return;
   uint8_t expected = 0;
-  if (!this->tx_access_unit_state_.compare_exchange_strong(
+  if (!slot.state.compare_exchange_strong(
           expected, 2, std::memory_order_acq_rel)) {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
     this->tx_resync_needed_.store(true, std::memory_order_release);
@@ -943,22 +940,27 @@ void VideoRtpSession::queue_access_unit_(
     this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
     return;
   }
-  memcpy(this->tx_access_unit_, access_unit.data, access_unit.size);
-  this->tx_access_unit_size_ = access_unit.size;
-  this->tx_access_unit_timestamp_ = access_unit.timestamp_90khz;
-  this->tx_access_unit_key_frame_ = access_unit.key_frame;
+  memcpy(slot.data, access_unit.data, access_unit.size);
+  slot.size = access_unit.size;
+  slot.timestamp = access_unit.timestamp_90khz;
+  slot.key_frame = access_unit.key_frame;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
   if (access_unit.key_frame)
     this->tx_resync_needed_.store(false, std::memory_order_release);
 #endif
-  this->tx_access_unit_state_.store(1, std::memory_order_release);
+  slot.state.store(1, std::memory_order_release);
+  this->tx_write_slot_ =
+      static_cast<uint8_t>((this->tx_write_slot_ + 1) % kTxAccessUnitSlots);
   if (this->sender_task_handle_ != nullptr)
     xTaskNotifyGive(this->sender_task_handle_);
 }
 
 bool VideoRtpSession::start_sender_task_() {
   if (!this->reap_sender_task_()) return false;
-  this->tx_access_unit_state_.store(0, std::memory_order_release);
+  for (auto &slot : this->tx_access_units_)
+    slot.state.store(0, std::memory_order_release);
+  this->tx_write_slot_ = 0;
+  this->tx_read_slot_ = 0;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
   this->reset_audio_pacing_burst_();
 #endif
@@ -1019,8 +1021,10 @@ bool VideoRtpSession::stop_sender_task_(TickType_t stop_started,
     this->reap_sender_task_();
   }
   const bool stopped = this->sender_task_handle_ == nullptr;
-  if (stopped)
-    this->tx_access_unit_state_.store(0, std::memory_order_release);
+  if (stopped) {
+    for (auto &slot : this->tx_access_units_)
+      slot.state.store(0, std::memory_order_release);
+  }
   return stopped;
 }
 
@@ -1061,23 +1065,21 @@ void VideoRtpSession::sender_task_() {
   while (this->sender_running_.load(std::memory_order_acquire)) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     if (!this->sender_running_.load(std::memory_order_acquire)) break;
-    uint8_t expected = 1;
-    if (!this->tx_access_unit_state_.compare_exchange_strong(
-            expected, 2, std::memory_order_acq_rel)) {
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
-      if (this->tx_resync_needed_.load(std::memory_order_acquire) &&
-          this->source_ != nullptr) {
-        LockGuard source_lock(this->source_control_mutex_);
-        this->source_->request_key_frame();
+    while (this->sender_running_.load(std::memory_order_acquire)) {
+      auto &slot = this->tx_access_units_[this->tx_read_slot_];
+      uint8_t expected = 1;
+      if (!slot.state.compare_exchange_strong(
+              expected, 2, std::memory_order_acq_rel)) {
+        break;
       }
-#endif
-      continue;
+      const EncodedVideoAccessUnit access_unit{
+          slot.data, slot.size, slot.timestamp, slot.key_frame};
+      this->send_access_unit_(access_unit);
+      slot.state.store(0, std::memory_order_release);
+      this->tx_read_slot_ =
+          static_cast<uint8_t>((this->tx_read_slot_ + 1) %
+                               kTxAccessUnitSlots);
     }
-    const EncodedVideoAccessUnit access_unit{
-        this->tx_access_unit_, this->tx_access_unit_size_,
-        this->tx_access_unit_timestamp_, this->tx_access_unit_key_frame_};
-    this->send_access_unit_(access_unit);
-    this->tx_access_unit_state_.store(0, std::memory_order_release);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
     if (this->tx_resync_needed_.load(std::memory_order_acquire) &&
         this->source_ != nullptr) {
@@ -1104,6 +1106,9 @@ void VideoRtpSession::send_access_unit_(
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   this->send_jpeg_access_unit_(access_unit);
 #else
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
+  if (!this->wait_for_audio_pacing_()) return;
+#endif
   this->send_h264_access_unit_(access_unit);
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
@@ -1257,7 +1262,8 @@ bool VideoRtpSession::send_rtp_payload_(const uint8_t *payload, size_t size,
       !this->send_enabled_.load(std::memory_order_acquire)) {
     return abort_payload();
   }
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
+#if defined(USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING) && \
+    defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG)
   if (!this->wait_for_audio_pacing_()) return abort_payload();
 #endif
   if (!this->send_enabled_.load(std::memory_order_acquire))
