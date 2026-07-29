@@ -159,6 +159,8 @@ class VideoRtpSession {
   void reset_audio_pacing_burst_();
 #endif
   bool handle_rtp_packet_(const uint8_t *packet, size_t size);
+  bool handle_rtp_keepalive_(const uint8_t *packet, size_t size,
+                             uint16_t source_port, uint32_t source_ssrc);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
   static constexpr size_t kH264ParameterSetBytes = 1024;
   bool handle_h264_payload_(const uint8_t *payload, size_t payload_size,

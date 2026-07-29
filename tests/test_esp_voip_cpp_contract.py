@@ -386,6 +386,35 @@ def test_video_rtp_latches_only_codec_valid_media_packets() -> None:
     )
 
 
+def test_video_rtp_consumes_only_latched_rfc6263_keepalive_sequences() -> None:
+    header = read("video_rtp.h")
+    source = read("video_rtp.cpp")
+
+    assert "bool handle_rtp_keepalive_(" in header
+    receiver = cpp_method(source, r"VideoRtpSession::task_")
+    assert receiver.index("source_ip !=") < receiver.index(
+        "this->handle_rtp_keepalive_("
+    )
+    assert receiver.index("this->handle_rtp_keepalive_(") < receiver.index(
+        "this->handle_rtp_packet_("
+    )
+
+    keepalive = cpp_method(source, r"VideoRtpSession::handle_rtp_keepalive_")
+    assert "payload_type < 96" in keepalive
+    assert "(packet[1] & 0x80) != 0" in keepalive
+    assert "remote_ssrc_latched_" in keepalive
+    assert "source_ssrc != this->remote_ssrc_" in keepalive
+    assert "source_port !=" in keepalive
+    assert "latched_remote_rtp_port_" in keepalive
+    assert "payload_size != 0" in keepalive
+    assert "!this->sequence_valid_" in keepalive
+    assert "sequence != this->expected_sequence_" in keepalive
+    assert keepalive.index("sequence != this->expected_sequence_") < (
+        keepalive.index("this->expected_sequence_ =")
+    )
+    assert "rx_packets_.fetch_add" not in keepalive
+
+
 def test_video_rtp_keeps_directional_endpoint_capabilities() -> None:
     header = read("video_rtp.h")
     source = read("video_rtp.cpp")
@@ -1250,7 +1279,20 @@ def test_video_offer_does_not_invent_a_missing_endpoint_capability() -> None:
         sip_cpp.index("std::string SipTransport::append_video_sdp_") :
         sip_cpp.index("\nstd::string SipTransport::build_sdp_offer_")
     ]
-    assert "capability = this->local_video_receive_capability_();" in append
+    assert "const bool offer_send =" in append
+    assert "const bool offer_receive =" in append
+    assert (
+        "answer ? this->negotiated_video_capability_\n"
+        "             : offer_receive ? local_receive : local_send"
+        in append
+    )
+    assert append.index("const VideoCapability local_receive") < append.index(
+        "VideoCapability capability ="
+    )
+    assert append.index(": offer_receive ? local_receive : local_send") < append.index(
+        'out += "a=fmtp:"'
+    )
+    assert "RFC 6184 profile-level-id" in append
     assert 'const char *direction =' in append
     assert '"sendrecv" : send ? "sendonly" : "recvonly"' in append
 

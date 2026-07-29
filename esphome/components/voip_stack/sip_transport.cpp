@@ -2132,26 +2132,32 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
            std::to_string(this->negotiated_video_capability_.payload_type) +
            "\r\n";
   }
-  VideoCapability capability = answer ? this->negotiated_video_capability_
-                                      : this->local_video_send_capability_();
-  if (!capability.valid()) {
-    capability = this->local_video_receive_capability_();
-    if (!capability.valid()) {
-      ESP_LOGW(TAG, "Video SDP omitted: local capabilities are invalid");
-      return sdp;
-    }
-  }
   const VideoCapability local_send = this->local_video_send_capability_();
   const VideoCapability local_receive =
       this->local_video_receive_capability_();
+  const bool offer_send =
+      this->video_send_requested_.load(std::memory_order_acquire) &&
+      this->video_source_ != nullptr && local_send.valid();
+  const bool offer_receive =
+      this->video_sink_ != nullptr && local_receive.valid();
+  // RFC 6184 profile-level-id in a unicast offer declares the highest level
+  // the offerer can receive. With bilateral level asymmetry the answer
+  // independently declares the answerer's receive level, allowing a P4
+  // hardware encoder and software decoder to use different envelopes.
+  VideoCapability capability =
+      answer ? this->negotiated_video_capability_
+             : offer_receive ? local_receive : local_send;
+  if (!capability.valid()) {
+    ESP_LOGW(TAG, "Video SDP omitted: local capabilities are invalid");
+    return sdp;
+  }
   const bool send =
       answer ? this->video_send_enabled_
-             : this->video_send_requested_.load(std::memory_order_acquire) &&
-                   this->video_source_ != nullptr && local_send.valid() &&
+             : offer_send &&
                    local_send.encoding == capability.encoding;
   const bool receive =
       answer ? this->video_receive_enabled_
-             : this->video_sink_ != nullptr && local_receive.valid() &&
+             : offer_receive &&
                    local_receive.encoding == capability.encoding;
   if (!send && !receive) return sdp;
   const char *direction =

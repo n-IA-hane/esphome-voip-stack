@@ -33,6 +33,35 @@ uint32_t read_be32(const uint8_t *data) {
          static_cast<uint32_t>(data[3]);
 }
 
+bool rtp_payload_bounds(const uint8_t *packet, size_t size, size_t *offset,
+                        size_t *payload_size) {
+  if (packet == nullptr || offset == nullptr || payload_size == nullptr ||
+      size < 12 || (packet[0] >> 6) != 2) {
+    return false;
+  }
+  const bool padding = (packet[0] & 0x20) != 0;
+  if (padding) {
+    const size_t padding_bytes = packet[size - 1];
+    if (padding_bytes == 0 || padding_bytes > size - 12) return false;
+    size -= padding_bytes;
+  }
+  const size_t csrc_bytes = (packet[0] & 0x0F) * 4;
+  const bool extension = (packet[0] & 0x10) != 0;
+  size_t payload_offset = 12 + csrc_bytes;
+  if (payload_offset > size) return false;
+  if (extension) {
+    if (payload_offset + 4 > size) return false;
+    const size_t words =
+        (static_cast<size_t>(packet[payload_offset + 2]) << 8) |
+        packet[payload_offset + 3];
+    payload_offset += 4 + words * 4;
+    if (payload_offset > size) return false;
+  }
+  *offset = payload_offset;
+  *payload_size = size - payload_offset;
+  return true;
+}
+
 void write_be16(uint8_t *data, uint16_t value) {
   data[0] = static_cast<uint8_t>(value >> 8);
   data[1] = static_cast<uint8_t>(value);
@@ -1418,8 +1447,7 @@ void VideoRtpSession::task_() {
             this->rtp_socket_, packet, sizeof(packet), 0,
             reinterpret_cast<struct sockaddr *>(&source), &source_size);
         if (received <= 0) break;
-        if (received < 12 || (packet[0] >> 6) != 2 ||
-            (packet[1] & 0x7F) != this->capability_.payload_type) {
+        if (received < 12 || (packet[0] >> 6) != 2) {
           continue;
         }
         const uint32_t source_ip = ntohl(source.sin_addr.s_addr);
@@ -1429,6 +1457,11 @@ void VideoRtpSession::task_() {
           continue;
         }
         const uint32_t source_ssrc = read_be32(packet + 8);
+        if ((packet[1] & 0x7F) != this->capability_.payload_type) {
+          this->handle_rtp_keepalive_(packet, static_cast<size_t>(received),
+                                      source_port, source_ssrc);
+          continue;
+        }
         const bool ssrc_latched =
             this->remote_ssrc_latched_.load(std::memory_order_acquire);
         bool source_changed = false;
@@ -1550,30 +1583,47 @@ void VideoRtpSession::task_() {
   voip_audio_core::finish_managed_pinned_task(this->task_done_);
 }
 
+bool VideoRtpSession::handle_rtp_keepalive_(const uint8_t *packet, size_t size,
+                                            uint16_t source_port,
+                                            uint32_t source_ssrc) {
+  if (packet == nullptr || size < 12 || (packet[0] >> 6) != 2) return false;
+  const uint8_t payload_type = packet[1] & 0x7F;
+  if (payload_type < 96 || payload_type == this->capability_.payload_type ||
+      (packet[1] & 0x80) != 0 ||
+      !this->remote_ssrc_latched_.load(std::memory_order_acquire) ||
+      source_ssrc != this->remote_ssrc_.load(std::memory_order_acquire) ||
+      source_port !=
+          this->latched_remote_rtp_port_.load(std::memory_order_acquire)) {
+    return false;
+  }
+  size_t payload_offset = 0;
+  size_t payload_size = 0;
+  if (!rtp_payload_bounds(packet, size, &payload_offset, &payload_size) ||
+      payload_size != 0 || !this->sequence_valid_) {
+    return false;
+  }
+  const uint16_t sequence =
+      static_cast<uint16_t>((packet[2] << 8) | packet[3]);
+  if (sequence != this->expected_sequence_) return false;
+
+  // RFC 6263 section 4.6 puts zero-payload keepalives in the media SSRC's
+  // sequence space. Ignore their unknown payload type as media, but consume
+  // the sequence number so the following H.264 packet is not reported as
+  // lost and a complete IDR is not discarded.
+  this->expected_sequence_ = static_cast<uint16_t>(sequence + 1);
+  return true;
+}
+
 bool VideoRtpSession::handle_rtp_packet_(const uint8_t *packet, size_t size) {
   if (!this->receive_enabled_ || packet == nullptr || size < 12 ||
       (packet[0] >> 6) != 2) {
     return false;
   }
-  const bool padding = (packet[0] & 0x20) != 0;
-  if (padding) {
-    const size_t padding_bytes = packet[size - 1];
-    if (padding_bytes == 0 || padding_bytes > size - 12) return false;
-    size -= padding_bytes;
-  }
-  const size_t csrc_bytes = (packet[0] & 0x0F) * 4;
-  const bool extension = (packet[0] & 0x10) != 0;
-  size_t offset = 12 + csrc_bytes;
-  if (offset > size) return false;
-  if (extension) {
-    if (offset + 4 > size) return false;
-    const size_t words =
-        (static_cast<size_t>(packet[offset + 2]) << 8) | packet[offset + 3];
-    offset += 4 + words * 4;
-    if (offset > size) return false;
-  }
+  size_t offset = 0;
+  size_t payload_size = 0;
+  if (!rtp_payload_bounds(packet, size, &offset, &payload_size)) return false;
   const uint8_t payload_type = packet[1] & 0x7F;
-  if (payload_type != this->capability_.payload_type || offset >= size)
+  if (payload_type != this->capability_.payload_type || payload_size == 0)
     return false;
   const bool marker = (packet[1] & 0x80) != 0;
   const uint16_t sequence =
@@ -1588,7 +1638,6 @@ bool VideoRtpSession::handle_rtp_packet_(const uint8_t *packet, size_t size) {
 #endif
 
   const uint8_t *payload = packet + offset;
-  const size_t payload_size = size - offset;
   bool payload_accepted = false;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   payload_accepted =
