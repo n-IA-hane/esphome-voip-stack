@@ -2519,6 +2519,32 @@ def test_cancel_transactions_are_serialized_and_handle_crossed_200() -> None:
     assert "!waiting_for_terminal_response" in timeout
 
 
+def test_unanswered_invite_timeout_does_not_send_cancel() -> None:
+    component = read("voip_stack.cpp")
+
+    timeout_dispatch = component[
+        component.index("void VoipStack::handle_call_timeouts_") :
+        component.index("\nvoid VoipStack::loop()")
+    ]
+    no_response = timeout_dispatch[
+        timeout_dispatch.index("if (!saw_sip_response)") :
+        timeout_dispatch.index(
+            "\n  if (calling_timeout_ms > 0",
+            timeout_dispatch.index("if (!saw_sip_response)"),
+        )
+    ]
+    assert "fire_unanswered_invite_timeout_();" in no_response
+    assert "fire_timeout_decline_();" not in no_response
+
+    teardown = component[
+        component.index("void VoipStack::fire_unanswered_invite_timeout_()") :
+        component.index("\nvoid VoipStack::fire_timeout_decline_()")
+    ]
+    assert "send_sip_cancel_" not in teardown
+    assert "CallEndReason::TIMEOUT" in teardown
+    assert "this->transport_->disconnect();" in teardown
+
+
 def test_udp_invite_server_final_retransmits_until_matching_ack() -> None:
     sip_h = read("sip_transport.h")
     sip_cpp = read("sip_transport.cpp")

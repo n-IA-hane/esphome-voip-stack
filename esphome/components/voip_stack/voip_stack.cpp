@@ -442,7 +442,7 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
                "SIP INVITE timeout after %" PRIu32 " ms without response - ending call "
                "(call_id=%s)",
                INVITE_NO_RESPONSE_TIMEOUT_MS, cid.c_str());
-      this->fire_timeout_decline_();
+      this->fire_unanswered_invite_timeout_();
       return;
     }
   }
@@ -532,6 +532,17 @@ void VoipStack::loop() {
   if (!keep_loop) {
     this->disable_loop();
   }
+}
+
+void VoipStack::fire_unanswered_invite_timeout_() {
+  // RFC 3261 section 9.1 forbids sending CANCEL before any provisional
+  // response. Treat the unanswered INVITE as a local 408 and release its
+  // transaction so a new call can start immediately.
+  const std::string call_id = this->get_current_call_id_();
+  this->set_terminal_response_(call_id, kReasonTimeout);
+  this->set_audio_devices_active_(false);
+  this->end_call_(CallEndReason::TIMEOUT, kReasonTimeout);
+  if (this->transport_) this->transport_->disconnect();
 }
 
 void VoipStack::fire_timeout_decline_() {
