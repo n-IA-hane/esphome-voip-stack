@@ -136,10 +136,8 @@ class VideoRtpSession {
   void task_();
   void sender_task_();
   bool start_sender_task_();
-  bool stop_sender_task_(TickType_t stop_started,
-                         TickType_t stop_budget);
-  bool stop_receive_task_(TickType_t stop_started,
-                          TickType_t stop_budget);
+  bool stop_sender_task_(int64_t stop_deadline_us);
+  bool stop_receive_task_(int64_t stop_deadline_us);
   bool reap_sender_task_();
   bool reap_receive_task_();
   void quiesce_tasks_();

@@ -17,6 +17,7 @@
 
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#include <esp_timer.h>
 #include <lwip/sockets.h>
 
 namespace esphome {
@@ -25,6 +26,17 @@ namespace voip_stack {
 static const char *const TAG = "voip_stack.video";
 
 namespace {
+
+TickType_t freertos_ticks_until(int64_t deadline_us) {
+  const int64_t remaining_us = deadline_us - esp_timer_get_time();
+  if (remaining_us <= 0) return 0;
+  constexpr uint64_t us_per_second = 1000000;
+  const uint64_t ticks =
+      (static_cast<uint64_t>(remaining_us) * configTICK_RATE_HZ +
+       us_per_second - 1) /
+      us_per_second;
+  return static_cast<TickType_t>(std::max<uint64_t>(1, ticks));
+}
 
 uint32_t read_be32(const uint8_t *data) {
   return (static_cast<uint32_t>(data[0]) << 24) |
@@ -734,8 +746,9 @@ void VideoRtpSession::stop() {
   // Source shutdown and both joins share one absolute budget. Any unfinished
   // worker retains every socket/buffer it may still reference until
   // destruction quiesces it, preserving the existing no-UAF policy.
-  const TickType_t stop_started = xTaskGetTickCount();
-  const TickType_t stop_budget = pdMS_TO_TICKS(kWorkerStopBudgetMs);
+  const int64_t stop_started_us = esp_timer_get_time();
+  const int64_t stop_deadline_us =
+      stop_started_us + static_cast<int64_t>(kWorkerStopBudgetMs) * 1000;
   // Everything below may wait for a camera callback, renderer task or socket
   // worker. SipTransport invokes it only from its lifecycle worker, after
   // BYE/CANCEL has already gated the public call path.
@@ -744,10 +757,8 @@ void VideoRtpSession::stop() {
     LockGuard source_lock(this->source_control_mutex_);
     this->source_->stop_video();
   }
-  const bool sender_stopped =
-      this->stop_sender_task_(stop_started, stop_budget);
-  const bool receiver_stopped =
-      this->stop_receive_task_(stop_started, stop_budget);
+  const bool sender_stopped = this->stop_sender_task_(stop_deadline_us);
+  const bool receiver_stopped = this->stop_receive_task_(stop_deadline_us);
   if (receiver_stopped &&
       this->sink_started_.exchange(false, std::memory_order_acq_rel) &&
       this->sink_ != nullptr) {
@@ -756,11 +767,12 @@ void VideoRtpSession::stop() {
   if (sender_stopped && receiver_stopped) {
     this->close_sockets_();
   } else {
-    const TickType_t stop_elapsed = xTaskGetTickCount() - stop_started;
+    const int64_t stop_elapsed_ms =
+        (esp_timer_get_time() - stop_started_us) / 1000;
     ESP_LOGE(TAG,
              "Video worker stop timeout after %u ms: sender=%s receiver=%s; "
              "retaining sockets and owned buffers",
-             (unsigned) ((stop_elapsed * 1000U) / configTICK_RATE_HZ),
+             (unsigned) stop_elapsed_ms,
              sender_stopped ? "stopped" : "active",
              receiver_stopped ? "stopped" : "active");
   }
@@ -815,14 +827,11 @@ bool VideoRtpSession::reap_receive_task_() {
   return false;
 }
 
-bool VideoRtpSession::stop_receive_task_(TickType_t stop_started,
-                                         TickType_t stop_budget) {
+bool VideoRtpSession::stop_receive_task_(int64_t stop_deadline_us) {
   this->terminate_.store(true, std::memory_order_release);
   this->wake_task_();
   if (this->reap_receive_task_()) return true;
-  const TickType_t elapsed = xTaskGetTickCount() - stop_started;
-  const TickType_t remaining =
-      elapsed < stop_budget ? stop_budget - elapsed : 0;
+  const TickType_t remaining = freertos_ticks_until(stop_deadline_us);
   if (!this->task_done_observed_ && this->task_done_ != nullptr &&
       remaining > 0 &&
       xSemaphoreTake(this->task_done_, remaining) == pdTRUE) {
@@ -1033,15 +1042,12 @@ bool VideoRtpSession::reap_sender_task_() {
   return false;
 }
 
-bool VideoRtpSession::stop_sender_task_(TickType_t stop_started,
-                                        TickType_t stop_budget) {
+bool VideoRtpSession::stop_sender_task_(int64_t stop_deadline_us) {
   const bool was_running =
       this->sender_running_.exchange(false, std::memory_order_acq_rel);
   if (was_running && this->sender_task_handle_ != nullptr)
     xTaskNotifyGive(this->sender_task_handle_);
-  const TickType_t elapsed = xTaskGetTickCount() - stop_started;
-  const TickType_t remaining =
-      elapsed < stop_budget ? stop_budget - elapsed : 0;
+  const TickType_t remaining = freertos_ticks_until(stop_deadline_us);
   if (!this->reap_sender_task_() && !this->sender_task_done_observed_ &&
       this->sender_task_done_ != nullptr &&
       remaining > 0 &&

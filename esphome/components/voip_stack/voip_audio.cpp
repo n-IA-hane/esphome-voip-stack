@@ -346,7 +346,10 @@ void VoipStack::rx_task_() {
     }
 
     const AudioFormat rx_format = this->get_current_rx_audio_format_();
-    const TickType_t frame_ticks = std::max<TickType_t>(1, pdMS_TO_TICKS(rx_format.frame_ms));
+    const uint64_t frame_tick_numerator =
+        static_cast<uint64_t>(rx_format.frame_ms) * configTICK_RATE_HZ;
+    const TickType_t frame_ticks = static_cast<TickType_t>(
+        std::max<uint64_t>(1, (frame_tick_numerator + 999) / 1000));
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
     if (this->speaker_ != nullptr && !this->speaker_->is_running()) {
       ulTaskNotifyTake(pdTRUE, frame_ticks);

@@ -1458,16 +1458,26 @@ def test_video_workers_share_one_bounded_stop_deadline_without_forced_delete() -
     ]
 
     assert "kWorkerStopBudgetMs = 1000" in header
-    assert "const TickType_t stop_started = xTaskGetTickCount();" in stop
-    assert "const TickType_t stop_budget" in stop
-    assert "stop_sender_task_(stop_started, stop_budget)" in stop
-    assert "stop_receive_task_(stop_started, stop_budget)" in stop
+    assert "const int64_t stop_started_us = esp_timer_get_time();" in stop
+    assert "const int64_t stop_deadline_us" in stop
+    assert "stop_sender_task_(stop_deadline_us)" in stop
+    assert "stop_receive_task_(stop_deadline_us)" in stop
     for worker_stop in (sender_stop, receiver_stop):
-        assert "xTaskGetTickCount() - stop_started" in worker_stop
-        assert "elapsed < stop_budget ? stop_budget - elapsed : 0" in worker_stop
-        assert "pdMS_TO_TICKS(1000)" not in worker_stop
+        assert "freertos_ticks_until(stop_deadline_us)" in worker_stop
     assert "force" not in stop.lower()
     assert "this->quiesce_tasks_();" in destructor
+
+
+def test_voip_media_paths_do_not_use_periodic_delay_macros() -> None:
+    component = ROOT / "esphome" / "components" / "voip_stack"
+    sources = "\n".join(
+        path.read_text()
+        for pattern in ("*.cpp", "*.h")
+        for path in component.glob(pattern)
+    )
+
+    assert "pdMS_TO_TICKS" not in sources
+    assert "vTaskDelay(" not in sources
 
 
 def test_call_teardown_is_deferred_to_the_event_driven_rtp_worker() -> None:
