@@ -283,6 +283,8 @@ bool VoipStack::setup_transport_() {
       this->video_max_rtp_payload_);
   this->transport_->set_video_send_state_callback(
       VoipStack::transport_video_send_state_callback_, this);
+  this->transport_->set_video_active_state_callback(
+      VoipStack::transport_video_active_state_callback_, this);
 #endif
 
   // Wire callbacks before start() so the transport task never fires into null.
@@ -331,6 +333,23 @@ void VoipStack::transport_video_send_state_callback_(void *ctx, bool enabled,
                         (pending ? 0x04U : 0U);
   self->video_send_state_event_.store(event, std::memory_order_release);
   self->enable_loop_soon_any_context();
+}
+
+void VoipStack::transport_video_active_state_callback_(void *ctx, bool active) {
+  auto *self = static_cast<VoipStack *>(ctx);
+  self->defer(
+      [self, active]() { self->on_video_active_state_(active); });
+  self->enable_loop_soon_any_context();
+}
+
+void VoipStack::on_video_active_state_(bool active) {
+  if (this->video_active_state_ == active) return;
+  this->video_active_state_ = active;
+  if (active) {
+    this->video_start_trigger_.trigger();
+  } else {
+    this->video_end_trigger_.trigger();
+  }
 }
 #endif
 

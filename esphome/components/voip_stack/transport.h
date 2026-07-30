@@ -31,6 +31,8 @@ using TransportDialogActiveCallback = bool (*)(void *ctx);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 using TransportVideoSendStateCallback =
     void (*)(void *ctx, bool enabled, bool pending);
+using TransportVideoActiveStateCallback =
+    void (*)(void *ctx, bool active);
 #endif
 
 struct SipTransportSnapshot {
@@ -194,6 +196,12 @@ class SipPhoneTransport {
     this->on_video_send_state_ = cb;
     this->on_video_send_state_ctx_ = ctx;
   }
+
+  void set_video_active_state_callback(TransportVideoActiveStateCallback cb,
+                                       void *ctx) {
+    this->on_video_active_state_ = cb;
+    this->on_video_active_state_ctx_ = ctx;
+  }
 #endif
 
  protected:
@@ -245,6 +253,12 @@ class SipPhoneTransport {
                                  pending);
     }
   }
+
+  void emit_video_active_state_(bool active) {
+    if (this->on_video_active_state_ != nullptr) {
+      this->on_video_active_state_(this->on_video_active_state_ctx_, active);
+    }
+  }
 #endif
 
  private:
@@ -261,6 +275,8 @@ class SipPhoneTransport {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   TransportVideoSendStateCallback on_video_send_state_{nullptr};
   void *on_video_send_state_ctx_{nullptr};
+  TransportVideoActiveStateCallback on_video_active_state_{nullptr};
+  void *on_video_active_state_ctx_{nullptr};
 #endif
 };
 

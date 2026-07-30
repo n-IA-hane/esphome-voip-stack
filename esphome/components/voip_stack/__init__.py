@@ -46,6 +46,8 @@ CONF_HA_PHONEBOOK_TEXT_SENSOR_ID = "ha_phonebook_text_sensor_id"
 CONF_ON_RINGING = "on_ringing"
 CONF_ON_IN_CALL = "on_in_call"
 CONF_ON_IDLE = "on_idle"
+CONF_ON_VIDEO_START = "on_video_start"
+CONF_ON_VIDEO_END = "on_video_end"
 # FSM triggers
 CONF_ON_CALLING = "on_calling"
 CONF_ON_DEST_RINGING = "on_dest_ringing"
@@ -643,6 +645,9 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_ON_IN_CALL): automation.validate_automation(single=True),
         # Trigger when state returns to idle
         cv.Optional(CONF_ON_IDLE): automation.validate_automation(single=True),
+        # Trigger on negotiated video media lifecycle edges
+        cv.Optional(CONF_ON_VIDEO_START): automation.validate_automation(single=True),
+        cv.Optional(CONF_ON_VIDEO_END): automation.validate_automation(single=True),
         # FSM triggers
         cv.Optional(CONF_ON_CALLING): automation.validate_automation(single=True),
         cv.Optional(CONF_ON_DEST_RINGING): automation.validate_automation(single=True),
@@ -1035,6 +1040,16 @@ async def _build_voip_automations(var, config):
     if CONF_ON_IDLE in config:
         await automation.build_automation(
             var.get_idle_trigger(), [], config[CONF_ON_IDLE]
+        )
+
+    if CONF_ON_VIDEO_START in config:
+        await automation.build_automation(
+            var.get_video_start_trigger(), [], config[CONF_ON_VIDEO_START]
+        )
+
+    if CONF_ON_VIDEO_END in config:
+        await automation.build_automation(
+            var.get_video_end_trigger(), [], config[CONF_ON_VIDEO_END]
         )
 
     # FSM triggers.

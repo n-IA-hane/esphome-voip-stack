@@ -336,6 +336,8 @@ Triggers:
 | `on_calling` | Outbound call enters `CALLING`; provides `peer`. |
 | `on_dest_ringing` | Remote side reports ringing; provides `peer`. |
 | `on_in_call` | Media is established; provides `peer`. |
+| `on_video_start` | Negotiated video media becomes active. Audio-only calls do not fire it. |
+| `on_video_end` | Active video media ends or is removed from an established call. |
 | `on_hangup` | Call ends normally; provides `peer` and `reason`. |
 | `on_call_failed` | Call ends in a failure terminal state; provides `peer` and `reason`. |
 | `on_idle` | FSM returns to idle. |

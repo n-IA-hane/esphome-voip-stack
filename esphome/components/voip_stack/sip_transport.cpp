@@ -1559,6 +1559,10 @@ bool SipTransport::commit_media_path_locked_() {
     this->video_session_->request_stop();
     this->video_negotiated_ = false;
   }
+  this->emit_video_active_state_(
+      this->video_negotiated_ && this->video_session_ != nullptr &&
+      this->video_session_->is_running() &&
+      (this->video_send_enabled_ || this->video_receive_enabled_));
   this->emit_video_send_state_(
       this->video_negotiated_ && this->video_send_enabled_, false);
 #endif
@@ -1618,6 +1622,7 @@ void SipTransport::request_audio_path_stop_locked_() {
   const bool video_was_running =
       this->video_session_ != nullptr &&
       this->video_session_->is_running();
+  if (video_was_running) this->emit_video_active_state_(false);
 #else
   constexpr bool video_was_running = false;
 #endif
@@ -1784,6 +1789,7 @@ void SipTransport::reset_dialog_media_locked_() {
   this->confirmed_local_sdp_.clear();
   this->dialog_originated_ = false;
   this->reset_video_negotiation_();
+  this->emit_video_active_state_(false);
   this->emit_video_send_state_(false, false);
 #endif
   this->sdp_session_id_ = 0;
@@ -4319,6 +4325,10 @@ bool SipTransport::handle_reinvite_(const std::string &message,
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->sdp_session_version_ = proposed_sdp_version;
   this->confirmed_local_sdp_ = answer;
+  this->emit_video_active_state_(
+      this->video_negotiated_ && this->video_session_ != nullptr &&
+      this->video_session_->is_running() &&
+      (this->video_send_enabled_ || this->video_receive_enabled_));
   this->emit_video_send_state_(
       this->video_negotiated_ && this->video_send_enabled_, false);
 #endif

@@ -364,6 +364,8 @@ class VoipStack : public Component {
   Trigger<std::string> *get_ringing_trigger() { return &this->ringing_trigger_; }
   Trigger<std::string> *get_in_call_trigger() { return &this->in_call_trigger_; }
   Trigger<> *get_idle_trigger() { return &this->idle_trigger_; }
+  Trigger<> *get_video_start_trigger() { return &this->video_start_trigger_; }
+  Trigger<> *get_video_end_trigger() { return &this->video_end_trigger_; }
   Trigger<std::string> *get_calling_trigger() { return &this->calling_trigger_; }
   Trigger<std::string> *get_dest_ringing_trigger() { return &this->dest_ringing_trigger_; }
   Trigger<std::string, std::string, std::string, std::string> *get_incoming_call_trigger() {
@@ -456,6 +458,8 @@ class VoipStack : public Component {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   static void transport_video_send_state_callback_(void *ctx, bool enabled,
                                                    bool pending);
+  static void transport_video_active_state_callback_(void *ctx, bool active);
+  void on_video_active_state_(bool active);
 #endif
   void on_audio_received_(const TransportAudioFrame &frame);
   void on_sip_signal_received_(const SipSignal &signal);
@@ -849,6 +853,8 @@ class VoipStack : public Component {
   Trigger<std::string> ringing_trigger_;
   Trigger<std::string> in_call_trigger_;
   Trigger<> idle_trigger_;
+  Trigger<> video_start_trigger_;
+  Trigger<> video_end_trigger_;
   Trigger<std::string> calling_trigger_;
   Trigger<std::string> dest_ringing_trigger_;
   Trigger<std::string, std::string, std::string, std::string> incoming_call_trigger_;
@@ -863,6 +869,7 @@ class VoipStack : public Component {
   // Bit 0 marks a fresh transport event, bit 1 is the committed send state,
   // bit 2 means an in-dialog direction transaction is still pending.
   std::atomic<uint8_t> video_send_state_event_{0};
+  bool video_active_state_{false};
 #endif
 };
 

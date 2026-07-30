@@ -954,6 +954,33 @@ def test_video_send_switch_is_compile_gated_and_transport_confirmed() -> None:
     assert "video_send_switch_->publish_state" in loop
 
 
+def test_video_lifecycle_automations_follow_transport_edges() -> None:
+    init_py = read("__init__.py")
+    header = read("voip_stack.h")
+    source = read("voip_stack.cpp")
+    transport = read("transport.h")
+    sip = read("sip_transport.cpp")
+
+    assert 'CONF_ON_VIDEO_START = "on_video_start"' in init_py
+    assert 'CONF_ON_VIDEO_END = "on_video_end"' in init_py
+    assert "var.get_video_start_trigger()" in init_py
+    assert "var.get_video_end_trigger()" in init_py
+    assert "get_video_start_trigger()" in header
+    assert "get_video_end_trigger()" in header
+    assert "set_video_active_state_callback" in transport
+    assert "transport_video_active_state_callback_" in source
+    callback = cpp_method(
+        source, r"VoipStack::transport_video_active_state_callback_"
+    )
+    assert "defer" in callback
+    edge_handler = cpp_method(source, r"VoipStack::on_video_active_state_")
+    assert "video_start_trigger_.trigger()" in edge_handler
+    assert "video_end_trigger_.trigger()" in edge_handler
+    assert sip.count("emit_video_active_state_") >= 4
+    loop = cpp_method(source, r"VoipStack::loop")
+    assert "is_video_active()" not in loop
+
+
 def test_video_send_control_has_a_dedicated_transport_api() -> None:
     transport = read("transport.h")
     sip_header = read("sip_transport.h")
