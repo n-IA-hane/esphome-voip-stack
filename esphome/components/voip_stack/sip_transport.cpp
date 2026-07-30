@@ -3871,7 +3871,7 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
       // transaction before mutating dialog metadata so the peer can retry
       // cleanly instead of receiving a late local transport failure.
       return this->send_stateless_response_(
-          message, src, 503, "Service Unavailable", "media_cleanup", true);
+          message, src, 503, "Service Unavailable", "media_cleanup", true, 1);
     }
   }
   this->remote_ip_v4_.store(src_ip, std::memory_order_release);

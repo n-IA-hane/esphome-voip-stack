@@ -1562,7 +1562,10 @@ def test_call_teardown_is_deferred_to_the_event_driven_rtp_worker() -> None:
         source.index("bool SipTransport::handle_reinvite_(") :
         source.index("\nbool SipTransport::handle_response_(")
     ]
-    assert 'message, src, 503, "Service Unavailable", "media_cleanup"' in invite
+    assert (
+        'message, src, 503, "Service Unavailable", "media_cleanup", true, 1'
+        in invite
+    )
     assert "MediaLifecyclePhase::CLEANING" in reinvite
     assert 'message, src, 491, "Request Pending"' in reinvite
 
