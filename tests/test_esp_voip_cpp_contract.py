@@ -1490,12 +1490,14 @@ def test_call_teardown_is_deferred_to_the_event_driven_rtp_worker() -> None:
     video_worker = cpp_method(video, r"VideoRtpSession::task_")
     assert "rtcp_bye_requested_.exchange" in video_worker
     assert "send_rtcp_bye_()" in video_worker
-    assert "sink_->set_video_active(false)" in video_worker
+    assert "sink_->set_video_active(false)" not in video_worker
+    assert video_worker.count("sink_->stop_video()") == 1
     assert "FD_SET(this->wake_socket_, &readfds)" in video_worker
     assert "FD_ISSET(this->wake_socket_, &readfds)" in video_worker
     assert re.search(
         r"if \(worker_failed &&\s+"
-        r"this->sink_started_\.exchange\(false, std::memory_order_acq_rel\)\)",
+        r"this->sink_started_\.exchange\(false, std::memory_order_acq_rel\) &&\s+"
+        r"this->sink_ != nullptr\)",
         video_worker,
     )
     video_wake = video[

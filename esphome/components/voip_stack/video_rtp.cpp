@@ -1565,16 +1565,16 @@ void VideoRtpSession::task_() {
       LockGuard source_lock(this->source_control_mutex_);
       this->source_->stop_video();
     }
-    if (this->sink_started_.load(std::memory_order_acquire) &&
+    // Normal teardown only gates callbacks here. The lifecycle owner joins
+    // this worker before stopping the renderer, so the receive task must not
+    // enter a potentially blocking display callback while its join deadline
+    // is running. A spontaneous socket/select failure has no lifecycle caller
+    // waiting to finish subordinate media, so this worker remains the fallback
+    // cleanup owner for that exceptional path only.
+    if (worker_failed &&
+        this->sink_started_.exchange(false, std::memory_order_acq_rel) &&
         this->sink_ != nullptr) {
-      this->sink_->set_video_active(false);
-      // A spontaneous socket/select failure has no lifecycle caller waiting
-      // to finish subordinate media, so this worker remains the fallback
-      // cleanup owner for that exceptional path only.
-      if (worker_failed &&
-          this->sink_started_.exchange(false, std::memory_order_acq_rel)) {
-        this->sink_->stop_video();
-      }
+      this->sink_->stop_video();
     }
     this->send_prepared_.store(false, std::memory_order_release);
     this->receive_prepared_.store(false, std::memory_order_release);
