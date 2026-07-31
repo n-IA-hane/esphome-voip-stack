@@ -24,7 +24,11 @@ VOIP = ROOT / "esphome" / "components" / "voip_stack"
 
 
 def read(name: str) -> str:
-    return (VOIP / name).read_text(encoding="utf-8")
+    source = (VOIP / name).read_text(encoding="utf-8")
+    if name == "sip_transport.cpp":
+        helpers = (VOIP / "sip_message.cpp").read_text(encoding="utf-8")
+        return f"{source}\n{helpers}"
+    return source
 
 
 def cpp_method(source: str, qualified_name_pattern: str) -> str:
@@ -1862,12 +1866,13 @@ def test_sip_tcp_originate_is_async() -> None:
 
 def test_sip_tcp_rx_is_bounded_and_active_dialog_accept_is_guarded() -> None:
     sip_h = read("sip_transport.h")
+    sip_message_h = read("sip_message.h")
     transport_h = read("transport.h")
     sip_cpp = read("sip_transport.cpp")
     stack_cpp = read("voip_stack.cpp")
 
-    assert "MAX_SIP_BODY_BYTES = 4096" in sip_cpp
-    assert "MAX_SIP_TCP_RX_BUFFER = 8192" in sip_cpp
+    assert "MAX_SIP_BODY_BYTES = 4096" in sip_message_h
+    assert "MAX_SIP_TCP_RX_BUFFER = 8192" in sip_message_h
     assert "sip_tcp_client_ip_v4_" in sip_h
     assert "TransportDialogActiveCallback" in transport_h
     assert "set_dialog_active_callback" in transport_h
