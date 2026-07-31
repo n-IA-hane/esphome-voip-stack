@@ -28,7 +28,11 @@ def read(name: str) -> str:
     if name == "sip_transport.cpp":
         helpers = [
             (VOIP / helper).read_text(encoding="utf-8")
-            for helper in ("sip_message.cpp", "sip_sdp.cpp")
+            for helper in (
+                "sip_message.cpp",
+                "sip_request_response.cpp",
+                "sip_sdp.cpp",
+            )
         ]
         return "\n".join((source, *helpers))
     return source
@@ -865,13 +869,10 @@ def test_failed_reinvite_response_restores_dialog_and_is_not_cached() -> None:
         "this->remember_completed_response_"
     )
 
-    stateless_start = sip_cpp.index(
-        "bool SipTransport::send_stateless_response_"
+    stateless = cpp_method(
+        sip_cpp,
+        r"SipTransport::send_stateless_response_",
     )
-    stateless = sip_cpp[
-        stateless_start :
-        sip_cpp.index("\nbool SipTransport::send_invite(", stateless_start)
-    ]
     assert stateless.index("this->send_sip_(msg, ip, port)") < stateless.index(
         "this->remember_completed_response_"
     )
