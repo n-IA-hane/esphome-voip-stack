@@ -26,8 +26,11 @@ VOIP = ROOT / "esphome" / "components" / "voip_stack"
 def read(name: str) -> str:
     source = (VOIP / name).read_text(encoding="utf-8")
     if name == "sip_transport.cpp":
-        helpers = (VOIP / "sip_message.cpp").read_text(encoding="utf-8")
-        return f"{source}\n{helpers}"
+        helpers = [
+            (VOIP / helper).read_text(encoding="utf-8")
+            for helper in ("sip_message.cpp", "sip_sdp.cpp")
+        ]
+        return "\n".join((source, *helpers))
     return source
 
 
@@ -805,13 +808,9 @@ def test_rtp_jpeg_host_behavioral_contract(tmp_path: Path) -> None:
 
 def test_rejected_video_answer_preserves_the_first_offered_payload_type() -> None:
     sip_cpp = read("sip_transport.cpp")
-    learn = sip_cpp[
-        sip_cpp.index("bool SipTransport::learn_remote_video_from_sdp_") :
-        sip_cpp.index(
-            "\nbool SipTransport::send_request_",
-            sip_cpp.index("bool SipTransport::learn_remote_video_from_sdp_"),
-        )
-    ]
+    learn = cpp_method(
+        sip_cpp, r"SipTransport::learn_remote_video_from_sdp_"
+    )
 
     preserve = learn.index(
         "this->negotiated_video_capability_.payload_type ="
@@ -2368,7 +2367,7 @@ def test_sip_response_validation_precedes_retarget_and_bad_sdp_closes_dialog() -
     assert "signal.terminal_transaction_pending = bye_pending;" in incompatible
     assert "this->reset_dialog_();" in incompatible
     assert "std::atomic<uint32_t> remote_rtp_ip_v4_{0};" in sip_h
-    learn = sip_cpp[sip_cpp.index("bool SipTransport::learn_remote_rtp_from_sdp_") : sip_cpp.index("\nbool SipTransport::send_request_")]
+    learn = cpp_method(sip_cpp, r"SipTransport::learn_remote_rtp_from_sdp_")
     assert "remote_rtp_ip_v4_.store(media_ip" in learn
     assert "remote_ip_v4_.store(media_ip" not in learn
     request = sip_cpp[sip_cpp.index("bool SipTransport::send_request_(const std::string &method, const std::string &body,") : sip_cpp.index("\nbool SipTransport::send_invite_error_ack_")]
@@ -2455,10 +2454,7 @@ def test_sdp_only_negotiates_payloads_from_the_selected_audio_media() -> None:
         sip_cpp.index("bool parse_audio_media_line") :
         sip_cpp.index("\nsize_t pcm_to_rtp_payload")
     ]
-    learn = sip_cpp[
-        sip_cpp.index("bool SipTransport::learn_remote_rtp_from_sdp_") :
-        sip_cpp.index("\nbool SipTransport::send_request_")
-    ]
+    learn = cpp_method(sip_cpp, r"SipTransport::learn_remote_rtp_from_sdp_")
 
     assert 'media.substr(protocol_start, protocol_end - protocol_start) != "RTP/AVP"' in parser
     assert "payload_types[payload_type] = true;" in parser
