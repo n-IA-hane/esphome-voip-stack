@@ -223,6 +223,19 @@ std::string sip_header_token(const std::string &raw, size_t max_bytes) {
   return trim_copy(out);
 }
 
+std::string sip_route_id(const std::string &raw, size_t max_bytes) {
+  const std::string route = trim_copy(raw);
+  if (route.empty() || route.size() > max_bytes) return "";
+  for (char ch : route) {
+    const auto byte = static_cast<unsigned char>(ch);
+    if (byte < 0x20 || byte == 0x7F || ch == '<' || ch == '>' ||
+        ch == '@' || ch == '"' || ch == '\\') {
+      return "";
+    }
+  }
+  return route;
+}
+
 std::string sip_quoted(const std::string &raw) {
   std::string out = "\"";
   for (char ch : raw) {
@@ -232,6 +245,69 @@ std::string sip_quoted(const std::string &raw) {
   }
   out.push_back('"');
   return out;
+}
+
+std::string sip_name_addr(const std::string &uri,
+                          const std::string &display_name) {
+  const std::string clean_uri = strip_angle_uri(uri);
+  if (clean_uri.empty()) return "";
+  const std::string display = trim_copy(display_name);
+  if (display.empty()) return "<" + clean_uri + ">";
+  for (char ch : display) {
+    const auto byte = static_cast<unsigned char>(ch);
+    if (byte < 0x20 || byte == 0x7F) return "";
+  }
+  return sip_quoted(display) + " <" + clean_uri + ">";
+}
+
+std::string sip_display_name_from_header(const std::string &value,
+                                         size_t max_bytes) {
+  const size_t left = value.find('<');
+  if (left == std::string::npos) return "";
+  const std::string prefix = trim_copy(value.substr(0, left));
+  if (prefix.empty()) return "";
+  std::string display;
+  if (prefix.front() == '"') {
+    bool escaped = false;
+    bool closed = false;
+    for (size_t i = 1; i < prefix.size(); i++) {
+      const char ch = prefix[i];
+      if (escaped) {
+        display.push_back(ch);
+        escaped = false;
+      } else if (ch == '\\') {
+        escaped = true;
+      } else if (ch == '"') {
+        closed = true;
+        break;
+      } else {
+        display.push_back(ch);
+      }
+    }
+    if (!closed || escaped) return "";
+  } else {
+    display = prefix;
+  }
+  display = trim_copy(display);
+  if (display.empty() || display.size() > max_bytes) return "";
+  for (char ch : display) {
+    const auto byte = static_cast<unsigned char>(ch);
+    if (byte < 0x20 || byte == 0x7F) return "";
+  }
+  return display;
+}
+
+std::string sip_request_uri(const std::string &message) {
+  const size_t first_space = message.find(' ');
+  if (first_space == std::string::npos) return "";
+  const size_t second_space = message.find(' ', first_space + 1);
+  if (second_space == std::string::npos || second_space <= first_space + 1) {
+    return "";
+  }
+  const size_t line_end = message.find("\r\n");
+  if (line_end != std::string::npos && second_space > line_end) return "";
+  return strip_angle_uri(
+      message.substr(first_space + 1, second_space - first_space - 1));
 }
 
 std::string reason_text_from_header(const std::string &value) {

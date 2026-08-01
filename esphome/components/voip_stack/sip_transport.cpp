@@ -1662,11 +1662,16 @@ bool SipTransport::send_invite(const std::string &call_id,
   char ip_text[16];
   inet_ntoa_r(a, ip_text, sizeof(ip_text));
   const char *uri_transport = this->remote_sip_tcp_.load(std::memory_order_acquire) ? "tcp" : "udp";
-  this->local_uri_ = "<sip:" + sip_uri_user_encode(this->caller_name_) + "@" + local_ip + ":" +
-                     std::to_string(this->sip_port_) + ";transport=" + uri_transport + ">";
-  this->remote_uri_ = "<sip:" + sip_uri_user_encode(this->dest_name_) + "@" + std::string(ip_text) + ":" +
-                      std::to_string(this->remote_sip_port_.load(std::memory_order_acquire)) +
-                      ";transport=" + uri_transport + ">";
+  const std::string local_identity_uri =
+      "sip:" + sip_uri_user_encode(this->caller_route_) + "@" + local_ip +
+      ":" + std::to_string(this->sip_port_) + ";transport=" + uri_transport;
+  const std::string remote_identity_uri =
+      "sip:" + sip_uri_user_encode(this->dest_route_) + "@" +
+      std::string(ip_text) + ":" +
+      std::to_string(this->remote_sip_port_.load(std::memory_order_acquire)) +
+      ";transport=" + uri_transport;
+  this->local_uri_ = sip_name_addr(local_identity_uri, this->caller_name_);
+  this->remote_uri_ = sip_name_addr(remote_identity_uri, this->dest_name_);
   this->remote_target_uri_ = strip_angle_uri(this->remote_uri_);
   ESP_LOGI(TAG, "SIP INVITE call_id=%s from=%s to=%s", this->call_id_.c_str(),
            this->caller_name_.c_str(), this->dest_name_.c_str());
@@ -2103,9 +2108,19 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
         "transaction_pending", false, 1);
   }
   std::string incoming_caller_name =
-      sip_header_token(header_value(message, "X-Voip-Stack-Caller-Name"), VOIP_STACK_MAX_NAME_LEN);
+      sip_display_name_from_header(incoming_from, VOIP_STACK_MAX_NAME_LEN);
   std::string incoming_dest_name =
-      sip_header_token(header_value(message, "X-Voip-Stack-Dest-Name"), VOIP_STACK_MAX_NAME_LEN);
+      sip_display_name_from_header(incoming_to, VOIP_STACK_MAX_NAME_LEN);
+  if (incoming_caller_name.empty()) {
+    incoming_caller_name = sip_header_token(
+        header_value(message, "X-Voip-Stack-Caller-Name"),
+        VOIP_STACK_MAX_NAME_LEN);
+  }
+  if (incoming_dest_name.empty()) {
+    incoming_dest_name = sip_header_token(
+        header_value(message, "X-Voip-Stack-Dest-Name"),
+        VOIP_STACK_MAX_NAME_LEN);
+  }
   if (incoming_caller_name.empty()) {
     incoming_caller_name = sip_header_token(sip_user_from_header(incoming_from), VOIP_STACK_MAX_NAME_LEN);
   }
@@ -2202,7 +2217,10 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   this->remote_tag_ = tag_from_header(this->last_invite_from_);
   if (this->local_tag_.empty()) this->local_tag_ = make_token("tag");
   const std::string remote_identity_uri = strip_angle_uri(this->last_invite_from_);
-  this->remote_uri_ = remote_identity_uri.empty() ? "" : "<" + remote_identity_uri + ">";
+  this->remote_uri_ = remote_identity_uri.empty()
+                          ? ""
+                          : sip_name_addr(remote_identity_uri,
+                                          incoming_caller_name);
   this->remote_target_uri_ = strip_angle_uri(header_value(message, "Contact"));
   if (this->remote_target_uri_.empty()) {
     this->remote_target_uri_ = strip_angle_uri(this->last_invite_from_);
@@ -2235,10 +2253,21 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   }
   this->caller_name_ = from_user;
   this->dest_name_ = to_user;
-  this->caller_route_ = sip_header_token(header_value(message, "X-Voip-Stack-Caller-Route"),
-                                         VOIP_STACK_MAX_ROUTE_ID_LEN);
-  this->dest_route_ = sip_header_token(header_value(message, "X-Voip-Stack-Dest-Route"),
-                                       VOIP_STACK_MAX_ROUTE_ID_LEN);
+  this->caller_route_ = sip_route_id(
+      sip_user_from_header(incoming_from), VOIP_STACK_MAX_ROUTE_ID_LEN);
+  this->dest_route_ = sip_route_id(
+      sip_user_from_header(sip_request_uri(message)),
+      VOIP_STACK_MAX_ROUTE_ID_LEN);
+  if (this->caller_route_.empty()) {
+    this->caller_route_ = sip_route_id(
+        header_value(message, "X-Voip-Stack-Caller-Route"),
+        VOIP_STACK_MAX_ROUTE_ID_LEN);
+  }
+  if (this->dest_route_.empty()) {
+    this->dest_route_ = sip_route_id(
+        header_value(message, "X-Voip-Stack-Dest-Route"),
+        VOIP_STACK_MAX_ROUTE_ID_LEN);
+  }
   if (this->caller_route_.empty()) this->caller_route_ = this->caller_name_;
   if (this->dest_route_.empty()) this->dest_route_ = this->dest_name_;
 

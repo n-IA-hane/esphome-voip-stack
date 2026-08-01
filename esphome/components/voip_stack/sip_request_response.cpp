@@ -80,15 +80,13 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
   msg += "User-Agent: ESPHome-VoIP-Stack-SIP\r\n";
   if (method == "INVITE") {
     msg += "X-Voip-Stack-Caller-Route: " +
-           sip_header_token(this->caller_route_,
-                            VOIP_STACK_MAX_ROUTE_ID_LEN) +
+           sip_route_id(this->caller_route_, VOIP_STACK_MAX_ROUTE_ID_LEN) +
            "\r\n";
     msg += "X-Voip-Stack-Caller-Name: " +
            sip_header_token(this->caller_name_, VOIP_STACK_MAX_NAME_LEN) +
            "\r\n";
     msg += "X-Voip-Stack-Dest-Route: " +
-           sip_header_token(this->dest_route_,
-                            VOIP_STACK_MAX_ROUTE_ID_LEN) +
+           sip_route_id(this->dest_route_, VOIP_STACK_MAX_ROUTE_ID_LEN) +
            "\r\n";
     msg += "X-Voip-Stack-Dest-Name: " +
            sip_header_token(this->dest_name_, VOIP_STACK_MAX_NAME_LEN) +

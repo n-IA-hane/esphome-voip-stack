@@ -350,6 +350,7 @@ class VoipStack : public Component {
   void next_contact();
   void prev_contact();
   const std::string &get_current_destination() const;
+  const std::string &get_current_destination_route() const;
   // Endpoint of the selected SIP contact. Empty/zero makes start() fail with
   // transport_unreachable; there is no implicit default peer.
   const std::string &get_current_contact_ip() const;

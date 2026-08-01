@@ -180,7 +180,11 @@ void VoipStack::start() {
       : selected_dest;
   const std::string caller_route =
       this->device_route_id_.empty() ? this->device_name_ : this->device_route_id_;
-  const std::string &dest_route = dest_name;
+  const std::string dest_route = !this->pending_dialplan_target_.empty()
+      ? this->pending_dialplan_target_
+      : (this->get_current_destination_route().empty()
+             ? dest_name
+             : this->get_current_destination_route());
   const std::string call_id = caller_route + "-" + std::to_string(millis()) + "-" +
                               std::to_string(static_cast<unsigned>(esp_random())) +
                               "@" + (this->device_route_id_.empty() ? std::string("esp") : this->device_route_id_);

@@ -2864,7 +2864,8 @@ def test_dialog_remote_target_and_in_dialog_requests_are_kept_separate() -> None
     assert 'msg += "To: " + this->remote_uri_;' in request
     inbound = sip_cpp[sip_cpp.index("bool SipTransport::handle_invite_(") : sip_cpp.index("\nbool SipTransport::handle_response_")]
     assert 'strip_angle_uri(header_value(message, "Contact"))' in inbound
-    assert 'this->remote_uri_ = remote_identity_uri.empty() ? "" : "<" + remote_identity_uri + ">";' in inbound
+    assert "sip_name_addr(remote_identity_uri," in inbound
+    assert "incoming_caller_name" in inbound
     response = sip_cpp[sip_cpp.index("bool SipTransport::handle_response_(") : sip_cpp.index("\nvoid SipTransport::handle_sip_datagram_")]
     assert 'const std::string contact_target = strip_angle_uri(header_value(message, "Contact"));' in response
     assert "this->remote_target_uri_ = contact_target;" in response
