@@ -35,6 +35,8 @@ std::string sip_name_addr(const std::string &uri,
                           const std::string &display_name = "");
 std::string sip_display_name_from_header(const std::string &value,
                                          size_t max_bytes);
+bool sip_option_supported(const std::string &message,
+                          const char *option);
 std::string sip_request_uri(const std::string &message);
 std::string reason_text_from_header(const std::string &value);
 std::string cseq_method(const std::string &cseq);

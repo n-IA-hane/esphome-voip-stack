@@ -297,6 +297,55 @@ std::string sip_display_name_from_header(const std::string &value,
   return display;
 }
 
+bool sip_option_supported(const std::string &message,
+                          const char *option) {
+  if (option == nullptr || option[0] == '\0') return false;
+  std::string wanted(option);
+  for (char &ch : wanted) {
+    ch = static_cast<char>(
+        std::tolower(static_cast<unsigned char>(ch)));
+  }
+  size_t line_begin = 0;
+  while (line_begin < message.size()) {
+    const size_t line_end = message.find("\r\n", line_begin);
+    const size_t end = line_end == std::string::npos
+                           ? message.size()
+                           : line_end;
+    const std::string line = message.substr(line_begin, end - line_begin);
+    if (line.empty()) break;
+    const size_t colon = line.find(':');
+    if (colon != std::string::npos) {
+      std::string key = trim_copy(line.substr(0, colon));
+      for (char &ch : key) {
+        ch = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(ch)));
+      }
+      if (key == "supported" || key == "k") {
+        const std::string values = line.substr(colon + 1);
+        size_t token_begin = 0;
+        while (token_begin <= values.size()) {
+          const size_t token_end = values.find(',', token_begin);
+          std::string token = trim_copy(values.substr(
+              token_begin,
+              token_end == std::string::npos
+                  ? std::string::npos
+                  : token_end - token_begin));
+          for (char &ch : token) {
+            ch = static_cast<char>(
+                std::tolower(static_cast<unsigned char>(ch)));
+          }
+          if (token == wanted) return true;
+          if (token_end == std::string::npos) break;
+          token_begin = token_end + 1;
+        }
+      }
+    }
+    if (line_end == std::string::npos) break;
+    line_begin = line_end + 2;
+  }
+  return false;
+}
+
 std::string sip_request_uri(const std::string &message) {
   const size_t first_space = message.find(' ');
   if (first_space == std::string::npos) return "";
@@ -370,7 +419,8 @@ std::string via_branch(const std::string &via) {
 
 bool sip_method_known_(const std::string &method) {
   return method == "INVITE" || method == "ACK" || method == "CANCEL" ||
-         method == "BYE" || method == "OPTIONS" || method == "REGISTER";
+         method == "BYE" || method == "OPTIONS" || method == "REGISTER" ||
+         method == "UPDATE";
 }
 
 std::string sip_failure_reason_(int status) {

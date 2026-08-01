@@ -110,6 +110,7 @@ enum class SipSignalType : uint8_t {
   INVITE,
   STATUS_180_RINGING,
   STATUS_200_OK,
+  CONNECTED_IDENTITY,
   CANCEL,
   BYE,
   FINAL_RESPONSE,
@@ -125,6 +126,7 @@ inline const char *sip_signal_type_name(SipSignalType type) {
     case SipSignalType::INVITE: return "INVITE";
     case SipSignalType::STATUS_180_RINGING: return "180";
     case SipSignalType::STATUS_200_OK: return "200";
+    case SipSignalType::CONNECTED_IDENTITY: return "CONNECTED_IDENTITY";
     case SipSignalType::CANCEL: return "CANCEL";
     case SipSignalType::BYE: return "BYE";
     case SipSignalType::FINAL_RESPONSE: return "FINAL_RESPONSE";
@@ -148,6 +150,8 @@ struct SipSignal {
   std::string caller_name;
   std::string dest_route;
   std::string dest_name;
+  std::string connected_route;
+  std::string connected_name;
   std::string reason;
   AudioFormatList caller_tx_formats{};
   AudioFormatList caller_rx_formats{};

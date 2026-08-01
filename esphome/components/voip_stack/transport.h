@@ -101,6 +101,14 @@ class SipPhoneTransport {
   virtual bool send_answer(const std::string &call_id,
                            const AudioFormat &caller_to_dest_format,
                            const AudioFormat &dest_to_caller_format) = 0;
+  /// Set the local identity reported after an inbound dialog is answered.
+  /// Signaling transports that support RFC 4916 can publish this identity in
+  /// a mid-dialog request without changing their reachable Contact URI.
+  virtual void set_connected_identity(const std::string &route,
+                                      const std::string &name) {
+    (void) route;
+    (void) name;
+  }
   virtual bool send_cancel(const std::string &call_id) = 0;
   virtual bool send_bye(const std::string &call_id) = 0;
   virtual bool send_final_response(const std::string &call_id,

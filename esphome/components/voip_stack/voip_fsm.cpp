@@ -818,6 +818,12 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
       this->set_call_identity_(incoming_cid, in_caller_route, in_caller_name,
                                 dest_route, dest_name);
       this->clear_terminal_response_();
+      if (this->transport_ != nullptr) {
+        this->transport_->set_connected_identity(
+            this->device_route_id_.empty() ? dest_route
+                                           : this->device_route_id_,
+            this->device_name_);
+      }
 
       const char *local = this->device_name_.c_str();
       const char *remote = in_caller_name.empty() ? "(unknown caller)" : in_caller_name.c_str();
@@ -885,6 +891,39 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
       this->set_audio_devices_active_(false);
       if (this->transport_ && !msg.terminal_transaction_pending)
         this->transport_->disconnect();
+      break;
+    }
+
+    case SipSignalType::CONNECTED_IDENTITY: {
+      if (this->ignore_if_idle_or_stale_("CONNECTED_IDENTITY", in_call_id)) {
+        break;
+      }
+      const CallSnapshot call = this->snapshot_call_identity_();
+      const std::string connected_name = msg.connected_name.empty()
+                                             ? msg.connected_route
+                                             : msg.connected_name;
+      if (connected_name.empty()) break;
+      if (call.caller_name == this->device_name_) {
+        this->set_call_identity_(
+            call.call_id,
+            call.caller_route,
+            call.caller_name,
+            msg.connected_route.empty() ? call.dest_route
+                                        : msg.connected_route,
+            connected_name);
+        this->publish_destination_();
+      } else {
+        this->set_call_identity_(
+            call.call_id,
+            msg.connected_route.empty() ? call.caller_route
+                                        : msg.connected_route,
+            connected_name,
+            call.dest_route,
+            call.dest_name);
+        this->publish_caller_(connected_name);
+      }
+      ESP_LOGI(TAG, "%s: connected identity is %s",
+               this->device_name_.c_str(), connected_name.c_str());
       break;
     }
 

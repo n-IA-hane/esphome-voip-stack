@@ -59,6 +59,8 @@ class SipTransport : public SipPhoneTransport {
   bool send_answer(const std::string &call_id,
                    const AudioFormat &caller_to_dest_format,
                    const AudioFormat &dest_to_caller_format) override;
+  void set_connected_identity(const std::string &route,
+                              const std::string &name) override;
   bool send_cancel(const std::string &call_id) override;
   bool send_bye(const std::string &call_id) override;
   bool send_final_response(const std::string &call_id,
@@ -92,6 +94,7 @@ class SipTransport : public SipPhoneTransport {
     CANCEL,
     BYE,
     OPTIONS,
+    UPDATE,
     RESPONSE,
   };
 
@@ -148,7 +151,9 @@ class SipTransport : public SipPhoneTransport {
   void handle_sip_stream_(int socket, const sockaddr_in &src);
   bool handle_invite_(const std::string &message, const sockaddr_in &src);
   bool handle_reinvite_(const std::string &message, const sockaddr_in &src);
+  bool handle_update_(const std::string &message, const sockaddr_in &src);
   bool handle_response_(const std::string &message, const sockaddr_in &src);
+  bool send_connected_identity_update_();
   std::string build_sdp_offer_() const;
   std::string build_sdp_answer_() const;
   std::string wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
@@ -371,6 +376,7 @@ class SipTransport : public SipPhoneTransport {
   std::string remote_tag_;
   std::string branch_;
   std::string local_uri_;
+  std::string local_contact_uri_;
   std::string remote_uri_;
   std::string remote_target_uri_;
   std::string last_invite_via_;
@@ -379,12 +385,16 @@ class SipTransport : public SipPhoneTransport {
   std::string last_invite_cseq_;
   std::string last_invite_response_;
   uint32_t last_invite_cseq_number_{0};
+  uint32_t remote_dialog_cseq_{0};
   uint32_t last_invite_peer_ip_v4_{0};
   uint16_t last_invite_peer_port_{0};
   std::string caller_route_;
   std::string caller_name_;
   std::string dest_route_;
   std::string dest_name_;
+  bool peer_supports_from_change_{false};
+  bool connected_identity_sent_{false};
+  bool dialog_originated_{false};
   CompletedServerTransaction completed_invite_;
   CompletedServerTransaction completed_control_;
   CompletedInviteClientTransaction completed_invite_client_;
@@ -430,7 +440,6 @@ class SipTransport : public SipPhoneTransport {
   PendingVideoDirectionInvite pending_video_direction_invite_{};
   CompletedInviteClientTransaction completed_video_direction_invite_{};
   std::string confirmed_local_sdp_;
-  bool dialog_originated_{false};
 #endif
   uint32_t sdp_session_id_{0};
   uint32_t sdp_session_version_{0};
@@ -439,6 +448,7 @@ class SipTransport : public SipPhoneTransport {
   UdpTransaction pending_invite_;
   UdpTransaction pending_cancel_;
   UdpTransaction pending_bye_;
+  UdpTransaction pending_update_;
 
   int sip_socket_{-1};
   // A private loopback datagram socket is part of the SIP select set. It is a

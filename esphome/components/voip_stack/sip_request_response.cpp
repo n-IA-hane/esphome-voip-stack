@@ -76,8 +76,13 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
       options.cseq_method.empty() ? method : options.cseq_method;
   msg += "CSeq: " + std::to_string(request_cseq) + " " + cseq_method +
          "\r\n";
-  msg += "Contact: " + this->local_uri_ + "\r\n";
+  msg += "Contact: " +
+         (this->local_contact_uri_.empty() ? this->local_uri_
+                                           : this->local_contact_uri_) +
+         "\r\n";
   msg += "User-Agent: ESPHome-VoIP-Stack-SIP\r\n";
+  msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS, UPDATE\r\n";
+  msg += "Supported: from-change\r\n";
   if (method == "INVITE") {
     msg += "X-Voip-Stack-Caller-Route: " +
            sip_route_id(this->caller_route_, VOIP_STACK_MAX_ROUTE_ID_LEN) +
@@ -108,7 +113,7 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
       this->mark_sip_event_(event);
     if (options.remember_transaction &&
         (method == "INVITE" || method == "CANCEL" ||
-         method == "BYE")) {
+         method == "BYE" || method == "UPDATE")) {
       this->remember_udp_transaction_(method, msg, ip, port);
     }
   }
@@ -124,6 +129,19 @@ bool SipTransport::send_invite_error_ack_() {
   // 3261 section 17.1.1.3.
   options.branch_override = this->branch_;
   return this->send_request_("ACK", "", options);
+}
+
+bool SipTransport::send_connected_identity_update_() {
+  if (this->dialog_originated_ || this->connected_identity_sent_ ||
+      !this->peer_supports_from_change_ ||
+      !this->media_active_.load(std::memory_order_acquire)) {
+    return false;
+  }
+  const bool sent = this->send_request_("UPDATE", "");
+  if (sent) {
+    this->connected_identity_sent_ = true;
+  }
+  return sent;
 }
 
 std::string SipTransport::format_response_(
@@ -147,8 +165,14 @@ std::string SipTransport::format_response_(
   msg += "Call-ID: " + call_id + "\r\n";
   msg += "CSeq: " + cseq + "\r\n";
   if (add_contact_ua) {
-    msg += "Contact: " + this->local_uri_ + "\r\n";
+    msg += "Contact: " +
+           (this->local_contact_uri_.empty() ? this->local_uri_
+                                             : this->local_contact_uri_) +
+           "\r\n";
     msg += "User-Agent: ESPHome-VoIP-Stack-SIP\r\n";
+  }
+  if (cseq_method(cseq) == "INVITE" && status > 100 && status < 300) {
+    msg += "Supported: from-change\r\n";
   }
   const std::string clean_reason = sip_header_token(app_reason);
   if (!clean_reason.empty() && (!stateless || status >= 300)) {
@@ -157,7 +181,7 @@ std::string SipTransport::format_response_(
     msg += "X-Voip-Stack-Decline-Reason: " + clean_reason + "\r\n";
   }
   if (status == 405) {
-    msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS\r\n";
+    msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS, UPDATE\r\n";
   }
   if (retry_after_seconds >= 0) {
     msg += "Retry-After: " + std::to_string(retry_after_seconds) +
@@ -219,9 +243,11 @@ bool SipTransport::send_stateless_response_(
             : this->local_tag_;
     response_to += ";tag=" + tag;
   }
+  const bool add_contact = method == "UPDATE" &&
+                           status >= 200 && status < 300;
   const std::string msg = this->format_response_(
       status, reason, response_via_with_rport(via, ip, port), from,
-      response_to, call_id, cseq, app_reason, "", false, false, true,
+      response_to, call_id, cseq, app_reason, "", add_contact, false, true,
       retry_after_seconds);
 
   const bool sent = this->send_sip_(msg, ip, port);

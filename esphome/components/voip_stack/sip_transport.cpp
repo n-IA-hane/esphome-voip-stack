@@ -72,6 +72,7 @@ const char *SipTransport::sip_event_name_(SipEvent event) {
     case SipEvent::CANCEL: return "CANCEL";
     case SipEvent::BYE: return "BYE";
     case SipEvent::OPTIONS: return "OPTIONS";
+    case SipEvent::UPDATE: return "UPDATE";
     case SipEvent::RESPONSE: return "SIP_RESPONSE";
     case SipEvent::NONE:
     default: return "";
@@ -84,6 +85,7 @@ SipTransport::SipEvent SipTransport::sip_event_from_method_(const std::string &m
   if (method == "CANCEL") return SipEvent::CANCEL;
   if (method == "BYE") return SipEvent::BYE;
   if (method == "OPTIONS") return SipEvent::OPTIONS;
+  if (method == "UPDATE") return SipEvent::UPDATE;
   return SipEvent::NONE;
 }
 
@@ -966,6 +968,7 @@ void SipTransport::clear_udp_transactions_() {
   this->pending_invite_.clear();
   this->pending_cancel_.clear();
   this->pending_bye_.clear();
+  this->pending_update_.clear();
 }
 
 void SipTransport::reset_rtp_latch_() {
@@ -1014,6 +1017,7 @@ void SipTransport::reset_dialog_media_locked_() {
   this->remote_tag_.clear();
   this->branch_.clear();
   this->local_uri_.clear();
+  this->local_contact_uri_.clear();
   this->remote_uri_.clear();
   this->remote_target_uri_.clear();
   this->last_invite_via_.clear();
@@ -1022,12 +1026,16 @@ void SipTransport::reset_dialog_media_locked_() {
   this->last_invite_cseq_.clear();
   this->last_invite_response_.clear();
   this->last_invite_cseq_number_ = 0;
+  this->remote_dialog_cseq_ = 0;
   this->last_invite_peer_ip_v4_ = 0;
   this->last_invite_peer_port_ = 0;
   this->caller_route_.clear();
   this->caller_name_.clear();
   this->dest_route_.clear();
   this->dest_name_.clear();
+  this->peer_supports_from_change_ = false;
+  this->connected_identity_sent_ = false;
+  this->dialog_originated_ = false;
   this->remote_offer_media_lines_.clear();
   this->remote_audio_media_index_ = -1;
   this->remote_video_media_index_ = -1;
@@ -1041,7 +1049,6 @@ void SipTransport::reset_dialog_media_locked_() {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->pending_video_direction_invite_.clear();
   this->confirmed_local_sdp_.clear();
-  this->dialog_originated_ = false;
   this->reset_video_negotiation_();
   this->emit_video_active_state_(false);
   this->emit_video_send_state_(false, false);
@@ -1068,6 +1075,8 @@ void SipTransport::remember_udp_transaction_(const std::string &method, const st
     txn = &this->pending_cancel_;
   } else if (method == "BYE") {
     txn = &this->pending_bye_;
+  } else if (method == "UPDATE") {
+    txn = &this->pending_update_;
   }
   if (txn == nullptr) return;
   const uint32_t now = millis();
@@ -1102,7 +1111,7 @@ void SipTransport::pump_udp_retransmits_() {
         invite_timed_out = true;
         timed_out_call_id = this->call_id_;
         this->outgoing_invite_pending_.store(false, std::memory_order_release);
-      } else {
+      } else if (std::strcmp(method, "UPDATE") != 0) {
         reset_terminal_dialog = true;
       }
       return;
@@ -1133,6 +1142,7 @@ void SipTransport::pump_udp_retransmits_() {
   }
   pump(this->pending_cancel_, "CANCEL");
   pump(this->pending_bye_, "BYE");
+  pump(this->pending_update_, "UPDATE");
   if (this->completed_invite_.awaiting_ack) {
     if (time_reached(now, this->completed_invite_.deadline_ms)) {
       ESP_LOGW(TAG, "SIP %s INVITE final response timed out waiting for ACK after %u ms",
@@ -1639,9 +1649,7 @@ bool SipTransport::send_invite(const std::string &call_id,
   this->sdp_session_id_ = esp_random();
   if (this->sdp_session_id_ == 0) this->sdp_session_id_ = 1;
   this->sdp_session_version_ = 0;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->dialog_originated_ = true;
-#endif
   this->caller_route_ = caller_route;
   this->caller_name_ = caller_name;
   this->dest_route_ = dest_route;
@@ -1671,6 +1679,7 @@ bool SipTransport::send_invite(const std::string &call_id,
       std::to_string(this->remote_sip_port_.load(std::memory_order_acquire)) +
       ";transport=" + uri_transport;
   this->local_uri_ = sip_name_addr(local_identity_uri, this->caller_name_);
+  this->local_contact_uri_ = sip_name_addr(local_identity_uri);
   this->remote_uri_ = sip_name_addr(remote_identity_uri, this->dest_name_);
   this->remote_target_uri_ = strip_angle_uri(this->remote_uri_);
   ESP_LOGI(TAG, "SIP INVITE call_id=%s from=%s to=%s", this->call_id_.c_str(),
@@ -1795,6 +1804,23 @@ bool SipTransport::send_ringing(const std::string &call_id) {
   LockGuard lock(this->dialog_mutex_);
   if (!call_id.empty()) this->call_id_ = call_id;
   return this->send_response_(180, "Ringing");
+}
+
+void SipTransport::set_connected_identity(const std::string &route,
+                                          const std::string &name) {
+  LockGuard lock(this->dialog_mutex_);
+  if (this->dialog_originated_ || this->call_id_.empty()) return;
+  std::string identity_uri = strip_angle_uri(this->local_uri_);
+  if (identity_uri.empty()) return;
+  const std::string clean_route =
+      sip_route_id(route, VOIP_STACK_MAX_ROUTE_ID_LEN);
+  const size_t at = identity_uri.find('@', 4);
+  if (!clean_route.empty() && identity_uri.rfind("sip:", 0) == 0 &&
+      at != std::string::npos) {
+    identity_uri.replace(4, at - 4, sip_uri_user_encode(clean_route));
+  }
+  const std::string updated = sip_name_addr(identity_uri, name);
+  if (!updated.empty()) this->local_uri_ = updated;
 }
 
 bool SipTransport::send_answer(const std::string &call_id,
@@ -1953,7 +1979,8 @@ void SipTransport::remember_completed_response_(const std::string &request, uint
                                                 const std::string &method,
                                                 const std::string &response) {
   if (response.empty() || peer_ip_v4 == 0 || peer_port == 0 ||
-      (method != "INVITE" && method != "CANCEL" && method != "BYE") ||
+      (method != "INVITE" && method != "CANCEL" && method != "BYE" &&
+       method != "UPDATE") ||
       response.rfind("SIP/2.0 ", 0) != 0 || response.size() < 12) {
     return;
   }
@@ -2204,17 +2231,18 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   this->sdp_session_id_ = esp_random();
   if (this->sdp_session_id_ == 0) this->sdp_session_id_ = 1;
   this->sdp_session_version_ = 0;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->dialog_originated_ = false;
-#endif
   this->last_invite_via_ = incoming_via;
   this->last_invite_from_ = incoming_from;
   this->last_invite_to_ = incoming_to;
   this->last_invite_cseq_ = incoming_cseq;
   this->last_invite_cseq_number_ = incoming_cseq_number;
+  this->remote_dialog_cseq_ = incoming_cseq_number;
   this->last_invite_peer_ip_v4_ = src_ip;
   this->last_invite_peer_port_ = ntohs(src.sin_port);
   this->remote_tag_ = tag_from_header(this->last_invite_from_);
+  this->peer_supports_from_change_ =
+      sip_option_supported(message, "from-change");
   if (this->local_tag_.empty()) this->local_tag_ = make_token("tag");
   const std::string remote_identity_uri = strip_angle_uri(this->last_invite_from_);
   this->remote_uri_ = remote_identity_uri.empty()
@@ -2225,13 +2253,18 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   if (this->remote_target_uri_.empty()) {
     this->remote_target_uri_ = strip_angle_uri(this->last_invite_from_);
   }
-  this->local_uri_ = this->last_invite_to_;
+  const std::string local_identity_uri =
+      strip_angle_uri(this->last_invite_to_);
+  this->local_uri_ = sip_name_addr(
+      local_identity_uri,
+      incoming_dest_name);
   std::string local_contact_ip = "0.0.0.0";
   this->local_ip_for_peer_(src_ip, &local_contact_ip);
   const char *contact_transport = this->remote_sip_tcp_.load(std::memory_order_acquire) ? "tcp" : "udp";
   const std::string local_contact_user = sip_uri_user_encode(sip_user_from_header(this->last_invite_to_));
-  this->local_uri_ = "<sip:" + local_contact_user + "@" + local_contact_ip + ":" +
-                     std::to_string(this->sip_port_) + ";transport=" + contact_transport + ">";
+  this->local_contact_uri_ =
+      "<sip:" + local_contact_user + "@" + local_contact_ip + ":" +
+      std::to_string(this->sip_port_) + ";transport=" + contact_transport + ">";
   bool media_compatible = false;
   {
     LockGuard media_lock(this->media_lifecycle_mutex_);
@@ -2333,7 +2366,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
         message, src, 491, "Request Pending");
   }
 #endif
-  if (incoming_cseq <= this->last_invite_cseq_number_) {
+  if (incoming_cseq <= this->remote_dialog_cseq_) {
     return this->send_stateless_response_(
         message, src, 500, "Server Internal Error", "stale_cseq", true,
         static_cast<int>(esp_random() % 11U));
@@ -2377,6 +2410,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
       this->last_invite_response_;
   const uint32_t old_last_invite_cseq_number =
       this->last_invite_cseq_number_;
+  const uint32_t old_remote_dialog_cseq = this->remote_dialog_cseq_;
   const uint32_t old_last_invite_peer_ip =
       this->last_invite_peer_ip_v4_;
   const uint16_t old_last_invite_peer_port =
@@ -2422,6 +2456,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
     this->last_invite_cseq_ = old_last_invite_cseq;
     this->last_invite_response_ = old_last_invite_response;
     this->last_invite_cseq_number_ = old_last_invite_cseq_number;
+    this->remote_dialog_cseq_ = old_remote_dialog_cseq;
     this->last_invite_peer_ip_v4_ = old_last_invite_peer_ip;
     this->last_invite_peer_port_ = old_last_invite_peer_port;
     this->remote_target_uri_ = old_remote_target_uri;
@@ -2598,6 +2633,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   this->last_invite_to_ = incoming_to;
   this->last_invite_cseq_ = header_value(message, "CSeq");
   this->last_invite_cseq_number_ = incoming_cseq;
+  this->remote_dialog_cseq_ = incoming_cseq;
   this->last_invite_peer_ip_v4_ = src_ip;
   this->last_invite_peer_port_ = ntohs(src.sin_port);
   const std::string refreshed_target =
@@ -2672,6 +2708,73 @@ bool SipTransport::handle_reinvite_(const std::string &message,
 #endif
   ESP_LOGI(TAG, "SIP re-INVITE accepted in existing dialog call_id=%s cseq=%u",
            this->call_id_.c_str(), (unsigned) incoming_cseq);
+  return true;
+}
+
+bool SipTransport::handle_update_(const std::string &message,
+                                  const sockaddr_in &src) {
+  if (this->replay_completed_response_(message, src, "UPDATE")) {
+    return true;
+  }
+  const std::string call_id = header_value(message, "Call-ID");
+  const std::string from = header_value(message, "From");
+  const std::string to = header_value(message, "To");
+  const std::string cseq = header_value(message, "CSeq");
+  const uint32_t sequence = cseq_number(cseq);
+  if (!this->media_active_.load(std::memory_order_acquire) ||
+      call_id.empty() || call_id != this->call_id_ ||
+      cseq_method(cseq) != "UPDATE" || sequence == 0 ||
+      tag_from_header(from) != this->remote_tag_ ||
+      tag_from_header(to) != this->local_tag_) {
+    return this->send_stateless_response_(
+        message, src, 481, "Call/Transaction Does Not Exist", "", true);
+  }
+  if (sequence <= this->remote_dialog_cseq_) {
+    return this->send_stateless_response_(
+        message, src, 500, "Server Internal Error", "stale_cseq", true,
+        static_cast<int>(esp_random() % 11U));
+  }
+  if (!message_body(message).empty()) {
+    return this->send_stateless_response_(
+        message, src, 488, "Not Acceptable Here",
+        "media_update_unsupported", true);
+  }
+  const std::string identity_uri = strip_angle_uri(from);
+  const std::string identity_route = sip_route_id(
+      sip_user_from_header(from), VOIP_STACK_MAX_ROUTE_ID_LEN);
+  if (identity_uri.empty() || identity_route.empty()) {
+    return this->send_stateless_response_(
+        message, src, 400, "Bad Request", "", true);
+  }
+  const std::string contact = header_value(message, "Contact");
+  const std::string refreshed_target = strip_angle_uri(contact);
+  if (!contact.empty() && refreshed_target.empty()) {
+    return this->send_stateless_response_(
+        message, src, 400, "Bad Request", "", true);
+  }
+  if (!this->send_stateless_response_(message, src, 200, "OK", "", true)) {
+    return false;
+  }
+
+  std::string identity_name = sip_display_name_from_header(
+      from, VOIP_STACK_MAX_NAME_LEN);
+  if (identity_name.empty()) identity_name = identity_route;
+  this->remote_uri_ = sip_name_addr(identity_uri, identity_name);
+  if (!refreshed_target.empty()) this->remote_target_uri_ = refreshed_target;
+  this->remote_dialog_cseq_ = sequence;
+  if (this->dialog_originated_) {
+    this->dest_route_ = identity_route;
+    this->dest_name_ = identity_name;
+  } else {
+    this->caller_route_ = identity_route;
+    this->caller_name_ = identity_name;
+  }
+  SipSignal signal;
+  signal.type = SipSignalType::CONNECTED_IDENTITY;
+  signal.call_id = this->call_id_;
+  signal.connected_route = identity_route;
+  signal.connected_name = identity_name;
+  this->emit_sip_signal_(signal);
   return true;
 }
 
@@ -2941,7 +3044,8 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
              (unsigned) response_cseq_number, method.c_str(), (unsigned) this->invite_cseq_);
     return true;
   }
-  if (method != "INVITE" && method != "CANCEL" && method != "BYE") {
+  if (method != "INVITE" && method != "CANCEL" && method != "BYE" &&
+      method != "UPDATE") {
     ESP_LOGD(TAG, "SIP response ignored for unsupported transaction method %s", method.c_str());
     return true;
   }
@@ -2958,6 +3062,16 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
       return true;
     }
   }
+  if (method == "UPDATE") {
+    if (this->pending_update_.empty() ||
+        response_cseq_number != cseq_number(
+            header_value(this->pending_update_.request, "CSeq")) ||
+        via_branch(header_value(message, "Via")) != via_branch(
+            header_value(this->pending_update_.request, "Via"))) {
+      ESP_LOGD(TAG, "SIP response ignored for mismatched UPDATE transaction");
+      return true;
+    }
+  }
   if (method == "INVITE" || method == "CANCEL") {
     const std::string response_branch = via_branch(header_value(message, "Via"));
     if (this->branch_.empty() || response_branch.empty() || response_branch != this->branch_) {
@@ -2969,6 +3083,7 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
     uint32_t expected_response_ip = this->remote_ip_v4_.load(std::memory_order_acquire);
     const UdpTransaction *transaction = method == "BYE" ? &this->pending_bye_
                                         : method == "CANCEL" ? &this->pending_cancel_
+                                        : method == "UPDATE" ? &this->pending_update_
                                                               : &this->pending_invite_;
     if (!transaction->empty() && transaction->ip_v4 != 0) expected_response_ip = transaction->ip_v4;
     if (expected_response_ip != 0 && src_ip != expected_response_ip) {
@@ -2987,6 +3102,10 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
       return true;
     }
     if (this->remote_tag_.empty() && !response_to_tag.empty()) this->remote_tag_ = response_to_tag;
+  }
+  if (method == "INVITE" && status > 100 &&
+      sip_option_supported(message, "from-change")) {
+    this->peer_supports_from_change_ = true;
   }
   // Only a response belonging to the active dialog may retarget subsequent
   // ACK/BYE traffic. Stale or spoofed responses must be side-effect free.
@@ -3027,6 +3146,12 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
         this->pending_cancel_.completed = true;
         this->pending_cancel_.next_ms = this->pending_cancel_.deadline_ms;
       }
+      return true;
+    }
+    if (method == "UPDATE") {
+      ESP_LOGI(TAG, "SIP connected identity UPDATE completed call_id=%s",
+               this->call_id_.c_str());
+      this->pending_update_.clear();
       return true;
     }
     if (method != "INVITE") {
@@ -3103,6 +3228,8 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
           this->pending_cancel_.completed = true;
           this->pending_cancel_.next_ms = this->pending_cancel_.deadline_ms;
         }
+      } else if (method == "UPDATE") {
+        this->pending_update_.clear();
       }
       return true;
     }
@@ -3189,6 +3316,7 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
     }
     this->outgoing_invite_pending_.store(false, std::memory_order_release);
     this->open_media_session_();
+    this->send_connected_identity_update_();
   } else if (method == "BYE") {
     if (this->reject_if_stale_dialog_(msg, src, "BYE")) return;
     const bool local_bye_pending = !this->pending_bye_.empty();
@@ -3233,6 +3361,8 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
     signal.reason = "cancelled";
     this->emit_sip_signal_(signal);
     this->reset_dialog_();
+  } else if (method == "UPDATE") {
+    this->handle_update_(msg, src);
   } else if (method == "OPTIONS") {
     this->send_stateless_response_(msg, src, 200, "OK");
   } else if (sip_method_known_(method)) {
@@ -3256,7 +3386,7 @@ bool SipTransport::reject_if_stale_dialog_(const std::string &request, const soc
     dialog_tags_match = !this->remote_tag_.empty() && !this->local_tag_.empty() &&
                         from_tag == this->remote_tag_ && to_tag == this->local_tag_ &&
                         cseq_method(header_value(request, "CSeq")) == "BYE" &&
-                        cseq_number(header_value(request, "CSeq")) > this->last_invite_cseq_number_;
+                        cseq_number(header_value(request, "CSeq")) > this->remote_dialog_cseq_;
   }
   if (call_id_matches && host_matches && dialog_tags_match) return false;
   ESP_LOGW(TAG, "SIP %s ignored for stale call_id=%s current=%s",
@@ -3501,6 +3631,7 @@ void SipTransport::sip_task_() {
         }
         include_txn(this->pending_cancel_);
         include_txn(this->pending_bye_);
+        include_txn(this->pending_update_);
         if (this->completed_invite_.awaiting_ack) {
           const bool retransmits =
               this->completed_invite_.udp ||

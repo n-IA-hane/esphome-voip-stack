@@ -2871,11 +2871,97 @@ def test_dialog_remote_target_and_in_dialog_requests_are_kept_separate() -> None
     assert "this->remote_target_uri_ = contact_target;" in response
 
 
+def test_connected_identity_uses_rfc4916_without_retargeting_contact() -> None:
+    transport_h = read("transport.h")
+    sip_h = read("sip_transport.h")
+    sip_cpp = read("sip_transport.cpp")
+    sip_message = read("sip_message.cpp")
+    fsm = read("voip_fsm.cpp")
+
+    assert "virtual void set_connected_identity" in transport_h
+    assert "void set_connected_identity" in sip_h
+    assert "bool peer_supports_from_change_{false};" in sip_h
+    assert "UdpTransaction pending_update_;" in sip_h
+    assert 'key == "supported" || key == "k"' in sip_message
+
+    set_identity = cpp_method(
+        sip_cpp, r"SipTransport::set_connected_identity"
+    )
+    assert "this->dialog_originated_" in set_identity
+    assert "sip_route_id(route" in set_identity
+    assert "sip_uri_user_encode(clean_route)" in set_identity
+    assert "this->local_uri_ = updated;" in set_identity
+    assert "local_contact_uri_" not in set_identity
+
+    request_start = sip_cpp.index(
+        "bool SipTransport::send_request_(const std::string &method, const std::string &body,"
+    )
+    request = sip_cpp[
+        request_start : sip_cpp.index(
+            "\nbool SipTransport::send_invite_error_ack_", request_start
+        )
+    ]
+    assert 'msg += "Supported: from-change\\r\\n";' in request
+    assert "this->local_contact_uri_.empty()" in request
+    assert 'method == "UPDATE"' in request
+    assert "remember_udp_transaction_" in request
+
+    response_start = sip_cpp.index("std::string SipTransport::format_response_(")
+    response = sip_cpp[
+        response_start : sip_cpp.index(
+            "\nbool SipTransport::send_response_", response_start
+        )
+    ]
+    assert 'cseq_method(cseq) == "INVITE"' in response
+    assert 'msg += "Supported: from-change\\r\\n";' in response
+
+    send_update = cpp_method(
+        sip_cpp, r"SipTransport::send_connected_identity_update_"
+    )
+    assert "this->dialog_originated_" in send_update
+    assert "this->peer_supports_from_change_" in send_update
+    assert 'this->send_request_("UPDATE", "")' in send_update
+    assert (
+        send_update.index('this->send_request_("UPDATE", "")')
+        < send_update.index("this->connected_identity_sent_ = true;")
+    )
+
+    accept_update = cpp_method(sip_cpp, r"SipTransport::handle_update_")
+    assert "tag_from_header(from) != this->remote_tag_" in accept_update
+    assert "tag_from_header(to) != this->local_tag_" in accept_update
+    assert "sequence <= this->remote_dialog_cseq_" in accept_update
+    assert "media_update_unsupported" in accept_update
+    assert (
+        accept_update.index("this->send_stateless_response_")
+        < accept_update.index("this->remote_uri_ =")
+    )
+    assert "SipSignalType::CONNECTED_IDENTITY" in accept_update
+
+    datagram = cpp_method(sip_cpp, r"SipTransport::handle_sip_datagram_")
+    initial_ack = datagram[
+        datagram.index('if (method == "ACK")') :
+        datagram.index('} else if (method == "BYE")')
+    ]
+    assert (
+        initial_ack.index("this->open_media_session_();")
+        < initial_ack.index("this->send_connected_identity_update_();")
+    )
+    assert '} else if (method == "UPDATE")' in datagram
+
+    inbound_signal = fsm[
+        fsm.index("case SipSignalType::INVITE:") :
+        fsm.index("case SipSignalType::CONNECTED_IDENTITY:")
+    ]
+    assert "this->transport_->set_connected_identity(" in inbound_signal
+    assert "this->device_name_" in inbound_signal
+
+
 def test_ack_bye_and_cancel_validate_their_dialog_or_transaction() -> None:
     sip_cpp = read("sip_transport.cpp")
 
     response = sip_cpp[sip_cpp.index("bool SipTransport::handle_response_(") : sip_cpp.index("\nvoid SipTransport::handle_sip_datagram_")]
     assert 'method != "INVITE" && method != "CANCEL" && method != "BYE"' in response
+    assert 'method != "UPDATE"' in response
     assert "this->pending_bye_.empty()" in response
     assert "mismatched BYE transaction" in response
     datagram = sip_cpp[sip_cpp.index("void SipTransport::handle_sip_datagram_") : sip_cpp.index("\nbool SipTransport::reject_if_stale_dialog_")]
