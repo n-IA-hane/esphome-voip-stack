@@ -1632,7 +1632,7 @@ def test_remote_ringing_transition_emits_one_callback() -> None:
     assert fsm.count("dest_ringing_trigger_.trigger(") == 1
 
 
-def test_audio_path_is_not_timer_paced_or_sink_callback_paced() -> None:
+def test_audio_path_uses_event_driven_tx_pacing_and_sink_backpressure() -> None:
     audio = read("voip_audio.cpp")
     stack = read("voip_stack.cpp")
     header = read("voip_stack.h")
@@ -1644,7 +1644,16 @@ def test_audio_path_is_not_timer_paced_or_sink_callback_paced() -> None:
     assert "kTxPrebufferFrames" not in combined
     assert "kTxQueuedFrames" not in combined
 
-    assert "Capture-clocked TX" in audio
+    tx_task = audio[
+        audio.index("void VoipStack::tx_task_()") :
+        audio.index("\n// === Microphone Callback ===")
+    ]
+    assert "next_send_at_us" in tx_task
+    assert "ticks_until_deadline_us(next_send_at_us)" in tx_task
+    assert "ulTaskNotifyTake(pdTRUE, wait_ticks);" in tx_task
+    assert "while (this->mic_buffer_->available()" not in tx_task
+    assert "sent_at_us - next_send_at_us >= frame_interval_us" in tx_task
+    assert "vTaskDelay" not in tx_task
     assert "TickType_t wait_budget = ticks_to_wait" in audio
     assert "speaker_->play(pcm + offset, bytes - offset, wait_budget)" in audio
     assert "wait_budget = 0" in audio
@@ -2000,8 +2009,10 @@ def test_voip_media_tasks_are_not_idle_polling() -> None:
     tx_start = audio.index("void VoipStack::tx_task_()")
     tx_end = audio.index("\n// === Microphone Callback ===", tx_start)
     tx_task = audio[tx_start:tx_end]
-    assert "pdMS_TO_TICKS(20)" not in tx_task
+    assert "pdMS_TO_TICKS" not in tx_task
     assert "portMAX_DELAY" in tx_task
+    assert "ulTaskNotifyTake(pdTRUE, wait_ticks);" in tx_task
+    assert "vTaskDelay" not in tx_task
     assert "xTaskNotifyGive(this->tx_task_handle_)" in audio
 
     rtp_start = sip_cpp.index("void SipTransport::rtp_task_()")
