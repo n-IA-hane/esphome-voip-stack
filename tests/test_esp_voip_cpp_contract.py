@@ -1143,6 +1143,18 @@ def test_video_direction_commit_uses_prepared_media_without_polling() -> None:
     assert "start_sender_task_" in start
 
 
+def test_remote_video_removal_deactivates_the_renderer_before_stop() -> None:
+    source = read("sip_transport.cpp")
+    reinvite = cpp_method(source, r"SipTransport::handle_reinvite_")
+    removal = braced_block_after(reinvite, "if (video_remove_requested)")
+
+    deactivate = "video_session_->request_media_direction(false, false);"
+    stop = "video_session_->request_stop();"
+    assert deactivate in removal
+    assert stop in removal
+    assert removal.index(deactivate) < removal.index(stop)
+
+
 def test_video_direction_response_uses_transaction_target_and_caches_ack() -> None:
     source = read("sip_transport.cpp")
     response = cpp_method(

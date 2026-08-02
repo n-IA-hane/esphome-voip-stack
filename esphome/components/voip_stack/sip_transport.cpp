@@ -2658,6 +2658,9 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   // The final response commits offer/answer. Only now may the prepared camera
   // producer or receive presentation become active.
   if (video_remove_requested) {
+    // Publish the inactive direction before terminating the RTP child so the
+    // camera and renderer leave video mode immediately on m=video 0.
+    this->video_session_->request_media_direction(false, false);
     this->video_session_->request_stop();
   } else if (video_direction_requested &&
       !this->video_session_->request_media_direction(
