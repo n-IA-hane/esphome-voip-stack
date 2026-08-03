@@ -121,9 +121,10 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
       answer ? this->video_receive_enabled_
              : offer_receive &&
                    local_receive.encoding == capability.encoding;
-  if (!send && !receive) return sdp;
+  if (!send && !receive && !answer) return sdp;
   const char *direction =
-      send && receive ? "sendrecv" : send ? "sendonly" : "recvonly";
+      send && receive ? "sendrecv"
+                      : send ? "sendonly" : receive ? "recvonly" : "inactive";
   std::string out = sdp;
   out += "m=video " + std::to_string(this->video_rtp_port_) +
          " RTP/AVP " + std::to_string(capability.payload_type) + "\r\n";
@@ -706,7 +707,10 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
                          local_receive.profile_level_id))
       local_sends = false;
 #endif
-    if (!local_sends && !local_receives) continue;
+    const bool inactive_direction = media_direction == 0;
+    if (!local_sends && !local_receives &&
+        (!inactive_direction || (!send_compatible && !receive_compatible)))
+      continue;
 
     // Keep the shared RTP capability stable across direction-only re-INVITEs.
     // Endpoint dimensions remain directional local metadata (RFC 2435 carries

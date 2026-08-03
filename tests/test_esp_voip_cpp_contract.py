@@ -1337,7 +1337,7 @@ def test_video_offer_does_not_invent_a_missing_endpoint_capability() -> None:
     )
     assert "RFC 6184 profile-level-id" in append
     assert 'const char *direction =' in append
-    assert '"sendrecv" : send ? "sendonly" : "recvonly"' in append
+    assert 'receive ? "recvonly" : "inactive"' in append
 
 
 def test_media_lifecycle_is_serialized_across_fsm_and_sip_tasks() -> None:
@@ -2491,6 +2491,22 @@ def test_sdp_only_negotiates_payloads_from_the_selected_audio_media() -> None:
     assert "uint8_t session_flow = 0x03;" in learn
     assert "media_flow = session_flow;" in learn
     assert "(!seen_any_media || in_audio)" in learn
+
+
+def test_inactive_video_reoffer_retains_the_negotiated_media_line() -> None:
+    sip_sdp = read("sip_sdp.cpp")
+    append_video = sip_sdp[
+        sip_sdp.index("std::string SipTransport::append_video_sdp_") :
+        sip_sdp.index("\nstd::string SipTransport::build_sdp_offer_")
+    ]
+    learn_video = cpp_method(
+        sip_sdp, r"SipTransport::learn_remote_video_from_sdp_"
+    )
+
+    assert 'receive ? "recvonly" : "inactive"' in append_video
+    assert "if (!send && !receive && !answer) return sdp;" in append_video
+    assert "const bool inactive_direction = media_direction == 0;" in learn_video
+    assert "(!inactive_direction || (!send_compatible && !receive_compatible))" in learn_video
 
 
 def test_sip_compact_headers_and_tcp_close_are_centralized() -> None:
