@@ -856,18 +856,23 @@ def test_reinvite_waits_for_prior_invite_ack_without_mutating_dialog() -> None:
     assert "false" in pending_response
 
 
-def test_failed_reinvite_response_restores_dialog_and_is_not_cached() -> None:
+def test_final_reinvite_response_is_owned_before_initial_send() -> None:
     sip_cpp = read("sip_transport.cpp")
     response = sip_cpp[
         sip_cpp.index("bool SipTransport::send_response_") :
         sip_cpp.index("\nbool SipTransport::send_stateless_response_")
     ]
-    assert response.index("this->send_sip_(msg, ip, port)") < response.index(
-        "this->last_invite_response_ = msg;"
+    assert response.index("this->last_invite_response_ = msg;") < response.index(
+        "this->send_sip_(msg, ip, port)"
+    )
+    assert response.index("this->remember_completed_response_") < response.index(
+        "this->send_sip_(msg, ip, port)"
     )
     assert response.index("this->send_sip_(msg, ip, port)") < response.index(
-        "this->remember_completed_response_"
+        "if (!sent && !final_response_owned) return false;"
     )
+    assert "vTaskDelay" not in response
+    assert "pdMS_TO_TICKS" not in response
 
     stateless = cpp_method(
         sip_cpp,

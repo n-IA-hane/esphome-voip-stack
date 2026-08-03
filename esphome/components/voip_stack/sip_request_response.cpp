@@ -206,16 +206,20 @@ bool SipTransport::send_response_(uint16_t status, const char *reason,
       response_via_with_rport(this->last_invite_via_, ip, port),
       this->last_invite_from_, this->last_invite_to_, this->call_id_,
       this->last_invite_cseq_, app_reason, body, true, true, false, -1);
-  const bool sent = this->send_sip_(msg, ip, port);
-  if (!sent) return false;
-  this->last_invite_response_ = msg;
+  bool final_response_owned = false;
   if (status >= 200) {
+    this->last_invite_response_ = msg;
     this->remember_completed_response_(
         "Via: " + this->last_invite_via_ + "\r\nCall-ID: " +
             this->call_id_ + "\r\nCSeq: " + this->last_invite_cseq_ +
             "\r\n",
         ip, port, "INVITE", msg);
+    final_response_owned = this->completed_invite_.awaiting_ack &&
+                           this->completed_invite_.response == msg;
   }
+  const bool sent = this->send_sip_(msg, ip, port);
+  if (!sent && !final_response_owned) return false;
+  if (status < 200) this->last_invite_response_ = msg;
   this->mark_sip_event_(SipEvent::RESPONSE, status);
   return true;
 }
