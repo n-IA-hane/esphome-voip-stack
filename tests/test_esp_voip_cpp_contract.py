@@ -2126,8 +2126,9 @@ def test_decline_keeps_an_outgoing_cancel_transaction_alive() -> None:
         fsm.index("\nvoid VoipStack::call_toggle")
     ]
     assert "const bool cancelling_outgoing = this->is_calling();" in decline
-    assert "waiting_for_terminal_response = cancelling_outgoing && sent;" in decline
-    assert "!waiting_for_terminal_response" in decline
+    assert "cancelling_outgoing ? SipTerminationAction::CANCEL" in decline
+    assert ": SipTerminationAction::FINAL_RESPONSE" in decline
+    assert "request_call_termination_" in decline
 
 
 def test_sip_control_callbacks_cross_to_the_esphome_loop() -> None:
@@ -2374,7 +2375,8 @@ def test_call_identity_formats_survive_teardown_and_invalid_route_is_terminal() 
     invalid_route = start[start.index("if (dial_ip.empty() || dial_port == 0)") : start.index("\n  this->clear_terminal_call_snapshot_", start.index("if (dial_ip.empty() || dial_port == 0)"))]
     assert "this->set_call_identity_(" in invalid_route
     assert "this->set_call_state_(CallState::CALLING);" in invalid_route
-    assert "this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);" in invalid_route
+    assert "this->request_call_termination_(" in invalid_route
+    assert "CallEndReason::TRANSPORT_UNREACHABLE" in invalid_route
 
 
 def test_sip_response_validation_precedes_retarget_and_bad_sdp_closes_dialog() -> None:
@@ -2598,13 +2600,15 @@ def test_cancel_transactions_are_serialized_and_handle_crossed_200() -> None:
     assert "incoming_branch == invite_branch" in datagram
     assert "!same_transaction_via" in datagram
     assert "this->media_active_.load(std::memory_order_acquire)" in datagram
-    assert "waiting_for_terminal_response = this->send_sip_cancel_(call_id);" in fsm
+    termination = cpp_method(fsm, r"VoipStack::request_call_termination_")
+    assert "this->send_sip_cancel_(call_id)" in termination
+    assert "dispatch_call_termination(" in termination
     timeout = component[
         component.index("void VoipStack::fire_timeout_decline_()") :
         component.index("\nvoid VoipStack::dump_config()")
     ]
-    assert "waiting_for_terminal_response = this->send_sip_cancel_(call_id);" in timeout
-    assert "!waiting_for_terminal_response" in timeout
+    assert "SipTerminationAction::CANCEL" in timeout
+    assert "request_call_termination_" in timeout
 
 
 def test_unanswered_invite_timeout_does_not_send_cancel() -> None:
@@ -2630,7 +2634,8 @@ def test_unanswered_invite_timeout_does_not_send_cancel() -> None:
     ]
     assert "send_sip_cancel_" not in teardown
     assert "CallEndReason::TIMEOUT" in teardown
-    assert "this->transport_->disconnect();" in teardown
+    assert "SipTerminationAction::NONE" in teardown
+    assert "request_call_termination_" in teardown
 
 
 def test_udp_invite_server_final_retransmits_until_matching_ack() -> None:
@@ -2850,7 +2855,9 @@ def test_terminal_sip_transaction_remains_owned_until_peer_completion() -> None:
     start = cpp_method(fsm, r"VoipStack::start")
     assert "snapshot().terminal_transaction_pending" in start
     terminal_signal = cpp_method(fsm, r"VoipStack::on_sip_signal_received_")
-    assert "!msg.terminal_transaction_pending" in terminal_signal
+    assert "request_call_termination_" in terminal_signal
+    termination = cpp_method(fsm, r"VoipStack::request_call_termination_")
+    assert "this->transport_->disconnect()" in termination
 
     inbound = cpp_method(sip_cpp, r"SipTransport::handle_invite_")
     gate = inbound[
