@@ -1259,11 +1259,22 @@ bool SipTransport::send_sip_(const std::string &message, uint32_t ip_v4, uint16_
   dest.sin_family = AF_INET;
   dest.sin_addr.s_addr = htonl(ip_v4);
   dest.sin_port = htons(port);
-  const int sent = sendto(this->sip_socket_, message.data(), message.size(), 0,
-                          reinterpret_cast<struct sockaddr *>(&dest), sizeof(dest));
+  constexpr uint8_t MAX_ATTEMPTS = 3;
+  int sent = -1;
+  int err = 0;
+  for (uint8_t attempt = 0; attempt < MAX_ATTEMPTS; ++attempt) {
+    sent = sendto(this->sip_socket_, message.data(), message.size(), 0,
+                  reinterpret_cast<struct sockaddr *>(&dest), sizeof(dest));
+    if (sent == static_cast<int>(message.size())) break;
+    err = errno;
+    if (!socket_errno_is_transient_tx_pressure(err) || attempt + 1 == MAX_ATTEMPTS) break;
+    ESP_LOGW(TAG, "SIP TX deferred by %s; retrying (%u/%u)", socket_errno_name(err),
+             static_cast<unsigned>(attempt + 1), static_cast<unsigned>(MAX_ATTEMPTS));
+    delay(2);
+  }
   if (sent != static_cast<int>(message.size())) {
-    const int err = errno;
-    ESP_LOGW(TAG, "SIP TX failed: %s (%d: %s)", socket_errno_name(err), err, socket_errno_text(err));
+    ESP_LOGW(TAG, "SIP TX failed: %s (%d: %s)", socket_errno_name(err), err,
+             socket_errno_text(err));
     return false;
   }
   char ip[16];

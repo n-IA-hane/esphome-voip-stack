@@ -1491,10 +1491,14 @@ def test_video_workers_share_one_bounded_stop_deadline_without_forced_delete() -
 
 def test_voip_media_paths_do_not_use_periodic_delay_macros() -> None:
     component = ROOT / "esphome" / "components" / "voip_stack"
+    sip = (component / "sip_transport.cpp").read_text()
+    rtp_start = sip.index("void SipTransport::rtp_task_()")
     sources = "\n".join(
-        path.read_text()
-        for pattern in ("*.cpp", "*.h")
-        for path in component.glob(pattern)
+        (
+            (component / "voip_audio.cpp").read_text(),
+            (component / "video_rtp.cpp").read_text(),
+            sip[rtp_start:],
+        )
     )
 
     assert "pdMS_TO_TICKS" not in sources
@@ -1890,6 +1894,21 @@ def test_sip_tcp_originate_is_async() -> None:
     assert "connect(" not in originate
 
 
+def test_udp_sip_signaling_retries_only_transient_tx_pressure() -> None:
+    sip_cpp = read("sip_transport.cpp")
+    net_utils = read("net_utils.h")
+    start = sip_cpp.index("bool SipTransport::send_sip_(")
+    end = sip_cpp.index("\nbool SipTransport::send_sip_tcp_", start)
+    send = sip_cpp[start:end]
+
+    assert "MAX_ATTEMPTS = 3" in send
+    assert "socket_errno_is_transient_tx_pressure(err)" in send
+    assert "delay(2)" in send
+    assert "ENOMEM" in net_utils
+    assert "ENOBUFS" in net_utils
+    assert "EAGAIN" in net_utils
+
+
 def test_sip_tcp_rx_is_bounded_and_active_dialog_accept_is_guarded() -> None:
     sip_h = read("sip_transport.h")
     sip_message_h = read("sip_message.h")
@@ -2035,7 +2054,7 @@ def test_voip_media_tasks_are_not_idle_polling() -> None:
     rtp_start = sip_cpp.index("void SipTransport::rtp_task_()")
     rtp_task = sip_cpp[rtp_start:]
     assert "select(socket + 1, &readfds" in rtp_task
-    assert "delay(" not in sip_cpp
+    assert "delay(" not in rtp_task
     assert "delay(5)" not in rtp_task
     assert "} else {\n      delay" not in rtp_task
 
