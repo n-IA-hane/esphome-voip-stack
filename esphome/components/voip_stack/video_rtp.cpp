@@ -776,9 +776,18 @@ void VideoRtpSession::stop() {
              sender_stopped ? "stopped" : "active",
              receiver_stopped ? "stopped" : "active");
   }
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   if (this->stop_had_active_session_.exchange(
           false, std::memory_order_acq_rel)) {
+    ESP_LOGI(TAG,
+             "Video session evidence: tx=%u rx=%u completed_au=%u "
+             "dropped_au=%u",
+             (unsigned) this->tx_packets_.load(std::memory_order_acquire),
+             (unsigned) this->rx_packets_.load(std::memory_order_acquire),
+             (unsigned) this->tx_access_units_ok_.load(
+                 std::memory_order_acquire),
+             (unsigned) this->dropped_access_units_.load(
+                 std::memory_order_acquire));
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
     ESP_LOGI(TAG,
              "Video session totals: tx=%u rx=%u completed_au=%u "
              "dropped_au=%u backpressure=%u send_fail=%u "
@@ -800,8 +809,8 @@ void VideoRtpSession::stop() {
              (unsigned) this->tx_audio_pacing_credit_waits_,
              (unsigned) this->tx_audio_pacing_max_wait_us_);
 #endif
-  }
 #endif
+  }
   if (receiver_stopped) this->reset_reassembly_();
 }
 
