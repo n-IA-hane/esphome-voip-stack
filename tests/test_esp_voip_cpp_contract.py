@@ -2088,6 +2088,8 @@ def test_active_rtp_wake_does_not_leave_a_stale_task_notification() -> None:
     socket_branch = wake[wake.index("if (socket >= 0)") : wake.index("else if")]
     parked_branch = wake[wake.index("else if") :]
     assert "sendto(socket" in socket_branch
+    assert "&WAKE_BYTE, sizeof(WAKE_BYTE)" in socket_branch
+    assert '\"\", 0' not in socket_branch
     assert "xTaskNotifyGive" not in socket_branch
     assert "xTaskNotifyGive" in parked_branch
 

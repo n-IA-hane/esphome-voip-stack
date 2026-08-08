@@ -592,7 +592,8 @@ void SipTransport::wake_rtp_task_() {
     self.sin_family = AF_INET;
     self.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     self.sin_port = htons(this->rtp_port_);
-    if (sendto(socket, "", 0, 0,
+    constexpr uint8_t WAKE_BYTE = 1;
+    if (sendto(socket, &WAKE_BYTE, sizeof(WAKE_BYTE), 0,
                reinterpret_cast<struct sockaddr *>(&self), sizeof(self)) < 0) {
       // No periodic timeout is needed: force select() awake and let the RTP
       // worker close this per-call socket after it has left recv.
