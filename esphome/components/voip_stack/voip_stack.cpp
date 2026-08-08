@@ -491,15 +491,9 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
       const std::string cid = this->get_current_call_id_();
       ESP_LOGW(TAG, "Media timeout after %u ms without RTP - ending call (call_id=%s)",
                (unsigned) MEDIA_TIMEOUT_MS, cid.c_str());
-      this->set_terminal_response_(cid, kReasonMediaTimeout);
-      this->end_call_(CallEndReason::MEDIA_TIMEOUT, kReasonMediaTimeout);
-      bool waiting_for_bye_response = false;
-      if (this->transport_ && this->transport_->is_connected() && !cid.empty()) {
-        waiting_for_bye_response = this->send_sip_bye_(cid);
-      }
-      this->set_in_call_(false);
-      this->set_audio_devices_active_(false);
-      if (this->transport_ && !waiting_for_bye_response) this->transport_->disconnect();
+      this->request_call_termination_(
+          {CallEndReason::MEDIA_TIMEOUT, kReasonMediaTimeout,
+           SipTerminationAction::BYE, true});
     }
   }
 }
@@ -557,30 +551,20 @@ void VoipStack::fire_unanswered_invite_timeout_() {
   // RFC 3261 section 9.1 forbids sending CANCEL before any provisional
   // response. Treat the unanswered INVITE as a local 408 and release its
   // transaction so a new call can start immediately.
-  const std::string call_id = this->get_current_call_id_();
-  this->set_terminal_response_(call_id, kReasonTimeout);
-  this->set_audio_devices_active_(false);
-  this->end_call_(CallEndReason::TIMEOUT, kReasonTimeout);
-  if (this->transport_) this->transport_->disconnect();
+  this->request_call_termination_(
+      {CallEndReason::TIMEOUT, kReasonTimeout, SipTerminationAction::NONE,
+       true});
 }
 
 void VoipStack::fire_timeout_decline_() {
   // Timeout sends CANCEL for pending outbound INVITE or a SIP final response
   // for inbound ringing.
-  const std::string call_id = this->get_current_call_id_();
   const CallState state = this->call_state_.load(std::memory_order_acquire);
-  bool waiting_for_terminal_response = false;
-  if (this->transport_ && this->transport_->is_connected() && !call_id.empty()) {
-    if (state == CallState::RINGING) {
-      this->send_sip_final_response_(call_id, kReasonTimeout);
-    } else {
-      waiting_for_terminal_response = this->send_sip_cancel_(call_id);
-    }
-  }
-  this->set_terminal_response_(call_id, kReasonTimeout);
-  this->set_audio_devices_active_(false);
-  this->end_call_(CallEndReason::TIMEOUT, kReasonTimeout);
-  if (this->transport_ && !waiting_for_terminal_response) this->transport_->disconnect();
+  this->request_call_termination_(
+      {CallEndReason::TIMEOUT, kReasonTimeout,
+       state == CallState::RINGING ? SipTerminationAction::FINAL_RESPONSE
+                                   : SipTerminationAction::CANCEL,
+       true});
 }
 
 void VoipStack::dump_config() {

@@ -509,6 +509,7 @@ class VoipStack : public Component {
   static std::string audio_format_token_(const AudioFormat &fmt);
 
   void set_call_state_(CallState new_state);
+  void request_call_termination_(const TerminationIntent &intent);
   void end_call_(CallEndReason reason, const std::string &detail = "");
   // An unanswered INVITE has no provisional response and must not be
   // cancelled. End it as a local transaction timeout and release the dialog.
