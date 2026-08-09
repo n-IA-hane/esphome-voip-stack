@@ -1114,6 +1114,7 @@ void SipTransport::pump_udp_retransmits_() {
         this->outgoing_invite_pending_.store(false, std::memory_order_release);
       } else if (std::strcmp(method, "UPDATE") != 0) {
         reset_terminal_dialog = true;
+        timed_out_call_id = this->call_id_;
       }
       return;
     }
@@ -1192,6 +1193,12 @@ void SipTransport::pump_udp_retransmits_() {
 #endif
   if (reset_terminal_dialog) {
     this->reset_dialog_();
+    SipSignal signal;
+    signal.type = SipSignalType::TERMINAL_COMPLETE;
+    signal.status_code = 408;
+    signal.call_id = timed_out_call_id;
+    signal.reason = "terminal_timeout";
+    this->emit_sip_signal_(signal);
   }
   if (invite_timed_out) {
     SipSignal signal;
@@ -3148,9 +3155,15 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
   }
   if (status >= 200 && status < 300) {
     if (method == "BYE") {
-      ESP_LOGI(TAG, "SIP BYE completed call_id=%s", this->call_id_.c_str());
+      const std::string completed_call_id = this->call_id_;
+      ESP_LOGI(TAG, "SIP BYE completed call_id=%s", completed_call_id.c_str());
       this->clear_bye_transaction_();
       this->reset_dialog_();
+      SipSignal signal;
+      signal.type = SipSignalType::TERMINAL_COMPLETE;
+      signal.status_code = static_cast<uint16_t>(status);
+      signal.call_id = completed_call_id;
+      this->emit_sip_signal_(signal);
       return true;
     }
     if (method == "CANCEL") {
@@ -3236,8 +3249,14 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
     if (method != "INVITE") {
       ESP_LOGW(TAG, "SIP %u response for %s", status, method.c_str());
       if (method == "BYE") {
+        const std::string completed_call_id = this->call_id_;
         this->clear_bye_transaction_();
         this->reset_dialog_();
+        SipSignal signal;
+        signal.type = SipSignalType::TERMINAL_COMPLETE;
+        signal.status_code = static_cast<uint16_t>(status);
+        signal.call_id = completed_call_id;
+        this->emit_sip_signal_(signal);
       } else if (method == "CANCEL") {
         if (!this->pending_cancel_.empty()) {
           this->pending_cancel_.completed = true;

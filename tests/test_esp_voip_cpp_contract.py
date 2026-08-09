@@ -2875,7 +2875,12 @@ def test_terminal_sip_transaction_remains_owned_until_peer_completion() -> None:
 
     start = cpp_method(fsm, r"VoipStack::start")
     assert "snapshot().terminal_transaction_pending" in start
+    finish = cpp_method(fsm, r"VoipStack::finish_call_termination_")
+    assert "snapshot().terminal_transaction_pending" in finish
+    assert finish.index("return;") < finish.index("CallState::IDLE")
     terminal_signal = cpp_method(fsm, r"VoipStack::on_sip_signal_received_")
+    assert "case SipSignalType::TERMINAL_COMPLETE:" in terminal_signal
+    assert "this->finish_call_termination_();" in terminal_signal
     assert "request_call_termination_" in terminal_signal
     termination = cpp_method(fsm, r"VoipStack::request_call_termination_")
     assert "this->transport_->disconnect()" in termination
@@ -2894,6 +2899,19 @@ def test_terminal_sip_transaction_remains_owned_until_peer_completion() -> None:
     assert "!local_bye_pending" in bye
     assert "signal.terminal_transaction_pending = local_bye_pending;" in bye
     assert "if (!local_bye_pending) this->reset_dialog_();" in bye
+
+    response = cpp_method(sip_cpp, r"SipTransport::handle_response_")
+    success = response.index("if (status >= 200 && status < 300)")
+    completed_bye = response[success : response.index('if (method == "CANCEL")', success)]
+    assert "SipSignalType::TERMINAL_COMPLETE" in completed_bye
+    assert completed_bye.index("clear_bye_transaction_()") < completed_bye.index(
+        "emit_sip_signal_"
+    )
+
+    retransmit = cpp_method(sip_cpp, r"SipTransport::pump_udp_retransmits_")
+    timeout = retransmit[retransmit.index("if (reset_terminal_dialog)") :]
+    assert "SipSignalType::TERMINAL_COMPLETE" in timeout
+    assert 'signal.reason = "terminal_timeout"' in timeout
 
     worker = cpp_method(sip_cpp, r"SipTransport::rtp_task_")
     worker_failure = worker[worker.index('signal.reason = "rtp_worker_failed"') :]

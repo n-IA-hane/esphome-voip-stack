@@ -511,6 +511,7 @@ class VoipStack : public Component {
   void set_call_state_(CallState new_state);
   void request_call_termination_(const TerminationIntent &intent);
   void end_call_(CallEndReason reason, const std::string &detail = "");
+  void finish_call_termination_();
   // An unanswered INVITE has no provisional response and must not be
   // cancelled. End it as a local transaction timeout and release the dialog.
   void fire_unanswered_invite_timeout_();

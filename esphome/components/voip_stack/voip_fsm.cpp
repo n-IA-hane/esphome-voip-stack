@@ -703,23 +703,31 @@ void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
   // INVITE.
   this->clear_call_identity_();
 
-  this->defer([this]() {
-    const CallState state = this->call_state_.load(std::memory_order_acquire);
-    switch (state) {
-      case CallState::TERMINATING:
-      case CallState::BUSY:
-      case CallState::DECLINED:
-      case CallState::CANCELLED:
-      case CallState::MEDIA_INCOMPATIBLE:
-      case CallState::TRANSPORT_UNREACHABLE:
-      case CallState::AUTH_REQUIRED_UNSUPPORTED:
-        this->set_call_state_(CallState::IDLE);
-        this->publish_destination_();
-        break;
-      default:
-        break;
-    }
-  });
+  this->defer([this]() { this->finish_call_termination_(); });
+}
+
+void VoipStack::finish_call_termination_() {
+  if (this->transport_ != nullptr &&
+      this->transport_->snapshot().terminal_transaction_pending) {
+    ESP_LOGD(TAG, "%s: terminal SIP transaction pending, retaining terminal state",
+             this->device_name_.c_str());
+    return;
+  }
+  const CallState state = this->call_state_.load(std::memory_order_acquire);
+  switch (state) {
+    case CallState::TERMINATING:
+    case CallState::BUSY:
+    case CallState::DECLINED:
+    case CallState::CANCELLED:
+    case CallState::MEDIA_INCOMPATIBLE:
+    case CallState::TRANSPORT_UNREACHABLE:
+    case CallState::AUTH_REQUIRED_UNSUPPORTED:
+      this->set_call_state_(CallState::IDLE);
+      this->publish_destination_();
+      break;
+    default:
+      break;
+  }
 }
 
 // === Transport callbacks ===
@@ -905,6 +913,10 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
            false});
       break;
     }
+
+    case SipSignalType::TERMINAL_COMPLETE:
+      this->finish_call_termination_();
+      break;
 
     case SipSignalType::CONNECTED_IDENTITY: {
       if (this->ignore_if_idle_or_stale_("CONNECTED_IDENTITY", in_call_id)) {

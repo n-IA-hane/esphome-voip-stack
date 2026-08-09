@@ -113,6 +113,7 @@ enum class SipSignalType : uint8_t {
   CONNECTED_IDENTITY,
   CANCEL,
   BYE,
+  TERMINAL_COMPLETE,
   FINAL_RESPONSE,
   OPTIONS,
   AUTH_REQUIRED,
@@ -129,6 +130,7 @@ inline const char *sip_signal_type_name(SipSignalType type) {
     case SipSignalType::CONNECTED_IDENTITY: return "CONNECTED_IDENTITY";
     case SipSignalType::CANCEL: return "CANCEL";
     case SipSignalType::BYE: return "BYE";
+    case SipSignalType::TERMINAL_COMPLETE: return "TERMINAL_COMPLETE";
     case SipSignalType::FINAL_RESPONSE: return "FINAL_RESPONSE";
     case SipSignalType::OPTIONS: return "OPTIONS";
     case SipSignalType::AUTH_REQUIRED: return "401";
