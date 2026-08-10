@@ -31,6 +31,13 @@ void VoipStack::set_call_identity_(const std::string &call_id,
                                       const std::string &dest_route,
                                       const std::string &dest_name) {
   LockGuard l(this->call_state_mutex_);
+  if (this->current_call_id_.empty() || this->current_call_id_ != call_id) {
+    if (caller_name == this->device_name_) {
+      this->current_dialed_dest_name_ = dest_name;
+    } else {
+      this->current_dialed_dest_name_.clear();
+    }
+  }
   this->current_call_id_ = call_id;
   this->current_caller_route_id_ = caller_route;
   this->current_caller_name_ = caller_name;
@@ -45,13 +52,15 @@ void VoipStack::clear_call_identity_() {
   this->current_caller_name_.clear();
   this->current_dest_route_id_.clear();
   this->current_dest_name_.clear();
+  this->current_dialed_dest_name_.clear();
 }
 
 VoipStack::CallSnapshot VoipStack::snapshot_call_identity_() const {
   LockGuard l(this->call_state_mutex_);
   return CallSnapshot{this->current_call_id_,
                       this->current_caller_route_id_, this->current_caller_name_,
-                      this->current_dest_route_id_, this->current_dest_name_};
+                      this->current_dest_route_id_, this->current_dest_name_,
+                      this->current_dialed_dest_name_};
 }
 
 std::string VoipStack::get_current_call_id_() const {
@@ -594,6 +603,13 @@ void VoipStack::set_call_state_(CallState new_state) {
 
 void VoipStack::request_call_termination_(const TerminationIntent &intent) {
   const CallState state = this->call_state_.load(std::memory_order_acquire);
+  if (call_state_is_terminating(state)) {
+    // A late final response or transport callback may complete the winning
+    // terminal transaction. It may advance that transaction to IDLE, but must
+    // not replace its reason, identity snapshot or SIP disposition.
+    this->finish_call_termination_();
+    return;
+  }
   const std::string call_id = this->get_current_call_id_();
   const std::string detail = intent.detail == nullptr ? std::string() : intent.detail;
   const TerminationSnapshot snapshot{
@@ -642,11 +658,13 @@ void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
   const std::string call_id = call.call_id;
   this->last_terminal_call_id_ = call.call_id;
   this->last_terminal_caller_name_ = call.caller_name;
-  this->last_terminal_dest_name_ = call.dest_name;
+  this->last_terminal_dest_name_ = !call.dialed_dest_name.empty()
+                                       ? call.dialed_dest_name
+                                       : call.dest_name;
   const CurrentMediaFormats formats = this->snapshot_current_media_formats_();
   this->last_terminal_tx_audio_format_ = formats.tx;
   this->last_terminal_rx_audio_format_ = formats.rx;
-  if (!call.caller_name.empty() && call.caller_name == this->device_name_) {
+  if (!call.dialed_dest_name.empty()) {
     this->last_terminal_direction_ = "outgoing";
   } else if (!call.dest_name.empty() && call.dest_name == this->device_name_) {
     this->last_terminal_direction_ = "incoming";

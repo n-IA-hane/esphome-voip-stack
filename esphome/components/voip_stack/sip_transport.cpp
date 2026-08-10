@@ -33,6 +33,12 @@ static constexpr uint32_t SIP_T1_MS = 500;
 static constexpr uint32_t SIP_T2_MS = 4000;
 static constexpr uint32_t SIP_TRANSACTION_TIMEOUT_MS = 64 * SIP_T1_MS;
 
+// Dialog and transaction strings are bounded and reused on every call. Keep
+// their capacity across hot-path resets so repeated calls do not fragment the
+// small internal heap needed by lwIP. Full component shutdown still releases
+// storage when the owning object is destroyed.
+static void reset_string(std::string &value) { value.clear(); }
+
 class ScopedMediaProposal {
  public:
   explicit ScopedMediaProposal(std::atomic<uint32_t> &epoch) : epoch_(epoch) {
@@ -507,7 +513,7 @@ void SipTransport::request_tcp_client_close_() {
   this->tcp_connect_requested_.store(false, std::memory_order_release);
   {
     LockGuard lock(this->tcp_tx_pending_mutex_);
-    this->tcp_tx_pending_.clear();
+    reset_string(this->tcp_tx_pending_);
   }
   this->sip_tcp_client_close_requested_.store(true, std::memory_order_release);
   if (socket >= 0) shutdown(socket, SHUT_RDWR);
@@ -520,7 +526,7 @@ void SipTransport::close_tcp_client_from_sip_task_() {
   this->sip_tcp_client_close_requested_.store(false, std::memory_order_release);
   this->sip_tcp_client_ip_v4_.store(0, std::memory_order_release);
   if (socket >= 0) close(socket);
-  this->sip_tcp_rx_buffer_.clear();
+  reset_string(this->sip_tcp_rx_buffer_);
 }
 
 void SipTransport::handle_tcp_peer_loss_() {
@@ -616,7 +622,7 @@ void SipTransport::stop() {
   this->tcp_connect_requested_.store(false, std::memory_order_release);
   {
     LockGuard lock(this->tcp_tx_pending_mutex_);
-    this->tcp_tx_pending_.clear();
+    reset_string(this->tcp_tx_pending_);
   }
   this->sip_tcp_client_close_requested_.store(true,
                                                std::memory_order_release);
@@ -838,14 +844,7 @@ void SipTransport::terminate_dialog_after_media_commit_failure_() {
       this->completed_invite_.call_id == this->call_id_;
   if (!accepted_dialog) return;
 
-  if (this->completed_invite_.awaiting_ack) {
-    // RFC 3261: a UAS cannot originate BYE until the ACK for its 2xx arrives.
-    // The existing ACK/timeout owner performs that BYE and keeps disconnect()
-    // from silently erasing the confirmed dialog meanwhile.
-    this->terminate_after_invite_ack_ = true;
-    this->wake_sip_task_();
-    return;
-  }
+  if (this->defer_bye_until_uas_ack_locked_()) return;
 
   // The ACK may have raced the main-loop commit. In that case the dialog is
   // already confirmed and can be terminated immediately with the normal BYE
@@ -937,7 +936,7 @@ bool SipTransport::originate(const std::string &host, uint16_t port) {
   if (ip_v4 == 0) return false;
   {
     LockGuard lock(this->tcp_tx_pending_mutex_);
-    this->tcp_tx_pending_.clear();
+    reset_string(this->tcp_tx_pending_);
   }
   this->tcp_connect_ip_v4_.store(ip_v4, std::memory_order_release);
   this->tcp_connect_port_.store(sip_port, std::memory_order_release);
@@ -1005,7 +1004,7 @@ void SipTransport::reset_dialog_media_locked_() {
     LockGuard send_lock(this->tcp_send_mutex_);
     LockGuard pending_lock(this->tcp_tx_pending_mutex_);
     abort_queued_tcp_record = !this->tcp_tx_pending_.empty();
-    this->tcp_tx_pending_.clear();
+    reset_string(this->tcp_tx_pending_);
     if (abort_queued_tcp_record) {
       this->tcp_connect_requested_.store(false, std::memory_order_release);
       this->sip_tcp_client_close_requested_.store(true,
@@ -1013,27 +1012,27 @@ void SipTransport::reset_dialog_media_locked_() {
     }
   }
   if (abort_queued_tcp_record) this->wake_sip_task_();
-  this->call_id_.clear();
-  this->local_tag_.clear();
-  this->remote_tag_.clear();
-  this->branch_.clear();
-  this->local_uri_.clear();
-  this->local_contact_uri_.clear();
-  this->remote_uri_.clear();
-  this->remote_target_uri_.clear();
-  this->last_invite_via_.clear();
-  this->last_invite_from_.clear();
-  this->last_invite_to_.clear();
-  this->last_invite_cseq_.clear();
-  this->last_invite_response_.clear();
+  reset_string(this->call_id_);
+  reset_string(this->local_tag_);
+  reset_string(this->remote_tag_);
+  reset_string(this->branch_);
+  reset_string(this->local_uri_);
+  reset_string(this->local_contact_uri_);
+  reset_string(this->remote_uri_);
+  reset_string(this->remote_target_uri_);
+  reset_string(this->last_invite_via_);
+  reset_string(this->last_invite_from_);
+  reset_string(this->last_invite_to_);
+  reset_string(this->last_invite_cseq_);
+  reset_string(this->last_invite_response_);
   this->last_invite_cseq_number_ = 0;
   this->remote_dialog_cseq_ = 0;
   this->last_invite_peer_ip_v4_ = 0;
   this->last_invite_peer_port_ = 0;
-  this->caller_route_.clear();
-  this->caller_name_.clear();
-  this->dest_route_.clear();
-  this->dest_name_.clear();
+  reset_string(this->caller_route_);
+  reset_string(this->caller_name_);
+  reset_string(this->dest_route_);
+  reset_string(this->dest_name_);
   this->peer_supports_from_change_ = false;
   this->connected_identity_sent_ = false;
   this->dialog_originated_ = false;
@@ -1046,10 +1045,11 @@ void SipTransport::reset_dialog_media_locked_() {
   this->cancel_requested_.store(false, std::memory_order_release);
   this->terminate_after_invite_ack_ = false;
   this->clear_udp_transactions_();
+  this->pending_provisional_response_.clear();
   this->reset_rtp_latch_();
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->pending_video_direction_invite_.clear();
-  this->confirmed_local_sdp_.clear();
+  reset_string(this->confirmed_local_sdp_);
   this->reset_video_negotiation_();
   this->emit_video_active_state_(false);
   this->emit_video_send_state_(false, false);
@@ -1091,6 +1091,21 @@ void SipTransport::remember_udp_transaction_(const std::string &method, const st
   txn->udp = !this->remote_sip_tcp_.load(std::memory_order_acquire);
   txn->completed = false;
   this->wake_sip_task_();
+}
+
+void SipTransport::defer_udp_provisional_response_(
+    const std::string &response, uint32_t ip_v4, uint16_t port) {
+  if (response.empty() || ip_v4 == 0 || port == 0) return;
+  const uint32_t now = millis();
+  this->pending_provisional_response_.response = response;
+  this->pending_provisional_response_.ip_v4 = ip_v4;
+  this->pending_provisional_response_.port = port;
+  this->pending_provisional_response_.interval_ms = 20;
+  this->pending_provisional_response_.next_ms = now + 20;
+  this->pending_provisional_response_.deadline_ms = now + SIP_T2_MS;
+  this->pending_provisional_response_.retries = 0;
+  this->wake_sip_task_();
+  ESP_LOGW(TAG, "SIP UDP provisional response deferred to event-driven retry");
 }
 
 void SipTransport::pump_udp_retransmits_() {
@@ -1145,6 +1160,30 @@ void SipTransport::pump_udp_retransmits_() {
   pump(this->pending_cancel_, "CANCEL");
   pump(this->pending_bye_, "BYE");
   pump(this->pending_update_, "UPDATE");
+  auto &provisional = this->pending_provisional_response_;
+  if (!provisional.empty() && time_reached(now, provisional.next_ms)) {
+    if (time_reached(now, provisional.deadline_ms)) {
+      ESP_LOGW(TAG, "SIP UDP provisional response retry expired");
+      provisional.clear();
+    } else {
+      const bool sent = this->send_sip_(provisional.response,
+                                        provisional.ip_v4,
+                                        provisional.port);
+      provisional.retries++;
+      if (sent) {
+        ESP_LOGI(TAG, "SIP UDP provisional response sent after %u retries",
+                 static_cast<unsigned>(provisional.retries));
+        provisional.clear();
+      } else {
+        provisional.interval_ms = std::min<uint16_t>(
+            static_cast<uint16_t>(provisional.interval_ms * 2), SIP_T1_MS);
+        provisional.next_ms = now + provisional.interval_ms;
+        if (time_reached(provisional.next_ms, provisional.deadline_ms)) {
+          provisional.next_ms = provisional.deadline_ms;
+        }
+      }
+    }
+  }
   if (this->completed_invite_.awaiting_ack) {
     if (time_reached(now, this->completed_invite_.deadline_ms)) {
       ESP_LOGW(TAG, "SIP %s INVITE final response timed out waiting for ACK after %u ms",
@@ -1190,6 +1229,24 @@ void SipTransport::pump_udp_retransmits_() {
   // not retransmit, but its final-response timeout and 491 retry deadline must
   // still wake the same event-driven SIP select loop.
   this->pump_video_direction_transaction_();
+#endif
+  // Completed transaction records are kept for 64*T1 so delayed UDP
+  // retransmissions can be replayed. Expire them on the SIP task deadline,
+  // even when no further packet arrives. Otherwise their std::string storage
+  // survives every completed call and gradually consumes the small internal
+  // heap needed by lwIP for the next socket send.
+  auto expire_completed = [now](auto &transaction) {
+    if (!transaction.empty() &&
+        time_reached(now, transaction.completed_ms +
+                              SIP_TRANSACTION_TIMEOUT_MS)) {
+      transaction.clear();
+    }
+  };
+  expire_completed(this->completed_invite_);
+  expire_completed(this->completed_control_);
+  expire_completed(this->completed_invite_client_);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  expire_completed(this->completed_video_direction_invite_);
 #endif
   if (reset_terminal_dialog) {
     this->reset_dialog_();
@@ -1905,7 +1962,7 @@ bool SipTransport::send_cancel_unlocked_(const std::string &call_id) {
       LockGuard pending_lock(this->tcp_tx_pending_mutex_);
       if (this->tcp_tx_pending_.rfind("INVITE ", 0) == 0 &&
           header_value(this->tcp_tx_pending_, "Call-ID") == this->call_id_) {
-        this->tcp_tx_pending_.clear();
+        reset_string(this->tcp_tx_pending_);
         this->tcp_connect_requested_.store(false, std::memory_order_release);
         this->sip_tcp_client_close_requested_.store(
             true, std::memory_order_release);
@@ -1940,12 +1997,38 @@ bool SipTransport::send_bye(const std::string &call_id) {
 
 bool SipTransport::send_bye_unlocked_(const std::string &call_id) {
   if (!call_id.empty()) this->call_id_ = call_id;
+  // A UAS dialog is not confirmed until the ACK for its 2xx arrives. A local
+  // hangup can race the initial final-response send, especially when lwIP is
+  // briefly short of pbuf memory. Retain the terminal intent under the INVITE
+  // transaction instead of putting an invalid pre-ACK BYE on the wire.
+  if (this->defer_bye_until_uas_ack_locked_()) {
+    this->stop_audio_path();
+    return true;
+  }
+  // Connected-identity is observational and must not outlive termination.
+  // Dropping its pending transaction also prevents a lower-CSeq UPDATE from
+  // being retransmitted after the dialog's BYE.
+  this->pending_update_.clear();
   // BYE is the latency-critical dialog action. Video/audio workers can take
   // time to leave codec and socket calls, so put the SIP request on the wire
   // before performing subordinate media teardown.
   const bool sent = this->send_request_("BYE");
   this->stop_audio_path();
   return sent;
+}
+
+bool SipTransport::defer_bye_until_uas_ack_locked_() {
+  const bool accepted_uas_dialog =
+      this->completed_invite_.awaiting_ack &&
+      this->completed_invite_.status >= 200 &&
+      this->completed_invite_.status < 300 &&
+      !this->call_id_.empty() &&
+      this->completed_invite_.call_id == this->call_id_ &&
+      this->last_invite_cseq_number_ == this->completed_invite_.cseq;
+  if (!accepted_uas_dialog) return false;
+  this->terminate_after_invite_ack_ = true;
+  this->wake_sip_task_();
+  return true;
 }
 
 bool SipTransport::send_final_response(const std::string &call_id,
@@ -3320,6 +3403,7 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
   if (method == "INVITE") {
     this->handle_invite_(msg, src);
   } else if (method == "ACK") {
+    const std::string request_call_id = header_value(msg, "Call-ID");
     bool terminate_after_ack = false;
     const uint16_t completed_status =
         this->acknowledge_completed_invite_(msg, src,
@@ -3329,8 +3413,17 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
       if (!this->send_bye_unlocked_(call_id)) this->reset_dialog_();
       return;
     }
-    if (completed_status >= 300) return;
-    const std::string request_call_id = header_value(msg, "Call-ID");
+    if (completed_status >= 300) {
+      // ACK is the terminal event for a non-2xx INVITE server transaction.
+      // The dialog may already have been detached after CANCEL, but the call
+      // lifecycle must still cross its cleanup barrier and become reusable.
+      SipSignal signal;
+      signal.type = SipSignalType::TERMINAL_COMPLETE;
+      signal.status_code = completed_status;
+      signal.call_id = request_call_id;
+      this->emit_sip_signal_(signal);
+      return;
+    }
     const uint32_t expected_ip = this->remote_ip_v4_.load(std::memory_order_acquire);
     const uint32_t request_cseq = cseq_number(header_value(msg, "CSeq"));
     const bool valid_ack = completed_status >= 200 && completed_status < 300 &&
@@ -3507,7 +3600,7 @@ void SipTransport::sip_task_() {
   };
   auto drop_tcp_pending = [this]() {
     LockGuard lock(this->tcp_tx_pending_mutex_);
-    this->tcp_tx_pending_.clear();
+    reset_string(this->tcp_tx_pending_);
   };
   auto fail_tcp_connect = [&](int err) {
     char ip[16];
@@ -3537,7 +3630,7 @@ void SipTransport::sip_task_() {
       this->sip_tcp_client_ip_v4_.store(promoted_ip, std::memory_order_release);
       this->sip_tcp_client_close_requested_.store(false, std::memory_order_release);
       this->tcp_connect_requested_.store(false, std::memory_order_release);
-      this->sip_tcp_rx_buffer_.clear();
+      reset_string(this->sip_tcp_rx_buffer_);
       {
         LockGuard lock(this->tcp_tx_pending_mutex_);
         pending.swap(this->tcp_tx_pending_);
@@ -3666,6 +3759,9 @@ void SipTransport::sip_task_() {
         include_txn(this->pending_cancel_);
         include_txn(this->pending_bye_);
         include_txn(this->pending_update_);
+        if (!this->pending_provisional_response_.empty()) {
+          include_at(this->pending_provisional_response_.next_ms);
+        }
         if (this->completed_invite_.awaiting_ack) {
           const bool retransmits =
               this->completed_invite_.udp ||
@@ -3674,6 +3770,18 @@ void SipTransport::sip_task_() {
                          ? this->completed_invite_.next_retransmit_ms
                          : this->completed_invite_.deadline_ms);
         }
+        auto include_completed_expiry = [&include_at](const auto &transaction) {
+          if (!transaction.empty()) {
+            include_at(transaction.completed_ms +
+                       SIP_TRANSACTION_TIMEOUT_MS);
+          }
+        };
+        include_completed_expiry(this->completed_invite_);
+        include_completed_expiry(this->completed_control_);
+        include_completed_expiry(this->completed_invite_client_);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+        include_completed_expiry(this->completed_video_direction_invite_);
+#endif
       }
       if (have_sip_timeout && (!have_timeout || next_ms < timeout_ms)) {
         timeout_ms = next_ms;

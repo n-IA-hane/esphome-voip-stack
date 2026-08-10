@@ -869,7 +869,7 @@ def test_final_reinvite_response_is_owned_before_initial_send() -> None:
         "this->send_sip_(msg, ip, port)"
     )
     assert response.index("this->send_sip_(msg, ip, port)") < response.index(
-        "if (!sent && !final_response_owned) return false;"
+        "if (!sent && !response_owned) return false;"
     )
     assert "vTaskDelay" not in response
     assert "pdMS_TO_TICKS" not in response
@@ -878,9 +878,10 @@ def test_final_reinvite_response_is_owned_before_initial_send() -> None:
         sip_cpp,
         r"SipTransport::send_stateless_response_",
     )
-    assert stateless.index("this->send_sip_(msg, ip, port)") < stateless.index(
-        "this->remember_completed_response_"
+    assert stateless.index("this->remember_completed_response_") < stateless.index(
+        "this->send_sip_(msg, ip, port)"
     )
+    assert "response_owned = completed.udp && completed.response == msg;" in stateless
 
     reinvite = cpp_method(sip_cpp, r"SipTransport::handle_reinvite_")
     failure = reinvite[
@@ -1427,9 +1428,12 @@ def test_incoming_answer_prepares_before_200_and_commits_after_send() -> None:
         "MediaLifecyclePhase::PREPARED"
     )
     assert "terminate_dialog_after_media_commit_failure_();" in commit_public
-    assert "this->completed_invite_.awaiting_ack" in commit_failure
-    assert "this->terminate_after_invite_ack_ = true;" in commit_failure
-    assert "this->wake_sip_task_();" in commit_failure
+    assert "this->defer_bye_until_uas_ack_locked_()" in commit_failure
+    deferred_bye = cpp_method(
+        source, r"SipTransport::defer_bye_until_uas_ack_locked_"
+    )
+    assert "this->terminate_after_invite_ack_ = true;" in deferred_bye
+    assert "this->wake_sip_task_();" in deferred_bye
     assert "this->send_bye_unlocked_(this->call_id_)" in commit_failure
     assert "this->reset_dialog_();" not in commit_failure
     acknowledge = source[
@@ -1784,6 +1788,16 @@ def test_sip_udp_transactions_are_minimal_and_explicit() -> None:
     assert "txn->deadline_ms = now + SIP_TRANSACTION_TIMEOUT_MS" in sip_cpp
     assert "txn.retries++;" in sip_cpp
     assert "if (sent)" in sip_cpp
+    request = sip_cpp[
+        sip_cpp.index(
+            "bool SipTransport::send_request_(const std::string &method, "
+            "const std::string &body,"
+        ) : sip_cpp.index("\nbool SipTransport::send_invite_error_ack_")
+    ]
+    assert "const bool udp_transaction" in request
+    assert "if (sent || udp_transaction)" in request
+    assert "this->remember_udp_transaction_(method, msg, ip, port);" in request
+    assert "return sent || udp_transaction;" in request
     response = sip_cpp[
         sip_cpp.index("bool SipTransport::handle_response_") :
         sip_cpp.index("\nvoid SipTransport::handle_sip_datagram_")
@@ -1791,6 +1805,31 @@ def test_sip_udp_transactions_are_minimal_and_explicit() -> None:
     assert "if (status < 200 && !this->pending_invite_.empty())" in response
     assert "this->pending_invite_.completed = true;" in response
     assert "this->pending_invite_.next_ms = this->pending_invite_.deadline_ms;" in response
+
+
+def test_uas_bye_waits_for_final_response_ack() -> None:
+    sip_h = read("sip_transport.h")
+    sip_cpp = read("sip_transport.cpp")
+
+    assert "bool defer_bye_until_uas_ack_locked_();" in sip_h
+    defer = cpp_method(sip_cpp, r"SipTransport::defer_bye_until_uas_ack_locked_")
+    assert "this->completed_invite_.awaiting_ack" in defer
+    assert "this->completed_invite_.status >= 200" in defer
+    assert "this->completed_invite_.status < 300" in defer
+    assert "this->completed_invite_.call_id == this->call_id_" in defer
+    assert "this->terminate_after_invite_ack_ = true;" in defer
+
+    bye = cpp_method(sip_cpp, r"SipTransport::send_bye_unlocked_")
+    assert bye.index("defer_bye_until_uas_ack_locked_") < bye.index(
+        'send_request_("BYE")'
+    )
+    assert "this->pending_update_.clear();" in bye
+
+    datagram = cpp_method(sip_cpp, r"SipTransport::handle_sip_datagram_")
+    assert datagram.index("if (terminate_after_ack)") < datagram.index(
+        "this->open_media_session_();"
+    )
+    assert "this->send_bye_unlocked_(call_id)" in datagram
 
 
 def test_completed_sip_server_transactions_are_bounded_and_replayed() -> None:
@@ -2227,7 +2266,7 @@ def test_tcp_connect_queue_never_overwrites_the_pending_invite() -> None:
         sip_cpp.index("void SipTransport::reset_dialog_()") :
         sip_cpp.index("\nvoid SipTransport::remember_udp_transaction_", sip_cpp.index("void SipTransport::reset_dialog_()"))
     ]
-    assert "this->tcp_tx_pending_.clear();" in reset
+    assert "reset_string(this->tcp_tx_pending_);" in reset
 
 
 def test_all_meaningful_invite_progress_responses_stop_local_calling_state() -> None:
@@ -2459,7 +2498,7 @@ def test_tcp_invite_can_be_cancelled_atomically_before_connect_flush() -> None:
     assert "LockGuard pending_lock(this->tcp_tx_pending_mutex_);" in cancel
     assert 'this->tcp_tx_pending_.rfind("INVITE ", 0) == 0' in cancel
     assert 'header_value(this->tcp_tx_pending_, "Call-ID") == this->call_id_' in cancel
-    assert "this->tcp_tx_pending_.clear();" in cancel
+    assert "reset_string(this->tcp_tx_pending_);" in cancel
     assert "this->tcp_connect_requested_.store(false" in cancel
     assert "this->sip_tcp_client_close_requested_.store(" in cancel
     assert "if (cancelled_before_flush)" in cancel
@@ -2624,6 +2663,9 @@ def test_cancel_transactions_are_serialized_and_handle_crossed_200() -> None:
     termination = cpp_method(fsm, r"VoipStack::request_call_termination_")
     assert "this->send_sip_cancel_(call_id)" in termination
     assert "dispatch_call_termination(" in termination
+    assert "if (call_state_is_terminating(state))" in termination
+    assert "this->finish_call_termination_();" in termination
+    assert "call_state_is_terminating(snapshot.state)" in read("voip_fsm.h")
     timeout = component[
         component.index("void VoipStack::fire_timeout_decline_()") :
         component.index("\nvoid VoipStack::dump_config()")
@@ -2715,7 +2757,15 @@ def test_udp_invite_server_final_retransmits_until_matching_ack() -> None:
     assert "acknowledge_completed_invite_(msg, src," in datagram
     assert "if (terminate_after_ack)" in datagram
     assert "this->send_bye_unlocked_(call_id)" in datagram
-    assert "if (completed_status >= 300) return;" in datagram
+    non_2xx_ack = datagram[
+        datagram.index("if (completed_status >= 300)") :
+        datagram.index("const uint32_t expected_ip")
+    ]
+    assert "SipSignalType::TERMINAL_COMPLETE" in non_2xx_ack
+    assert "signal.status_code = completed_status;" in non_2xx_ack
+    assert "signal.call_id = request_call_id;" in non_2xx_ack
+    assert "this->emit_sip_signal_(signal);" in non_2xx_ack
+    assert "return;" in non_2xx_ack
     assert "completed_status >= 200 && completed_status < 300" in datagram
 
     sip_task = sip_cpp[
@@ -3183,6 +3233,63 @@ def test_contact_cycler_dismisses_terminal_destination_snapshot() -> None:
         assert 'this->publish_last_reason_("")' in body
         assert "this->clear_terminal_call_snapshot_()" in body
         assert "this->publish_destination_()" in body
+
+
+def test_terminal_destination_preserves_the_original_dialed_target() -> None:
+    header = read("voip_stack.h")
+    fsm = read("voip_fsm.cpp")
+
+    assert "std::string current_dialed_dest_name_;" in header
+    assert "std::string dialed_dest_name;" in header
+    identity = cpp_method(fsm, r"VoipStack::set_call_identity_")
+    assert "this->current_call_id_.empty()" in identity
+    assert "this->current_call_id_ != call_id" in identity
+    assert "caller_name == this->device_name_" in identity
+    assert "this->current_dialed_dest_name_ = dest_name;" in identity
+    assert "this->current_dialed_dest_name_.clear();" in identity
+    end_call = cpp_method(fsm, r"VoipStack::end_call_")
+    assert "!call.dialed_dest_name.empty()" in end_call
+    assert "? call.dialed_dest_name" in end_call
+
+
+def test_completed_sip_transactions_expire_without_hot_path_heap_churn() -> None:
+    header = read("sip_transport.h")
+    source = read("sip_transport.cpp")
+
+    for field in ("request", "response", "ack", "offered_sdp"):
+        assert f"this->{field}.clear();" in header
+    assert "std::string{}.swap" not in header
+    pump = cpp_method(source, r"SipTransport::pump_udp_retransmits_")
+    for field in (
+        "completed_invite_",
+        "completed_control_",
+        "completed_invite_client_",
+        "completed_video_direction_invite_",
+    ):
+        assert f"expire_completed(this->{field});" in pump
+    sip_task = cpp_method(source, r"SipTransport::sip_task_")
+    assert sip_task.count("include_completed_expiry(this->") == 4
+    assert "transaction.completed_ms +" in sip_task
+
+
+def test_udp_provisional_response_survives_transient_tx_pressure() -> None:
+    header = read("sip_transport.h")
+    request_response = read("sip_request_response.cpp")
+    source = read("sip_transport.cpp")
+
+    assert "struct DeferredUdpResponse" in header
+    assert "DeferredUdpResponse pending_provisional_response_;" in header
+    response = cpp_method(request_response, r"SipTransport::send_response_")
+    assert "this->last_invite_response_ = msg;" in response
+    assert "this->defer_udp_provisional_response_(msg, ip, port);" in response
+    assert "response_owned = true;" in response
+    defer = cpp_method(source, r"SipTransport::defer_udp_provisional_response_")
+    assert "this->wake_sip_task_();" in defer
+    pump = cpp_method(source, r"SipTransport::pump_udp_retransmits_")
+    assert "SIP UDP provisional response retry expired" in pump
+    assert "provisional.clear();" in pump
+    sip_task = cpp_method(source, r"SipTransport::sip_task_")
+    assert "include_at(this->pending_provisional_response_.next_ms);" in sip_task
 
 
 def test_roster_json_uses_address_direct_or_ha_route_without_kind_semantics() -> None:

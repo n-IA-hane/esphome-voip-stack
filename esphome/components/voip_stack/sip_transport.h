@@ -132,6 +132,7 @@ class SipTransport : public SipPhoneTransport {
                      const SipRequestOptions &options);
   bool send_cancel_unlocked_(const std::string &call_id);
   bool send_bye_unlocked_(const std::string &call_id);
+  bool defer_bye_until_uas_ack_locked_();
   bool send_invite_error_ack_();
   bool send_response_(uint16_t status, const char *reason, const std::string &body = "",
                       const std::string &app_reason = "");
@@ -196,6 +197,8 @@ class SipTransport : public SipPhoneTransport {
   void clear_udp_transactions_();
   void remember_udp_transaction_(const std::string &method, const std::string &message,
                                  uint32_t ip_v4, uint16_t port);
+  void defer_udp_provisional_response_(const std::string &response,
+                                       uint32_t ip_v4, uint16_t port);
   void pump_udp_retransmits_();
   void clear_invite_transaction_();
   void clear_bye_transaction_();
@@ -260,6 +263,26 @@ class SipTransport : public SipPhoneTransport {
       this->completed = false;
     }
     bool empty() const { return this->request.empty(); }
+  };
+
+  struct DeferredUdpResponse {
+    std::string response;
+    uint32_t ip_v4{0};
+    uint16_t port{0};
+    uint32_t next_ms{0};
+    uint32_t deadline_ms{0};
+    uint16_t interval_ms{20};
+    uint8_t retries{0};
+    void clear() {
+      this->response.clear();
+      this->ip_v4 = 0;
+      this->port = 0;
+      this->next_ms = 0;
+      this->deadline_ms = 0;
+      this->interval_ms = 20;
+      this->retries = 0;
+    }
+    bool empty() const { return this->response.empty(); }
   };
 
   struct CompletedServerTransaction {
@@ -449,6 +472,7 @@ class SipTransport : public SipPhoneTransport {
   UdpTransaction pending_cancel_;
   UdpTransaction pending_bye_;
   UdpTransaction pending_update_;
+  DeferredUdpResponse pending_provisional_response_;
 
   int sip_socket_{-1};
   // A private loopback datagram socket is part of the SIP select set. It is a

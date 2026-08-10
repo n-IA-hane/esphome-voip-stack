@@ -71,6 +71,21 @@ inline SipTerminationAction resolve_sip_termination_action(
   }
 }
 
+inline bool call_state_is_terminating(CallState state) {
+  switch (state) {
+    case CallState::TERMINATING:
+    case CallState::BUSY:
+    case CallState::DECLINED:
+    case CallState::CANCELLED:
+    case CallState::MEDIA_INCOMPATIBLE:
+    case CallState::TRANSPORT_UNREACHABLE:
+    case CallState::AUTH_REQUIRED_UNSUPPORTED:
+      return true;
+    default:
+      return false;
+  }
+}
+
 struct TerminationSnapshot {
   CallState state{CallState::IDLE};
   bool transport_connected{false};
@@ -86,7 +101,13 @@ inline void dispatch_call_termination(const TerminationSnapshot &snapshot,
                                       EndFn &&end,
                                       MediaOffFn &&media_off,
                                       DisconnectFn &&disconnect) {
-  if (snapshot.state == CallState::IDLE) return;
+  // The first terminal intent owns signaling, the terminal snapshot and
+  // teardown. Late SIP or UI events may only let TERMINAL_COMPLETE advance the
+  // existing transaction to IDLE, never replace the winning intent.
+  if (snapshot.state == CallState::IDLE ||
+      call_state_is_terminating(snapshot.state)) {
+    return;
+  }
   if (intent.cache_final_response && snapshot.has_call_id) {
     cache_final_response();
   }

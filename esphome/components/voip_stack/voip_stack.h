@@ -794,6 +794,10 @@ class VoipStack : public Component {
   std::string current_caller_name_;
   std::string current_dest_route_id_;
   std::string current_dest_name_;
+  // Original user-selected target. Connected-identity UPDATE may refine the
+  // active peer name, but must not rewrite the dialed destination reported by
+  // the terminal snapshot.
+  std::string current_dialed_dest_name_;
   // Last terminal SIP final response: replayed briefly when an INVITE with
   // the same Call-ID arrives again. The cache is time-limited so a later real
   // call between the same two devices cannot inherit the previous reason.
@@ -808,6 +812,7 @@ class VoipStack : public Component {
     std::string caller_name;
     std::string dest_route;
     std::string dest_name;
+    std::string dialed_dest_name;
   };
 
   // === Call-identity helpers (mutex-protected) ===

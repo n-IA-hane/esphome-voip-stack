@@ -48,6 +48,19 @@ def test_call_termination_dispatcher_host_behavioral_contract(tmp_path: Path) ->
 
             int main() {
               assert(run(CallState::IDLE, SipTerminationAction::AUTO).empty());
+              assert(run(CallState::TERMINATING,
+                         SipTerminationAction::AUTO).empty());
+              assert(run(CallState::BUSY, SipTerminationAction::AUTO).empty());
+              assert(run(CallState::DECLINED,
+                         SipTerminationAction::AUTO).empty());
+              assert(run(CallState::CANCELLED,
+                         SipTerminationAction::AUTO).empty());
+              assert(run(CallState::MEDIA_INCOMPATIBLE,
+                         SipTerminationAction::AUTO).empty());
+              assert(run(CallState::TRANSPORT_UNREACHABLE,
+                         SipTerminationAction::AUTO).empty());
+              assert(run(CallState::AUTH_REQUIRED_UNSUPPORTED,
+                         SipTerminationAction::AUTO).empty());
               assert((run(CallState::CALLING, SipTerminationAction::AUTO) ==
                       std::vector<int>{CACHE, CANCEL, END, MEDIA_OFF}));
               assert((run(CallState::REMOTE_RINGING,

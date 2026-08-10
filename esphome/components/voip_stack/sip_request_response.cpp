@@ -3,8 +3,12 @@
 
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_SIP_TRANSPORT)
 
+#include "esphome/core/log.h"
+
 namespace esphome {
 namespace voip_stack {
+
+static const char *const TAG = "voip_stack.sip";
 
 bool SipTransport::send_request_(const std::string &method, const std::string &body) {
   SipRequestOptions options;
@@ -106,18 +110,28 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
   if (method == "ACK" && options.remember_invite_ack) {
     this->remember_completed_invite_ack_(msg, ip, port);
   }
+  const bool transaction_request =
+      options.remember_transaction &&
+      (method == "INVITE" || method == "CANCEL" || method == "BYE" ||
+       method == "UPDATE");
+  const bool udp_transaction =
+      transaction_request &&
+      !this->remote_sip_tcp_.load(std::memory_order_acquire);
   const bool sent = this->send_sip_(msg, ip, port);
-  if (sent) {
+  if (sent || udp_transaction) {
     const SipEvent event = sip_event_from_method_(method);
     if (event != SipEvent::NONE)
       this->mark_sip_event_(event);
-    if (options.remember_transaction &&
-        (method == "INVITE" || method == "CANCEL" ||
-         method == "BYE" || method == "UPDATE")) {
+    if (transaction_request) {
       this->remember_udp_transaction_(method, msg, ip, port);
     }
   }
-  return sent;
+  if (!sent && udp_transaction) {
+    ESP_LOGW(TAG,
+             "SIP UDP %s initial send deferred to transaction retry",
+             method.c_str());
+  }
+  return sent || udp_transaction;
 }
 
 bool SipTransport::send_invite_error_ack_() {
@@ -206,20 +220,31 @@ bool SipTransport::send_response_(uint16_t status, const char *reason,
       response_via_with_rport(this->last_invite_via_, ip, port),
       this->last_invite_from_, this->last_invite_to_, this->call_id_,
       this->last_invite_cseq_, app_reason, body, true, true, false, -1);
-  bool final_response_owned = false;
+  bool response_owned = false;
   if (status >= 200) {
+    this->pending_provisional_response_.clear();
     this->last_invite_response_ = msg;
     this->remember_completed_response_(
         "Via: " + this->last_invite_via_ + "\r\nCall-ID: " +
             this->call_id_ + "\r\nCSeq: " + this->last_invite_cseq_ +
             "\r\n",
         ip, port, "INVITE", msg);
-    final_response_owned = this->completed_invite_.awaiting_ack &&
-                           this->completed_invite_.response == msg;
+    response_owned = this->completed_invite_.awaiting_ack &&
+                     this->completed_invite_.response == msg;
+  } else {
+    // Keep the latest provisional response before touching the socket. If the
+    // local WiFi/lwIP TX pool is temporarily exhausted, the SIP task owns a
+    // bounded retry and an INVITE retransmission can replay the same response.
+    this->last_invite_response_ = msg;
+    this->pending_provisional_response_.clear();
   }
   const bool sent = this->send_sip_(msg, ip, port);
-  if (!sent && !final_response_owned) return false;
-  if (status < 200) this->last_invite_response_ = msg;
+  if (!sent && status < 200 &&
+      !this->remote_sip_tcp_.load(std::memory_order_acquire)) {
+    this->defer_udp_provisional_response_(msg, ip, port);
+    response_owned = true;
+  }
+  if (!sent && !response_owned) return false;
   this->mark_sip_event_(SipEvent::RESPONSE, status);
   return true;
 }
@@ -254,11 +279,16 @@ bool SipTransport::send_stateless_response_(
       response_to, call_id, cseq, app_reason, "", add_contact, false, true,
       retry_after_seconds);
 
-  const bool sent = this->send_sip_(msg, ip, port);
-  if (!sent) return false;
+  bool response_owned = false;
   if (cache_transaction && status >= 200) {
     this->remember_completed_response_(request, ip, port, method, msg);
+    const CompletedServerTransaction &completed =
+        method == "INVITE" ? this->completed_invite_
+                           : this->completed_control_;
+    response_owned = completed.udp && completed.response == msg;
   }
+  const bool sent = this->send_sip_(msg, ip, port);
+  if (!sent && !response_owned) return false;
   this->mark_sip_event_(SipEvent::RESPONSE, status);
   return true;
 }
