@@ -23,6 +23,7 @@ struct ParsedPhonebookSlot {
 
 struct JsonRosterSlot {
   std::string name;
+  std::string route;
   std::string address;
   std::string endpoint_type;
   std::string sip_transport;
@@ -60,13 +61,17 @@ void append_csv(std::string *out, const std::string &entry) {
   *out += entry;
 }
 
-std::string serialize_endpoint(const std::string &name, ContactEndpointType endpoint_type,
+std::string serialize_endpoint(const std::string &name, const std::string &route,
+                               ContactEndpointType endpoint_type,
                                const std::string &ip, uint16_t port,
                                uint16_t rtp_port, bool sip_transport_tcp = false) {
   if (name.empty()) return "";
   if (ip.empty() || port == 0) return name;
   if (endpoint_type == ContactEndpointType::SIP) {
-    return name + "|" + ip + "|" + std::to_string(port) + "|" +
+    const std::string prefix = route.empty() || route == name
+        ? name
+        : name + "|" + route;
+    return prefix + "|" + ip + "|" + std::to_string(port) + "|" +
            std::to_string(rtp_port) + "|" + (sip_transport_tcp ? "sip_tcp" : "sip_udp");
   }
   return name;
@@ -142,6 +147,7 @@ bool parse_json_roster_slot(const cJSON *obj, JsonRosterSlot *slot) {
   }
 
   slot->name = name;
+  slot->route = id;
   slot->address = Phonebook::trim(json_string(obj, "address"));
   if (slot->address.empty()) slot->address = Phonebook::trim(json_string(obj, "host"));
   if (slot->address.size() > Phonebook::MAX_ADDRESS_BYTES ||
@@ -378,7 +384,8 @@ std::string VoipStack::normalize_phonebook_for_transport_(const std::string &con
     const auto &entry = slot.entry;
 
     if (entry.endpoint_type == ContactEndpointType::SIP) {
-      append_csv(&out, serialize_endpoint(entry.name, entry.endpoint_type, entry.ip,
+      append_csv(&out, serialize_endpoint(entry.name, entry.route,
+                                          entry.endpoint_type, entry.ip,
                                           entry.port, entry.rtp_port,
                                           entry.sip_transport_tcp));
       continue;
@@ -430,7 +437,7 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
     JsonRosterSlot slot;
     if (!parse_json_roster_slot(item, &slot)) continue;
     saw_valid_slot = true;
-    if (slot.name == this->device_name_ || slot.name == this->device_route_id_) continue;
+    if (slot.name == this->device_name_ || slot.route == this->device_route_id_) continue;
     slots.push_back(slot);
     if (slot.local_ha && !slot.address.empty()) {
       ha_slot = slot;
@@ -470,6 +477,7 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
 
     ContactEntry entry;
     entry.name = slot.name;
+    entry.route = slot.route;
 
     if (slot.local_ha) {
       entry.endpoint_type = local_endpoint_type;
@@ -646,6 +654,10 @@ void VoipStack::prev_contact() {
 
 const std::string &VoipStack::get_current_destination() const {
   return this->phonebook_.current_name();
+}
+
+const std::string &VoipStack::get_current_destination_route() const {
+  return this->phonebook_.current_route();
 }
 
 const std::string &VoipStack::get_current_contact_ip() const {

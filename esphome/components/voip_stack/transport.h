@@ -7,6 +7,9 @@
 #include <string>
 
 #include "sip_types.h"
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+#include "video.h"
+#endif
 
 namespace esphome {
 namespace voip_stack {
@@ -17,6 +20,7 @@ struct TransportAudioFrame {
   uint16_t sequence{0};
   uint32_t timestamp{0};
   bool has_rtp_metadata{false};
+  bool source_changed{false};
 };
 
 using TransportAudioCallback = void (*)(void *ctx, const TransportAudioFrame &frame);
@@ -24,10 +28,27 @@ using TransportSipSignalCallback = void (*)(void *ctx, const SipSignal &signal);
 using TransportConnectionCallback = void (*)(void *ctx, bool connected);
 using TransportAcceptCallback = bool (*)(void *ctx);
 using TransportDialogActiveCallback = bool (*)(void *ctx);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+using TransportVideoSendStateCallback =
+    void (*)(void *ctx, bool enabled, bool pending);
+using TransportVideoActiveStateCallback =
+    void (*)(void *ctx, bool active);
+#endif
 
 struct SipTransportSnapshot {
   bool running{false};
   bool rtp_running{false};
+  bool terminal_transaction_pending{false};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  bool video_running{false};
+  bool video_send_enabled{false};
+  bool video_send_change_pending{false};
+  uint32_t video_tx_packets{0};
+  uint32_t video_rx_packets{0};
+  uint32_t video_tx_access_units{0};
+  uint32_t video_rx_access_units{0};
+  uint8_t media_lifecycle_phase{0};
+#endif
   bool call_active{false};
   bool pending_invite{false};
   bool sip_tcp{false};
@@ -80,6 +101,14 @@ class SipPhoneTransport {
   virtual bool send_answer(const std::string &call_id,
                            const AudioFormat &caller_to_dest_format,
                            const AudioFormat &dest_to_caller_format) = 0;
+  /// Set the local identity reported after an inbound dialog is answered.
+  /// Signaling transports that support RFC 4916 can publish this identity in
+  /// a mid-dialog request without changing their reachable Contact URI.
+  virtual void set_connected_identity(const std::string &route,
+                                      const std::string &name) {
+    (void) route;
+    (void) name;
+  }
   virtual bool send_cancel(const std::string &call_id) = 0;
   virtual bool send_bye(const std::string &call_id) = 0;
   virtual bool send_final_response(const std::string &call_id,
@@ -107,9 +136,36 @@ class SipPhoneTransport {
     (void) tx;
     (void) rx;
   }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  virtual void set_video_endpoints(EncodedVideoSource *source,
+                                   EncodedVideoSink *sink) {
+    (void) source;
+    (void) sink;
+  }
+  virtual void set_video_config(VideoCodec codec, uint16_t rtp_port,
+                                uint8_t offer_payload_type,
+                                size_t max_rtp_payload) {
+    (void) codec;
+    (void) rtp_port;
+    (void) offer_payload_type;
+    (void) max_rtp_payload;
+  }
+  /// Request a direction-only in-dialog SDP update. The SIP transport remains
+  /// the single owner of the INVITE transaction and media commit.
+  virtual bool request_video_send(bool enabled) {
+    (void) enabled;
+    return false;
+  }
+#endif
 
-  /// Lazy audio path. UDP binds the audio socket and spawns recv_task
-  /// only here so an idle device isn't a passive PCM listener. TCP no-op.
+  /// Reserve/bind negotiated media without admitting RTP. A UAS uses this
+  /// before serialising its SDP answer.
+  virtual bool prepare_media_path() { return true; }
+  /// Admit media only after the final SIP answer has reached the wire.
+  virtual bool commit_media_path() { return this->start_audio_path(); }
+  /// Cancel a prepared path through the normal event-driven teardown owner.
+  virtual void abort_media_path() { this->stop_audio_path(); }
+  /// Compatibility one-shot used by the already-confirmed outgoing call path.
   virtual bool start_audio_path() { return true; }
   virtual void stop_audio_path() {}
 
@@ -142,6 +198,20 @@ class SipPhoneTransport {
     this->dialog_active_ctx_ = ctx;
   }
 
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  void set_video_send_state_callback(TransportVideoSendStateCallback cb,
+                                     void *ctx) {
+    this->on_video_send_state_ = cb;
+    this->on_video_send_state_ctx_ = ctx;
+  }
+
+  void set_video_active_state_callback(TransportVideoActiveStateCallback cb,
+                                       void *ctx) {
+    this->on_video_active_state_ = cb;
+    this->on_video_active_state_ctx_ = ctx;
+  }
+#endif
+
  protected:
   /// Buffer lifetime = callback duration only.
   void emit_audio_frame_(const uint8_t *pcm, size_t bytes) {
@@ -151,13 +221,15 @@ class SipPhoneTransport {
     if (this->on_audio_frame_ != nullptr) this->on_audio_frame_(this->on_audio_frame_ctx_, frame);
   }
 
-  void emit_audio_frame_(const uint8_t *pcm, size_t bytes, uint16_t sequence, uint32_t timestamp) {
+  void emit_audio_frame_(const uint8_t *pcm, size_t bytes, uint16_t sequence,
+                         uint32_t timestamp, bool source_changed = false) {
     TransportAudioFrame frame;
     frame.pcm = pcm;
     frame.bytes = bytes;
     frame.sequence = sequence;
     frame.timestamp = timestamp;
     frame.has_rtp_metadata = true;
+    frame.source_changed = source_changed;
     if (this->on_audio_frame_ != nullptr) this->on_audio_frame_(this->on_audio_frame_ctx_, frame);
   }
 
@@ -182,6 +254,21 @@ class SipPhoneTransport {
     return this->dialog_active_cb_ != nullptr && this->dialog_active_cb_(this->dialog_active_ctx_);
   }
 
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  void emit_video_send_state_(bool enabled, bool pending) {
+    if (this->on_video_send_state_ != nullptr) {
+      this->on_video_send_state_(this->on_video_send_state_ctx_, enabled,
+                                 pending);
+    }
+  }
+
+  void emit_video_active_state_(bool active) {
+    if (this->on_video_active_state_ != nullptr) {
+      this->on_video_active_state_(this->on_video_active_state_ctx_, active);
+    }
+  }
+#endif
+
  private:
   TransportAudioCallback on_audio_frame_{nullptr};
   void *on_audio_frame_ctx_{nullptr};
@@ -193,6 +280,12 @@ class SipPhoneTransport {
   void *should_accept_session_ctx_{nullptr};
   TransportDialogActiveCallback dialog_active_cb_{nullptr};
   void *dialog_active_ctx_{nullptr};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  TransportVideoSendStateCallback on_video_send_state_{nullptr};
+  void *on_video_send_state_ctx_{nullptr};
+  TransportVideoActiveStateCallback on_video_active_state_{nullptr};
+  void *on_video_active_state_ctx_{nullptr};
+#endif
 };
 
 }  // namespace voip_stack

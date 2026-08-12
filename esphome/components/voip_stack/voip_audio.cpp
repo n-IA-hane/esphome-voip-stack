@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include <esp_timer.h>
+
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 
@@ -61,6 +63,16 @@ static uint32_t frames_for_bytes(size_t bytes, size_t frame_bytes) {
   if (bytes == 0 || frame_bytes == 0)
     return 0;
   return static_cast<uint32_t>((bytes + frame_bytes - 1) / frame_bytes);
+}
+
+static TickType_t ticks_until_deadline_us(int64_t deadline_us) {
+  const int64_t remaining_us = deadline_us - esp_timer_get_time();
+  if (remaining_us <= 0)
+    return 0;
+  constexpr uint64_t us_per_second = 1000000;
+  const uint64_t ticks =
+      (static_cast<uint64_t>(remaining_us) * configTICK_RATE_HZ + us_per_second - 1) / us_per_second;
+  return static_cast<TickType_t>(std::max<uint64_t>(1, ticks));
 }
 }  // namespace
 
@@ -146,31 +158,69 @@ void VoipStack::tx_task_() {
   ESP_LOGD(TAG, "TX task started");
 
   uint8_t *const audio_chunk = this->tx_audio_chunk_;
+  int64_t next_send_at_us = 0;
+  uint8_t paced_frame_ms = 0;
 
   while (true) {
     if (!this->is_tx_stream_ready_()) {
+      next_send_at_us = 0;
+      paced_frame_ms = 0;
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
       continue;
     }
 
     if (this->mic_buffer_ == nullptr) {
+      next_send_at_us = 0;
+      paced_frame_ms = 0;
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
       continue;
     }
 
-    // Capture-clocked TX: the microphone callback is the only pacing source.
-    // Drain every complete frame immediately; RTP timestamps are sample-based,
-    // so cadence jitter belongs in the receiver jitter buffer, not a TX timer.
+    const AudioFormat tx_format = this->get_current_tx_audio_format_();
     const size_t frame_bytes = this->tx_audio_chunk_bytes_();
-    while (this->mic_buffer_->available() >= frame_bytes && this->read_tx_chunk_(audio_chunk)) {
-      this->process_tx_chunk_(audio_chunk);
-      if (!this->is_tx_stream_ready_())
-        break;
+    if (frame_bytes == 0 || tx_format.frame_ms == 0) {
+      next_send_at_us = 0;
+      paced_frame_ms = 0;
+      ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+      continue;
     }
+
+    if (paced_frame_ms != tx_format.frame_ms) {
+      next_send_at_us = 0;
+      paced_frame_ms = tx_format.frame_ms;
+    }
+
+    if (this->mic_buffer_->available() < frame_bytes) {
+      this->media_tx_queue_depth_.store(0, std::memory_order_relaxed);
+      ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+      continue;
+    }
+
+    const int64_t now_us = esp_timer_get_time();
+    if (next_send_at_us != 0 && now_us < next_send_at_us) {
+      const TickType_t wait_ticks = ticks_until_deadline_us(next_send_at_us);
+      if (wait_ticks > 0) {
+        ulTaskNotifyTake(pdTRUE, wait_ticks);
+        continue;
+      }
+    }
+
+    if (!this->read_tx_chunk_(audio_chunk))
+      continue;
+    this->process_tx_chunk_(audio_chunk);
+
+    const int64_t sent_at_us = esp_timer_get_time();
+    const int64_t frame_interval_us = static_cast<int64_t>(tx_format.frame_ms) * 1000;
+    if (next_send_at_us == 0 || sent_at_us - next_send_at_us >= frame_interval_us) {
+      // Do not burst stale frames after a scheduler or network stall.
+      next_send_at_us = sent_at_us + frame_interval_us;
+    } else {
+      next_send_at_us += frame_interval_us;
+    }
+
     this->media_tx_queue_depth_.store(
         static_cast<uint32_t>(this->mic_buffer_->available() / std::max<size_t>(1, frame_bytes)),
         std::memory_order_relaxed);
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
   }
 }
 
@@ -255,6 +305,9 @@ void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
   const size_t expected = this->get_current_rx_audio_format_().nominal_frame_bytes();
   if (frame.bytes != expected || frame.bytes > this->rx_audio_chunk_alloc_bytes_)
     return;
+  if (frame.source_changed) {
+    this->rx_jitter_buffer_->reset();
+  }
 
   const auto before = this->rx_jitter_buffer_->counters();
   RtpJitterBuffer::Frame jitter_frame;
@@ -343,7 +396,10 @@ void VoipStack::rx_task_() {
     }
 
     const AudioFormat rx_format = this->get_current_rx_audio_format_();
-    const TickType_t frame_ticks = std::max<TickType_t>(1, pdMS_TO_TICKS(rx_format.frame_ms));
+    const uint64_t frame_tick_numerator =
+        static_cast<uint64_t>(rx_format.frame_ms) * configTICK_RATE_HZ;
+    const TickType_t frame_ticks = static_cast<TickType_t>(
+        std::max<uint64_t>(1, (frame_tick_numerator + 999) / 1000));
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
     if (this->speaker_ != nullptr && !this->speaker_->is_running()) {
       ulTaskNotifyTake(pdTRUE, frame_ticks);

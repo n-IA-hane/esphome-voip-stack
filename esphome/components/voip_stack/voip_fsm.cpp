@@ -31,6 +31,13 @@ void VoipStack::set_call_identity_(const std::string &call_id,
                                       const std::string &dest_route,
                                       const std::string &dest_name) {
   LockGuard l(this->call_state_mutex_);
+  if (this->current_call_id_.empty() || this->current_call_id_ != call_id) {
+    if (caller_name == this->device_name_) {
+      this->current_dialed_dest_name_ = dest_name;
+    } else {
+      this->current_dialed_dest_name_.clear();
+    }
+  }
   this->current_call_id_ = call_id;
   this->current_caller_route_id_ = caller_route;
   this->current_caller_name_ = caller_name;
@@ -45,13 +52,15 @@ void VoipStack::clear_call_identity_() {
   this->current_caller_name_.clear();
   this->current_dest_route_id_.clear();
   this->current_dest_name_.clear();
+  this->current_dialed_dest_name_.clear();
 }
 
 VoipStack::CallSnapshot VoipStack::snapshot_call_identity_() const {
   LockGuard l(this->call_state_mutex_);
   return CallSnapshot{this->current_call_id_,
                       this->current_caller_route_id_, this->current_caller_name_,
-                      this->current_dest_route_id_, this->current_dest_name_};
+                      this->current_dest_route_id_, this->current_dest_name_,
+                      this->current_dialed_dest_name_};
 }
 
 std::string VoipStack::get_current_call_id_() const {
@@ -159,6 +168,12 @@ void VoipStack::start() {
     ESP_LOGW(TAG, "Cannot start call: already %s", this->get_call_state_str());
     return;
   }
+  if (this->transport_ != nullptr &&
+      this->transport_->snapshot().terminal_transaction_pending) {
+    ESP_LOGW(TAG,
+             "Cannot start call: prior SIP dialog is still terminating");
+    return;
+  }
 
   std::string dial_ip = this->get_current_contact_ip();
   uint16_t dial_port = this->get_current_contact_port();
@@ -174,7 +189,11 @@ void VoipStack::start() {
       : selected_dest;
   const std::string caller_route =
       this->device_route_id_.empty() ? this->device_name_ : this->device_route_id_;
-  const std::string &dest_route = dest_name;
+  const std::string dest_route = !this->pending_dialplan_target_.empty()
+      ? this->pending_dialplan_target_
+      : (this->get_current_destination_route().empty()
+             ? dest_name
+             : this->get_current_destination_route());
   const std::string call_id = caller_route + "-" + std::to_string(millis()) + "-" +
                               std::to_string(static_cast<unsigned>(esp_random())) +
                               "@" + (this->device_route_id_.empty() ? std::string("esp") : this->device_route_id_);
@@ -190,7 +209,9 @@ void VoipStack::start() {
     this->set_current_media_formats_(this->tx_audio_format_, this->rx_audio_format_, this->tx_audio_format_,
                                      this->rx_audio_format_);
     this->set_call_state_(CallState::CALLING);
-    this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
+    this->request_call_termination_(
+        {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
+         SipTerminationAction::NONE, false});
     return;
   }
 
@@ -221,9 +242,9 @@ void VoipStack::start() {
     ESP_LOGE(TAG, "%s: SIP originate to %s:%u failed",
              this->device_name_.c_str(), dial_ip.c_str(), (unsigned) dial_port);
     this->pending_dialplan_target_.clear();
-    this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
-    this->set_audio_devices_active_(false);
-    if (this->transport_) this->transport_->disconnect();
+    this->request_call_termination_(
+        {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
+         SipTerminationAction::NONE, false});
     return;
   }
 
@@ -231,9 +252,9 @@ void VoipStack::start() {
                               dest_route, dest_name)) {
     ESP_LOGE(TAG, "SIP INVITE send failed");
     this->pending_dialplan_target_.clear();
-    this->end_call_(CallEndReason::PROTOCOL_ERROR);
-    this->set_audio_devices_active_(false);
-    if (this->transport_) this->transport_->disconnect();
+    this->request_call_termination_(
+        {CallEndReason::PROTOCOL_ERROR, nullptr, SipTerminationAction::NONE,
+         false});
     return;
   }
   this->pending_dialplan_target_.clear();
@@ -256,23 +277,8 @@ void VoipStack::stop() {
            call_state_to_str(state),
            call_id.c_str());
 
-  if (!call_id.empty()) {
-    this->set_terminal_response_(call_id, "");
-  }
-  this->end_call_(CallEndReason::LOCAL_HANGUP);
-  bool waiting_for_terminal_response = false;
-  if (this->transport_ && this->transport_->is_connected() && !call_id.empty()) {
-    if (state == CallState::IN_CALL) {
-      waiting_for_terminal_response = this->send_sip_bye_(call_id);
-    } else if (state == CallState::RINGING) {
-      this->send_sip_final_response_(call_id, kReasonDeclined);
-    } else {
-      waiting_for_terminal_response = this->send_sip_cancel_(call_id);
-    }
-  }
-  this->set_audio_devices_active_(false);
-  this->set_in_call_(false);
-  if (this->transport_ && !waiting_for_terminal_response) this->transport_->disconnect();
+  this->request_call_termination_({CallEndReason::LOCAL_HANGUP, nullptr,
+                                   SipTerminationAction::AUTO, true});
 }
 
 void VoipStack::answer_call() {
@@ -289,23 +295,34 @@ void VoipStack::answer_call() {
   const std::string call_id = this->get_current_call_id_();
   ESP_LOGI(TAG, "%s: answering call (call_id=%s)",
            this->device_name_.c_str(), call_id.c_str());
-  this->set_audio_devices_active_(true);
-  if (this->transport_ && !this->transport_->start_audio_path()) {
-    ESP_LOGE(TAG, "%s: RTP start failed while answering call", this->device_name_.c_str());
-    this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
-    this->set_audio_devices_active_(false);
-    this->transport_->disconnect();
+  if (this->transport_ && !this->transport_->prepare_media_path()) {
+    ESP_LOGE(TAG, "%s: RTP prepare failed while answering call",
+             this->device_name_.c_str());
+    this->request_call_termination_(
+        {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
+         SipTerminationAction::NONE, false});
     return;
   }
+  this->set_audio_devices_active_(true);
   this->set_call_state_(CallState::CONNECTING);
   if (this->transport_ && !call_id.empty()) {
     if (!this->send_sip_answer_(call_id)) {
       ESP_LOGE(TAG, "%s: failed to send SIP answer", this->device_name_.c_str());
-      this->end_call_(CallEndReason::PROTOCOL_ERROR);
-      this->set_audio_devices_active_(false);
-      this->transport_->disconnect();
+      this->transport_->abort_media_path();
+      this->request_call_termination_(
+          {CallEndReason::PROTOCOL_ERROR, nullptr,
+           SipTerminationAction::NONE, false});
       return;
     }
+  }
+  if (this->transport_ && !this->transport_->commit_media_path()) {
+    ESP_LOGE(TAG, "%s: RTP commit failed after SIP answer",
+             this->device_name_.c_str());
+    this->transport_->abort_media_path();
+    this->request_call_termination_(
+        {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
+         SipTerminationAction::NONE, false});
+    return;
   }
   this->set_in_call_(true);  // also publishes IN_CALL state
 }
@@ -333,28 +350,14 @@ void VoipStack::decline_call(const std::string &reason) {
 
   // Empty reason => peer treats as remote_hangup; non-empty surfaces as
   // user-visible "Call ended: X".
-  const std::string call_id = this->get_current_call_id_();
   // Cached so a retransmitted INVITE with this Call-ID replays the same
   // final response instead of being seen as a fresh ring.
-  this->set_terminal_response_(call_id, reason);
-
-  this->end_call_(
-      reason.empty() ? CallEndReason::LOCAL_HANGUP : CallEndReason::DECLINED,
-      reason);
-  bool waiting_for_terminal_response = false;
-  if (this->transport_ && this->transport_->is_connected() && !call_id.empty()) {
-    const bool sent = this->send_sip_final_response_(call_id, reason);
-    // For an outgoing INVITE send_final_response() is a CANCEL. Keep the SIP
-    // dialog alive for its 200/487 exchange and bounded retransmission timer.
-    waiting_for_terminal_response = cancelling_outgoing && sent;
-  }
-  this->set_audio_devices_active_(false);
-
-  // Disconnect after end_call_ so on_connection_change_(false) sees IDLE
-  // and skips the REMOTE_HANGUP path that would mask our trigger.
-  if (this->transport_ && this->transport_->is_connected() && !waiting_for_terminal_response) {
-    this->transport_->disconnect();
-  }
+  this->request_call_termination_(
+      {reason.empty() ? CallEndReason::LOCAL_HANGUP : CallEndReason::DECLINED,
+       reason.empty() ? nullptr : reason.c_str(),
+       cancelling_outgoing ? SipTerminationAction::CANCEL
+                           : SipTerminationAction::FINAL_RESPONSE,
+       true});
 }
 
 void VoipStack::call_toggle() {
@@ -598,6 +601,52 @@ void VoipStack::set_call_state_(CallState new_state) {
   this->publish_state_();
 }
 
+void VoipStack::request_call_termination_(const TerminationIntent &intent) {
+  const CallState state = this->call_state_.load(std::memory_order_acquire);
+  if (call_state_is_terminating(state)) {
+    // A late final response or transport callback may complete the winning
+    // terminal transaction. It may advance that transaction to IDLE, but must
+    // not replace its reason, identity snapshot or SIP disposition.
+    this->finish_call_termination_();
+    return;
+  }
+  const std::string call_id = this->get_current_call_id_();
+  const std::string detail = intent.detail == nullptr ? std::string() : intent.detail;
+  const TerminationSnapshot snapshot{
+      state,
+      this->transport_ != nullptr && this->transport_->is_connected(),
+      !call_id.empty(),
+  };
+  dispatch_call_termination(
+      snapshot, intent,
+      [this, &call_id, &detail]() {
+        this->set_terminal_response_(call_id, detail);
+      },
+      [this, &call_id, &detail](SipTerminationAction action) {
+        switch (action) {
+          case SipTerminationAction::CANCEL:
+            return this->send_sip_cancel_(call_id);
+          case SipTerminationAction::BYE:
+            return this->send_sip_bye_(call_id);
+          case SipTerminationAction::FINAL_RESPONSE:
+            this->send_sip_final_response_(call_id, detail);
+            return false;
+          case SipTerminationAction::AUTO:
+          case SipTerminationAction::NONE:
+            return false;
+        }
+        return false;
+      },
+      [this, &intent, &detail]() { this->end_call_(intent.reason, detail); },
+      [this]() {
+        this->set_in_call_(false);
+        this->set_audio_devices_active_(false);
+      },
+      [this]() {
+        if (this->transport_ != nullptr) this->transport_->disconnect();
+      });
+}
+
 void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
   if (this->call_state_.load(std::memory_order_acquire) == CallState::IDLE) return;
   this->pending_dialplan_target_.clear();
@@ -609,11 +658,13 @@ void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
   const std::string call_id = call.call_id;
   this->last_terminal_call_id_ = call.call_id;
   this->last_terminal_caller_name_ = call.caller_name;
-  this->last_terminal_dest_name_ = call.dest_name;
+  this->last_terminal_dest_name_ = !call.dialed_dest_name.empty()
+                                       ? call.dialed_dest_name
+                                       : call.dest_name;
   const CurrentMediaFormats formats = this->snapshot_current_media_formats_();
   this->last_terminal_tx_audio_format_ = formats.tx;
   this->last_terminal_rx_audio_format_ = formats.rx;
-  if (!call.caller_name.empty() && call.caller_name == this->device_name_) {
+  if (!call.dialed_dest_name.empty()) {
     this->last_terminal_direction_ = "outgoing";
   } else if (!call.dest_name.empty() && call.dest_name == this->device_name_) {
     this->last_terminal_direction_ = "incoming";
@@ -670,23 +721,31 @@ void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
   // INVITE.
   this->clear_call_identity_();
 
-  this->defer([this]() {
-    const CallState state = this->call_state_.load(std::memory_order_acquire);
-    switch (state) {
-      case CallState::TERMINATING:
-      case CallState::BUSY:
-      case CallState::DECLINED:
-      case CallState::CANCELLED:
-      case CallState::MEDIA_INCOMPATIBLE:
-      case CallState::TRANSPORT_UNREACHABLE:
-      case CallState::AUTH_REQUIRED_UNSUPPORTED:
-        this->set_call_state_(CallState::IDLE);
-        this->publish_destination_();
-        break;
-      default:
-        break;
-    }
-  });
+  this->defer([this]() { this->finish_call_termination_(); });
+}
+
+void VoipStack::finish_call_termination_() {
+  if (this->transport_ != nullptr &&
+      this->transport_->snapshot().terminal_transaction_pending) {
+    ESP_LOGD(TAG, "%s: terminal SIP transaction pending, retaining terminal state",
+             this->device_name_.c_str());
+    return;
+  }
+  const CallState state = this->call_state_.load(std::memory_order_acquire);
+  switch (state) {
+    case CallState::TERMINATING:
+    case CallState::BUSY:
+    case CallState::DECLINED:
+    case CallState::CANCELLED:
+    case CallState::MEDIA_INCOMPATIBLE:
+    case CallState::TRANSPORT_UNREACHABLE:
+    case CallState::AUTH_REQUIRED_UNSUPPORTED:
+      this->set_call_state_(CallState::IDLE);
+      this->publish_destination_();
+      break;
+    default:
+      break;
+  }
 }
 
 // === Transport callbacks ===
@@ -737,67 +796,20 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
   switch (msg.type) {
     case SipSignalType::INVITE: {
       const std::string &incoming_cid = in_call_id;
-      const std::string active_cid = this->get_current_call_id_();
       const CallState state = this->call_state_.load(std::memory_order_acquire);
 
-      if (state == CallState::RINGING) {
-        if (incoming_cid == active_cid) {
-          ESP_LOGD(TAG, "INVITE retransmit while RINGING - re-sending 180");
-          this->send_sip_ringing_(active_cid);
-        } else {
-          ESP_LOGW(TAG, "%s: another caller while RINGING - 486 Busy Here",
-                   this->device_name_.c_str());
-          this->send_sip_final_response_(incoming_cid, kReasonBusy);
-        }
+      if (state != CallState::IDLE) {
+        // SipTransport owns transaction collisions, retransmissions, glare and
+        // in-dialog re-INVITEs and has already replied before emitting an
+        // application signal. Never let the UI FSM terminate or replace its
+        // current dialog in response to a second transaction authority.
+        ESP_LOGW(TAG,
+                 "%s: unexpected INVITE callback while state=%s; retaining "
+                 "the current dialog",
+                 this->device_name_.c_str(), call_state_to_str(state));
         break;
       }
-      if (state == CallState::IN_CALL) {
-        if (incoming_cid == active_cid) {
-          ESP_LOGD(TAG, "INVITE retransmit while IN_CALL - re-sending 200 OK");
-          this->send_sip_answer_(active_cid);
-        } else {
-          ESP_LOGW(TAG, "%s: another caller while IN_CALL - 486 Busy Here",
-                   this->device_name_.c_str());
-          this->send_sip_final_response_(incoming_cid, kReasonBusy);
-        }
-        break;
-      }
-      if (state == CallState::CALLING) {
-        if (incoming_cid == active_cid) {
-          ESP_LOGD(TAG, "INVITE echo of our own call_id while CALLING - ignored");
-          break;
-        }
-        // Glare: both ends dialed each other. Recognised when the
-        // inbound caller_name matches our current dest. Anything else is
-        // a third-party collision (486 Busy Here).
-        const auto active = this->snapshot_call_identity_();
-        const bool is_glare = !in_caller_name.empty() &&
-                              in_caller_name == active.dest_name;
-        if (!is_glare) {
-          ESP_LOGW(TAG, "%s: collision (we are CALLING) - sending 486 Busy Here",
-                   this->device_name_.c_str());
-          this->send_sip_final_response_(incoming_cid, kReasonBusy);
-          break;
-        }
-        // Tie-break: lexicographically lower device_name wins. Symmetric
-        // on both sides so exactly one peer survives.
-        const bool we_win = this->device_name_ < in_caller_name;
-        if (we_win) {
-          ESP_LOGW(TAG, "%s: glare with %s (we win), rejecting inbound INVITE",
-                   this->device_name_.c_str(), in_caller_name.c_str());
-          this->send_sip_final_response_(incoming_cid, "glare");
-          break;
-        }
-        ESP_LOGW(TAG, "%s: glare with %s (we lose), aborting CALLING and accepting inbound",
-                 this->device_name_.c_str(), in_caller_name.c_str());
-        // Retract silently. The peer never sees our 200 OK, so its
-        // outgoing leg dies on its own timeout; a final response here would
-        // just race the peer's success.
-        this->set_audio_devices_active_(false);
-        this->set_call_state_(CallState::IDLE);
-        goto handle_incoming_invite_in_idle;
-      }
-handle_incoming_invite_in_idle:
+
       std::string cached_cid, cached_reason;
       uint32_t cached_age_ms = UINT32_MAX;
       this->snapshot_terminal_response_(&cached_cid, &cached_reason, &cached_age_ms);
@@ -845,6 +857,12 @@ handle_incoming_invite_in_idle:
       this->set_call_identity_(incoming_cid, in_caller_route, in_caller_name,
                                 dest_route, dest_name);
       this->clear_terminal_response_();
+      if (this->transport_ != nullptr) {
+        this->transport_->set_connected_identity(
+            this->device_route_id_.empty() ? dest_route
+                                           : this->device_route_id_,
+            this->device_name_);
+      }
 
       const char *local = this->device_name_.c_str();
       const char *remote = in_caller_name.empty() ? "(unknown caller)" : in_caller_name.c_str();
@@ -860,28 +878,40 @@ handle_incoming_invite_in_idle:
       });
 
       if (this->auto_answer_) {
-        this->set_audio_devices_active_(true);
-        if (this->transport_ && !this->transport_->start_audio_path()) {
-          ESP_LOGE(TAG, "%s: RTP start failed while auto-answering call", this->device_name_.c_str());
-          this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
-          this->set_audio_devices_active_(false);
-          if (this->transport_) this->transport_->disconnect();
+        if (this->transport_ && !this->transport_->prepare_media_path()) {
+          ESP_LOGE(TAG, "%s: RTP prepare failed while auto-answering call",
+                   this->device_name_.c_str());
+          this->request_call_termination_(
+              {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
+               SipTerminationAction::NONE, false});
           break;
         }
+        this->set_audio_devices_active_(true);
         this->set_call_state_(CallState::CONNECTING);
         if (!this->send_sip_answer_(incoming_cid)) {
           ESP_LOGE(TAG, "%s: failed to send automatic SIP answer", this->device_name_.c_str());
-          this->end_call_(CallEndReason::PROTOCOL_ERROR);
-          this->set_audio_devices_active_(false);
-          if (this->transport_) this->transport_->disconnect();
+          if (this->transport_) this->transport_->abort_media_path();
+          this->request_call_termination_(
+              {CallEndReason::PROTOCOL_ERROR, nullptr,
+               SipTerminationAction::NONE, false});
+          break;
+        }
+        if (this->transport_ && !this->transport_->commit_media_path()) {
+          ESP_LOGE(TAG, "%s: RTP commit failed after automatic SIP answer",
+                   this->device_name_.c_str());
+          this->transport_->abort_media_path();
+          this->request_call_termination_(
+              {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
+               SipTerminationAction::NONE, false});
           break;
         }
         this->set_in_call_(true);
       } else {
         if (!this->send_sip_ringing_(incoming_cid)) {
           ESP_LOGE(TAG, "%s: failed to send SIP ringing response", this->device_name_.c_str());
-          this->end_call_(CallEndReason::PROTOCOL_ERROR);
-          if (this->transport_) this->transport_->disconnect();
+          this->request_call_termination_(
+              {CallEndReason::PROTOCOL_ERROR, nullptr,
+               SipTerminationAction::NONE, false});
           break;
         }
         this->ringing_start_time_ = millis();
@@ -896,11 +926,46 @@ handle_incoming_invite_in_idle:
       ESP_LOGI(TAG, "%s: remote hung up (call_id=%s)",
                this->device_name_.c_str(),
                in_call_id.c_str());
-      this->set_call_state_(CallState::TERMINATING);
-      this->end_call_(CallEndReason::REMOTE_HANGUP);
-      this->set_in_call_(false);
-      this->set_audio_devices_active_(false);
-      if (this->transport_) this->transport_->disconnect();
+      this->request_call_termination_(
+          {CallEndReason::REMOTE_HANGUP, nullptr, SipTerminationAction::NONE,
+           false});
+      break;
+    }
+
+    case SipSignalType::TERMINAL_COMPLETE:
+      this->finish_call_termination_();
+      break;
+
+    case SipSignalType::CONNECTED_IDENTITY: {
+      if (this->ignore_if_idle_or_stale_("CONNECTED_IDENTITY", in_call_id)) {
+        break;
+      }
+      const CallSnapshot call = this->snapshot_call_identity_();
+      const std::string connected_name = msg.connected_name.empty()
+                                             ? msg.connected_route
+                                             : msg.connected_name;
+      if (connected_name.empty()) break;
+      if (call.caller_name == this->device_name_) {
+        this->set_call_identity_(
+            call.call_id,
+            call.caller_route,
+            call.caller_name,
+            msg.connected_route.empty() ? call.dest_route
+                                        : msg.connected_route,
+            connected_name);
+        this->publish_destination_();
+      } else {
+        this->set_call_identity_(
+            call.call_id,
+            msg.connected_route.empty() ? call.caller_route
+                                        : msg.connected_route,
+            connected_name,
+            call.dest_route,
+            call.dest_name);
+        this->publish_caller_(connected_name);
+      }
+      ESP_LOGI(TAG, "%s: connected identity is %s",
+               this->device_name_.c_str(), connected_name.c_str());
       break;
     }
 
@@ -927,17 +992,16 @@ handle_incoming_invite_in_idle:
           ESP_LOGE(TAG,
                    "%s: 200 OK confirmed an incompatible audio format; ending call",
                    this->device_name_.c_str());
-          this->end_call_(CallEndReason::MEDIA_INCOMPATIBLE);
-          this->set_in_call_(false);
-          this->set_audio_devices_active_(false);
-          if (this->transport_) this->transport_->disconnect();
+          this->request_call_termination_(
+              {CallEndReason::MEDIA_INCOMPATIBLE, nullptr,
+               SipTerminationAction::NONE, false});
           break;
         }
         if (this->transport_ && !this->transport_->start_audio_path()) {
           ESP_LOGE(TAG, "%s: RTP start failed after SIP answer", this->device_name_.c_str());
-          this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
-          this->set_audio_devices_active_(false);
-          this->transport_->disconnect();
+          this->request_call_termination_(
+              {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
+               SipTerminationAction::NONE, false});
           break;
         }
         this->set_current_media_formats_(msg.selected_tx_format, msg.selected_rx_format, msg.selected_tx_format,
@@ -966,9 +1030,9 @@ handle_incoming_invite_in_idle:
       if (this->ignore_if_idle_or_stale_("CANCEL", in_call_id)) break;
       ESP_LOGI(TAG, "%s: remote cancelled call (call_id=%s)",
                this->device_name_.c_str(), in_call_id.c_str());
-      this->end_call_(CallEndReason::CANCELLED);
-      this->set_audio_devices_active_(false);
-      if (this->transport_) this->transport_->disconnect();
+      this->request_call_termination_(
+          {CallEndReason::CANCELLED, nullptr, SipTerminationAction::NONE,
+           false});
       break;
 
     case SipSignalType::FINAL_RESPONSE:
@@ -993,15 +1057,13 @@ handle_incoming_invite_in_idle:
                this->device_name_.c_str(), (unsigned) msg.status_code,
                detail.empty() ? call_end_reason_to_str(reason) : detail.c_str(),
                in_call_id.c_str());
-      this->end_call_(reason, detail);
-      this->set_audio_devices_active_(false);
+      this->request_call_termination_(
+          {reason, detail.empty() ? nullptr : detail.c_str(),
+           SipTerminationAction::NONE, false});
       // A malformed/incompatible 2xx still creates a confirmed SIP dialog.
       // SipTransport has already ACKed it and owns a retransmitted BYE; do not
       // clear that transaction here. A non-2xx 488 was reset by the transport
       // before the signal was emitted, so leaving it alone is also safe.
-      if (this->transport_ && msg.type != SipSignalType::MEDIA_INCOMPATIBLE) {
-        this->transport_->disconnect();
-      }
       break;
     }
 
@@ -1033,19 +1095,21 @@ void VoipStack::on_connection_change_(bool connected) {
   }
 
   ESP_LOGI(TAG, "Transport disconnected");
-  this->set_audio_devices_active_(false);
   if (this->call_state_.load(std::memory_order_acquire) != CallState::IDLE) {
-    this->end_call_(CallEndReason::TRANSPORT_UNREACHABLE);
-    this->set_in_call_(false);
+    this->request_call_termination_(
+        {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
+         SipTerminationAction::NONE, false});
   } else {
+    this->set_audio_devices_active_(false);
     this->publish_caller_("");
     this->publish_state_();
   }
 }
 
 bool VoipStack::can_accept_session_() const {
-  // Accept new TCP sessions only when IDLE or CALLING. CALLING covers
-  // the bridged-caller case where the dest connects back.
+  // This is only the coarse application-state gate. SipTransport separately
+  // freezes the selected signaling transport while it owns an INVITE/dialog
+  // or terminal transaction, so CALLING can never replace that session.
   CallState cs = this->call_state_.load(std::memory_order_acquire);
   return cs == CallState::IDLE || cs == CallState::CALLING;
 }

@@ -66,6 +66,17 @@ class SetMicGainDbAction : public Action<Ts...>, public Parented<VoipStack> {
   }
 };
 
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+template<typename... Ts>
+class SetVideoSendAction : public Action<Ts...>, public Parented<VoipStack> {
+ public:
+  TEMPLATABLE_VALUE(bool, enabled)
+  void play(const Ts &...x) override {
+    this->parent_->set_video_send(this->enabled_.value(x...));
+  }
+};
+#endif
+
 template<typename... Ts>
 class SetContactsAction : public Action<Ts...>, public Parented<VoipStack> {
  public:
