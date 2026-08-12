@@ -26,7 +26,6 @@ _LOGGER = logging.getLogger(__name__)
 CONF_VOIP_STACK_ID = "voip_stack_id"
 CONF_DC_OFFSET_REMOVAL = "dc_offset_removal"
 CONF_TASK_STACKS_IN_PSRAM = "task_stacks_in_psram"
-CONF_AUDIO_TASK_STACKS_IN_PSRAM = "audio_task_stacks_in_psram"
 CONF_BUFFERS_IN_PSRAM = "buffers_in_psram"
 CONF_MICROPHONE_SOURCE = "microphone_source"
 
@@ -46,8 +45,6 @@ CONF_HA_PHONEBOOK_TEXT_SENSOR_ID = "ha_phonebook_text_sensor_id"
 CONF_ON_RINGING = "on_ringing"
 CONF_ON_IN_CALL = "on_in_call"
 CONF_ON_IDLE = "on_idle"
-CONF_ON_VIDEO_START = "on_video_start"
-CONF_ON_VIDEO_END = "on_video_end"
 # FSM triggers
 CONF_ON_CALLING = "on_calling"
 CONF_ON_DEST_RINGING = "on_dest_ringing"
@@ -65,17 +62,6 @@ CONF_RTP_PORT = "rtp_port"
 CONF_USE_HA_AS_FIRST_CONTACT = "use_ha_as_first_contact"
 CONF_AUDIO_DEBUG = "audio_debug"
 CONF_AUDIO = "audio"
-CONF_VIDEO = "video"
-CONF_VIDEO_DEBUG = "video_debug"
-CONF_CODEC = "codec"
-CONF_SOURCE = "source"
-CONF_SINK = "sink"
-CONF_CAMERA_ID = "camera_id"
-CONF_WIDTH = "width"
-CONF_HEIGHT = "height"
-CONF_FRAMERATE = "framerate"
-CONF_OFFER_PAYLOAD_TYPE = "offer_payload_type"
-CONF_MAX_RTP_PAYLOAD = "max_rtp_payload"
 CONF_TX = "tx"
 CONF_RX = "rx"
 CONF_TX_FORMATS = "tx_formats"
@@ -101,17 +87,11 @@ CONF_TX_USES_ESP_AUDIO_STACK = "_tx_uses_esp_audio_stack"
 
 TRANSPORT_TCP = "tcp"
 TRANSPORT_UDP = "udp"
-VIDEO_CODEC_JPEG = "jpeg"
-VIDEO_CODEC_H264 = "h264"
 
 voip_stack_ns = cg.esphome_ns.namespace("voip_stack")
 VoipStack = voip_stack_ns.class_("VoipStack", cg.Component)
 TransportType = voip_stack_ns.enum("TransportType", is_class=True)
 PcmFormat = voip_stack_ns.enum("PcmFormat", is_class=True)
-EncodedVideoSource = voip_stack_ns.class_("EncodedVideoSource")
-EncodedVideoSink = voip_stack_ns.class_("EncodedVideoSink")
-VideoCodec = voip_stack_ns.enum("VideoCodec", is_class=True)
-Camera = cg.esphome_ns.namespace("camera").class_("Camera", cg.Component)
 
 PCM_FORMAT_IDS = {
     "s16le": 1,
@@ -232,72 +212,6 @@ PHONE_AUDIO_FORMAT_SCHEMA = cv.All(cv.Any(cv.one_of(CONF_AUTO, lower=True), cv.S
         ),
     }
 )), _validate_voip_audio_format)
-
-def _validate_video_payload_type(value):
-    value = cv.int_(value)
-    if value == 26 or 96 <= value <= 127:
-        return value
-    raise cv.Invalid("must be RTP/JPEG static payload type 26 or a dynamic payload type from 96 to 127")
-
-
-def _validate_video_config(value):
-    codec = value[CONF_CODEC]
-    if CONF_SOURCE in value and CONF_CAMERA_ID in value:
-        raise cv.Invalid(
-            "Use only one of voip_stack.video.source or voip_stack.video.camera_id."
-        )
-    if codec == VIDEO_CODEC_H264 and CONF_CAMERA_ID in value:
-        raise cv.Invalid(
-            "voip_stack.video.codec: h264 requires an encoded source; camera_id "
-            "is the standard JPEG camera adapter."
-        )
-    if CONF_OFFER_PAYLOAD_TYPE not in value:
-        value[CONF_OFFER_PAYLOAD_TYPE] = (
-            26 if codec == VIDEO_CODEC_JPEG else 103
-        )
-    if codec == VIDEO_CODEC_JPEG and value[CONF_OFFER_PAYLOAD_TYPE] != 26:
-        raise cv.Invalid(
-            "voip_stack.video.codec: jpeg uses the static RTP/JPEG assignment and requires "
-            "offer_payload_type: 26."
-        )
-    if codec == VIDEO_CODEC_H264 and not (
-        96 <= value[CONF_OFFER_PAYLOAD_TYPE] <= 127
-    ):
-        raise cv.Invalid(
-            "voip_stack.video.codec: h264 requires a dynamic offer_payload_type "
-            "from 96 to 127."
-        )
-    if codec == VIDEO_CODEC_JPEG and (
-        value[CONF_WIDTH] > 2040 or value[CONF_HEIGHT] > 2040
-    ):
-        raise cv.Invalid(
-            "RTP/JPEG dimensions are encoded in 8-pixel blocks and cannot "
-            "exceed 2040x2040."
-        )
-    return value
-
-
-PHONE_VIDEO_SCHEMA = cv.All(cv.Schema(
-    {
-        cv.Required(CONF_CODEC): cv.one_of(
-            VIDEO_CODEC_JPEG, VIDEO_CODEC_H264, lower=True
-        ),
-        cv.Optional(CONF_SOURCE): cv.use_id(EncodedVideoSource),
-        # ESPHome's camera base currently has no Python codegen declaration,
-        # but it is a stable C++ platform interface. Declare that exact base
-        # type locally so schema validation accepts camera entities only.
-        cv.Optional(CONF_CAMERA_ID): cv.use_id(Camera),
-        cv.Optional(CONF_SINK): cv.use_id(EncodedVideoSink),
-        cv.Optional(CONF_WIDTH, default=640): cv.int_range(min=8, max=2048),
-        cv.Optional(CONF_HEIGHT, default=480): cv.int_range(min=8, max=2048),
-        cv.Optional(CONF_FRAMERATE, default=10): cv.int_range(min=1, max=60),
-        cv.Optional(CONF_RTP_PORT, default=40002): cv.port,
-        cv.Optional(CONF_OFFER_PAYLOAD_TYPE): _validate_video_payload_type,
-        cv.Optional(CONF_MAX_RTP_PAYLOAD, default=1200): cv.int_range(
-            min=576, max=1400
-        ),
-    }
-), _validate_video_config)
 
 
 def _format_container_bits(fmt: dict) -> int:
@@ -496,7 +410,6 @@ PublishEntityStatesAction = voip_stack_ns.class_("PublishEntityStatesAction", au
 # Parameterized actions
 SetVolumeAction = voip_stack_ns.class_("SetVolumeAction", automation.Action)
 SetMicGainDbAction = voip_stack_ns.class_("SetMicGainDbAction", automation.Action)
-SetVideoSendAction = voip_stack_ns.class_("SetVideoSendAction", automation.Action)
 SetContactsAction = voip_stack_ns.class_("SetContactsAction", automation.Action)
 SetContactAction = voip_stack_ns.class_("SetContactAction", automation.Action)
 CallAction = voip_stack_ns.class_("CallAction", automation.Action)
@@ -591,10 +504,6 @@ CONFIG_SCHEMA = cv.Schema(
                 ),
             }
         ), _validate_voip_audio_config),
-        cv.Optional(CONF_VIDEO): PHONE_VIDEO_SCHEMA,
-        # Compile-time gate for per-frame/packet diagnostics. Disabled builds
-        # contain neither hot-path log branches nor their format strings.
-        cv.Optional(CONF_VIDEO_DEBUG, default=False): cv.boolean,
         # Preferred path: use the native ESPHome microphone directly. Maintained
         # esp_audio_stack profiles already expose 16 kHz / 16-bit / mono audio,
         # so MicrophoneSource would only add an avoidable copy/conversion pass.
@@ -616,10 +525,6 @@ CONFIG_SCHEMA = cv.Schema(
         # required on plain ESP32 boards without PSRAM. Set true on heavy S3/P4
         # builds when PSRAM stacks are enabled in sdkconfig.
         cv.Optional(CONF_TASK_STACKS_IN_PSRAM, default=False): cv.boolean,
-        # Realtime audio task stacks can remain in internal RAM while the
-        # signaling/video workers follow task_stacks_in_psram. Realtime audio
-        # defaults to internal RAM even when the other task stacks use PSRAM.
-        cv.Optional(CONF_AUDIO_TASK_STACKS_IN_PSRAM, default=False): cv.boolean,
         # Standalone VoIP DSP/AEC was removed. Use native ESPHome mic/speaker
         # directly, or put software AEC/AFE on esp_audio_stack and pass its
         # microphone/speaker facade here.
@@ -645,9 +550,6 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_ON_IN_CALL): automation.validate_automation(single=True),
         # Trigger when state returns to idle
         cv.Optional(CONF_ON_IDLE): automation.validate_automation(single=True),
-        # Trigger on negotiated video media lifecycle edges
-        cv.Optional(CONF_ON_VIDEO_START): automation.validate_automation(single=True),
-        cv.Optional(CONF_ON_VIDEO_END): automation.validate_automation(single=True),
         # FSM triggers
         cv.Optional(CONF_ON_CALLING): automation.validate_automation(single=True),
         cv.Optional(CONF_ON_DEST_RINGING): automation.validate_automation(single=True),
@@ -694,16 +596,10 @@ def _consume_voip_sockets(config):
     """
     from esphome.components import socket
 
-    # SIP signaling can be UDP or TCP; audio remains RTP/UDP. The third UDP
-    # socket is a private event-driven wake channel included in the SIP
-    # select() set, so command handling never needs a polling timeout.
-    socket.consume_sockets(3, "voip_stack_sip", socket.SocketType.UDP)(config)
+    # SIP signaling can be UDP or TCP; audio remains RTP/UDP.
+    socket.consume_sockets(2, "voip_stack_sip", socket.SocketType.UDP)(config)
     socket.consume_sockets(2, "voip_stack_sip_tcp")(config)
     socket.consume_sockets(1, "voip_stack_sip", socket.SocketType.TCP_LISTEN)(config)
-    if CONF_VIDEO in config:
-        # Separate RTP/RTCP sockets plus a private event-driven wake socket.
-        # They exist only in video builds; audio-only firmware pays nothing.
-        socket.consume_sockets(3, "voip_stack_video", socket.SocketType.UDP)(config)
     extra = config.get(CONF_NETWORK_SOCKET_HEADROOM, 0)
     if extra:
         socket.consume_sockets(extra, "voip_stack_headroom")(config)
@@ -713,15 +609,12 @@ def _consume_voip_sockets(config):
 def _final_validate(config):
     """Cross-component validation + socket reservation."""
     protocol = config.get(CONF_TRANSPORT, TRANSPORT_UDP)
-    audio_task_stacks_in_psram = config[CONF_AUDIO_TASK_STACKS_IN_PSRAM]
-    if config[CONF_TASK_STACKS_IN_PSRAM] or audio_task_stacks_in_psram:
+    if config[CONF_TASK_STACKS_IN_PSRAM]:
         if "psram" not in fv.full_config.get():
-            raise cv.Invalid(
-                "voip_stack task stacks in PSRAM require the psram component"
-            )
+            raise cv.Invalid("voip_stack.task_stacks_in_psram requires the psram component")
         if esp32.get_esp32_variant() == esp32.VARIANT_ESP32:
             raise cv.Invalid(
-                "voip_stack task stacks in PSRAM are unsafe on the original ESP32 because "
+                "voip_stack.task_stacks_in_psram is unsafe on the original ESP32 because "
                 "the SIP/RTP tasks call Wi-Fi/lwIP code while flash cache can be disabled. "
                 "Keep task stacks in internal RAM on ESP32; ESP32-S3/P4 are supported."
             )
@@ -740,31 +633,6 @@ def _final_validate(config):
             "voip_stack requires at least one audio direction: configure a "
             "microphone/microphone_source, a speaker, or both."
         )
-    if CONF_VIDEO in config:
-        video = config[CONF_VIDEO]
-        if (
-            CONF_SOURCE not in video
-            and CONF_CAMERA_ID not in video
-            and CONF_SINK not in video
-        ):
-            raise cv.Invalid(
-                "voip_stack.video requires at least one of source, camera_id or sink."
-            )
-        if video[CONF_RTP_PORT] == config[CONF_RTP_PORT]:
-            raise cv.Invalid(
-                "voip_stack.video.rtp_port must differ from the audio rtp_port."
-            )
-        if video[CONF_RTP_PORT] + 1 == config[CONF_RTP_PORT]:
-            raise cv.Invalid(
-                "voip_stack.video RTCP port overlaps the audio RTP port."
-            )
-        if video[CONF_RTP_PORT] >= 65535:
-            raise cv.Invalid(
-                "voip_stack.video.rtp_port must leave the following UDP port "
-                "available for RTCP."
-            )
-    elif config[CONF_VIDEO_DEBUG]:
-        raise cv.Invalid("voip_stack.video_debug requires voip_stack.video.")
 
     audio_cfg = config[CONF_AUDIO]
     audio_cfg[CONF_TX] = _resolve_audio_format(config, CONF_TX, audio_cfg[CONF_TX])
@@ -881,69 +749,7 @@ async def _add_core_settings(var, config):
 
     cg.add(var.set_dc_offset_removal(config[CONF_DC_OFFSET_REMOVAL]))
     cg.add(var.set_task_stacks_in_psram(config[CONF_TASK_STACKS_IN_PSRAM]))
-    cg.add(
-        var.set_audio_task_stacks_in_psram(
-            config[CONF_AUDIO_TASK_STACKS_IN_PSRAM]
-        )
-    )
     cg.add(var.set_buffers_in_psram(config[CONF_BUFFERS_IN_PSRAM]))
-    if CONF_VIDEO in config:
-        video = config[CONF_VIDEO]
-        cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO")
-        codec = video[CONF_CODEC]
-        if codec == VIDEO_CODEC_JPEG:
-            cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_JPEG")
-            codec_enum = VideoCodec.JPEG
-        else:
-            cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_H264")
-            codec_enum = VideoCodec.H264
-        cg.add(var.set_video_codec(codec_enum))
-        # A high-resolution JPEG frame and an H.264 keyframe both arrive as
-        # short RTP bursts. Espressif's P4 + ESP-Hosted throughput profile uses
-        # the maximum 64-entry UDP mailbox; smaller mailboxes discard fragments
-        # before the video worker can drain a complete access unit. Keep the
-        # setting compile-time gated to firmware that actually enables video.
-        esp32.add_idf_sdkconfig_option("CONFIG_LWIP_UDP_RECVMBOX_SIZE", 64)
-        if CONF_SOURCE in video:
-            source = await cg.get_variable(video[CONF_SOURCE])
-            cg.add(var.set_video_source(source))
-        if CONF_CAMERA_ID in video:
-            cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA")
-            video_camera = await cg.get_variable(video[CONF_CAMERA_ID])
-            cg.add(
-                var.set_video_camera(
-                    video_camera,
-                    video[CONF_WIDTH],
-                    video[CONF_HEIGHT],
-                    video[CONF_FRAMERATE],
-                )
-            )
-        if CONF_SINK in video:
-            sink = await cg.get_variable(video[CONF_SINK])
-            cg.add(var.set_video_sink(sink))
-        cg.add(var.set_video_rtp_port(video[CONF_RTP_PORT]))
-        cg.add(var.set_video_offer_payload_type(video[CONF_OFFER_PAYLOAD_TYPE]))
-        cg.add(var.set_video_max_rtp_payload(video[CONF_MAX_RTP_PAYLOAD]))
-        if "esp32_hosted" in (CORE.config or {}):
-            # ESP-Hosted routes audio and video through one bounded blocking
-            # SDIO queue. Let each successfully queued audio RTP packet release
-            # one video packet so camera bursts cannot starve realtime audio.
-            # Native-WiFi video builds do not carry this scheduler or semaphore.
-            cg.add_define(
-                "USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING"
-            )
-        if config[CONF_VIDEO_DEBUG]:
-            cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG")
-            if "esp32_hosted" in (CORE.config or {}):
-                # Reuse the same explicit debug gate for Espressif's own SDIO
-                # counters. Production video builds incur no reporting task or
-                # periodic wakeup when video_debug is disabled.
-                esp32.add_idf_sdkconfig_option(
-                    "CONFIG_ESP_HOSTED_PKT_STATS", True
-                )
-                esp32.add_idf_sdkconfig_option(
-                    "CONFIG_ESP_HOSTED_PKT_STATS_INTERVAL_SEC", 5
-                )
     cg.add(var.set_extension(config[CONF_EXTENSION]))
     cg.add(var.set_conference_groups(config[CONF_CONFERENCE_GROUPS]))
     cg.add(var.set_conference_ring(config[CONF_CONFERENCE_RING]))
@@ -1040,16 +846,6 @@ async def _build_voip_automations(var, config):
     if CONF_ON_IDLE in config:
         await automation.build_automation(
             var.get_idle_trigger(), [], config[CONF_ON_IDLE]
-        )
-
-    if CONF_ON_VIDEO_START in config:
-        await automation.build_automation(
-            var.get_video_start_trigger(), [], config[CONF_ON_VIDEO_START]
-        )
-
-    if CONF_ON_VIDEO_END in config:
-        await automation.build_automation(
-            var.get_video_end_trigger(), [], config[CONF_ON_VIDEO_END]
         )
 
     # FSM triggers.
@@ -1189,7 +985,6 @@ _register_simple_action("voip_stack.publish_entity_states", PublishEntityStatesA
 
 CONF_VOLUME = "volume"
 CONF_GAIN_DB = "gain_db"
-CONF_ENABLED = "enabled"
 CONF_CONTACTS_CSV = "contacts_csv"
 CONF_ROSTER_JSON = "roster_json"
 CONF_TARGET = "target"
@@ -1231,29 +1026,6 @@ _register_templated_action(
     float,
     lambda var, value: var.set_gain_db(value),
 )
-
-
-@automation.register_action(
-    "voip_stack.set_video_send",
-    SetVideoSendAction,
-    cv.Schema(
-        {
-            cv.GenerateID(): cv.use_id(VoipStack),
-            cv.Required(CONF_ENABLED): cv.templatable(cv.boolean),
-        }
-    ),
-    synchronous=True,
-)
-async def set_video_send_action_to_code(config, action_id, template_arg, args):
-    voip_config = (CORE.config or {}).get("voip_stack")
-    if not isinstance(voip_config, dict) or CONF_VIDEO not in voip_config:
-        raise cv.Invalid(
-            "voip_stack.set_video_send requires voip_stack.video."
-        )
-    var = await _new_parented_action(config, action_id, template_arg)
-    templ = await cg.templatable(config[CONF_ENABLED], args, cg.bool_)
-    cg.add(var.set_enabled(templ))
-    return var
 _register_templated_action(
     "voip_stack.set_contacts",
     SetContactsAction,

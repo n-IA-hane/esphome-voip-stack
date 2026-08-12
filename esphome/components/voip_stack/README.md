@@ -22,7 +22,7 @@ internal no-audio placeholder is `16000:s16le:1:16` and is not used to repair
 missing endpoint formats. AFE/AEC-backed branches remain
 16 kHz/s16/mono because Espressif esp-sr exposes that surface.
 
-## Audio capabilities
+## Audio Capabilities
 
 The endpoint capability is inferred from the YAML wiring:
 
@@ -47,7 +47,7 @@ negotiation and avoiding audio directions that cannot exist. User YAML should
 use the structured `add_contact` action or HA-managed roster sync instead of
 hand-building serialized endpoint rows.
 
-## Compile-time shape
+## Compile-Time Shape
 
 `voip_stack` now defines its own local compile flags from YAML:
 
@@ -62,7 +62,7 @@ component in the same firmware uses a microphone or speaker.
 The only always-present pieces are the finite-state machine, phonebook,
 transport listener/client and control signaling.
 
-## Minimal full-duplex example
+## Minimal Full-Duplex Example
 
 ```yaml
 microphone:
@@ -97,12 +97,12 @@ voip_stack:
       sample_rate: 48000
       pcm_format: s16le
       channels: 1
-      frame_ms: 10
+      frame_ms: 20
     rx:
       sample_rate: 48000
       pcm_format: s16le
       channels: 1
-      frame_ms: 10
+      frame_ms: 20
 ```
 
 Use `microphone_source:` when the ESPHome microphone is wider than the VoIP
@@ -115,7 +115,7 @@ stream you want to advertise in `audio.tx`. This is the normal shape with
 post-AEC/AFE clean microphone stream. Maintained AEC/AFE profiles publish
 `16000:s16le:1` toward VoIP.
 
-## Software AEC and AFE
+## Software AEC / AFE
 
 `voip_stack` does not own echo cancellation. Import `esp_audio_stack` plus the
 processor you want, attach that processor to `esp_audio_stack`, then give
@@ -179,7 +179,7 @@ esp_audio_stack:
   output_sample_rate: 16000
 ```
 
-## Microphone-only and speaker-only
+## Mic-Only And Speaker-Only
 
 Mic-only:
 
@@ -201,7 +201,7 @@ These are first-class modes, not degraded modes. They are useful for split
 installations, paging speakers, monitor/listen devices, and hardware that
 already exposes only one audio direction.
 
-## Removed legacy AEC and AFE options
+## Removed Legacy AEC / AFE Options
 
 Standalone `voip_stack` AEC has been removed.
 
@@ -247,7 +247,7 @@ RTP media remains UDP for both signaling transports. Setting `transport: tcp`
 does not tunnel audio over TCP; it makes SIP INVITE/ACK/BYE use TCP while SDP
 still negotiates RTP/UDP media.
 
-## Phonebook and HA routing
+## Phonebook And HA Routing
 
 Contacts can be declared directly in `voip_stack` for installs that do not
 want HA to be the only phonebook source. HA-managed sync through
@@ -310,7 +310,7 @@ ESP devices never register to the optional HA/provider trunk. If HA has a trunk,
 HA maps external numbers or inbound DTMF route digits to local phonebook
 targets and then calls ESP devices as normal SIP phones.
 
-## SIP automation hooks
+## SIP Automation Hooks
 
 SIP-aware hooks expose the call identity directly:
 
@@ -338,7 +338,7 @@ voip_stack:
 HA peer. HA-side dial-plan decisions are exposed as Home Assistant bus events
 and services by `voip_stack`.
 
-## Optional entity platforms
+## Optional Entity Platforms
 
 Declare only the native ESPHome platforms an endpoint needs:
 
@@ -351,38 +351,17 @@ The core component does not auto-load primary entity platforms. The maintained
 YAML packages provide explicit `switch:`, `number:`, `button:`, `text:` and
 `text_sensor:` entries with stable names and UI layout.
 
-## Optional SIP video
-
-One encoded video codec is compiled into each firmware:
-
-```yaml
-voip_stack:
-  video:
-    codec: jpeg
-    camera_id: p4_camera
-    sink: p4_video
-    rtp_port: 40002
-```
-
-`jpeg` uses ESPHome's standard camera platform and static RTP payload type 26.
-An H.264 build instead declares `codec: h264` with an encoded `source` and/or
-`sink`; its offer payload type defaults to dynamic PT 103. Codec-specific RTP
-code and camera adapters are compile-time gated, so an audio-only or JPEG
-firmware does not link the H.264 path.
-
-## Resource notes
+## Resource Notes
 
 - Mic ring buffer and TX chunk are allocated only when a mic path is configured.
 - No speaker ring, speaker task or AEC reference buffer exists in
   `voip_stack`.
 - Incoming audio is written directly to the configured ESPHome speaker.
 - `buffers_in_psram: true` affects only VoIP-owned staging buffers.
-- `task_stacks_in_psram: true` applies to signaling and media transport tasks
-  where supported by the transport.
-- `audio_task_stacks_in_psram` independently controls the realtime
-  `voip_tx`/`voip_rx` stacks and defaults to `false`.
+- `task_stacks_in_psram: true` applies to the VoIP TX task and transport
+  tasks where supported by the transport.
 
-## Experimental native dual-bus test
+## Experimental Native Dual-Bus Test
 
 See:
 
@@ -394,7 +373,7 @@ That profile intentionally avoids `esp_audio_stack` and binds `voip_stack` to
 native ESPHome `i2s_audio` microphone/speaker components. It is for regression
 testing standalone full-duplex, mic-only and speaker-only modes.
 
-## Protocol and security boundaries
+## Protocol And Security Boundaries
 
 - ESP endpoints do not register and do not implement SIP Digest challenges.
 - The phonebook is an outbound dial plan, not an inbound caller allowlist. Any

@@ -33,8 +33,6 @@ static inline const char *socket_errno_name(int err) {
       return "ENETUNREACH";
     case ENOBUFS:
       return "ENOBUFS";
-    case ENOMEM:
-      return "ENOMEM";
     case ENOTCONN:
       return "ENOTCONN";
     case ETIMEDOUT:
@@ -51,14 +49,6 @@ static inline const char *socket_errno_name(int err) {
 }
 
 static inline const char *socket_errno_text(int err) { return strerror(err); }
-
-static inline bool socket_errno_is_transient_tx_pressure(int err) {
-  return err == ENOMEM || err == ENOBUFS || err == EAGAIN
-#if EWOULDBLOCK != EAGAIN
-         || err == EWOULDBLOCK
-#endif
-      ;
-}
 
 }  // namespace voip_stack
 }  // namespace esphome

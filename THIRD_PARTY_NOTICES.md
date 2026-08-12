@@ -1,4 +1,4 @@
-# Third-party notices
+# Third-Party Notices
 
 Project code in this repository is MIT-licensed unless a file states otherwise.
 

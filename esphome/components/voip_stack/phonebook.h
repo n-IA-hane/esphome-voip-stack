@@ -37,7 +37,6 @@ inline const char *contact_endpoint_type_to_str(ContactEndpointType endpoint_typ
 /// configured threshold is hit. Default 0 keeps pruning disabled.
 struct ContactEntry {
   std::string name;
-  std::string route;
   std::string ip;
   ContactEndpointType endpoint_type{ContactEndpointType::UNKNOWN};
   uint16_t port{0};
@@ -62,7 +61,6 @@ class Phonebook {
  public:
   static constexpr size_t MAX_CONTACTS = 64;
   static constexpr size_t MAX_NAME_BYTES = 64;
-  static constexpr size_t MAX_ROUTE_BYTES = 96;
   static constexpr size_t MAX_ADDRESS_BYTES = 64;
   static constexpr size_t MAX_CAPABILITY_BYTES = 160;
 
@@ -128,7 +126,6 @@ class Phonebook {
   /// preserving the selected contact when that name still exists.
   bool replace_all(std::vector<ContactEntry> entries) {
     const std::string selected = this->current_name();
-    const std::string selected_route = this->current_route();
     std::vector<ContactEntry> normalized;
     normalized.reserve(std::min(entries.size(), MAX_CONTACTS));
     for (auto &entry : entries) {
@@ -138,7 +135,7 @@ class Phonebook {
       entry.missing_count = 0;
       bool replaced = false;
       for (auto &existing : normalized) {
-        if (existing.route != entry.route) continue;
+        if (existing.name != entry.name) continue;
         existing = std::move(entry);
         replaced = true;
         break;
@@ -149,10 +146,7 @@ class Phonebook {
     const bool changed = !same_entries_(this->entries_, normalized);
     this->entries_ = std::move(normalized);
     this->index_ = 0;
-    if (!selected_route.empty() && !this->select(selected_route) &&
-        !selected.empty()) {
-      this->select(selected);
-    }
+    if (!selected.empty()) this->select(selected);
     return changed;
   }
 
@@ -209,7 +203,7 @@ class Phonebook {
   /// Move the cursor to the named contact. Returns false if not present.
   bool select(const std::string &name) {
     for (size_t i = 0; i < this->entries_.size(); i++) {
-      if (this->entries_[i].name == name || this->entries_[i].route == name) {
+      if (this->entries_[i].name == name) {
         this->index_ = i;
         return true;
       }
@@ -235,7 +229,7 @@ class Phonebook {
   /// Lookup without moving the cursor (safe on the FSM hot path).
   const ContactEntry *find(const std::string &name) const {
     for (const auto &e : this->entries_) {
-      if (e.name == name || e.route == name) return &e;
+      if (e.name == name) return &e;
     }
     return nullptr;
   }
@@ -243,11 +237,6 @@ class Phonebook {
     static const std::string kEmpty;
     const auto *c = this->current();
     return c ? c->name : kEmpty;
-  }
-  const std::string &current_route() const {
-    static const std::string kEmpty;
-    const auto *c = this->current();
-    return c ? c->route : kEmpty;
   }
   const std::string &current_ip() const {
     static const std::string kEmpty;
@@ -284,7 +273,7 @@ class Phonebook {
   AddResult merge_(const ContactEntry &incoming) {
     if (!valid_entry_(incoming)) return AddResult::Rejected;
     for (auto &existing : this->entries_) {
-      if (existing.route != incoming.route) continue;
+      if (existing.name != incoming.name) continue;
       if (incoming.ip.empty() && incoming.port == 0 && incoming.rtp_port == 0) {
         return AddResult::Noop;
       }
@@ -292,13 +281,11 @@ class Phonebook {
           existing.rtp_port == incoming.rtp_port &&
           existing.endpoint_type == incoming.endpoint_type &&
           existing.sip_transport_tcp == incoming.sip_transport_tcp &&
-          existing.audio_capability == incoming.audio_capability &&
-          existing.name == incoming.name) {
+          existing.audio_capability == incoming.audio_capability) {
         return AddResult::Noop;
       }
       const bool was_unset = existing.ip.empty() && existing.port == 0 &&
                              existing.rtp_port == 0;
-      existing.name = incoming.name;
       existing.ip = incoming.ip;
       existing.endpoint_type = incoming.endpoint_type;
       existing.port = incoming.port;
@@ -314,8 +301,7 @@ class Phonebook {
   }
 
   static bool same_entry_(const ContactEntry &a, const ContactEntry &b) {
-    return a.name == b.name && a.route == b.route && a.ip == b.ip &&
-           a.endpoint_type == b.endpoint_type &&
+    return a.name == b.name && a.ip == b.ip && a.endpoint_type == b.endpoint_type &&
            a.port == b.port && a.rtp_port == b.rtp_port &&
            a.sip_transport_tcp == b.sip_transport_tcp &&
            a.audio_capability == b.audio_capability;
@@ -340,7 +326,6 @@ class Phonebook {
     ContactEntry c;
     c.name = trim_(parts[0]);
     if (c.name.empty()) return false;
-    c.route = c.name;
 
     if (!parse_short_entry_(parts, &c)) return false;
     if (!valid_entry_(c)) return false;
@@ -351,20 +336,15 @@ class Phonebook {
 
   static bool parse_short_entry_(const std::vector<std::string> &parts, ContactEntry *out) {
     if (parts.size() == 1) return true;
-    if (parts.size() != 5 && parts.size() != 6 && parts.size() != 8) return false;
+    if (parts.size() != 5 && parts.size() != 8) return false;
     out->endpoint_type = ContactEndpointType::SIP;
-    const bool has_route = parts.size() == 6;
-    if (has_route) out->route = trim_(parts[1]);
-    const size_t ip_index = has_route ? 2 : 1;
-    const size_t port_index = has_route ? 3 : 2;
-    const size_t rtp_port_index = has_route ? 4 : 3;
-    out->ip = trim_(parts[ip_index]);
+    out->ip = trim_(parts[1]);
     if (out->ip.empty()) return false;
-    if (!parse_u16_(trim_(parts[port_index]), &out->port) ||
-        !parse_u16_(trim_(parts[rtp_port_index]), &out->rtp_port)) {
+    if (!parse_u16_(trim_(parts[2]), &out->port) ||
+        !parse_u16_(trim_(parts[3]), &out->rtp_port)) {
       return false;
     }
-    const size_t transport_index = parts.size() == 8 ? 7 : parts.size() - 1;
+    const size_t transport_index = parts.size() == 8 ? 7 : 4;
     if (parts.size() == 8) out->audio_capability = trim_(parts[4]);
     const std::string transport = trim_(parts[transport_index]);
     if (transport == "sip_tcp" || transport == "SIP_TCP") {
@@ -435,9 +415,8 @@ class Phonebook {
   }
 
   static bool valid_entry_(const ContactEntry &entry) {
-    if (entry.name.empty() || entry.route.empty() ||
+    if (entry.name.empty() ||
         !valid_text_field_(entry.name, MAX_NAME_BYTES, true) ||
-        !valid_text_field_(entry.route, MAX_ROUTE_BYTES, true) ||
         !valid_text_field_(entry.ip, MAX_ADDRESS_BYTES, true) ||
         !valid_text_field_(entry.audio_capability, MAX_CAPABILITY_BYTES, true)) {
       return false;

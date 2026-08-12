@@ -4,7 +4,7 @@ A native SIP phone component for ESPHome. `voip_stack` turns an ESP32 device int
 
 It binds to standard ESPHome `microphone` and `speaker` components, so the audio source can be anything from a bare I2S MEMS microphone to the echo-cancelled output of [`esphome-audio-stack`](https://github.com/n-IA-hane/esphome-audio-stack). The component is a complete SIP phone on its own; the optional Home Assistant integration from [`esphome-intercom`](https://github.com/n-IA-hane/esphome-intercom) adds central phonebook management, call routing, a softphone/B2BUA and a Lovelace card on top of the same devices.
 
-## What this is
+## 1. What This Is
 
 ESPHome has excellent building blocks for voice devices, but no native way to make two devices call each other or carry a two-way conversation with a phone, PBX extension, Home Assistant dashboard, or another ESP. `voip_stack` fills that layer with the protocol the rest of the telephony world already speaks: SIP for call control, SDP for capability negotiation, RTP for media.
 
@@ -33,7 +33,7 @@ Two scope decisions shape the component:
 
 **Devices are peers, not trunk subscribers.** ESP devices call each other and Home Assistant directly by SIP; they never register to a PBX or provider trunk. If an installation has a trunk, Home Assistant terminates it and routes calls to ESP devices as normal SIP phones.
 
-## What it gives you
+## 2. What It Gives You
 
 **A real SIP endpoint.** INVITE/ACK/BYE over UDP or TCP signaling, SDP offer/answer, RTP media that stays UDP in both signaling modes, and a jitter buffer on the receive path.
 
@@ -61,7 +61,7 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 **Full ESPHome automation surface.** Triggers, actions and conditions are normal ESPHome automations.
 
-## Scenarios
+## 3. Scenarios It Covers
 
 | Goal | Shape |
 |---|---|
@@ -73,7 +73,9 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 | PBX/provider trunk reaching ESP devices | HA terminates the trunk and routes; ESPs stay plain SIP peers |
 | Offline installation with a fixed dial plan | `static_contacts`, no HA required |
 
-## Core concepts
+## The Manual
+
+## 4. Core Concepts
 
 **Endpoint.** The published identity of a device: name, optional host/IP, SIP port, RTP port, signaling transport, capability mode, and advertised TX/RX PCM capabilities. The `endpoint` text sensor is the authoritative record Home Assistant consumes.
 
@@ -85,7 +87,7 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 **Call FSM.** One explicit state machine drives the lifecycle. Every state is observable through the `state` text sensor, triggers and conditions. Terminal outcomes are published through `last_reason`.
 
-## Installation
+## 5. Installation
 
 ```yaml
 external_components:
@@ -105,9 +107,9 @@ external_components:
     components: [voip_stack]
 ```
 
-## Audio wiring
+## 6. Audio Wiring
 
-### Standalone native ESPHome audio
+### 6.1 Standalone Native ESPHome Audio
 
 Use native ESPHome `microphone` and `speaker` components when the hardware already returns processed audio, or for simple full-duplex tests:
 
@@ -120,8 +122,8 @@ voip_stack:
     channels: [0]
   speaker: native_speaker
   audio:
-    tx: { sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 10 }
-    rx: { sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 10 }
+    tx: { sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 20 }
+    rx: { sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 20 }
 ```
 
 Use `microphone_source:` when the ESPHome microphone is wider than the VoIP
@@ -135,7 +137,7 @@ stream you want to advertise in `audio.tx`. This is the normal shape with
 `esp_audio_stack`, because its microphone platform already publishes the
 post-AEC/AFE clean microphone stream.
 
-### Audio stack facade
+### 6.2 Audio Stack Facade
 
 This is the maintained path when software AEC/AFE, media player, Voice Assistant, Micro Wake Word or multiple consumers share the backend:
 
@@ -199,7 +201,7 @@ esp_audio_stack:
   output_sample_rate: 16000
 ```
 
-### Microphone-only and speaker-only
+### 6.3 Mic-Only and Speaker-Only
 
 ```yaml
 # Paging speaker
@@ -213,7 +215,7 @@ voip_stack:
   microphone: processed_mic
 ```
 
-## Audio format negotiation
+## 7. Audio Format Negotiation
 
 Per-direction format blocks accept `auto` per field or as the whole block:
 
@@ -232,7 +234,7 @@ rejects the eighth extra entry.
 
 RTP packet sizes are guarded by `udp_max_payload` (default 1200 bytes), enforced at validation.
 
-## Transport
+## 8. Transport
 
 SIP is the only call-control protocol. `transport` selects the SIP signaling transport; RTP media remains UDP in both modes:
 
@@ -247,7 +249,7 @@ voip_stack:
 TCP signaling is useful where UDP SIP is filtered or unreliable; per-contact
 `transport` allows mixing.
 
-## Phonebook and routing
+## 9. Phonebook and Routing
 
 ```yaml
 voip_stack:
@@ -296,7 +298,7 @@ contact by name. Home Assistant materializes the group entries, performs SIP
 forking for ring groups, mixes conference rooms, and pushes the updated roster
 back to the ESP devices.
 
-### Home Assistant inbound routing
+### Home Assistant Inbound Routing
 
 Provider/PBX trunks and automation routing belong to the optional Home
 Assistant integration, never to ESP firmware. That integration keeps the same
@@ -322,7 +324,7 @@ See the main project's
 [Automation Dial Plan](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/AUTOMATION_DIALPLAN.md)
 guide for the exact config-flow semantics and native HA automation examples.
 
-## Call lifecycle, triggers and conditions
+## 10. Call Lifecycle, Triggers and Conditions
 
 FSM states: `IDLE`, `CALLING`, `REMOTE_RINGING`, `RINGING`, `CONNECTING`, `IN_CALL`, `TERMINATING`, and terminal outcomes `BUSY`, `DECLINED`, `CANCELLED`, `MEDIA_INCOMPATIBLE`, `TRANSPORT_UNREACHABLE`, `AUTH_REQUIRED_UNSUPPORTED`.
 
@@ -334,8 +336,6 @@ Triggers:
 | `on_calling` | Outbound call enters `CALLING`; provides `peer`. |
 | `on_dest_ringing` | Remote side reports ringing; provides `peer`. |
 | `on_in_call` | Media is established; provides `peer`. |
-| `on_video_start` | Negotiated video media becomes active. Audio-only calls do not fire it. |
-| `on_video_end` | Active video media ends or is removed from an established call. |
 | `on_hangup` | Call ends normally; provides `peer` and `reason`. |
 | `on_call_failed` | Call ends in a failure terminal state; provides `peer` and `reason`. |
 | `on_idle` | FSM returns to idle. |
@@ -349,7 +349,7 @@ Conditions: `voip_stack.is_idle`, `voip_stack.is_ringing`,
 `voip_stack.is_in_call`, `voip_stack.is_calling`, `voip_stack.is_incoming`,
 `voip_stack.destination_is`, and `voip_stack.is_ha_destination`.
 
-## Actions
+## 11. Actions
 
 Call control:
 
@@ -372,7 +372,7 @@ Phonebook actions: `voip_stack.next_contact`, `voip_stack.prev_contact`,
 Audio and diagnostic actions: `voip_stack.set_volume`,
 `voip_stack.set_mic_gain_db`, and `voip_stack.publish_entity_states`.
 
-## Entities
+## 12. Entities
 
 `voip_stack:` alone enables the local SIP/RTP engine. HA discovery, card mirror
 state, editable groups and diagnostics are exposed by declaring the native
@@ -455,7 +455,7 @@ button:
     decline: { name: Decline }
 ```
 
-## Configuration reference
+## 13. Configuration Reference
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -479,24 +479,19 @@ button:
 | `dc_offset_removal` | `false` | Remove DC bias on TX. |
 | `audio_debug` | `false` | Verbose audio-path diagnostics. |
 | `buffers_in_psram` | `false` | Place VoIP-owned buffers in PSRAM. |
-| `task_stacks_in_psram` | `false` | Place signaling and media-transport task stacks in PSRAM where supported. |
-| `audio_task_stacks_in_psram` | `false` | Independently place the realtime `voip_tx`/`voip_rx` task stacks in PSRAM. |
-| `video.codec` | required with `video:` | Compile exactly one video backend: `jpeg` or `h264`. |
-| `video.camera_id` | none | Standard ESPHome camera JPEG source; valid only with `codec: jpeg`. |
-| `video.source` / `video.sink` | none | Encoded source and/or sink matching the selected codec. |
-| `video.offer_payload_type` | `26` / `103` | Static PT 26 for JPEG; dynamic PT 103 by default for H.264. |
+| `task_stacks_in_psram` | `false` | Place TX/transport task stacks in PSRAM where supported. |
 | `network_socket_headroom` | `0` | Extra lwIP sockets reserved at validation. |
 
 Removed options rejected with migration guidance: `processor_id`, `aec_reference_delay_ms`, and the old `aec:` switch platform. Software audio processing belongs to `esp_audio_stack`.
 
-## Resource notes
+## 14. Resource Notes
 
 - The mic ring buffer and TX chunk exist only when a mic path is configured.
 - There is no speaker ring, speaker task or AEC reference buffer inside `voip_stack`; incoming audio is written directly to the configured ESPHome speaker.
 - `buffers_in_psram` affects only VoIP-owned staging buffers.
 - Keep RTP payloads inside `udp_max_payload`; raising it above the real path MTU trades a compile error for intermittent one-way audio.
 
-## Scope and known boundaries
+## 15. Scope and Known Boundaries
 
 - No SIP registration or digest authentication. Calls that hit an auth challenge terminate in `AUTH_REQUIRED_UNSUPPORTED`.
 - SIP over UDP/TCP only; no TLS signaling and no SRTP.
@@ -509,7 +504,7 @@ Removed options rejected with migration guidance: `processor_id`, `aec_reference
   may send an INVITE, so plaintext SIP/RTP belongs on a trusted LAN/VPN or
   behind firewall/SBC policy.
 
-## Provenance and license
+## 16. Provenance and License
 
 This component is the SIP engine of the [`esphome-intercom`](https://github.com/n-IA-hane/esphome-intercom) platform, where it is exercised together with its Home Assistant integration, Lovelace card, maintained device YAMLs and full-experience packages. Higher layers remain in the intercom repository; this repository tracks the component itself, and `SOURCE.md` records its extraction origin and scope.
 

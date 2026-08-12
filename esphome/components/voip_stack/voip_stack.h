@@ -36,13 +36,6 @@
 
 #include "phonebook.h"
 #include "rtp_jitter_buffer.h"
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-#include "video.h"
-#endif
-#if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
-    defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
-#include "camera_video_source.h"
-#endif
 #include "sip_types.h"
 #include "transport.h"
 #include "voip_fsm.h"
@@ -122,9 +115,6 @@ class VoipStack : public Component {
 
   void set_dc_offset_removal(bool enabled) { this->dc_offset_removal_ = enabled; }
   void set_task_stacks_in_psram(bool enabled) { this->task_stacks_in_psram_ = enabled; }
-  void set_audio_task_stacks_in_psram(bool enabled) {
-    this->audio_task_stacks_in_psram_ = enabled;
-  }
   void set_buffers_in_psram(bool enabled) { this->buffers_in_psram_ = enabled; }
   void set_device_name(const std::string &name) { this->device_name_ = name; }
   void set_extension(const std::string &extension);
@@ -156,28 +146,6 @@ class VoipStack : public Component {
   void set_udp_max_payload(size_t bytes) { this->udp_max_payload_ = bytes; }
   void set_sip_port(uint16_t port) { this->sip_port_ = port; }
   void set_rtp_port(uint16_t port) { this->rtp_port_ = port; }
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  void set_video_codec(VideoCodec codec) { this->video_codec_ = codec; }
-  void set_video_source(EncodedVideoSource *source) { this->video_source_ = source; }
-  void set_video_sink(EncodedVideoSink *sink) { this->video_sink_ = sink; }
-#if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
-    defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
-  void set_video_camera(camera::Camera *camera, uint16_t width,
-                        uint16_t height, uint8_t max_fps) {
-    this->video_camera_source_.set_camera(camera);
-    this->video_camera_source_.set_dimensions(width, height);
-    this->video_camera_source_.set_max_fps(max_fps);
-    this->video_source_ = &this->video_camera_source_;
-  }
-#endif
-  void set_video_rtp_port(uint16_t port) { this->video_rtp_port_ = port; }
-  void set_video_offer_payload_type(uint8_t payload_type) {
-    this->video_offer_payload_type_ = payload_type;
-  }
-  void set_video_max_rtp_payload(size_t bytes) {
-    this->video_max_rtp_payload_ = bytes;
-  }
-#endif
   std::string get_endpoint() const { return this->build_endpoint_string_(); }
   const char *get_audio_capability() const { return this->audio_capability_(); }
 
@@ -244,25 +212,6 @@ class VoipStack : public Component {
   }
   bool is_idle() const { return this->call_state_.load(std::memory_order_acquire) == CallState::IDLE; }
   bool is_in_call() const { return this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL; }
-  bool is_video_active() const {
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-    return this->transport_ != nullptr &&
-           this->transport_->snapshot().video_running;
-#else
-    return false;
-#endif
-  }
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  bool set_video_send(bool enabled);
-  bool get_video_send() const {
-    return this->transport_ != nullptr &&
-           this->transport_->snapshot().video_send_enabled;
-  }
-  bool is_video_send_change_pending() const {
-    return this->transport_ != nullptr &&
-           this->transport_->snapshot().video_send_change_pending;
-  }
-#endif
   // True when the selected contact name matches the configured HA peer.
   // Empty ha_peer_name_ disables the check (treated as "no HA configured").
   bool is_ha_destination() const {
@@ -317,11 +266,6 @@ class VoipStack : public Component {
   void register_auto_answer_switch(switch_::Switch *sw) { this->auto_answer_switch_ = sw; }
   void register_dnd_switch(switch_::Switch *sw) { this->dnd_switch_ = sw; }
   void register_conference_ring_switch(switch_::Switch *sw) { this->conference_ring_switch_ = sw; }
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  void register_video_send_switch(switch_::Switch *sw) {
-    this->video_send_switch_ = sw;
-  }
-#endif
 #endif
 #ifdef USE_NUMBER
   // Optional number-platform registration.
@@ -350,7 +294,6 @@ class VoipStack : public Component {
   void next_contact();
   void prev_contact();
   const std::string &get_current_destination() const;
-  const std::string &get_current_destination_route() const;
   // Endpoint of the selected SIP contact. Empty/zero makes start() fail with
   // transport_unreachable; there is no implicit default peer.
   const std::string &get_current_contact_ip() const;
@@ -358,15 +301,12 @@ class VoipStack : public Component {
   uint16_t get_current_contact_rtp_port() const;
   bool get_current_contact_sip_transport_tcp() const;
   std::string get_caller() const { return this->current_caller_name_; }
-  size_t get_contact_count() const { return this->phonebook_.size(); }
   std::string get_contacts_csv() const;
 
   // Call state triggers (exposed to YAML)
   Trigger<std::string> *get_ringing_trigger() { return &this->ringing_trigger_; }
   Trigger<std::string> *get_in_call_trigger() { return &this->in_call_trigger_; }
   Trigger<> *get_idle_trigger() { return &this->idle_trigger_; }
-  Trigger<> *get_video_start_trigger() { return &this->video_start_trigger_; }
-  Trigger<> *get_video_end_trigger() { return &this->video_end_trigger_; }
   Trigger<std::string> *get_calling_trigger() { return &this->calling_trigger_; }
   Trigger<std::string> *get_dest_ringing_trigger() { return &this->dest_ringing_trigger_; }
   Trigger<std::string, std::string, std::string, std::string> *get_incoming_call_trigger() {
@@ -456,12 +396,6 @@ class VoipStack : public Component {
   static void transport_connection_callback_(void *ctx, bool connected);
   static bool transport_accept_callback_(void *ctx);
   static bool transport_dialog_active_callback_(void *ctx);
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  static void transport_video_send_state_callback_(void *ctx, bool enabled,
-                                                   bool pending);
-  static void transport_video_active_state_callback_(void *ctx, bool active);
-  void on_video_active_state_(bool active);
-#endif
   void on_audio_received_(const TransportAudioFrame &frame);
   void on_sip_signal_received_(const SipSignal &signal);
   bool ignore_if_idle_or_stale_(const char *message_name, const std::string &call_id) const;
@@ -509,12 +443,7 @@ class VoipStack : public Component {
   static std::string audio_format_token_(const AudioFormat &fmt);
 
   void set_call_state_(CallState new_state);
-  void request_call_termination_(const TerminationIntent &intent);
   void end_call_(CallEndReason reason, const std::string &detail = "");
-  void finish_call_termination_();
-  // An unanswered INVITE has no provisional response and must not be
-  // cancelled. End it as a local transaction timeout and release the dialog.
-  void fire_unanswered_invite_timeout_();
   // Shared teardown for calling/ringing timeouts: send SIP timeout,
   // cache it as terminal, end locally.
   void fire_timeout_decline_();
@@ -548,18 +477,6 @@ class VoipStack : public Component {
   size_t udp_max_payload_{UDP_SAFE_AUDIO_PAYLOAD_BYTES};
   uint16_t sip_port_{5060};
   uint16_t rtp_port_{40000};
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-#if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
-    defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
-  CameraJpegVideoSource video_camera_source_{};
-#endif
-  EncodedVideoSource *video_source_{nullptr};
-  EncodedVideoSink *video_sink_{nullptr};
-  VideoCodec video_codec_{VideoCodec::JPEG};
-  uint16_t video_rtp_port_{40002};
-  uint8_t video_offer_payload_type_{103};
-  size_t video_max_rtp_payload_{1200};
-#endif
 
   // Active SIP phone transport (created in setup() based on protocol_).
   std::unique_ptr<SipPhoneTransport> transport_;
@@ -591,9 +508,6 @@ class VoipStack : public Component {
   switch_::Switch *auto_answer_switch_{nullptr};
   switch_::Switch *dnd_switch_{nullptr};
   switch_::Switch *conference_ring_switch_{nullptr};
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  switch_::Switch *video_send_switch_{nullptr};
-#endif
 #endif
   bool entity_restore_applied_{false};
 #ifdef USE_NUMBER
@@ -685,19 +599,7 @@ class VoipStack : public Component {
   StackType_t *rx_task_stack_{nullptr};
 #endif
   bool task_stacks_in_psram_{false};
-  bool audio_task_stacks_in_psram_{false};
-  // Audio must pre-empt video encode/decode/RTP work. ESP-Hosted's four SDIO
-  // workers run at priority 23 and can stay runnable while bidirectional media
-  // is flowing. On that compile-time-gated path, priority 24 lets the short
-  // mic queue enqueue its complete audio batch first; blocking on the hosted
-  // queue immediately yields back to its priority-23 drain workers. Native
-  // network builds retain the established priority 15.
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
-  static constexpr uint8_t kTxTaskPriority = 24;
-#else
-  static constexpr uint8_t kTxTaskPriority = 15;
-#endif
-  static constexpr uint8_t kRxTaskPriority = 15;
+  static constexpr uint8_t kMediaTaskPriority = 5;
 
   std::atomic<float> volume_{1.0f};
   bool audio_debug_{false};
@@ -794,10 +696,6 @@ class VoipStack : public Component {
   std::string current_caller_name_;
   std::string current_dest_route_id_;
   std::string current_dest_name_;
-  // Original user-selected target. Connected-identity UPDATE may refine the
-  // active peer name, but must not rewrite the dialed destination reported by
-  // the terminal snapshot.
-  std::string current_dialed_dest_name_;
   // Last terminal SIP final response: replayed briefly when an INVITE with
   // the same Call-ID arrives again. The cache is time-limited so a later real
   // call between the same two devices cannot inherit the previous reason.
@@ -812,7 +710,6 @@ class VoipStack : public Component {
     std::string caller_name;
     std::string dest_route;
     std::string dest_name;
-    std::string dialed_dest_name;
   };
 
   // === Call-identity helpers (mutex-protected) ===
@@ -861,8 +758,6 @@ class VoipStack : public Component {
   Trigger<std::string> ringing_trigger_;
   Trigger<std::string> in_call_trigger_;
   Trigger<> idle_trigger_;
-  Trigger<> video_start_trigger_;
-  Trigger<> video_end_trigger_;
   Trigger<std::string> calling_trigger_;
   Trigger<std::string> dest_ringing_trigger_;
   Trigger<std::string, std::string, std::string, std::string> incoming_call_trigger_;
@@ -873,12 +768,6 @@ class VoipStack : public Component {
   Trigger<std::string> destination_changed_trigger_;
   Trigger<std::string> phonebook_update_trigger_;
   CallbackManager<void(CallState)> state_callback_{};
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  // Bit 0 marks a fresh transport event, bit 1 is the committed send state,
-  // bit 2 means an in-dialog direction transaction is still pending.
-  std::atomic<uint8_t> video_send_state_event_{0};
-  bool video_active_state_{false};
-#endif
 };
 
 #ifdef USE_SWITCH
@@ -914,18 +803,6 @@ class VoipStackConferenceRingSwitch : public switch_::Switch, public Parented<Vo
  public:
   void write_state(bool state) override { this->parent_->set_conference_ring(state); }
 };
-
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-class VoipStackVideoSendSwitch : public switch_::Switch,
-                                 public Parented<VoipStack> {
- public:
-  void write_state(bool state) override {
-    if (!this->parent_->set_video_send(state)) {
-      this->publish_state(this->parent_->get_video_send());
-    }
-  }
-};
-#endif
 #endif
 
 #ifdef USE_NUMBER

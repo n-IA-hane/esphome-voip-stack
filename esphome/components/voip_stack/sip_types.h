@@ -110,10 +110,8 @@ enum class SipSignalType : uint8_t {
   INVITE,
   STATUS_180_RINGING,
   STATUS_200_OK,
-  CONNECTED_IDENTITY,
   CANCEL,
   BYE,
-  TERMINAL_COMPLETE,
   FINAL_RESPONSE,
   OPTIONS,
   AUTH_REQUIRED,
@@ -127,10 +125,8 @@ inline const char *sip_signal_type_name(SipSignalType type) {
     case SipSignalType::INVITE: return "INVITE";
     case SipSignalType::STATUS_180_RINGING: return "180";
     case SipSignalType::STATUS_200_OK: return "200";
-    case SipSignalType::CONNECTED_IDENTITY: return "CONNECTED_IDENTITY";
     case SipSignalType::CANCEL: return "CANCEL";
     case SipSignalType::BYE: return "BYE";
-    case SipSignalType::TERMINAL_COMPLETE: return "TERMINAL_COMPLETE";
     case SipSignalType::FINAL_RESPONSE: return "FINAL_RESPONSE";
     case SipSignalType::OPTIONS: return "OPTIONS";
     case SipSignalType::AUTH_REQUIRED: return "401";
@@ -144,16 +140,11 @@ inline const char *sip_signal_type_name(SipSignalType type) {
 struct SipSignal {
   SipSignalType type{SipSignalType::PROTOCOL_ERROR};
   uint16_t status_code{0};
-  // The transport already owns the terminal ACK/BYE transaction. Consumers
-  // may end UI/media state but must not reset the dialog prematurely.
-  bool terminal_transaction_pending{false};
   std::string call_id;
   std::string caller_route;
   std::string caller_name;
   std::string dest_route;
   std::string dest_name;
-  std::string connected_route;
-  std::string connected_name;
   std::string reason;
   AudioFormatList caller_tx_formats{};
   AudioFormatList caller_rx_formats{};

@@ -242,24 +242,6 @@ bool VoipStack::setup_audio_helpers_() {
 }
 
 bool VoipStack::setup_transport_() {
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  const auto endpoint_matches_codec = [this](const VideoCapability &capability) {
-    return capability.valid() &&
-           ((this->video_codec_ == VideoCodec::JPEG && capability.is_jpeg()) ||
-            (this->video_codec_ == VideoCodec::H264 && capability.is_h264()));
-  };
-  if (this->video_source_ != nullptr &&
-      !endpoint_matches_codec(this->video_source_->get_video_capability())) {
-    ESP_LOGE(TAG, "Configured video codec does not match the source capability");
-    return false;
-  }
-  if (this->video_sink_ != nullptr &&
-      !endpoint_matches_codec(
-          this->video_sink_->get_receive_video_capability())) {
-    ESP_LOGE(TAG, "Configured video codec does not match the sink capability");
-    return false;
-  }
-#endif
 #ifdef USE_ESPHOME_VOIP_SIP_TRANSPORT
   this->transport_ = std::make_unique<SipTransport>(
       this->sip_port_, this->rtp_port_, this->udp_max_payload_, "",
@@ -275,17 +257,6 @@ bool VoipStack::setup_transport_() {
   }
 
   this->transport_->set_audio_formats(this->tx_audio_formats_, this->rx_audio_formats_);
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  this->transport_->set_video_endpoints(this->video_source_, this->video_sink_);
-  this->transport_->set_video_config(
-      this->video_codec_, this->video_rtp_port_,
-      this->video_offer_payload_type_,
-      this->video_max_rtp_payload_);
-  this->transport_->set_video_send_state_callback(
-      VoipStack::transport_video_send_state_callback_, this);
-  this->transport_->set_video_active_state_callback(
-      VoipStack::transport_video_active_state_callback_, this);
-#endif
 
   // Wire callbacks before start() so the transport task never fires into null.
   this->transport_->set_audio_callback(VoipStack::transport_audio_callback_, this);
@@ -325,42 +296,14 @@ bool VoipStack::transport_dialog_active_callback_(void *ctx) {
   return static_cast<VoipStack *>(ctx)->is_active();
 }
 
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-void VoipStack::transport_video_send_state_callback_(void *ctx, bool enabled,
-                                                     bool pending) {
-  auto *self = static_cast<VoipStack *>(ctx);
-  const uint8_t event = 0x01U | (enabled ? 0x02U : 0U) |
-                        (pending ? 0x04U : 0U);
-  self->video_send_state_event_.store(event, std::memory_order_release);
-  self->enable_loop_soon_any_context();
-}
-
-void VoipStack::transport_video_active_state_callback_(void *ctx, bool active) {
-  auto *self = static_cast<VoipStack *>(ctx);
-  self->defer(
-      [self, active]() { self->on_video_active_state_(active); });
-  self->enable_loop_soon_any_context();
-}
-
-void VoipStack::on_video_active_state_(bool active) {
-  if (this->video_active_state_ == active) return;
-  this->video_active_state_ = active;
-  if (active) {
-    this->video_start_trigger_.trigger();
-  } else {
-    this->video_end_trigger_.trigger();
-  }
-}
-#endif
-
 bool VoipStack::start_runtime_tasks_() {
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
   // TX task exists only when a microphone is configured. Speaker-only peers
   // still accept calls and play incoming audio through the transport recv task.
   if (this->has_microphone_()) {
     if (!voip_audio_core::start_pinned_task(VoipStack::tx_task, "voip_tx",
-                                             VoipStack::kTxTaskStackBytes, this, VoipStack::kTxTaskPriority, 0,
-                                             this->audio_task_stacks_in_psram_, TAG,
+                                             VoipStack::kTxTaskStackBytes, this, VoipStack::kMediaTaskPriority, 0,
+                                             this->task_stacks_in_psram_, TAG,
                                              &this->tx_task_handle_, &this->tx_task_tcb_,
                                              &this->tx_task_stack_)) {
       return false;
@@ -370,8 +313,8 @@ bool VoipStack::start_runtime_tasks_() {
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   if (this->has_speaker_()) {
     if (!voip_audio_core::start_pinned_task(VoipStack::rx_task, "voip_rx",
-                                             VoipStack::kRxTaskStackBytes, this, VoipStack::kRxTaskPriority, 0,
-                                             this->audio_task_stacks_in_psram_, TAG,
+                                             VoipStack::kRxTaskStackBytes, this, VoipStack::kMediaTaskPriority, 0,
+                                             this->task_stacks_in_psram_, TAG,
                                              &this->rx_task_handle_, &this->rx_task_tcb_,
                                              &this->rx_task_stack_)) {
       return false;
@@ -399,11 +342,6 @@ void VoipStack::fail_setup_() {
 
 void VoipStack::setup() {
   ESP_LOGI(TAG, "Setting up VoIP Stack...");
-
-#if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
-    defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
-  this->video_camera_source_.register_listener();
-#endif
 
   ESP_LOGI(TAG, "Audio capability: %s (SIP/%s, tasks: %s)",
            this->audio_capability_(),
@@ -461,7 +399,7 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
                "SIP INVITE timeout after %" PRIu32 " ms without response - ending call "
                "(call_id=%s)",
                INVITE_NO_RESPONSE_TIMEOUT_MS, cid.c_str());
-      this->fire_unanswered_invite_timeout_();
+      this->fire_timeout_decline_();
       return;
     }
   }
@@ -491,27 +429,21 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
       const std::string cid = this->get_current_call_id_();
       ESP_LOGW(TAG, "Media timeout after %u ms without RTP - ending call (call_id=%s)",
                (unsigned) MEDIA_TIMEOUT_MS, cid.c_str());
-      this->request_call_termination_(
-          {CallEndReason::MEDIA_TIMEOUT, kReasonMediaTimeout,
-           SipTerminationAction::BYE, true});
+      this->set_terminal_response_(cid, kReasonMediaTimeout);
+      this->end_call_(CallEndReason::MEDIA_TIMEOUT, kReasonMediaTimeout);
+      bool waiting_for_bye_response = false;
+      if (this->transport_ && this->transport_->is_connected() && !cid.empty()) {
+        waiting_for_bye_response = this->send_sip_bye_(cid);
+      }
+      this->set_in_call_(false);
+      this->set_audio_devices_active_(false);
+      if (this->transport_ && !waiting_for_bye_response) this->transport_->disconnect();
     }
   }
 }
 
 void VoipStack::loop() {
   uint32_t now = millis();
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  const uint8_t video_send_event =
-      this->video_send_state_event_.exchange(0, std::memory_order_acq_rel);
-#ifdef USE_SWITCH
-  if ((video_send_event & 0x01U) != 0 &&
-      (video_send_event & 0x04U) == 0 &&
-      this->video_send_switch_ != nullptr) {
-    this->video_send_switch_->publish_state(
-        (video_send_event & 0x02U) != 0);
-  }
-#endif
-#endif
   if (this->endpoint_publish_requested_.exchange(false, std::memory_order_acq_rel)) {
     this->publish_endpoint_();
   }
@@ -547,24 +479,23 @@ void VoipStack::loop() {
   }
 }
 
-void VoipStack::fire_unanswered_invite_timeout_() {
-  // RFC 3261 section 9.1 forbids sending CANCEL before any provisional
-  // response. Treat the unanswered INVITE as a local 408 and release its
-  // transaction so a new call can start immediately.
-  this->request_call_termination_(
-      {CallEndReason::TIMEOUT, kReasonTimeout, SipTerminationAction::NONE,
-       true});
-}
-
 void VoipStack::fire_timeout_decline_() {
   // Timeout sends CANCEL for pending outbound INVITE or a SIP final response
   // for inbound ringing.
+  const std::string call_id = this->get_current_call_id_();
   const CallState state = this->call_state_.load(std::memory_order_acquire);
-  this->request_call_termination_(
-      {CallEndReason::TIMEOUT, kReasonTimeout,
-       state == CallState::RINGING ? SipTerminationAction::FINAL_RESPONSE
-                                   : SipTerminationAction::CANCEL,
-       true});
+  bool waiting_for_terminal_response = false;
+  if (this->transport_ && this->transport_->is_connected() && !call_id.empty()) {
+    if (state == CallState::RINGING) {
+      this->send_sip_final_response_(call_id, kReasonTimeout);
+    } else {
+      waiting_for_terminal_response = this->send_sip_cancel_(call_id);
+    }
+  }
+  this->set_terminal_response_(call_id, kReasonTimeout);
+  this->set_audio_devices_active_(false);
+  this->end_call_(CallEndReason::TIMEOUT, kReasonTimeout);
+  if (this->transport_ && !waiting_for_terminal_response) this->transport_->disconnect();
 }
 
 void VoipStack::dump_config() {
@@ -576,14 +507,6 @@ void VoipStack::dump_config() {
   }
   ESP_LOGCONFIG(TAG, "  SIP listen port: %u", (unsigned) this->sip_port_);
   ESP_LOGCONFIG(TAG, "  RTP port: %u", (unsigned) this->rtp_port_);
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  ESP_LOGCONFIG(TAG, "  Video RTP port: %u", (unsigned) this->video_rtp_port_);
-  ESP_LOGCONFIG(TAG, "  Video: %s%s PT=%u max_payload=%u",
-                this->video_source_ != nullptr ? "send" : "",
-                this->video_sink_ != nullptr ? "recv" : "",
-                (unsigned) this->video_offer_payload_type_,
-                (unsigned) this->video_max_rtp_payload_);
-#endif
   ESP_LOGCONFIG(TAG, "  Routing: SIP dial plan");
   ESP_LOGCONFIG(TAG, "  HA peer name: %s", this->ha_peer_name_.c_str());
   ESP_LOGCONFIG(TAG, "  Audio capability: %s", this->audio_capability_());
@@ -618,18 +541,6 @@ void VoipStack::set_remote_endpoint(const std::string &ip, uint16_t port, uint16
   ESP_LOGI(TAG, "Remote endpoint updated to SIP %s:%u RTP %u", ip.c_str(), (unsigned) port,
            (unsigned) (rtp_port != 0 ? rtp_port : this->rtp_port_));
 }
-
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-bool VoipStack::set_video_send(bool enabled) {
-  if (this->call_state_.load(std::memory_order_acquire) !=
-          CallState::IN_CALL ||
-      this->transport_ == nullptr) {
-    ESP_LOGW(TAG, "Video send direction can only change during an active call");
-    return false;
-  }
-  return this->transport_->request_video_send(enabled);
-}
-#endif
 
 void VoipStack::set_remote_sip_transport_tcp(bool tcp) {
   if (this->transport_ != nullptr) {
@@ -703,20 +614,13 @@ std::string VoipStack::build_endpoint_string_() const {
   };
   const std::string tx = format_list_token(this->tx_audio_formats_);
   const std::string rx = format_list_token(this->rx_audio_formats_);
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-  constexpr const char *video_extra = " | video=jpeg";
-#elif defined(USE_ESPHOME_VOIP_STACK_VIDEO_H264)
-  constexpr const char *video_extra = " | video=h264";
-#else
-  constexpr const char *video_extra = "";
-#endif
   char buf[640];
   const int written = snprintf(
-      buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s%s",
+      buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s",
       name.c_str(), ip.c_str(), (unsigned) this->sip_port_, (unsigned) this->rtp_port_,
       this->audio_capability_(), tx.c_str(), rx.c_str(),
       this->protocol_ == TransportType::TCP ? "sip_tcp" : "sip_udp",
-      this->extension_.c_str(), video_extra);
+      this->extension_.c_str());
   if (written < 0 || written >= (int) sizeof(buf)) {
     ESP_LOGW(TAG, "VoIP endpoint string truncated; endpoint will not be published");
     return "";
@@ -806,13 +710,6 @@ std::string VoipStack::build_sip_snapshot_string_() const {
   }
   uint32_t rtp_tx_packets = 0;
   uint32_t rtp_rx_packets = 0;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  uint32_t video_tx_packets = 0;
-  uint32_t video_rx_packets = 0;
-  uint32_t video_tx_access_units = 0;
-  uint32_t video_rx_access_units = 0;
-  uint8_t media_lifecycle_phase = 0;
-#endif
   uint16_t sip_status = 0;
   const char *last_event = "";
   const CurrentMediaFormats current_formats = this->snapshot_current_media_formats_();
@@ -827,13 +724,6 @@ std::string VoipStack::build_sip_snapshot_string_() const {
     const SipTransportSnapshot snap = this->transport_->snapshot();
     rtp_tx_packets = snap.rtp_tx_packets;
     rtp_rx_packets = snap.rtp_rx_packets;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-    video_tx_packets = snap.video_tx_packets;
-    video_rx_packets = snap.video_rx_packets;
-    video_tx_access_units = snap.video_tx_access_units;
-    video_rx_access_units = snap.video_rx_access_units;
-    media_lifecycle_phase = snap.media_lifecycle_phase;
-#endif
     sip_status = snap.last_sip_status_code;
     last_event = snap.last_sip_event;
     if (this->call_state_.load(std::memory_order_acquire) != CallState::IDLE || this->last_reason_.empty()) {
@@ -865,27 +755,16 @@ std::string VoipStack::build_sip_snapshot_string_() const {
            (unsigned) this->media_rx_queue_drops_.load(std::memory_order_relaxed),
            field_escape(this->last_reason_, 22).c_str(),
            field_escape(last_event, 22).c_str());
-  std::string result(out);
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  char video[72];
-  snprintf(video, sizeof(video),
-           "; vt=%u; vr=%u; vat=%u; var=%u; mlp=%u",
-           (unsigned) video_tx_packets, (unsigned) video_rx_packets,
-           (unsigned) video_tx_access_units,
-           (unsigned) video_rx_access_units,
-           (unsigned) media_lifecycle_phase);
-  result += video;
-#endif
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
   if (this->audio_debug_) {
     char debug[48];
     snprintf(debug, sizeof(debug), "; rsil=%u; spkshort=%u",
              (unsigned) this->audio_debug_rx_silence_frames_.load(std::memory_order_relaxed),
              (unsigned) this->audio_debug_speaker_short_writes_.load(std::memory_order_relaxed));
-    result += debug;
+    return std::string(out) + debug;
   }
 #endif
-  return result;
+  return out;
 }
 
 void VoipStack::publish_sip_snapshot_() {
@@ -976,11 +855,6 @@ void VoipStack::publish_entity_states() {
     }
     this->dnd_switch_->publish_state(this->do_not_disturb_);
   }
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  if (this->video_send_switch_ != nullptr) {
-    this->video_send_switch_->publish_state(this->get_video_send());
-  }
-#endif
 #else
   (void) apply_restore;
 #endif
