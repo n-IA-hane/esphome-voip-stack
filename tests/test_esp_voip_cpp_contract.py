@@ -1700,7 +1700,9 @@ def test_audio_path_uses_event_driven_tx_pacing_and_sink_backpressure() -> None:
     assert "ticks_until_deadline_us(next_send_at_us)" in tx_task
     assert "ulTaskNotifyTake(pdTRUE, wait_ticks);" in tx_task
     assert "while (this->mic_buffer_->available()" not in tx_task
-    assert "sent_at_us - next_send_at_us >= frame_interval_us" in tx_task
+    assert "next_send_at_us + frame_interval_us" in tx_task
+    assert "sent_at_us - next_send_at_us" not in tx_task
+    assert "next_send_at_us = sent_at_us + frame_interval_us" not in tx_task
     assert "vTaskDelay" not in tx_task
     assert "TickType_t wait_budget = ticks_to_wait" in audio
     assert "speaker_->play(pcm + offset, bytes - offset, wait_budget)" in audio
@@ -2345,7 +2347,7 @@ def test_simultaneous_invites_preserve_local_transaction_and_reject_glare() -> N
 
     assert "const bool glare = this->outgoing_invite_pending_" in inbound
     assert "active_peer_ip == src_ip" in inbound
-    assert "incoming_caller_name == this->dest_name_" in inbound
+    assert "incoming_caller_name == this->destination_.name" in inbound
     glare = inbound[
         inbound.index("// One transport owns one dialog") :
         inbound.index("\n  const uint32_t active_peer_ip", inbound.index("// One transport owns one dialog"))
@@ -3329,6 +3331,21 @@ def test_udp_provisional_response_survives_transient_tx_pressure() -> None:
     assert "provisional.clear();" in pump
     sip_task = cpp_method(source, r"SipTransport::sip_task_")
     assert "include_at(this->pending_provisional_response_.next_ms);" in sip_task
+
+
+def test_sdp_media_shape_uses_one_bounded_signaling_allocation() -> None:
+    header = read("sip_transport.h")
+    sdp = read("sip_sdp.cpp")
+
+    shape = header[
+        header.index("struct RemoteMediaShape") :
+        header.index("} remote_media_shape_;")
+    ]
+    assert "SipSignalingString lines;" in shape
+    assert "uint16_t offsets[kMaxSdpMediaLines + 1]{};" in shape
+    assert "std::vector<std::string>" not in shape
+    assert "this->remote_media_shape_.append(line)" in sdp
+    assert "this->remote_media_shape_.line(index)" in sdp
 
 
 def test_roster_json_uses_address_direct_or_ha_route_without_kind_semantics() -> None:

@@ -34,36 +34,27 @@ std::string SipTransport::wrap_sdp_envelope_(const std::string &local_ip, const 
 }
 
 void SipTransport::capture_remote_media_shape_(const std::string &sdp) {
-  this->remote_offer_media_lines_.clear();
-  this->remote_audio_media_index_ = -1;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  this->remote_video_media_index_ = -1;
-#endif
-  this->remote_media_shape_overflow_ = false;
+  this->remote_media_shape_.clear();
   size_t pos = 0;
   while (pos < sdp.size()) {
     size_t end = sdp.find("\r\n", pos);
     if (end == std::string::npos) end = sdp.size();
     const std::string line = sdp.substr(pos, end - pos);
     if (line.rfind("m=", 0) == 0) {
-      if (this->remote_offer_media_lines_.size() >= kMaxSdpMediaLines) {
-        this->remote_media_shape_overflow_ = true;
-      } else {
-        const int8_t index = static_cast<int8_t>(
-            this->remote_offer_media_lines_.size());
-        this->remote_offer_media_lines_.push_back(line);
-        if (this->remote_audio_media_index_ < 0) {
+      const int8_t index = this->remote_media_shape_.count;
+      if (this->remote_media_shape_.append(line)) {
+        if (this->remote_media_shape_.audio_index < 0) {
           bool payloads[128]{};
           uint16_t port = 0;
           if (parse_audio_media_line(line, &port, payloads))
-            this->remote_audio_media_index_ = index;
+            this->remote_media_shape_.audio_index = index;
         }
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-        if (this->remote_video_media_index_ < 0) {
+        if (this->remote_media_shape_.video_index < 0) {
           bool payloads[128]{};
           uint16_t port = 0;
           if (parse_video_media_line(line, &port, payloads))
-            this->remote_video_media_index_ = index;
+            this->remote_media_shape_.video_index = index;
         }
 #endif
       }
@@ -252,8 +243,8 @@ std::string SipTransport::build_sdp_answer_() const {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   video = this->append_video_sdp_("", local_ip, true);
 #endif
-  if (this->remote_offer_media_lines_.empty()) return audio_sdp + video;
-  if (this->remote_media_shape_overflow_) {
+  if (this->remote_media_shape_.empty()) return audio_sdp + video;
+  if (this->remote_media_shape_.overflow) {
     ESP_LOGW(TAG, "SIP SDP answer refused: more than %u media lines",
              (unsigned) kMaxSdpMediaLines);
     return "";
@@ -263,18 +254,17 @@ std::string SipTransport::build_sdp_answer_() const {
   // m-line, in the same order. Unsupported and duplicate streams are retained
   // with port zero instead of being silently omitted or reordered.
   std::string answer = session;
-  for (size_t index = 0; index < this->remote_offer_media_lines_.size();
-       index++) {
-    if (static_cast<int>(index) == this->remote_audio_media_index_) {
+  for (size_t index = 0; index < this->remote_media_shape_.count; index++) {
+    if (static_cast<int>(index) == this->remote_media_shape_.audio_index) {
       answer += audio;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-    } else if (static_cast<int>(index) == this->remote_video_media_index_ &&
+    } else if (static_cast<int>(index) == this->remote_media_shape_.video_index &&
                !video.empty()) {
       answer += video;
 #endif
     } else {
-      const std::string rejected =
-          this->rejected_media_answer_(this->remote_offer_media_lines_[index]);
+      const std::string rejected = this->rejected_media_answer_(
+          this->remote_media_shape_.line(index));
       if (rejected.empty()) return "";
       answer += rejected;
     }
@@ -286,7 +276,7 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
                                               uint32_t default_ip,
                                               bool remote_is_answer) {
   this->capture_remote_media_shape_(sdp);
-  if (this->remote_media_shape_overflow_) {
+  if (this->remote_media_shape_.overflow) {
     ESP_LOGW(TAG, "SIP SDP rejected: too many media lines");
     return false;
   }

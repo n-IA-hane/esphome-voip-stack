@@ -1038,19 +1038,12 @@ void SipTransport::reset_dialog_media_locked_() {
   this->remote_dialog_cseq_ = 0;
   this->last_invite_peer_ip_v4_ = 0;
   this->last_invite_peer_port_ = 0;
-  reset_string(this->caller_route_);
-  reset_string(this->caller_name_);
-  reset_string(this->dest_route_);
-  reset_string(this->dest_name_);
+  this->caller_.clear();
+  this->destination_.clear();
   this->peer_supports_from_change_ = false;
   this->connected_identity_sent_ = false;
   this->dialog_originated_ = false;
-  this->remote_offer_media_lines_.clear();
-  this->remote_audio_media_index_ = -1;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  this->remote_video_media_index_ = -1;
-#endif
-  this->remote_media_shape_overflow_ = false;
+  this->remote_media_shape_.clear();
   this->close_media_session_();
   this->outgoing_invite_pending_.store(false, std::memory_order_release);
   this->cancel_requested_.store(false, std::memory_order_release);
@@ -1602,10 +1595,7 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
       this->remote_rtp_ip_v4_.load(std::memory_order_acquire);
   const uint16_t old_audio_port =
       this->remote_rtp_port_.load(std::memory_order_acquire);
-  const auto old_media_lines = this->remote_offer_media_lines_;
-  const int8_t old_audio_index = this->remote_audio_media_index_;
-  const int8_t old_video_index = this->remote_video_media_index_;
-  const bool old_shape_overflow = this->remote_media_shape_overflow_;
+  const auto old_media_shape = this->remote_media_shape_;
   const bool old_video_offered = this->video_offered_;
   const bool old_video_negotiated = this->video_negotiated_;
   const bool old_video_send = this->video_send_enabled_;
@@ -1642,10 +1632,7 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
   this->set_media_config_(old_tx, old_rx, old_tx_pt, old_rx_pt);
   this->remote_rtp_ip_v4_.store(old_audio_ip, std::memory_order_release);
   this->remote_rtp_port_.store(old_audio_port, std::memory_order_release);
-  this->remote_offer_media_lines_ = old_media_lines;
-  this->remote_audio_media_index_ = old_audio_index;
-  this->remote_video_media_index_ = old_video_index;
-  this->remote_media_shape_overflow_ = old_shape_overflow;
+  this->remote_media_shape_ = old_media_shape;
   this->video_offered_ = old_video_offered;
   this->video_negotiated_ = old_video_negotiated;
   this->video_send_enabled_ = old_video_send;
@@ -1756,10 +1743,8 @@ bool SipTransport::send_invite(const std::string &call_id,
   if (this->sdp_session_id_ == 0) this->sdp_session_id_ = 1;
   this->sdp_session_version_ = 0;
   this->dialog_originated_ = true;
-  this->caller_route_ = caller_route;
-  this->caller_name_ = caller_name;
-  this->dest_route_ = dest_route;
-  this->dest_name_ = dest_name;
+  this->caller_ = {caller_route, caller_name};
+  this->destination_ = {dest_route, dest_name};
   this->last_sip_status_code_.store(0, std::memory_order_release);
   const uint32_t ip = this->remote_ip_v4_.load(std::memory_order_acquire);
   if (ip == 0) {
@@ -1777,19 +1762,19 @@ bool SipTransport::send_invite(const std::string &call_id,
   inet_ntoa_r(a, ip_text, sizeof(ip_text));
   const char *uri_transport = this->remote_sip_tcp_.load(std::memory_order_acquire) ? "tcp" : "udp";
   const std::string local_identity_uri =
-      "sip:" + sip_uri_user_encode(this->caller_route_) + "@" + local_ip +
+      "sip:" + sip_uri_user_encode(this->caller_.route) + "@" + local_ip +
       ":" + std::to_string(this->sip_port_) + ";transport=" + uri_transport;
   const std::string remote_identity_uri =
-      "sip:" + sip_uri_user_encode(this->dest_route_) + "@" +
+      "sip:" + sip_uri_user_encode(this->destination_.route) + "@" +
       std::string(ip_text) + ":" +
       std::to_string(this->remote_sip_port_.load(std::memory_order_acquire)) +
       ";transport=" + uri_transport;
-  this->local_uri_ = sip_name_addr(local_identity_uri, this->caller_name_);
+  this->local_uri_ = sip_name_addr(local_identity_uri, this->caller_.name);
   this->local_contact_uri_ = sip_name_addr(local_identity_uri);
-  this->remote_uri_ = sip_name_addr(remote_identity_uri, this->dest_name_);
+  this->remote_uri_ = sip_name_addr(remote_identity_uri, this->destination_.name);
   this->remote_target_uri_ = strip_angle_uri(this->remote_uri_);
   ESP_LOGI(TAG, "SIP INVITE call_id=%s from=%s to=%s", this->call_id_.c_str(),
-           this->caller_name_.c_str(), this->dest_name_.c_str());
+           this->caller_.name.c_str(), this->destination_.name.c_str());
   std::string sdp;
   {
     LockGuard media_lock(this->media_lifecycle_mutex_);
@@ -2289,8 +2274,8 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   if (!incoming_call_id.empty() && !this->call_id_.empty() && incoming_call_id != this->call_id_) {
     const uint32_t active_peer_ip = this->remote_ip_v4_.load(std::memory_order_acquire);
     const bool glare = this->outgoing_invite_pending_.load(std::memory_order_acquire) &&
-                       active_peer_ip == src_ip && !this->caller_name_.empty() &&
-                       incoming_caller_name == this->dest_name_;
+                       active_peer_ip == src_ip && !this->caller_.name.empty() &&
+                       incoming_caller_name == this->destination_.name;
     if (!glare) {
       ESP_LOGW(TAG, "SIP INVITE rejected busy: active_call_id=%s incoming_call_id=%s",
                this->call_id_.c_str(), incoming_call_id.c_str());
@@ -2416,25 +2401,26 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
     this->reset_dialog_();
     return sent;
   }
-  this->caller_name_ = from_user;
-  this->dest_name_ = to_user;
-  this->caller_route_ = sip_route_id(
+  this->caller_.name = from_user;
+  this->destination_.name = to_user;
+  this->caller_.route = sip_route_id(
       sip_user_from_header(incoming_from), VOIP_STACK_MAX_ROUTE_ID_LEN);
-  this->dest_route_ = sip_route_id(
+  this->destination_.route = sip_route_id(
       sip_user_from_header(sip_request_uri(message)),
       VOIP_STACK_MAX_ROUTE_ID_LEN);
-  if (this->caller_route_.empty()) {
-    this->caller_route_ = sip_route_id(
+  if (this->caller_.route.empty()) {
+    this->caller_.route = sip_route_id(
         header_value(message, "X-Voip-Stack-Caller-Route"),
         VOIP_STACK_MAX_ROUTE_ID_LEN);
   }
-  if (this->dest_route_.empty()) {
-    this->dest_route_ = sip_route_id(
+  if (this->destination_.route.empty()) {
+    this->destination_.route = sip_route_id(
         header_value(message, "X-Voip-Stack-Dest-Route"),
         VOIP_STACK_MAX_ROUTE_ID_LEN);
   }
-  if (this->caller_route_.empty()) this->caller_route_ = this->caller_name_;
-  if (this->dest_route_.empty()) this->dest_route_ = this->dest_name_;
+  if (this->caller_.route.empty()) this->caller_.route = this->caller_.name;
+  if (this->destination_.route.empty())
+    this->destination_.route = this->destination_.name;
 
   ESP_LOGI(TAG, "SIP INVITE accepted into FSM call_id=%s", this->call_id_.c_str());
   AudioFormat selected_tx;
@@ -2443,10 +2429,10 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   SipSignal signal;
   signal.type = SipSignalType::INVITE;
   signal.call_id = this->call_id_;
-  signal.caller_route = this->caller_route_;
-  signal.caller_name = this->caller_name_;
-  signal.dest_route = this->dest_route_;
-  signal.dest_name = this->dest_name_;
+  signal.caller_route = this->caller_.route;
+  signal.caller_name = this->caller_.name;
+  signal.dest_route = this->destination_.route;
+  signal.dest_name = this->destination_.name;
   signal.caller_tx_formats.formats[0] = selected_rx;
   signal.caller_tx_formats.count = 1;
   signal.caller_rx_formats.formats[0] = selected_tx;
@@ -2530,12 +2516,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
       this->remote_rtp_ip_v4_.load(std::memory_order_acquire);
   const uint16_t old_audio_port =
       this->remote_rtp_port_.load(std::memory_order_acquire);
-  const auto old_media_lines = this->remote_offer_media_lines_;
-  const int8_t old_audio_index = this->remote_audio_media_index_;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  const int8_t old_video_index = this->remote_video_media_index_;
-#endif
-  const bool old_shape_overflow = this->remote_media_shape_overflow_;
+  const auto old_media_shape = this->remote_media_shape_;
   const std::string old_last_invite_via = this->last_invite_via_;
   const std::string old_last_invite_from = this->last_invite_from_;
   const std::string old_last_invite_to = this->last_invite_to_;
@@ -2567,11 +2548,8 @@ bool SipTransport::handle_reinvite_(const std::string &message,
     this->set_media_config_(old_tx, old_rx, old_tx_pt, old_rx_pt);
     this->remote_rtp_ip_v4_.store(old_audio_ip, std::memory_order_release);
     this->remote_rtp_port_.store(old_audio_port, std::memory_order_release);
-    this->remote_offer_media_lines_ = old_media_lines;
-    this->remote_audio_media_index_ = old_audio_index;
-    this->remote_media_shape_overflow_ = old_shape_overflow;
+    this->remote_media_shape_ = old_media_shape;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-    this->remote_video_media_index_ = old_video_index;
     this->video_offered_ = old_video_offered;
     this->video_negotiated_ = old_video_negotiated;
     this->video_send_enabled_ = old_video_send;
@@ -2900,11 +2878,9 @@ bool SipTransport::handle_update_(const std::string &message,
   if (!refreshed_target.empty()) this->remote_target_uri_ = refreshed_target;
   this->remote_dialog_cseq_ = sequence;
   if (this->dialog_originated_) {
-    this->dest_route_ = identity_route;
-    this->dest_name_ = identity_name;
+    this->destination_ = {identity_route, identity_name};
   } else {
-    this->caller_route_ = identity_route;
-    this->caller_name_ = identity_name;
+    this->caller_ = {identity_route, identity_name};
   }
   SipSignal signal;
   signal.type = SipSignalType::CONNECTED_IDENTITY;

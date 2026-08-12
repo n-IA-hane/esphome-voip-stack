@@ -209,14 +209,13 @@ void VoipStack::tx_task_() {
       continue;
     this->process_tx_chunk_(audio_chunk);
 
-    const int64_t sent_at_us = esp_timer_get_time();
     const int64_t frame_interval_us = static_cast<int64_t>(tx_format.frame_ms) * 1000;
-    if (next_send_at_us == 0 || sent_at_us - next_send_at_us >= frame_interval_us) {
-      // Do not burst stale frames after a scheduler or network stall.
-      next_send_at_us = sent_at_us + frame_interval_us;
-    } else {
-      next_send_at_us += frame_interval_us;
-    }
+    // Preserve capture-clock debt after a late wakeup. The bounded microphone
+    // queue limits catch-up while preventing scheduler stalls from becoming
+    // permanent PCM loss.
+    next_send_at_us = next_send_at_us == 0
+                          ? esp_timer_get_time() + frame_interval_us
+                          : next_send_at_us + frame_interval_us;
 
     this->media_tx_queue_depth_.store(
         static_cast<uint32_t>(this->mic_buffer_->available() / std::max<size_t>(1, frame_bytes)),

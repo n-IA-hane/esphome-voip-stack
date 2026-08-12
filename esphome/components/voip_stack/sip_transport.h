@@ -418,10 +418,14 @@ class SipTransport : public SipPhoneTransport {
   uint32_t remote_dialog_cseq_{0};
   uint32_t last_invite_peer_ip_v4_{0};
   uint16_t last_invite_peer_port_{0};
-  std::string caller_route_;
-  std::string caller_name_;
-  std::string dest_route_;
-  std::string dest_name_;
+  struct SipIdentity {
+    std::string route;
+    std::string name;
+    void clear() {
+      std::string{}.swap(this->route);
+      std::string{}.swap(this->name);
+    }
+  } caller_, destination_;
   bool peer_supports_from_change_{false};
   bool connected_identity_sent_{false};
   bool dialog_originated_{false};
@@ -445,12 +449,44 @@ class SipTransport : public SipPhoneTransport {
   // original m-lines while answering an offer; media payload buffers remain
   // owned by their dedicated audio/video paths.
   static constexpr size_t kMaxSdpMediaLines = 8;
-  std::vector<std::string> remote_offer_media_lines_;
-  int8_t remote_audio_media_index_{-1};
+  struct RemoteMediaShape {
+    SipSignalingString lines;
+    uint16_t offsets[kMaxSdpMediaLines + 1]{};
+    uint8_t count{0};
+    int8_t audio_index{-1};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  int8_t remote_video_media_index_{-1};
+    int8_t video_index{-1};
 #endif
-  bool remote_media_shape_overflow_{false};
+    bool overflow{false};
+
+    void clear() {
+      this->lines.clear();
+      this->count = 0;
+      this->audio_index = -1;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+      this->video_index = -1;
+#endif
+      this->overflow = false;
+      this->offsets[0] = 0;
+    }
+    bool append(const std::string &line) {
+      if (this->count >= kMaxSdpMediaLines ||
+          this->lines.size() + line.size() > UINT16_MAX) {
+        this->overflow = true;
+        return false;
+      }
+      this->lines.append(line.data(), line.size());
+      this->offsets[++this->count] = this->lines.size();
+      return true;
+    }
+    bool empty() const { return this->count == 0; }
+    std::string line(size_t index) const {
+      if (index >= this->count) return {};
+      return this->lines.substr(this->offsets[index],
+                                this->offsets[index + 1] -
+                                    this->offsets[index]);
+    }
+  } remote_media_shape_;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   EncodedVideoSource *video_source_{nullptr};
   EncodedVideoSink *video_sink_{nullptr};
