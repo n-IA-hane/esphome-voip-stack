@@ -452,7 +452,7 @@ class VoipStack : public Component {
 
   // Transport callbacks (registered in setup()).
   static void transport_audio_callback_(void *ctx, const TransportAudioFrame &frame);
-  static void transport_sip_signal_callback_(void *ctx, const SipSignal &signal);
+  static void transport_sip_signal_callback_(void *ctx, SipSignal signal);
   static void transport_connection_callback_(void *ctx, bool connected);
   static bool transport_accept_callback_(void *ctx);
   static bool transport_dialog_active_callback_(void *ctx);
@@ -848,6 +848,25 @@ class VoipStack : public Component {
   void load_settings_();
   void schedule_save_settings_();
   void save_settings_();
+
+  static constexpr uint8_t ROUTING_SETTINGS_VERSION = 1;
+  static constexpr size_t MAX_EXTENSION_BYTES = 32;
+  static constexpr size_t MAX_GROUP_LIST_BYTES = 240;
+
+  struct StoredRoutingSettings {
+    uint8_t version{ROUTING_SETTINGS_VERSION};
+    char extension[MAX_EXTENSION_BYTES + 1]{};
+    char ring_groups[MAX_GROUP_LIST_BYTES + 1]{};
+    char conference_groups[MAX_GROUP_LIST_BYTES + 1]{};
+  };
+
+  ESPPreferenceObject routing_settings_pref_{};
+  bool routing_settings_loaded_{false};
+  bool routing_save_scheduled_{false};
+
+  void load_routing_settings_();
+  void schedule_save_routing_settings_();
+  void save_routing_settings_();
 
   bool dc_offset_removal_{false};       // for mics with DC bias (SPH0645)
   bool buffers_in_psram_{false};

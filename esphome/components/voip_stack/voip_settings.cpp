@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 
 #include "cJSON.h"
 #include "esphome/core/helpers.h"
@@ -259,6 +260,45 @@ void VoipStack::save_settings_() {
   this->settings_pref_.save(&stored);
   ESP_LOGD(TAG, "Saved settings: vol=%d%%, mic=%ddB",
            stored.volume_pct, stored.mic_gain_db);
+}
+
+void VoipStack::load_routing_settings_() {
+  this->routing_settings_pref_ =
+      global_preferences->make_preference<StoredRoutingSettings>(fnv1_hash("voip_stack_routing_settings"));
+  StoredRoutingSettings stored;
+  if (this->routing_settings_pref_.load(&stored) && stored.version == ROUTING_SETTINGS_VERSION) {
+    stored.extension[MAX_EXTENSION_BYTES] = '\0';
+    stored.ring_groups[MAX_GROUP_LIST_BYTES] = '\0';
+    stored.conference_groups[MAX_GROUP_LIST_BYTES] = '\0';
+    this->set_extension(stored.extension);
+    this->set_ring_groups(stored.ring_groups);
+    this->set_conference_groups(stored.conference_groups);
+    ESP_LOGD(TAG, "Loaded routing identity and groups");
+  }
+  this->routing_settings_loaded_ = true;
+}
+
+void VoipStack::schedule_save_routing_settings_() {
+  if (!this->routing_settings_loaded_ || this->routing_save_scheduled_) return;
+  this->routing_save_scheduled_ = true;
+  this->set_timeout("save_routing_settings", 250, [this]() {
+    this->routing_save_scheduled_ = false;
+    this->save_routing_settings_();
+  });
+}
+
+void VoipStack::save_routing_settings_() {
+  StoredRoutingSettings stored;
+  auto copy_bounded = [](char *dest, size_t capacity, const std::string &source) {
+    const size_t bytes = std::min(capacity - 1, source.size());
+    std::memcpy(dest, source.data(), bytes);
+    dest[bytes] = '\0';
+  };
+  copy_bounded(stored.extension, sizeof(stored.extension), this->extension_);
+  copy_bounded(stored.ring_groups, sizeof(stored.ring_groups), this->ring_groups_);
+  copy_bounded(stored.conference_groups, sizeof(stored.conference_groups), this->conference_groups_);
+  this->routing_settings_pref_.save(&stored);
+  ESP_LOGD(TAG, "Saved routing identity and groups");
 }
 
 // === User-facing setters ===

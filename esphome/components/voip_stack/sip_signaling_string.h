@@ -18,6 +18,16 @@ class SipSignalingString {
   using Storage = std::string;
 #endif
 
+  SipSignalingString() = default;
+  SipSignalingString(const SipSignalingString &other) {
+    this->assign(other.data(), other.size());
+  }
+
+  SipSignalingString &operator=(const SipSignalingString &other) {
+    if (this != &other) this->assign(other.data(), other.size());
+    return *this;
+  }
+
   SipSignalingString &operator=(const std::string &value) {
     this->assign(value.data(), value.size());
     return *this;

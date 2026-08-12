@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 
 #include "sip_types.h"
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
@@ -24,7 +25,7 @@ struct TransportAudioFrame {
 };
 
 using TransportAudioCallback = void (*)(void *ctx, const TransportAudioFrame &frame);
-using TransportSipSignalCallback = void (*)(void *ctx, const SipSignal &signal);
+using TransportSipSignalCallback = void (*)(void *ctx, SipSignal signal);
 using TransportConnectionCallback = void (*)(void *ctx, bool connected);
 using TransportAcceptCallback = bool (*)(void *ctx);
 using TransportDialogActiveCallback = bool (*)(void *ctx);
@@ -233,8 +234,9 @@ class SipPhoneTransport {
     if (this->on_audio_frame_ != nullptr) this->on_audio_frame_(this->on_audio_frame_ctx_, frame);
   }
 
-  void emit_sip_signal_(const SipSignal &signal) {
-    if (this->on_sip_signal_ != nullptr) this->on_sip_signal_(this->on_sip_signal_ctx_, signal);
+  void emit_sip_signal_(SipSignal signal) {
+    if (this->on_sip_signal_ != nullptr)
+      this->on_sip_signal_(this->on_sip_signal_ctx_, std::move(signal));
   }
 
   /// TCP: per accept/disconnect. UDP: once per start/stop.

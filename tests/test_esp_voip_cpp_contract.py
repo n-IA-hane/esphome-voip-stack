@@ -2386,7 +2386,7 @@ def test_in_progress_invite_retransmission_replays_without_refiring_fsm() -> Non
         sip_cpp.index("\nbool SipTransport::handle_response_")
     ]
     replay = inbound.index("if (!this->last_invite_response_.empty())")
-    emit = inbound.index("this->emit_sip_signal_(signal)")
+    emit = inbound.index("this->emit_sip_signal_(std::move(signal))")
     assert replay < emit
 
 
@@ -2800,7 +2800,8 @@ def test_udp_invite_server_final_retransmits_until_matching_ack() -> None:
     assert "SipSignalType::TERMINAL_COMPLETE" in non_2xx_ack
     assert "signal.status_code = completed_status;" in non_2xx_ack
     assert "signal.call_id = request_call_id;" in non_2xx_ack
-    assert "this->emit_sip_signal_(signal);" in non_2xx_ack
+    assert "this->emit_sip_signal_(std::move(signal));" in non_2xx_ack
+
     assert "return;" in non_2xx_ack
     assert "completed_status >= 200 && completed_status < 300" in datagram
 
@@ -2811,6 +2812,43 @@ def test_udp_invite_server_final_retransmits_until_matching_ack() -> None:
     assert "LockGuard lock(this->dialog_mutex_);" in sip_task
     assert "this->completed_invite_.next_retransmit_ms" in sip_task
     assert "this->completed_invite_.deadline_ms" in sip_task
+
+
+def test_sip_signal_has_single_owner_across_transport_defer_boundary() -> None:
+    transport_h = read("transport.h")
+    transport_cpp = read("sip_transport.cpp")
+    stack_cpp = read("voip_stack.cpp")
+
+    assert "TransportSipSignalCallback = void (*)(void *ctx, SipSignal signal)" in transport_h
+    assert "void emit_sip_signal_(SipSignal signal)" in transport_h
+    assert "std::move(signal)" in transport_h
+    assert "emit_sip_signal_(signal)" not in transport_cpp
+    assert "signal = std::move(signal)" in stack_cpp
+
+
+def test_routing_identity_uses_separate_versioned_persistence() -> None:
+    stack_h = read("voip_stack.h")
+    stack_cpp = read("voip_stack.cpp")
+    settings_cpp = read("voip_settings.cpp")
+    init_py = read("__init__.py")
+
+    assert "struct StoredRoutingSettings" in stack_h
+    assert "char extension[MAX_EXTENSION_BYTES + 1]" in stack_h
+    assert "char ring_groups[MAX_GROUP_LIST_BYTES + 1]" in stack_h
+    assert "char conference_groups[MAX_GROUP_LIST_BYTES + 1]" in stack_h
+    assert 'fnv1_hash("voip_stack_routing_settings")' in settings_cpp
+    assert "routing_settings_loaded_" in settings_cpp
+    assert "schedule_save_routing_settings_();" in stack_cpp
+    assert 'len(normalized.encode("utf-8")) > 240' in init_py
+
+
+def test_conference_ring_restore_is_applied_once_by_parent() -> None:
+    stack_cpp = read("voip_stack.cpp")
+    publish = stack_cpp[
+        stack_cpp.index("void VoipStack::publish_entity_states()") :
+    ]
+    assert "conference_ring_switch_->get_initial_state_with_restore_mode()" in publish
+    assert "*initial && !this->conference_groups_.empty()" in publish
 
 
 def test_sip_transactions_keep_deadlines_on_tcp_and_ack_replay_is_transport_safe() -> None:

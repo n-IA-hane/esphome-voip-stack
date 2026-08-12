@@ -1259,7 +1259,7 @@ void SipTransport::pump_udp_retransmits_() {
     signal.status_code = 408;
     signal.call_id = timed_out_call_id;
     signal.reason = "terminal_timeout";
-    this->emit_sip_signal_(signal);
+    this->emit_sip_signal_(std::move(signal));
   }
   if (invite_timed_out) {
     SipSignal signal;
@@ -1268,7 +1268,7 @@ void SipTransport::pump_udp_retransmits_() {
     signal.call_id = timed_out_call_id;
     signal.reason = "timeout";
     this->reset_dialog_();
-    this->emit_sip_signal_(signal);
+    this->emit_sip_signal_(std::move(signal));
   }
   if (ack_timed_out) {
     SipSignal signal;
@@ -1279,7 +1279,7 @@ void SipTransport::pump_udp_retransmits_() {
     const bool bye_pending = this->send_bye_unlocked_(timed_out_call_id);
     signal.terminal_transaction_pending = bye_pending;
     if (!bye_pending) this->reset_dialog_();
-    this->emit_sip_signal_(signal);
+    this->emit_sip_signal_(std::move(signal));
   }
 }
 
@@ -2439,7 +2439,7 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   signal.caller_rx_formats.count = 1;
   signal.selected_rx_format = selected_rx;
   signal.selected_tx_format = selected_tx;
-  this->emit_sip_signal_(signal);
+  this->emit_sip_signal_(std::move(signal));
   return true;
 }
 
@@ -2791,7 +2791,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
     signal.call_id = this->call_id_;
     signal.reason = "video_activation_failed";
     signal.terminal_transaction_pending = true;
-    this->emit_sip_signal_(signal);
+    this->emit_sip_signal_(std::move(signal));
     return true;
   }
 #endif
@@ -2887,7 +2887,7 @@ bool SipTransport::handle_update_(const std::string &message,
   signal.call_id = this->call_id_;
   signal.connected_route = identity_route;
   signal.connected_name = identity_name;
-  this->emit_sip_signal_(signal);
+  this->emit_sip_signal_(std::move(signal));
   return true;
 }
 
@@ -2996,7 +2996,7 @@ bool SipTransport::handle_video_direction_response_(
       signal.reason = "video_reinvite_answer_incompatible";
       signal.terminal_transaction_pending = bye_sent;
       if (!bye_sent) this->reset_dialog_();
-      this->emit_sip_signal_(signal);
+      this->emit_sip_signal_(std::move(signal));
       return true;
     }
     this->sdp_session_version_ = accepted_version;
@@ -3049,7 +3049,7 @@ bool SipTransport::handle_video_direction_response_(
     const bool bye_pending = this->send_bye_unlocked_(call_id);
     signal.terminal_transaction_pending = bye_pending;
     if (!bye_pending) this->reset_dialog_();
-    this->emit_sip_signal_(signal);
+    this->emit_sip_signal_(std::move(signal));
   }
   return true;
 }
@@ -3087,7 +3087,7 @@ void SipTransport::pump_video_direction_transaction_() {
     signal.reason = "video_reinvite_timeout";
     signal.terminal_transaction_pending = bye_sent;
     if (!bye_sent) this->reset_dialog_();
-    this->emit_sip_signal_(signal);
+    this->emit_sip_signal_(std::move(signal));
     return;
   }
   if (!pending.transaction.udp ||
@@ -3241,7 +3241,7 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
     signal.type = SipSignalType::STATUS_180_RINGING;
     signal.status_code = static_cast<uint16_t>(status);
     signal.call_id = this->call_id_;
-    this->emit_sip_signal_(signal);
+    this->emit_sip_signal_(std::move(signal));
     return true;
   }
   if (status >= 200 && status < 300) {
@@ -3254,7 +3254,7 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
       signal.type = SipSignalType::TERMINAL_COMPLETE;
       signal.status_code = static_cast<uint16_t>(status);
       signal.call_id = completed_call_id;
-      this->emit_sip_signal_(signal);
+      this->emit_sip_signal_(std::move(signal));
       return true;
     }
     if (method == "CANCEL") {
@@ -3290,7 +3290,7 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
       signal.call_id = this->call_id_;
       signal.reason = "malformed_2xx";
       this->reset_dialog_();
-      this->emit_sip_signal_(signal);
+      this->emit_sip_signal_(std::move(signal));
       return true;
     }
     bool media_ok = false;
@@ -3324,7 +3324,7 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
       signal.reason = "media_incompatible";
       signal.terminal_transaction_pending = bye_pending;
       if (!bye_pending) this->reset_dialog_();
-      this->emit_sip_signal_(signal);
+      this->emit_sip_signal_(std::move(signal));
       return true;
     }
     this->open_media_session_();
@@ -3333,7 +3333,7 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
     signal.status_code = static_cast<uint16_t>(status);
     signal.call_id = this->call_id_;
     this->get_media_config_(&signal.selected_tx_format, &signal.selected_rx_format, nullptr, nullptr);
-    this->emit_sip_signal_(signal);
+    this->emit_sip_signal_(std::move(signal));
     return true;
   }
   if (status >= 300) {
@@ -3347,7 +3347,7 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
         signal.type = SipSignalType::TERMINAL_COMPLETE;
         signal.status_code = static_cast<uint16_t>(status);
         signal.call_id = completed_call_id;
-        this->emit_sip_signal_(signal);
+        this->emit_sip_signal_(std::move(signal));
       } else if (method == "CANCEL") {
         if (!this->pending_cancel_.empty()) {
           this->pending_cancel_.completed = true;
@@ -3371,7 +3371,7 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
     signal.status_code = static_cast<uint16_t>(status);
     signal.call_id = this->call_id_;
     signal.reason = reason;
-    this->emit_sip_signal_(signal);
+    this->emit_sip_signal_(std::move(signal));
     this->reset_dialog_();
     return true;
   }
@@ -3429,7 +3429,7 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
       signal.type = SipSignalType::TERMINAL_COMPLETE;
       signal.status_code = completed_status;
       signal.call_id = request_call_id;
-      this->emit_sip_signal_(signal);
+      this->emit_sip_signal_(std::move(signal));
       return;
     }
     const uint32_t expected_ip = this->remote_ip_v4_.load(std::memory_order_acquire);
@@ -3465,7 +3465,7 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
     signal.type = SipSignalType::BYE;
     signal.call_id = this->call_id_;
     signal.terminal_transaction_pending = local_bye_pending;
-    this->emit_sip_signal_(signal);
+    this->emit_sip_signal_(std::move(signal));
     if (!local_bye_pending) this->reset_dialog_();
   } else if (method == "CANCEL") {
     if (this->reject_if_stale_dialog_(msg, src, "CANCEL")) return;
@@ -3494,7 +3494,7 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
     signal.status_code = 487;
     signal.call_id = this->call_id_;
     signal.reason = "cancelled";
-    this->emit_sip_signal_(signal);
+    this->emit_sip_signal_(std::move(signal));
     this->reset_dialog_();
   } else if (method == "UPDATE") {
     this->handle_update_(msg, src);
@@ -4159,7 +4159,7 @@ void SipTransport::rtp_task_() {
             this->reset_dialog_();
         }
       }
-      if (!signal.call_id.empty()) this->emit_sip_signal_(signal);
+      if (!signal.call_id.empty()) this->emit_sip_signal_(std::move(signal));
     }
 
     if (this->rtp_task_terminate_.load(std::memory_order_acquire)) break;

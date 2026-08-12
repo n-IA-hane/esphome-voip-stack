@@ -28,6 +28,8 @@ static const char *const TAG = "voip_stack";
 namespace {
 
 std::string normalize_group_list(const std::string &value) {
+  static constexpr size_t MAX_GROUP_BYTES = 32;
+  static constexpr size_t MAX_GROUP_LIST_BYTES = 240;
   std::string out;
   std::string current;
   auto flush = [&]() {
@@ -38,8 +40,16 @@ std::string normalize_group_list(const std::string &value) {
       return;
     }
     std::string group = current.substr(first, last - first + 1);
-    if (group.size() > 32) group.resize(32);
-    if (!out.empty()) out += ",";
+    if (group.size() > MAX_GROUP_BYTES) {
+      current.clear();
+      return;
+    }
+    const size_t separator = out.empty() ? 0 : 1;
+    if (out.size() + separator + group.size() > MAX_GROUP_LIST_BYTES) {
+      current.clear();
+      return;
+    }
+    if (separator != 0) out += ",";
     out += group;
     current.clear();
   };
@@ -305,9 +315,9 @@ void VoipStack::transport_audio_callback_(void *ctx, const TransportAudioFrame &
   static_cast<VoipStack *>(ctx)->on_audio_received_(frame);
 }
 
-void VoipStack::transport_sip_signal_callback_(void *ctx, const SipSignal &signal) {
+void VoipStack::transport_sip_signal_callback_(void *ctx, SipSignal signal) {
   auto *self = static_cast<VoipStack *>(ctx);
-  self->defer([self, signal]() { self->on_sip_signal_received_(signal); });
+  self->defer([self, signal = std::move(signal)]() { self->on_sip_signal_received_(signal); });
   self->enable_loop_soon_any_context();
 }
 
@@ -428,6 +438,7 @@ void VoipStack::setup() {
   }
 
   this->load_settings_();
+  this->load_routing_settings_();
   esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID,
                                       &VoipStack::ip_event_handler_,
                                       this, nullptr);
@@ -726,6 +737,7 @@ std::string VoipStack::build_endpoint_string_() const {
 
 void VoipStack::set_extension(const std::string &extension) {
   const std::string normalized = normalize_endpoint_label(extension);
+  if (normalized == this->extension_) return;
   this->extension_ = normalized;
 #ifdef USE_TEXT
   if (this->extension_text_ != nullptr) {
@@ -733,20 +745,24 @@ void VoipStack::set_extension(const std::string &extension) {
   }
 #endif
   this->request_endpoint_publish_();
+  this->schedule_save_routing_settings_();
 }
 
 void VoipStack::set_ring_groups(const std::string &groups) {
   const std::string normalized = normalize_group_list(groups);
+  if (normalized == this->ring_groups_) return;
   this->ring_groups_ = normalized;
 #ifdef USE_TEXT
   if (this->ring_groups_text_ != nullptr) {
     this->ring_groups_text_->publish_state(normalized);
   }
 #endif
+  this->schedule_save_routing_settings_();
 }
 
 void VoipStack::set_conference_groups(const std::string &groups) {
   const std::string normalized = normalize_group_list(groups);
+  if (normalized == this->conference_groups_) return;
   this->conference_groups_ = normalized;
   if (normalized.empty() && this->conference_ring_) {
     this->set_conference_ring(false);
@@ -756,6 +772,7 @@ void VoipStack::set_conference_groups(const std::string &groups) {
     this->conference_groups_text_->publish_state(normalized);
   }
 #endif
+  this->schedule_save_routing_settings_();
 }
 
 void VoipStack::set_conference_ring(bool enabled) {
@@ -954,6 +971,12 @@ void VoipStack::publish_entity_states() {
 #endif
 #ifdef USE_SWITCH
   if (this->conference_ring_switch_ != nullptr) {
+    if (apply_restore) {
+      auto initial = this->conference_ring_switch_->get_initial_state_with_restore_mode();
+      if (initial.has_value()) {
+        this->conference_ring_ = *initial && !this->conference_groups_.empty();
+      }
+    }
     this->conference_ring_switch_->publish_state(this->conference_ring_);
   }
 

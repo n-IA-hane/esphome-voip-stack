@@ -163,7 +163,10 @@ def _validate_group_list(value):
     for group in groups:
         if len(group.encode("utf-8")) > 32:
             raise cv.Invalid("each group name must be at most 32 UTF-8 bytes")
-    return ", ".join(groups)
+    normalized = ", ".join(groups)
+    if len(normalized.encode("utf-8")) > 240:
+        raise cv.Invalid("group list must be at most 240 UTF-8 bytes")
+    return normalized
 
 
 def resolve_parent_id(config):
