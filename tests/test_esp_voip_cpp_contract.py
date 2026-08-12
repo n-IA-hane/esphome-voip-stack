@@ -3252,13 +3252,14 @@ def test_terminal_destination_preserves_the_original_dialed_target() -> None:
     assert "? call.dialed_dest_name" in end_call
 
 
-def test_completed_sip_transactions_expire_without_hot_path_heap_churn() -> None:
+def test_completed_sip_transactions_expire_and_release_large_payloads() -> None:
     header = read("sip_transport.h")
     source = read("sip_transport.cpp")
 
     for field in ("request", "response", "ack", "offered_sdp"):
-        assert f"this->{field}.clear();" in header
-    assert "std::string{}.swap" not in header
+        assert f"std::string{{}}.swap(this->{field});" in header
+    assert "RETAINED_SIP_STRING_CAPACITY = 256" in source
+    assert "value.capacity() > RETAINED_SIP_STRING_CAPACITY" in source
     pump = cpp_method(source, r"SipTransport::pump_udp_retransmits_")
     for field in (
         "completed_invite_",

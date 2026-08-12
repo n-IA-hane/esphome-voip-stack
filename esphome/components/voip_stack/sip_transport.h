@@ -252,7 +252,7 @@ class SipTransport : public SipPhoneTransport {
     bool udp{true};
     bool completed{false};
     void clear() {
-      this->request.clear();
+      std::string{}.swap(this->request);
       this->ip_v4 = 0;
       this->port = 0;
       this->next_ms = 0;
@@ -274,7 +274,7 @@ class SipTransport : public SipPhoneTransport {
     uint16_t interval_ms{20};
     uint8_t retries{0};
     void clear() {
-      this->response.clear();
+      std::string{}.swap(this->response);
       this->ip_v4 = 0;
       this->port = 0;
       this->next_ms = 0;
@@ -309,7 +309,7 @@ class SipTransport : public SipPhoneTransport {
       this->branch.clear();
       this->from_tag.clear();
       this->to_tag.clear();
-      this->response.clear();
+      std::string{}.swap(this->response);
       this->cseq = 0;
       this->peer_ip_v4 = 0;
       this->peer_port = 0;
@@ -338,7 +338,7 @@ class SipTransport : public SipPhoneTransport {
     void clear() {
       this->call_id.clear();
       this->branch.clear();
-      this->ack.clear();
+      std::string{}.swap(this->ack);
       this->cseq = 0;
       this->response_ip_v4 = 0;
       this->ack_ip_v4 = 0;
@@ -366,7 +366,7 @@ class SipTransport : public SipPhoneTransport {
     void clear() {
       this->transaction.clear();
       this->branch.clear();
-      this->offered_sdp.clear();
+      std::string{}.swap(this->offered_sdp);
       this->cseq = 0;
       this->session_version = 0;
       this->response_deadline_ms = 0;

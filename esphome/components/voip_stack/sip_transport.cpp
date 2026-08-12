@@ -33,11 +33,18 @@ static constexpr uint32_t SIP_T1_MS = 500;
 static constexpr uint32_t SIP_T2_MS = 4000;
 static constexpr uint32_t SIP_TRANSACTION_TIMEOUT_MS = 64 * SIP_T1_MS;
 
-// Dialog and transaction strings are bounded and reused on every call. Keep
-// their capacity across hot-path resets so repeated calls do not fragment the
-// small internal heap needed by lwIP. Full component shutdown still releases
-// storage when the owning object is destroyed.
-static void reset_string(std::string &value) { value.clear(); }
+// Reuse small dialog fields, but return large call-scoped SIP/SDP buffers to
+// the heap at the terminal barrier. Keeping every peak capacity permanently
+// resident leaves S3 full profiles without enough contiguous internal heap for
+// a fresh ESPHome API inventory after Home Assistant reconnects.
+static constexpr size_t RETAINED_SIP_STRING_CAPACITY = 256;
+static void reset_string(std::string &value) {
+  if (value.capacity() > RETAINED_SIP_STRING_CAPACITY) {
+    std::string{}.swap(value);
+  } else {
+    value.clear();
+  }
+}
 
 class ScopedMediaProposal {
  public:
