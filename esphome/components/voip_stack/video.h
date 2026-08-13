@@ -9,6 +9,7 @@
 #error "voip_stack video builds require exactly one codec backend"
 #endif
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -30,6 +31,37 @@ struct EncodedVideoAccessUnit {
   size_t size{0};
   uint32_t timestamp_90khz{0};
   bool key_frame{false};
+};
+
+/// Frame-driven RTP clock gate with an ideal, wrap-safe 90 kHz timeline.
+class RtpFrameCadence90k {
+ public:
+  void reset(uint8_t frames_per_second) {
+    const uint32_t fps = frames_per_second == 0 ? 1U : frames_per_second;
+    this->interval_.store((90000U + fps - 1U) / fps,
+                          std::memory_order_relaxed);
+    this->seen_.store(false, std::memory_order_release);
+  }
+
+  bool accept(uint32_t timestamp) {
+    const uint32_t interval = this->interval_.load(std::memory_order_relaxed);
+    if (!this->seen_.exchange(true, std::memory_order_acq_rel)) {
+      this->next_.store(timestamp + interval, std::memory_order_relaxed);
+      return true;
+    }
+    uint32_t next = this->next_.load(std::memory_order_relaxed);
+    const int32_t delta = static_cast<int32_t>(timestamp - next);
+    if (delta < 0)
+      return false;
+    next += (static_cast<uint32_t>(delta) / interval + 1U) * interval;
+    this->next_.store(next, std::memory_order_relaxed);
+    return true;
+  }
+
+ protected:
+  std::atomic<uint32_t> interval_{9000};
+  std::atomic<uint32_t> next_{0};
+  std::atomic<bool> seen_{false};
 };
 
 struct VideoCapability {

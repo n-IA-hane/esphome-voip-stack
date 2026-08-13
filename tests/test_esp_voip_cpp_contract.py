@@ -549,6 +549,82 @@ def test_rtp_jpeg_dimension_limit_matches_rfc2435_encoding() -> None:
     ] == 103
 
 
+def test_rtp_frame_cadence_host_behavioral_contract(tmp_path: Path) -> None:
+    """Exercise fractional ratios, reset and uint32 RTP wrap in real C++."""
+
+    stub = tmp_path / "esphome" / "core"
+    stub.mkdir(parents=True)
+    (stub / "defines.h").write_text("#pragma once\n", encoding="utf-8")
+    probe = tmp_path / "rtp_frame_cadence.cpp"
+    probe.write_text(
+        textwrap.dedent(
+            r"""
+            #include "esphome/components/voip_stack/video.h"
+
+            #include <array>
+            #include <cstdint>
+
+            using esphome::voip_stack::RtpFrameCadence90k;
+
+            template <size_t N>
+            int count(RtpFrameCadence90k &cadence,
+                      const std::array<uint32_t, N> &timestamps) {
+              int accepted = 0;
+              for (uint32_t timestamp : timestamps)
+                accepted += cadence.accept(timestamp) ? 1 : 0;
+              return accepted;
+            }
+
+            int main() {
+              RtpFrameCadence90k cadence;
+              cadence.reset(10);
+              std::array<uint32_t, 15> from_15{};
+              for (size_t i = 0; i < from_15.size(); i++)
+                from_15[i] = static_cast<uint32_t>(i) * 6000U;
+              if (count(cadence, from_15) != 10) return 1;
+
+              cadence.reset(15);
+              std::array<uint32_t, 25> from_25{};
+              for (size_t i = 0; i < from_25.size(); i++)
+                from_25[i] = static_cast<uint32_t>(i) * 3600U;
+              if (count(cadence, from_25) != 15) return 2;
+
+              cadence.reset(10);
+              if (!cadence.accept(0xffffe000U) ||
+                  cadence.accept(0xfffff000U) ||
+                  !cadence.accept(0x00000328U)) return 3;
+
+              cadence.reset(30);
+              if (!cadence.accept(1234U) || cadence.accept(2234U) ||
+                  !cadence.accept(4234U)) return 4;
+              return 0;
+            }
+            """
+        ),
+        encoding="utf-8",
+    )
+    executable = tmp_path / "rtp_frame_cadence"
+    subprocess.run(
+        [
+            "g++",
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-DUSE_ESPHOME_VOIP_STACK_VIDEO",
+            "-DUSE_ESPHOME_VOIP_STACK_VIDEO_JPEG",
+            f"-I{tmp_path}",
+            f"-I{ROOT}",
+            str(probe),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+        cwd=ROOT,
+    )
+    subprocess.run([str(executable)], check=True, cwd=ROOT)
+
+
 def test_rtp_jpeg_host_behavioral_contract(tmp_path: Path) -> None:
     """Compile the real allocation-free depacketizer and exercise RFC 2435."""
 
