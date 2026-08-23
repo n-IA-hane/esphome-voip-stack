@@ -89,8 +89,8 @@ class VoipStack : public Component {
   // FreeRTOS task stack sizes in bytes. Kept at class level so xTaskCreate
   // sites stay free of magic numbers. The transport task declares its own
   // stack size inside the transport class.
-  static constexpr uint32_t kTxTaskStackBytes = 12288;
-  static constexpr uint32_t kRxTaskStackBytes = 12288;
+  static constexpr uint32_t kDefaultTxTaskStackBytes = 12288;
+  static constexpr uint32_t kDefaultRxTaskStackBytes = 12288;
   static constexpr size_t kRxQueuedFrames = 16;
   static constexpr uint32_t kRxPrebufferFrames = 4;
   static constexpr uint32_t kRxSilenceAfterMs = 60;
@@ -125,6 +125,8 @@ class VoipStack : public Component {
   void set_audio_task_stacks_in_psram(bool enabled) {
     this->audio_task_stacks_in_psram_ = enabled;
   }
+  void set_tx_task_stack_size(uint32_t bytes) { this->tx_task_stack_bytes_ = bytes; }
+  void set_rx_task_stack_size(uint32_t bytes) { this->rx_task_stack_bytes_ = bytes; }
   void set_buffers_in_psram(bool enabled) { this->buffers_in_psram_ = enabled; }
   void set_device_name(const std::string &name) { this->device_name_ = name; }
   void set_extension(const std::string &extension);
@@ -686,6 +688,8 @@ class VoipStack : public Component {
 #endif
   bool task_stacks_in_psram_{false};
   bool audio_task_stacks_in_psram_{false};
+  uint32_t tx_task_stack_bytes_{kDefaultTxTaskStackBytes};
+  uint32_t rx_task_stack_bytes_{kDefaultRxTaskStackBytes};
   // Audio must pre-empt video encode/decode/RTP work. ESP-Hosted's four SDIO
   // workers run at priority 23 and can stay runnable while bidirectional media
   // is flowing. On that compile-time-gated path, priority 24 lets the short

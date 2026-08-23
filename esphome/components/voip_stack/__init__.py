@@ -27,6 +27,8 @@ CONF_VOIP_STACK_ID = "voip_stack_id"
 CONF_DC_OFFSET_REMOVAL = "dc_offset_removal"
 CONF_TASK_STACKS_IN_PSRAM = "task_stacks_in_psram"
 CONF_AUDIO_TASK_STACKS_IN_PSRAM = "audio_task_stacks_in_psram"
+CONF_TX_TASK_STACK_SIZE = "tx_task_stack_size"
+CONF_RX_TASK_STACK_SIZE = "rx_task_stack_size"
 CONF_BUFFERS_IN_PSRAM = "buffers_in_psram"
 CONF_SIGNALING_BUFFERS_IN_PSRAM = "signaling_buffers_in_psram"
 CONF_MICROPHONE_SOURCE = "microphone_source"
@@ -633,6 +635,15 @@ CONFIG_SCHEMA = cv.Schema(
         # signaling/video workers follow task_stacks_in_psram. Realtime audio
         # defaults to internal RAM even when the other task stacks use PSRAM.
         cv.Optional(CONF_AUDIO_TASK_STACKS_IN_PSRAM, default=False): cv.boolean,
+        # Byte sizes for the realtime audio workers. Defaults preserve the
+        # historical budget; constrained profiles may reduce them only after
+        # measuring task high-water marks under full concurrent load.
+        cv.Optional(CONF_TX_TASK_STACK_SIZE, default=12288): cv.int_range(
+            min=4096, max=32768
+        ),
+        cv.Optional(CONF_RX_TASK_STACK_SIZE, default=12288): cv.int_range(
+            min=4096, max=32768
+        ),
         # Standalone VoIP DSP/AEC was removed. Use native ESPHome mic/speaker
         # directly, or put software AEC/AFE on esp_audio_stack and pass its
         # microphone/speaker facade here.
@@ -904,6 +915,8 @@ async def _add_core_settings(var, config):
             config[CONF_AUDIO_TASK_STACKS_IN_PSRAM]
         )
     )
+    cg.add(var.set_tx_task_stack_size(config[CONF_TX_TASK_STACK_SIZE]))
+    cg.add(var.set_rx_task_stack_size(config[CONF_RX_TASK_STACK_SIZE]))
     cg.add(var.set_buffers_in_psram(config[CONF_BUFFERS_IN_PSRAM]))
     if config[CONF_SIGNALING_BUFFERS_IN_PSRAM]:
         cg.add_define("USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM")

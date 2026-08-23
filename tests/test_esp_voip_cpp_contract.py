@@ -257,7 +257,13 @@ def test_realtime_audio_task_stack_policy_defaults_to_internal_ram() -> None:
     )
     assert "set_audio_task_stacks_in_psram" in header
     assert "bool audio_task_stacks_in_psram_{false};" in header
+    assert "set_tx_task_stack_size" in header
+    assert "set_rx_task_stack_size" in header
+    assert "tx_task_stack_bytes_{kDefaultTxTaskStackBytes}" in header
+    assert "rx_task_stack_bytes_{kDefaultRxTaskStackBytes}" in header
     assert source.count("this->audio_task_stacks_in_psram_, TAG") == 2
+    assert source.count("this->tx_task_stack_bytes_") >= 2
+    assert source.count("this->rx_task_stack_bytes_") >= 2
     assert "this->task_stacks_in_psram_, TAG" not in source[
         source.index("bool VoipStack::start_runtime_tasks_()") :
         source.index("\nvoid VoipStack::", source.index("bool VoipStack::start_runtime_tasks_()"))

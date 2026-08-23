@@ -129,7 +129,7 @@ void VoipStack::cleanup_partial_setup_() {
   // were just spawned and have not entered a blocking upstream call yet.
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
   voip_audio_core::force_delete_pinned_task(&this->tx_task_handle_, &this->tx_task_stack_,
-                                             VoipStack::kTxTaskStackBytes);
+                                             this->tx_task_stack_bytes_);
 
   RAMAllocator<int16_t> i16_alloc;
   if (int16_t *mic_converted = this->mic_converted_.exchange(nullptr, std::memory_order_acq_rel)) {
@@ -147,7 +147,7 @@ void VoipStack::cleanup_partial_setup_() {
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   voip_audio_core::force_delete_pinned_task(&this->rx_task_handle_, &this->rx_task_stack_,
-                                             VoipStack::kRxTaskStackBytes);
+                                             this->rx_task_stack_bytes_);
   this->rx_jitter_buffer_.reset();
   RAMAllocator<uint8_t> rx_u8_alloc;
   if (this->rx_audio_chunk_ != nullptr) {
@@ -369,7 +369,7 @@ bool VoipStack::start_runtime_tasks_() {
   // still accept calls and play incoming audio through the transport recv task.
   if (this->has_microphone_()) {
     if (!voip_audio_core::start_pinned_task(VoipStack::tx_task, "voip_tx",
-                                             VoipStack::kTxTaskStackBytes, this, VoipStack::kTxTaskPriority, 0,
+                                             this->tx_task_stack_bytes_, this, VoipStack::kTxTaskPriority, 0,
                                              this->audio_task_stacks_in_psram_, TAG,
                                              &this->tx_task_handle_, &this->tx_task_tcb_,
                                              &this->tx_task_stack_)) {
@@ -380,7 +380,7 @@ bool VoipStack::start_runtime_tasks_() {
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   if (this->has_speaker_()) {
     if (!voip_audio_core::start_pinned_task(VoipStack::rx_task, "voip_rx",
-                                             VoipStack::kRxTaskStackBytes, this, VoipStack::kRxTaskPriority, 0,
+                                             this->rx_task_stack_bytes_, this, VoipStack::kRxTaskPriority, 0,
                                              this->audio_task_stacks_in_psram_, TAG,
                                              &this->rx_task_handle_, &this->rx_task_tcb_,
                                              &this->rx_task_stack_)) {
