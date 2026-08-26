@@ -59,6 +59,8 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 **Compile-time pruning.** A speaker-only build contains no VoIP TX path and a mic-only build contains no RX-to-speaker path.
 
+**Optional ESP32-P4 video adapters.** JPEG and H.264 remain separate compile-time profiles. The camera component owns capture and borrowed frames, the codec-specific source owns encoding or compressed-frame forwarding, and `p4_video_renderer` owns receive decode and panel presentation. Audio-only builds do not include these components or their codec dependencies.
+
 **Full ESPHome automation surface.** Triggers, actions and conditions are normal ESPHome automations.
 
 ## Scenarios
