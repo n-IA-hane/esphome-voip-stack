@@ -86,6 +86,8 @@ class EspH264VideoSource
                      bool publish, uint32_t generation = 0);
   bool start_tx_task_();
   bool stop_tx_task_();
+  bool wait_for_tx_idle_();
+  bool tx_slots_idle_() const;
   static void tx_task_trampoline_(void *ctx);
   void tx_task_();
 
@@ -126,6 +128,8 @@ class EspH264VideoSource
   bool tx_task_with_caps_{false};
   SemaphoreHandle_t tx_done_{nullptr};
   StaticSemaphore_t tx_done_storage_{};
+  SemaphoreHandle_t tx_idle_{nullptr};
+  StaticSemaphore_t tx_idle_storage_{};
   // The generation value makes a key-frame request immune to a previous
   // call's in-flight encoder operation consuming it during rapid redial.
   std::atomic<uint32_t> force_idr_generation_{0};

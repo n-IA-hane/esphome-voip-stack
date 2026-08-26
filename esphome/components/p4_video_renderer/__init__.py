@@ -18,7 +18,6 @@ from esphome.core import CORE
 CODEOWNERS = ["@n-IA-hane"]
 DEPENDENCIES = ["esp32", "voip_stack", "lvgl"]
 
-CONF_TASK_STACKS_IN_PSRAM = "task_stacks_in_psram"
 CONF_CODEC = "codec"
 CONF_WIDTH = "width"
 CONF_HEIGHT = "height"
@@ -84,10 +83,6 @@ CONFIG_SCHEMA = cv.All(
         {
             cv.GenerateID(): cv.declare_id(P4VideoRenderer),
             cv.Required(CONF_CODEC): cv.enum(_CODECS, lower=True),
-            # Decoder control flow is latency-sensitive while camera, PPA and
-            # display DMA contend for PSRAM. Keep its stack internal by
-            # default; the multi-megabyte frame buffers remain in PSRAM.
-            cv.Optional(CONF_TASK_STACKS_IN_PSRAM, default=False): cv.boolean,
             # Preferred receive envelope advertised to SIP peers.
             cv.Optional(CONF_WIDTH, default=640): cv.int_range(
                 min=160, max=1280
@@ -130,7 +125,6 @@ async def to_code(config):
 
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
-    cg.add(var.set_task_stacks_in_psram(config[CONF_TASK_STACKS_IN_PSRAM]))
     cg.add(var.set_width(config[CONF_WIDTH]))
     cg.add(var.set_height(config[CONF_HEIGHT]))
     cg.add(var.set_framerate(config[CONF_FRAMERATE]))

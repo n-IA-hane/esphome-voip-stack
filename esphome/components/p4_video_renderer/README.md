@@ -32,7 +32,6 @@ p4_video_renderer:
 | `width` / `height` | Preferred receive geometry advertised in SDP. |
 | `framerate` | Preferred receive frame rate. |
 | `max_decode_width` / `max_decode_height` | Hard decode and surface allocation bounds. |
-| `task_stacks_in_psram` | Place supported renderer task stacks in PSRAM. Frame buffers already use PSRAM. |
 | `display_id` | Direct display used for H.264 presentation. Required when `codec: h264`. |
 | `display_rotation` | Direct display rotation: 0, 90, 180 or 270 degrees. |
 | `on_first_frame` | Runs when the first remote frame becomes presentable. |

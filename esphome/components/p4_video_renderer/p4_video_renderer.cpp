@@ -276,7 +276,7 @@ void P4VideoRenderer::dump_config() {
   ESP_LOGCONFIG(TAG, "  Presentation: LVGL image");
 #endif
   ESP_LOGCONFIG(TAG, "  Task stack in PSRAM: %s",
-                YESNO(this->task_stacks_in_psram_));
+                YESNO(kTaskStackInPsram));
 }
 
 void P4VideoRenderer::attach_video_container(lv_obj_t *container) {
@@ -1143,7 +1143,7 @@ bool P4VideoRenderer::start_rx_task_() {
   // direct notification. H.264 drains only its fixed-depth AU queue.
   return voip_audio_core::start_managed_pinned_task(
       P4VideoRenderer::rx_task_trampoline_, "p4_video_rx", kTaskStackBytes,
-      this, kTaskPriority, 1, this->task_stacks_in_psram_, TAG,
+      this, kTaskPriority, 1, kTaskStackInPsram, TAG,
       &this->rx_task_handle_, &this->rx_task_tcb_, &this->rx_task_stack_,
       &this->rx_task_with_caps_);
 }

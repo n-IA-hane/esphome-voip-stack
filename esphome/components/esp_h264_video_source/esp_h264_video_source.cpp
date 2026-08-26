@@ -84,14 +84,16 @@ void EspH264VideoSource::setup() {
   this->control_mutex_ =
       xSemaphoreCreateMutexStatic(&this->control_mutex_storage_);
   this->tx_done_ = xSemaphoreCreateBinaryStatic(&this->tx_done_storage_);
+  this->tx_idle_ = xSemaphoreCreateBinaryStatic(&this->tx_idle_storage_);
   if (this->camera_ == nullptr || this->control_mutex_ == nullptr ||
-      this->tx_done_ == nullptr ||
+      this->tx_done_ == nullptr || this->tx_idle_ == nullptr ||
       (this->width_ & 15U) != 0 ||
       (this->height_ & 15U) != 0 || !this->init_ppa_() ||
       !this->init_encoder_and_probe_() ||
       !this->camera_->register_raw_frame_consumer(
           this,
-          esp_video_camera::RawVideoPixelFormat::YUV420_OUYY_EVYY)) {
+          esp_video_camera::RawVideoPixelFormat::YUV420_OUYY_EVYY) ||
+      !this->start_tx_task_()) {
     ESP_LOGE(TAG, "P4 hardware H.264 source setup failed");
     this->encoder_ready_.store(false, std::memory_order_release);
     this->close_encoder_();
@@ -109,6 +111,7 @@ void EspH264VideoSource::setup() {
   if (ppa_unregister_client(this->ppa_) != ESP_OK) {
     ESP_LOGE(TAG, "Unable to release H.264 setup-probe PPA client");
     this->encoder_ready_.store(false, std::memory_order_release);
+    this->stop_tx_task_();
     this->close_encoder_();
     this->free_resources_();
     this->mark_failed();
@@ -119,6 +122,7 @@ void EspH264VideoSource::setup() {
 
 void EspH264VideoSource::on_shutdown() {
   this->stop_video();
+  this->stop_tx_task_();
   this->encoder_ready_.store(false, std::memory_order_release);
   this->close_encoder_();
   this->free_resources_();
@@ -163,6 +167,8 @@ bool EspH264VideoSource::prepare_video(
     const voip_stack::VideoCapability &capability) {
   return !this->is_failed() &&
          this->encoder_ready_.load(std::memory_order_acquire) &&
+         this->tx_task_handle_ != nullptr &&
+         this->tx_task_running_.load(std::memory_order_acquire) &&
          !this->tx_active_.load(std::memory_order_acquire) &&
          capability.valid() && capability.is_h264() &&
          capability.width == this->width_ &&
@@ -209,12 +215,6 @@ bool EspH264VideoSource::start_video(
   this->encode_total_us_.store(0, std::memory_order_release);
   this->encoded_max_bytes_.store(0, std::memory_order_release);
 #endif
-  if (!this->start_tx_task_()) {
-    this->callback_ = nullptr;
-    this->callback_ctx_ = nullptr;
-    xSemaphoreGive(this->control_mutex_);
-    return false;
-  }
   this->tx_active_.store(true, std::memory_order_release);
   xSemaphoreGive(this->control_mutex_);
 
@@ -225,12 +225,16 @@ bool EspH264VideoSource::start_video(
       this->tx_generation_.fetch_add(1, std::memory_order_acq_rel);
     }
     xSemaphoreGive(this->control_mutex_);
-    if (this->stop_tx_task_()) {
-      xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
-      this->callback_ = nullptr;
-      this->callback_ctx_ = nullptr;
-      xSemaphoreGive(this->control_mutex_);
+    xSemaphoreTake(this->tx_idle_, 0);
+    xTaskNotifyGive(this->tx_task_handle_);
+    if (!this->wait_for_tx_idle_()) {
+      ESP_LOGE(TAG, "H.264 TX worker did not drain after camera start failure");
+      this->mark_failed();
     }
+    xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
+    this->callback_ = nullptr;
+    this->callback_ctx_ = nullptr;
+    xSemaphoreGive(this->control_mutex_);
     return false;
   }
   ESP_LOGI(TAG, "P4 hardware H.264 source started at %u bit/s",
@@ -248,12 +252,18 @@ void EspH264VideoSource::stop_video() {
     this->tx_generation_.fetch_add(1, std::memory_order_acq_rel);
   this->force_idr_generation_.store(0, std::memory_order_release);
   xSemaphoreGive(this->control_mutex_);
-  if (this->stop_tx_task_()) {
-    xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
-    this->callback_ = nullptr;
-    this->callback_ctx_ = nullptr;
-    xSemaphoreGive(this->control_mutex_);
+  if (this->tx_task_handle_ != nullptr) {
+    xSemaphoreTake(this->tx_idle_, 0);
+    xTaskNotifyGive(this->tx_task_handle_);
   }
+  if (!this->wait_for_tx_idle_()) {
+    ESP_LOGE(TAG, "H.264 TX worker did not reach the idle barrier");
+    this->mark_failed();
+  }
+  xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
+  this->callback_ = nullptr;
+  this->callback_ctx_ = nullptr;
+  xSemaphoreGive(this->control_mutex_);
   if (was_active) {
     ESP_LOGI(TAG, "H.264 TX evidence: raw=%u queued=%u dropped=%u encoded=%u",
              (unsigned) this->raw_frames_.load(std::memory_order_relaxed),
@@ -582,18 +592,19 @@ bool EspH264VideoSource::encode_frame_(
   }
 
   if (publish) {
-    // stop_video() first revokes this generation, then joins the TX worker,
-    // and only then clears the callback. The callback therefore remains owned
-    // for this entire operation without a lock spanning RTP publication.
+    // The worker persists across calls. Serialize callback ownership with
+    // stop_video() so teardown cannot release the RTP session while a publish
+    // is in progress.
+    xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
     if (this->tx_active_.load(std::memory_order_acquire) &&
-        generation ==
-            this->tx_generation_.load(std::memory_order_acquire) &&
+        generation == this->tx_generation_.load(std::memory_order_acquire) &&
         this->callback_ != nullptr) {
       const voip_stack::EncodedVideoAccessUnit access_unit{
           output.raw_data.buffer, output.length, timestamp_90khz,
           output.frame_type == ESP_H264_FRAME_TYPE_IDR};
       this->callback_(this->callback_ctx_, access_unit);
     }
+    xSemaphoreGive(this->control_mutex_);
   }
   return !this->profile_level_id_.empty();
 }
@@ -688,6 +699,21 @@ bool EspH264VideoSource::start_tx_task_() {
   return false;
 }
 
+bool EspH264VideoSource::tx_slots_idle_() const {
+  for (const auto &slot : this->tx_slots_) {
+    if (slot.state.load(std::memory_order_acquire) != 0)
+      return false;
+  }
+  return true;
+}
+
+bool EspH264VideoSource::wait_for_tx_idle_() {
+  if (this->tx_task_handle_ == nullptr || this->tx_slots_idle_())
+    return true;
+  return xSemaphoreTake(this->tx_idle_, pdMS_TO_TICKS(3000)) == pdTRUE &&
+         this->tx_slots_idle_();
+}
+
 bool EspH264VideoSource::stop_tx_task_() {
   if (this->tx_task_handle_ == nullptr)
     return true;
@@ -730,6 +756,10 @@ void EspH264VideoSource::tx_task_() {
         continue;
     }
     if (slot == nullptr) {
+      if (!this->tx_active_.load(std::memory_order_acquire) &&
+          this->tx_slots_idle_()) {
+        xSemaphoreGive(this->tx_idle_);
+      }
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
       continue;
     }
@@ -764,6 +794,10 @@ void EspH264VideoSource::tx_task_() {
     if (force_idr && !this->set_encoder_gop_(this->gop_))
       ESP_LOGE(TAG, "Unable to restore H.264 GOP");
     slot->state.store(0, std::memory_order_release);
+    if (!this->tx_active_.load(std::memory_order_acquire) &&
+        this->tx_slots_idle_()) {
+      xSemaphoreGive(this->tx_idle_);
+    }
   }
   for (auto &slot : this->tx_slots_)
     slot.state.store(0, std::memory_order_release);

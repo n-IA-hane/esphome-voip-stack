@@ -55,9 +55,6 @@ public:
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::DATA; }
 
-  void set_task_stacks_in_psram(bool value) {
-    this->task_stacks_in_psram_ = value;
-  }
   void set_width(uint16_t value) { this->width_ = value; }
   void set_height(uint16_t value) { this->height_ = value; }
   void set_framerate(uint8_t value) { this->framerate_ = value; }
@@ -106,6 +103,11 @@ protected:
   static constexpr size_t kMaxAccessUnitBytes = 512 * 1024;
 #endif
   static constexpr uint32_t kTaskStackBytes = 12288;
+#ifdef USE_P4_VIDEO_RENDERER_H264
+  static constexpr bool kTaskStackInPsram = true;
+#else
+  static constexpr bool kTaskStackInPsram = false;
+#endif
   // Match Espressif's dual-task decoder priority. Audio/AFE stays above it at
   // 18-19, while the two decoder halves can run in parallel on separate cores.
   static constexpr uint8_t kTaskPriority = 17;
@@ -180,7 +182,6 @@ protected:
   static void display_refresh_ready_callback_(lv_event_t *event);
   void on_display_refresh_ready_();
 
-  bool task_stacks_in_psram_{false};
   uint16_t width_{640};
   uint16_t height_{480};
   uint8_t framerate_{10};
