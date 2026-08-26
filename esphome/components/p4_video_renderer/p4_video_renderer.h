@@ -91,7 +91,7 @@ protected:
   // decoder. This remains below the former 1.5 MiB fixed-slot allocation and
   // keeps every allocation outside the hot path.
   static constexpr size_t kMaxAccessUnitBytes = 128 * 1024;
-  static constexpr size_t kH264AccessUnitQueueDepth = 8;
+  static constexpr size_t kH264AccessUnitQueueDepth = 3;
 #else
   // RFC 2435 frames are independent and can be substantially larger.
   static constexpr size_t kMaxAccessUnitBytes = 512 * 1024;
@@ -184,9 +184,7 @@ protected:
 
 #ifdef USE_P4_VIDEO_RENDERER_H264
   struct H264AccessUnitSlot {
-    uint8_t *data{nullptr};
-    size_t size{0};
-    uint32_t timestamp{0};
+    voip_stack::EncodedVideoAccessUnit access_unit{};
     uint32_t session_generation{0};
     uint32_t loss_generation{0};
     bool key_frame{false};

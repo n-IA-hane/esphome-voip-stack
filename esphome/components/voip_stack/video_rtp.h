@@ -142,6 +142,7 @@ class VideoRtpSession {
   bool reap_receive_task_();
   void quiesce_tasks_();
   void close_sockets_();
+  bool allocate_persistent_buffers_();
   void queue_access_unit_(const EncodedVideoAccessUnit &access_unit);
   void send_access_unit_(const EncodedVideoAccessUnit &access_unit);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
@@ -171,6 +172,8 @@ class VideoRtpSession {
   bool ensure_jpeg_quantization_cache_();
 #endif
   void reset_reassembly_();
+  bool acquire_reassembly_slot_();
+  static void release_reassembly_slot_(void *ctx);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
   bool append_annex_b_nal_(const uint8_t *nal, size_t size);
   void finish_access_unit_(uint32_t timestamp);
@@ -251,6 +254,7 @@ class VideoRtpSession {
   std::atomic<bool> sender_running_{false};
   std::atomic<bool> stop_had_active_session_{false};
   std::atomic<bool> rtcp_bye_requested_{false};
+  bool persistent_buffers_ready_{false};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
   SemaphoreHandle_t audio_pacing_{nullptr};
   StaticSemaphore_t audio_pacing_storage_{};
@@ -266,9 +270,7 @@ class VideoRtpSession {
   // main loop.
   struct TxAccessUnitSlot {
     uint8_t *data{nullptr};
-    size_t size{0};
-    uint32_t timestamp{0};
-    bool key_frame{false};
+    EncodedVideoAccessUnit access_unit{};
     std::atomic<uint8_t> state{0};  // 0=free, 1=ready, 2=owned
   };
   TxAccessUnitSlot tx_access_units_[kTxAccessUnitSlots]{};
@@ -278,6 +280,14 @@ class VideoRtpSession {
   std::atomic<bool> tx_resync_needed_{false};
 #endif
 
+  static constexpr uint8_t kReceiveAccessUnitSlots = 3;
+  struct ReceiveAccessUnitSlot {
+    VideoRtpSession *owner{nullptr};
+    uint8_t *data{nullptr};
+    std::atomic<uint8_t> state{0};  // 0=free, 1=filling, 2=consumer
+  };
+  ReceiveAccessUnitSlot receive_access_units_[kReceiveAccessUnitSlots]{};
+  ReceiveAccessUnitSlot *reassembly_slot_{nullptr};
   uint8_t *reassembly_{nullptr};
   size_t reassembly_size_{0};
   uint32_t reassembly_timestamp_{0};

@@ -221,6 +221,32 @@ VideoRtpSession::VideoRtpSession(bool task_stack_in_psram)
   this->audio_pacing_ =
       xSemaphoreCreateBinaryStatic(&this->audio_pacing_storage_);
 #endif
+  this->persistent_buffers_ready_ = this->allocate_persistent_buffers_();
+}
+
+bool VideoRtpSession::allocate_persistent_buffers_() {
+  for (auto &slot : this->receive_access_units_) {
+    slot.owner = this;
+    slot.data = static_cast<uint8_t *>(heap_caps_malloc(
+        kMaxAccessUnitBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (slot.data == nullptr) {
+      ESP_LOGE(TAG, "Video reassembly PSRAM allocation failed at setup");
+      return false;
+    }
+  }
+  if (!this->acquire_reassembly_slot_()) return false;
+  for (auto &slot : this->tx_access_units_) {
+    slot.data = static_cast<uint8_t *>(heap_caps_malloc(
+        kMaxAccessUnitBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (slot.data == nullptr) {
+      ESP_LOGE(TAG, "Video TX access-unit PSRAM allocation failed at setup");
+      return false;
+    }
+  }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  if (!this->ensure_jpeg_quantization_cache_()) return false;
+#endif
+  return true;
 }
 
 VideoRtpSession::~VideoRtpSession() {
@@ -235,10 +261,13 @@ VideoRtpSession::~VideoRtpSession() {
     this->sink_->stop_video();
   }
   this->close_sockets_();
-  if (this->reassembly_ != nullptr) {
-    heap_caps_free(this->reassembly_);
-    this->reassembly_ = nullptr;
+  for (auto &slot : this->receive_access_units_) {
+    if (slot.data != nullptr) heap_caps_free(slot.data);
+    slot.data = nullptr;
+    slot.state.store(0, std::memory_order_release);
   }
+  this->reassembly_ = nullptr;
+  this->reassembly_slot_ = nullptr;
   for (auto &slot : this->tx_access_units_) {
     if (slot.data != nullptr) {
       heap_caps_free(slot.data);
@@ -387,6 +416,10 @@ bool VideoRtpSession::bind_socket_(int *fd, uint16_t port, const char *label) {
 
 bool VideoRtpSession::start(bool activate) {
   if (this->running_.load(std::memory_order_acquire)) return true;
+  if (!this->persistent_buffers_ready_) {
+    ESP_LOGE(TAG, "Video media not started: persistent buffers unavailable");
+    return false;
+  }
   // A timed-out teardown retains every object a worker could still touch.
   // Reap a worker that subsequently exited, or refuse to reuse its static
   // TCB/stack and sockets while it is still alive.
@@ -452,26 +485,6 @@ bool VideoRtpSession::start(bool activate) {
     return false;
   }
 
-  if (this->reassembly_ == nullptr && sink_compatible) {
-    this->reassembly_ = static_cast<uint8_t *>(
-        heap_caps_malloc(kMaxAccessUnitBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (this->reassembly_ == nullptr && negotiated_receive) {
-      ESP_LOGE(TAG, "Video reassembly PSRAM allocation failed");
-      return false;
-    }
-  }
-  if (source_compatible) {
-    for (auto &slot : this->tx_access_units_) {
-      if (slot.data == nullptr) {
-        slot.data = static_cast<uint8_t *>(heap_caps_malloc(
-            kMaxAccessUnitBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-      }
-      if (slot.data == nullptr && negotiated_send) {
-        ESP_LOGE(TAG, "Video TX access-unit PSRAM allocation failed");
-        return false;
-      }
-    }
-  }
   if (!this->bind_socket_(&this->rtp_socket_, this->local_rtp_port_, "video RTP") ||
       !this->bind_socket_(&this->rtcp_socket_, this->local_rtp_port_ + 1, "video RTCP") ||
       !this->bind_socket_(&this->wake_socket_, 0, "video wake")) {
@@ -544,13 +557,19 @@ bool VideoRtpSession::start(bool activate) {
           this, kReceiveTaskPriority, 0, this->task_stack_in_psram_, TAG,
           &this->task_handle_, &this->task_tcb_, &this->task_stack_,
           &this->task_with_caps_)) {
+    ESP_LOGE(TAG, "Video prepare failed: receive task unavailable");
     this->running_.store(false, std::memory_order_release);
     this->close_sockets_();
     return false;
   }
 
+  const bool receive_slot_ready =
+      !negotiated_receive || this->reassembly_ != nullptr ||
+      this->acquire_reassembly_slot_();
+  if (negotiated_receive && !receive_slot_ready)
+    ESP_LOGE(TAG, "Video prepare failed: no free RX access-unit slot");
   bool receive_prepared =
-      sink_compatible && this->reassembly_ != nullptr &&
+      sink_compatible && receive_slot_ready &&
       this->sink_->start_video(this->receive_capability_);
   if (receive_prepared &&
       !this->sink_->set_video_active(false)) {
@@ -560,6 +579,7 @@ bool VideoRtpSession::start(bool activate) {
   this->receive_prepared_.store(receive_prepared,
                                 std::memory_order_release);
   if (negotiated_receive && !receive_prepared) {
+    ESP_LOGE(TAG, "Video prepare failed: receive sink unavailable");
     this->request_stop();
     return false;
   }
@@ -567,8 +587,11 @@ bool VideoRtpSession::start(bool activate) {
   bool tx_queue_prepared = true;
   for (const auto &slot : this->tx_access_units_)
     tx_queue_prepared = tx_queue_prepared && slot.data != nullptr;
+  if (negotiated_send && !tx_queue_prepared)
+    ESP_LOGE(TAG, "Video prepare failed: TX queue unavailable");
   bool send_prepared = source_prepared && tx_queue_prepared;
   if (send_prepared && !this->start_sender_task_()) {
+    ESP_LOGE(TAG, "Video prepare failed: sender task unavailable");
     send_prepared = false;
     if (negotiated_send) {
       this->request_stop();
@@ -952,10 +975,12 @@ bool VideoRtpSession::wait_for_audio_pacing_() {
 
 void VideoRtpSession::queue_access_unit_(
     const EncodedVideoAccessUnit &access_unit) {
+  const auto release_input = [&access_unit]() { access_unit.release(); };
   if (!this->running_.load(std::memory_order_acquire) ||
       !this->sender_running_.load(std::memory_order_acquire) ||
       !this->send_enabled_ ||
       access_unit.data == nullptr || access_unit.size == 0) {
+    release_input();
     return;
   }
   if (access_unit.size > kMaxAccessUnitBytes) {
@@ -967,17 +992,22 @@ void VideoRtpSession::queue_access_unit_(
     }
 #endif
     this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+    release_input();
     return;
   }
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
   if (this->tx_resync_needed_.load(std::memory_order_acquire) &&
       !access_unit.key_frame) {
     this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+    release_input();
     return;
   }
 #endif
   auto &slot = this->tx_access_units_[this->tx_write_slot_];
-  if (slot.data == nullptr) return;
+  if (slot.data == nullptr) {
+    release_input();
+    return;
+  }
   uint8_t expected = 0;
   if (!slot.state.compare_exchange_strong(
           expected, 2, std::memory_order_acq_rel)) {
@@ -985,12 +1015,17 @@ void VideoRtpSession::queue_access_unit_(
     this->tx_resync_needed_.store(true, std::memory_order_release);
 #endif
     this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+    release_input();
     return;
   }
-  memcpy(slot.data, access_unit.data, access_unit.size);
-  slot.size = access_unit.size;
-  slot.timestamp = access_unit.timestamp_90khz;
-  slot.key_frame = access_unit.key_frame;
+  if (access_unit.release_callback != nullptr) {
+    slot.access_unit = access_unit;
+  } else {
+    memcpy(slot.data, access_unit.data, access_unit.size);
+    slot.access_unit = EncodedVideoAccessUnit{
+        slot.data, access_unit.size, access_unit.timestamp_90khz,
+        access_unit.key_frame};
+  }
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
   if (access_unit.key_frame)
     this->tx_resync_needed_.store(false, std::memory_order_release);
@@ -1004,8 +1039,11 @@ void VideoRtpSession::queue_access_unit_(
 
 bool VideoRtpSession::start_sender_task_() {
   if (!this->reap_sender_task_()) return false;
-  for (auto &slot : this->tx_access_units_)
+  for (auto &slot : this->tx_access_units_) {
+    slot.access_unit.release();
+    slot.access_unit = {};
     slot.state.store(0, std::memory_order_release);
+  }
   this->tx_write_slot_ = 0;
   this->tx_read_slot_ = 0;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
@@ -1066,8 +1104,11 @@ bool VideoRtpSession::stop_sender_task_(int64_t stop_deadline_us) {
   }
   const bool stopped = this->sender_task_handle_ == nullptr;
   if (stopped) {
-    for (auto &slot : this->tx_access_units_)
+    for (auto &slot : this->tx_access_units_) {
+      slot.access_unit.release();
+      slot.access_unit = {};
       slot.state.store(0, std::memory_order_release);
+    }
   }
   return stopped;
 }
@@ -1116,9 +1157,10 @@ void VideoRtpSession::sender_task_() {
               expected, 2, std::memory_order_acq_rel)) {
         break;
       }
-      const EncodedVideoAccessUnit access_unit{
-          slot.data, slot.size, slot.timestamp, slot.key_frame};
+      const EncodedVideoAccessUnit access_unit = slot.access_unit;
       this->send_access_unit_(access_unit);
+      access_unit.release();
+      slot.access_unit = {};
       slot.state.store(0, std::memory_order_release);
       this->tx_read_slot_ =
           static_cast<uint8_t>((this->tx_read_slot_ + 1) %
@@ -1640,6 +1682,10 @@ bool VideoRtpSession::handle_rtp_packet_(const uint8_t *packet, size_t size) {
   const uint8_t payload_type = packet[1] & 0x7F;
   if (payload_type != this->capability_.payload_type || payload_size == 0)
     return false;
+  if (this->reassembly_ == nullptr && !this->acquire_reassembly_slot_()) {
+    this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+    return false;
+  }
   const bool marker = (packet[1] & 0x80) != 0;
   const uint16_t sequence =
       static_cast<uint16_t>((packet[2] << 8) | packet[3]);
@@ -1942,10 +1988,15 @@ void VideoRtpSession::finish_access_unit_(uint32_t timestamp) {
       }
       this->reassembly_size_ += parameter_prefix;
     }
-    EncodedVideoAccessUnit access_unit{this->reassembly_,
-                                       this->reassembly_size_, timestamp,
-                                       key_frame};
+    auto *completed_slot = this->reassembly_slot_;
+    completed_slot->state.store(2, std::memory_order_release);
+    this->reassembly_slot_ = nullptr;
+    this->reassembly_ = nullptr;
+    EncodedVideoAccessUnit access_unit{
+        completed_slot->data, this->reassembly_size_, timestamp, key_frame,
+        VideoRtpSession::release_reassembly_slot_, completed_slot};
     if (!this->sink_->consume_video_access_unit(access_unit)) {
+      access_unit.release();
       this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
       this->send_rtcp_pli_();
     } else {
@@ -1956,6 +2007,7 @@ void VideoRtpSession::finish_access_unit_(uint32_t timestamp) {
     this->send_rtcp_pli_();
   }
   this->reset_reassembly_();
+  this->acquire_reassembly_slot_();
 }
 
 void VideoRtpSession::reset_h264_parameter_sets_() {
@@ -1974,6 +2026,27 @@ void VideoRtpSession::reset_reassembly_() {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   this->jpeg_depacketizer_.reset();
 #endif
+}
+
+bool VideoRtpSession::acquire_reassembly_slot_() {
+  if (this->reassembly_slot_ != nullptr) return true;
+  for (auto &slot : this->receive_access_units_) {
+    uint8_t free = 0;
+    if (slot.state.compare_exchange_strong(
+            free, 1, std::memory_order_acq_rel)) {
+      this->reassembly_slot_ = &slot;
+      this->reassembly_ = slot.data;
+      return this->reassembly_ != nullptr;
+    }
+  }
+  return false;
+}
+
+void VideoRtpSession::release_reassembly_slot_(void *ctx) {
+  auto *slot = static_cast<ReceiveAccessUnitSlot *>(ctx);
+  if (slot == nullptr) return;
+  slot->state.store(0, std::memory_order_release);
+  if (slot->owner != nullptr) slot->owner->wake_task_();
 }
 
 bool VideoRtpSession::handle_rtcp_packet_(const uint8_t *packet, size_t size,

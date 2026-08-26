@@ -78,7 +78,7 @@ class EspH264VideoSource
   bool init_encoder_and_probe_();
   bool restart_encoder_();
   void close_encoder_();
-  bool set_encoder_gop_(uint8_t gop);
+  bool force_encoder_idr_();
   bool set_encoder_bitrate_(uint32_t bitrate);
   bool transform_to_encoder_yuv_(
       const esp_video_camera::RawVideoFrame &frame, uint8_t *target);
@@ -107,9 +107,15 @@ class EspH264VideoSource
     uint32_t generation{0};
     uint32_t sequence{0};
   };
+  struct EncodedSlot {
+    EspH264VideoSource *owner{nullptr};
+    uint8_t *data{nullptr};
+    std::atomic<uint8_t> state{0};
+  };
   void release_tx_slot_(TxSlot *slot);
+  static void release_encoded_slot_(void *ctx);
   TxSlot tx_slots_[2]{};
-  uint8_t *tx_encoded_{nullptr};
+  EncodedSlot encoded_slots_[2]{};
   std::string profile_level_id_;
   std::atomic<bool> encoder_ready_{false};
 

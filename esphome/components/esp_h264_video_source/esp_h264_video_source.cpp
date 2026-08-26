@@ -12,24 +12,6 @@
 #include <algorithm>
 #include <cstring>
 
-extern "C" void *__real_esp_h264_malloc_prefer(
-    uint32_t n, uint32_t size, uint32_t *actual_size, uint32_t caps1,
-    uint32_t caps2);
-
-extern "C" void *__wrap_esp_h264_malloc_prefer(
-    uint32_t n, uint32_t size, uint32_t *actual_size, uint32_t caps1,
-    uint32_t caps2) {
-  constexpr uint32_t kLargeAllocationBytes = 64U * 1024U;
-  const uint64_t bytes = static_cast<uint64_t>(n) * size;
-  if (bytes >= kLargeAllocationBytes && caps1 == MALLOC_CAP_INTERNAL &&
-      caps2 == MALLOC_CAP_SPIRAM) {
-    // This is the hardware encoder deblocking buffer. Prefer PSRAM so API,
-    // TLS, lwIP and realtime audio retain bounded internal headroom.
-    return __real_esp_h264_malloc_prefer(n, size, actual_size, caps2, caps1);
-  }
-  return __real_esp_h264_malloc_prefer(n, size, actual_size, caps1, caps2);
-}
-
 namespace esphome::esp_h264_video_source {
 
 static const char *const TAG = "esp_h264_video_source";
@@ -102,19 +84,8 @@ void EspH264VideoSource::setup() {
     this->mark_failed();
     return;
   }
-  // The setup probe runs on the ESPHome task. The runtime conversion runs
-  // synchronously in the camera capture task, so let that task register a
-  // separate client on its first frame as recommended by the PPA driver.
-  if (ppa_unregister_client(this->ppa_) != ESP_OK) {
-    ESP_LOGE(TAG, "Unable to release H.264 setup-probe PPA client");
-    this->encoder_ready_.store(false, std::memory_order_release);
-    this->stop_tx_task_();
-    this->close_encoder_();
-    this->free_resources_();
-    this->mark_failed();
-    return;
-  }
-  this->ppa_ = nullptr;
+  // One runtime caller owns this client. Registration is completed before the
+  // source is advertised so the first call never allocates PPA driver state.
 }
 
 void EspH264VideoSource::on_shutdown() {
@@ -344,11 +315,17 @@ bool EspH264VideoSource::allocate_resources_() {
     if (slot.yuv == nullptr)
       slot.yuv = static_cast<uint8_t *>(alloc_psram_dma(this->yuv_bytes_()));
   }
-  if (this->tx_encoded_ == nullptr)
-    this->tx_encoded_ =
-        static_cast<uint8_t *>(alloc_psram_dma(kEncodedBufferBytes));
+  for (auto &slot : this->encoded_slots_) {
+    slot.owner = this;
+    if (slot.data == nullptr) {
+      slot.data = static_cast<uint8_t *>(
+          alloc_psram_dma(kEncodedBufferBytes));
+    }
+  }
   return this->tx_slots_[0].yuv != nullptr &&
-         this->tx_slots_[1].yuv != nullptr && this->tx_encoded_ != nullptr;
+         this->tx_slots_[1].yuv != nullptr &&
+         this->encoded_slots_[0].data != nullptr &&
+         this->encoded_slots_[1].data != nullptr;
 }
 
 void EspH264VideoSource::free_resources_() {
@@ -358,8 +335,11 @@ void EspH264VideoSource::free_resources_() {
     slot.yuv = nullptr;
     slot.state.store(0, std::memory_order_release);
   }
-  if (this->tx_encoded_ != nullptr) heap_caps_free(this->tx_encoded_);
-  this->tx_encoded_ = nullptr;
+  for (auto &slot : this->encoded_slots_) {
+    if (slot.data != nullptr) heap_caps_free(slot.data);
+    slot.data = nullptr;
+    slot.state.store(0, std::memory_order_release);
+  }
 }
 
 bool EspH264VideoSource::init_encoder_and_probe_() {
@@ -432,16 +412,15 @@ void EspH264VideoSource::close_encoder_() {
   this->encoder_ = nullptr;
 }
 
-bool EspH264VideoSource::set_encoder_gop_(uint8_t gop) {
-  if (this->encoder_ == nullptr || gop == 0) return false;
+bool EspH264VideoSource::force_encoder_idr_() {
+  if (this->encoder_ == nullptr) return false;
   esp_h264_enc_param_hw_handle_t parameters = nullptr;
   if (esp_h264_enc_hw_get_param_hd(
           this->encoder_, &parameters) != ESP_H264_ERR_OK ||
       parameters == nullptr) {
     return false;
   }
-  return esp_h264_enc_set_gop(&parameters->base, gop) ==
-         ESP_H264_ERR_OK;
+  return esp_h264_enc_force_idr(&parameters->base) == ESP_H264_ERR_OK;
 }
 
 bool EspH264VideoSource::set_encoder_bitrate_(uint32_t bitrate) {
@@ -562,10 +541,19 @@ bool EspH264VideoSource::transform_to_encoder_yuv_(
 bool EspH264VideoSource::encode_frame_(
     const uint8_t *yuv, uint32_t timestamp_90khz, bool publish,
     uint32_t generation) {
-  if (this->encoder_ == nullptr || yuv == nullptr ||
-      this->tx_encoded_ == nullptr) {
+  if (this->encoder_ == nullptr || yuv == nullptr) {
     return false;
   }
+  EncodedSlot *encoded_slot = nullptr;
+  for (auto &candidate : this->encoded_slots_) {
+    uint8_t free = 0;
+    if (candidate.state.compare_exchange_strong(
+            free, 1, std::memory_order_acq_rel)) {
+      encoded_slot = &candidate;
+      break;
+    }
+  }
+  if (encoded_slot == nullptr) return false;
   esp_h264_enc_in_frame_t input{};
   input.raw_data.buffer = const_cast<uint8_t *>(yuv);
   input.raw_data.len = this->yuv_bytes_();
@@ -573,7 +561,7 @@ bool EspH264VideoSource::encode_frame_(
   // config.fps, so preserving the RTP clock avoids a second timestamp domain.
   input.pts = timestamp_90khz;
   esp_h264_enc_out_frame_t output{};
-  output.raw_data.buffer = this->tx_encoded_;
+  output.raw_data.buffer = encoded_slot->data;
   output.raw_data.len = kEncodedBufferBytes;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   const int64_t encode_started_us = esp_timer_get_time();
@@ -591,6 +579,7 @@ bool EspH264VideoSource::encode_frame_(
   if (error != ESP_H264_ERR_OK || output.length == 0 ||
       output.length > kEncodedBufferBytes) {
     ESP_LOGW(TAG, "H.264 encode failed: %d", (int) error);
+    encoded_slot->state.store(0, std::memory_order_release);
     return false;
   }
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
@@ -604,6 +593,7 @@ bool EspH264VideoSource::encode_frame_(
             output.raw_data.buffer, output.length, &profile) ||
         !voip_stack::h264_same_subprofile(profile, "42c01e")) {
       ESP_LOGE(TAG, "Encoder probe emitted no supported H.264 SPS");
+      encoded_slot->state.store(0, std::memory_order_release);
       return false;
     }
     this->profile_level_id_ = profile;
@@ -619,11 +609,15 @@ bool EspH264VideoSource::encode_frame_(
         this->callback_ != nullptr) {
       const voip_stack::EncodedVideoAccessUnit access_unit{
           output.raw_data.buffer, output.length, timestamp_90khz,
-          output.frame_type == ESP_H264_FRAME_TYPE_IDR};
+          output.frame_type == ESP_H264_FRAME_TYPE_IDR,
+          EspH264VideoSource::release_encoded_slot_, encoded_slot};
       this->callback_(this->callback_ctx_, access_unit);
+      encoded_slot = nullptr;
     }
     xSemaphoreGive(this->control_mutex_);
   }
+  if (encoded_slot != nullptr)
+    encoded_slot->state.store(0, std::memory_order_release);
   return !this->profile_level_id_.empty();
 }
 
@@ -632,20 +626,10 @@ void EspH264VideoSource::consume_raw_video_frame(
   if (!this->tx_active_.load(std::memory_order_acquire)) {
     return;
   }
-  // This callback executes on the camera capture task. Registering the
-  // runtime client here keeps each task on its own PPA client; setup used and
-  // released a separate client for the deterministic encoder probe.
-  if (this->ppa_ == nullptr && !this->init_ppa_()) {
-    ESP_LOGE(TAG, "Unable to register runtime H.264 PPA client");
-    xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
-    this->tx_active_.store(false, std::memory_order_release);
-    this->callback_ = nullptr;
-    this->callback_ctx_ = nullptr;
-    xSemaphoreGive(this->control_mutex_);
-    if (this->tx_task_handle_ != nullptr)
-      xTaskNotifyGive(this->tx_task_handle_);
-    return;
-  }
+  // setup() has already registered the client used by this single runtime
+  // caller. A missing handle is a permanent readiness failure, not a reason
+  // to allocate driver state from the camera hot path.
+  if (this->ppa_ == nullptr) return;
   this->raw_frames_.fetch_add(1, std::memory_order_relaxed);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   const uint32_t previous_timestamp = this->raw_last_timestamp_.exchange(
@@ -739,7 +723,21 @@ bool EspH264VideoSource::tx_slots_idle_() const {
     if (slot.state.load(std::memory_order_acquire) != 0)
       return false;
   }
+  for (const auto &slot : this->encoded_slots_) {
+    if (slot.state.load(std::memory_order_acquire) != 0)
+      return false;
+  }
   return true;
+}
+
+void EspH264VideoSource::release_encoded_slot_(void *ctx) {
+  auto *slot = static_cast<EncodedSlot *>(ctx);
+  if (slot == nullptr || slot->owner == nullptr) return;
+  slot->state.store(0, std::memory_order_release);
+  if (!slot->owner->tx_active_.load(std::memory_order_acquire) &&
+      slot->owner->tx_slots_idle_()) {
+    xSemaphoreGive(slot->owner->tx_idle_);
+  }
 }
 
 void EspH264VideoSource::release_tx_slot_(TxSlot *slot) {
@@ -831,14 +829,12 @@ void EspH264VideoSource::tx_task_() {
     const bool force_idr =
         this->force_idr_generation_.compare_exchange_strong(
             requested_idr_generation, 0, std::memory_order_acq_rel);
-    if (force_idr && !this->set_encoder_gop_(1))
+    if (force_idr && !this->force_encoder_idr_())
       ESP_LOGE(TAG, "Unable to request H.264 IDR");
     if (this->encode_frame_(
             slot->yuv, slot->timestamp_90khz, true, generation)) {
       this->encoded_frames_.fetch_add(1, std::memory_order_relaxed);
     }
-    if (force_idr && !this->set_encoder_gop_(this->gop_))
-      ESP_LOGE(TAG, "Unable to restore H.264 GOP");
     this->release_tx_slot_(slot);
   }
   for (auto &slot : this->tx_slots_)

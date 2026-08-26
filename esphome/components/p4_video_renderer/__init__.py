@@ -157,7 +157,10 @@ async def to_code(config):
         add_lv_use("image", "label")
         cg.add_define("USE_P4_VIDEO_RENDERER_H264")
         cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_H264")
-        add_idf_component(name="espressif/esp_h264", ref="1.3.8")
+        add_idf_component(
+            name="espressif/esp_h264",
+            path="/home/codex/esp-h264-pr-work/esp_h264",
+        )
         # esp_h264 decodes to planar I420. Use Espressif's cache-aligned P4
         # conversion kernel for the PPA-native O_UYY_E_VYY layout instead of
         # walking every luma/chroma byte in application C++.

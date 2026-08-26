@@ -164,7 +164,10 @@ void P4VideoRenderer::loop() {
 #endif
 
   bool first_frame = false;
-  xSemaphoreTake(this->presentation_mutex_, portMAX_DELAY);
+  if (xSemaphoreTake(this->presentation_mutex_, 0) != pdTRUE) {
+    this->enable_loop_soon_any_context();
+    return;
+  }
   const int pending = this->pending_surface_.load(std::memory_order_acquire);
   if (this->rx_running_.load(std::memory_order_acquire) &&
       this->rx_active_.load(std::memory_order_acquire) &&
@@ -736,17 +739,10 @@ bool P4VideoRenderer::update_jpeg_picture_info_(const uint8_t *data,
 bool P4VideoRenderer::allocate_session_resources_() {
   const size_t encoded_buffer_bytes = kMaxAccessUnitBytes;
 #ifdef USE_P4_VIDEO_RENDERER_H264
-  for (auto &slot : this->h264_au_slots_) {
-    if (slot.data == nullptr) {
-      slot.data = static_cast<uint8_t *>(heap_caps_aligned_alloc(
-          16, encoded_buffer_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    }
-    if (slot.data == nullptr) {
-      this->free_codec_resources_();
-      this->free_unpublished_surfaces_();
-      return false;
-    }
-  }
+  // RTP owns the three bounded reassembly buffers and transfers leases to the
+  // decoder worker. The renderer queues only slot metadata and never copies a
+  // complete H.264 access unit.
+  (void) encoded_buffer_bytes;
 #else
   if (this->rx_au_ == nullptr) {
     this->rx_au_ = static_cast<uint8_t *>(heap_caps_aligned_alloc(
@@ -889,21 +885,39 @@ bool P4VideoRenderer::h264_resolution_fits_(uint16_t width,
 
 bool P4VideoRenderer::start_video(
     const voip_stack::VideoCapability &capability) {
-  if (this->is_failed() || !capability.valid()
+  const bool component_failed = this->is_failed();
+  const bool capability_valid = capability.valid();
 #ifdef USE_P4_VIDEO_RENDERER_H264
-      || !capability.is_h264() ||
-      !voip_stack::h264_level_fits(
+  const bool codec_valid = capability.is_h264();
+  const bool level_valid =
+      codec_valid &&
+      voip_stack::h264_level_fits(
           capability.profile_level_id,
           this->h264_receive_profile_level_id_(
               this->max_decode_width_, this->max_decode_height_,
-              this->framerate_)) ||
-      this->h264_decoder_ == nullptr
+              this->framerate_));
+  const bool codec_ready = this->h264_decoder_ != nullptr;
 #else
-      || !capability.is_jpeg()
+  const bool codec_valid = capability.is_jpeg();
+  const bool level_valid = true;
+  const bool codec_ready = true;
 #endif
-      || !this->rx_running_.load(std::memory_order_acquire) ||
-      this->rx_session_prepared_.exchange(true, std::memory_order_acq_rel)
-  ) {
+  const bool worker_running =
+      this->rx_running_.load(std::memory_order_acquire);
+  const bool already_prepared =
+      this->rx_session_prepared_.load(std::memory_order_acquire);
+  if (component_failed || !capability_valid || !codec_valid || !level_valid ||
+      !codec_ready || !worker_running || already_prepared) {
+    ESP_LOGE(TAG,
+             "Video prepare rejected: failed=%s capability=%s codec=%s "
+             "level=%s ready=%s worker=%s prepared=%s",
+             YESNO(component_failed), YESNO(capability_valid),
+             YESNO(codec_valid), YESNO(level_valid), YESNO(codec_ready),
+             YESNO(worker_running), YESNO(already_prepared));
+    return false;
+  }
+  if (this->rx_session_prepared_.exchange(true, std::memory_order_acq_rel)) {
+    ESP_LOGE(TAG, "Video prepare lost ownership race");
     return false;
   }
   this->rx_capability_ = capability;
@@ -986,8 +1000,7 @@ bool P4VideoRenderer::set_video_active(bool active) {
   // AU may already be owned, but every publish site rechecks rx_active_. Drop
   // a decoded surface still waiting for presentation. A surface handed to DSI
   // remains immutable until the serialized presentation owner releases it.
-  xSemaphoreTake(this->presentation_mutex_, portMAX_DELAY);
-  this->pending_surface_.store(-1, std::memory_order_release);
+  this->rx_active_.store(false, std::memory_order_release);
   this->rx_session_generation_.fetch_add(1, std::memory_order_acq_rel);
 #ifdef USE_P4_VIDEO_RENDERER_H264
   this->loss_generation_.fetch_add(1, std::memory_order_acq_rel);
@@ -995,6 +1008,12 @@ bool P4VideoRenderer::set_video_active(bool active) {
 #endif
   if (this->rx_task_handle_ != nullptr)
     xTaskNotifyGive(this->rx_task_handle_);
+  if (xSemaphoreTake(this->presentation_mutex_, 0) != pdTRUE) {
+    this->video_ended_pending_.store(true, std::memory_order_release);
+    this->enable_loop_soon_any_context();
+    return true;
+  }
+  this->pending_surface_.store(-1, std::memory_order_release);
   const bool was_visible =
       this->remote_frame_visible_.exchange(false, std::memory_order_acq_rel);
   xSemaphoreGive(this->presentation_mutex_);
@@ -1009,7 +1028,8 @@ bool P4VideoRenderer::consume_video_access_unit(
     const voip_stack::EncodedVideoAccessUnit &access_unit) {
   if (!this->rx_running_.load(std::memory_order_acquire) ||
       !this->rx_active_.load(std::memory_order_acquire) ||
-      access_unit.data == nullptr || access_unit.size == 0) {
+      access_unit.data == nullptr || access_unit.size == 0 ||
+      access_unit.release_callback == nullptr) {
     return false;
   }
 #ifdef USE_P4_VIDEO_RENDERER_H264
@@ -1053,19 +1073,7 @@ bool P4VideoRenderer::consume_video_access_unit(
   }
 
   auto &slot = this->h264_au_slots_[slot_index];
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
-  const uint32_t copy_started_us = micros();
-#endif
-  memcpy(slot.data, access_unit.data, access_unit.size);
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
-  const uint32_t copy_us = micros() - copy_started_us;
-  update_max(this->rx_au_copy_max_us_, copy_us);
-  this->rx_au_copy_total_us_.fetch_add(copy_us, std::memory_order_relaxed);
-  this->rx_au_copy_total_bytes_.fetch_add(access_unit.size,
-                                          std::memory_order_relaxed);
-#endif
-  slot.size = access_unit.size;
-  slot.timestamp = access_unit.timestamp_90khz;
+  slot.access_unit = access_unit;
   slot.key_frame = access_unit.key_frame;
   slot.session_generation =
       this->rx_session_generation_.load(std::memory_order_acquire);
@@ -1076,6 +1084,8 @@ bool P4VideoRenderer::consume_video_access_unit(
 #endif
   slot.state.store(1, std::memory_order_release);
   if (xQueueSend(this->h264_au_queue_, &slot_index, 0) != pdTRUE) {
+    slot.access_unit.release();
+    slot.access_unit = {};
     slot.state.store(0, std::memory_order_release);
     this->loss_generation_.fetch_add(1, std::memory_order_acq_rel);
     this->waiting_for_key_frame_.store(true, std::memory_order_release);
@@ -1320,7 +1330,8 @@ void P4VideoRenderer::rx_task_() {
                    micros() - slot.queued_at_us);
 #endif
         rendered = this->decode_h264_access_unit_(
-            slot.data, slot.size, slot.timestamp, slot.key_frame,
+            slot.access_unit.data, slot.access_unit.size,
+            slot.access_unit.timestamp_90khz, slot.key_frame,
             slot.session_generation, slot.loss_generation, decoded);
       }
       if (current) {
@@ -1331,6 +1342,8 @@ void P4VideoRenderer::rx_task_() {
           this->rx_decode_drops_.fetch_add(1, std::memory_order_relaxed);
 #endif
       }
+      slot.access_unit.release();
+      slot.access_unit = {};
       slot.state.store(0, std::memory_order_release);
     }
 #else
@@ -1429,8 +1442,11 @@ void P4VideoRenderer::rx_task_() {
 #endif
   }
 #ifdef USE_P4_VIDEO_RENDERER_H264
-  for (auto &slot : this->h264_au_slots_)
+  for (auto &slot : this->h264_au_slots_) {
+    slot.access_unit.release();
+    slot.access_unit = {};
     slot.state.store(0, std::memory_order_release);
+  }
 #else
   this->rx_slot_state_.store(0, std::memory_order_release);
 #endif
@@ -1686,7 +1702,8 @@ bool P4VideoRenderer::render_i420_(const uint8_t *i420, size_t size,
           this->rx_session_generation_.load(std::memory_order_acquire)) {
     return false;
   }
-  xSemaphoreTake(this->presentation_mutex_, portMAX_DELAY);
+  if (xSemaphoreTake(this->presentation_mutex_, 0) != pdTRUE)
+    return false;
   if (!this->rx_active_.load(std::memory_order_acquire) ||
       session_generation !=
           this->rx_session_generation_.load(std::memory_order_acquire)) {
@@ -1771,10 +1788,8 @@ bool P4VideoRenderer::reap_rx_task_() {
 void P4VideoRenderer::free_codec_resources_() {
 #ifdef USE_P4_VIDEO_RENDERER_H264
   for (auto &slot : this->h264_au_slots_) {
-    if (slot.data != nullptr)
-      heap_caps_free(slot.data);
-    slot.data = nullptr;
-    slot.size = 0;
+    slot.access_unit.release();
+    slot.access_unit = {};
     slot.state.store(0, std::memory_order_release);
   }
 #else

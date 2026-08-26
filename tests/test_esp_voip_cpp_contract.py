@@ -1286,7 +1286,12 @@ def test_video_direction_commit_uses_prepared_media_without_polling() -> None:
     assert "heap_caps_malloc" not in request
     assert "start_sender_task_" not in request
     assert "stop_sender_task_" not in request
-    assert "heap_caps_malloc" in start
+    assert "heap_caps_malloc" not in start
+    persistent_buffers = cpp_method(
+        source, r"VideoRtpSession::allocate_persistent_buffers_"
+    )
+    assert "heap_caps_malloc" in persistent_buffers
+    assert "persistent_buffers_ready_" in start
     assert "start_sender_task_" in start
 
 

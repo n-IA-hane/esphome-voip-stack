@@ -24,13 +24,24 @@ enum class VideoCodec : uint8_t {
 
 /// One complete encoded video access unit.
 ///
-/// Ownership stays with the producer for the duration of the callback. RTP
-/// packetization must finish (or copy/drop the complete AU) before returning.
+/// A producer may transfer a bounded lease by setting release_callback. The
+/// consumer then calls release exactly once after sending, consuming or
+/// dropping the AU. Without a release callback the data remains borrowed only
+/// for the callback and an asynchronous consumer must copy it.
 struct EncodedVideoAccessUnit {
+  using ReleaseCallback = void (*)(void *ctx);
   const uint8_t *data{nullptr};
   size_t size{0};
   uint32_t timestamp_90khz{0};
   bool key_frame{false};
+  ReleaseCallback release_callback{nullptr};
+  void *release_ctx{nullptr};
+
+  void release() const {
+    if (this->release_callback != nullptr) {
+      this->release_callback(this->release_ctx);
+    }
+  }
 };
 
 /// Wrap-safe 90 kHz token bucket with one frame of bounded recovery credit.
