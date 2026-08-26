@@ -1028,11 +1028,15 @@ bool P4VideoRenderer::consume_video_access_unit(
     const voip_stack::EncodedVideoAccessUnit &access_unit) {
   if (!this->rx_running_.load(std::memory_order_acquire) ||
       !this->rx_active_.load(std::memory_order_acquire) ||
-      access_unit.data == nullptr || access_unit.size == 0 ||
-      access_unit.release_callback == nullptr) {
+      access_unit.data == nullptr || access_unit.size == 0) {
     return false;
   }
 #ifdef USE_P4_VIDEO_RENDERER_H264
+  // H.264 transfers a preallocated RTP slot to the persistent decoder worker,
+  // so every accepted AU must carry the callback that returns that lease.
+  // JPEG is copied synchronously into the renderer-owned slot below and does
+  // not transfer ownership.
+  if (access_unit.release_callback == nullptr) return false;
   if (!this->rx_session_prepared_.load(std::memory_order_acquire) ||
       this->h264_au_queue_ == nullptr ||
       access_unit.size > kMaxAccessUnitBytes) {

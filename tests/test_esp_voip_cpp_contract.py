@@ -418,6 +418,20 @@ def test_p4_h264_renderer_uses_compact_surfaces_and_supported_display_copy() -> 
     assert "cv.use_id(mipi_dsi_display.MipiDsi)" in codegen
     assert "prepare_direct_frame_buffers" not in source
     assert "present_direct_frame_buffer" not in source
+
+
+def test_p4_renderer_requires_transfer_callback_only_for_h264() -> None:
+    source = read("../p4_video_renderer/p4_video_renderer.cpp")
+    consume = cpp_method(source, r"P4VideoRenderer::consume_video_access_unit")
+
+    common_gate, codec_paths = consume.split(
+        "#ifdef USE_P4_VIDEO_RENDERER_H264", 1
+    )
+    h264_path, jpeg_path = codec_paths.split("#else", 1)
+
+    assert "release_callback" not in common_gate
+    assert "access_unit.release_callback == nullptr" in h264_path
+    assert "memcpy(this->rx_au_, access_unit.data, access_unit.size);" in jpeg_path
     assert "this->direct_display_->draw_pixels_at(" in source
     assert "config.out.pic_w = geometry.surface_width;" in source
     assert "config.out.pic_h = geometry.surface_height;" in source
