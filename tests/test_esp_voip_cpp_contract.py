@@ -408,6 +408,16 @@ def test_h264_camera_callback_completes_the_shared_idle_barrier() -> None:
     assert callback.count("this->release_tx_slot_(slot);") == 2
 
 
+def test_p4_renderer_uses_only_the_public_display_contract() -> None:
+    header = read("../p4_video_renderer/p4_video_renderer.h")
+    codegen = read("../p4_video_renderer/__init__.py")
+
+    assert "display::Display *value" in header
+    assert "mipi_dsi::MipiDsi" not in header
+    assert 'components/mipi_dsi/mipi_dsi.h' not in header
+    assert "cv.use_id(display.Display)" in codegen
+
+
 def test_video_rtp_latches_only_codec_valid_media_packets() -> None:
     header = read("video_rtp.h")
     source = read("video_rtp.cpp")

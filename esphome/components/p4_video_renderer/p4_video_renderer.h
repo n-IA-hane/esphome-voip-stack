@@ -21,9 +21,6 @@
 #include "esp_h264_dec_sw.h"
 #include "esp_imgfx_color_convert.h"
 #endif
-#ifdef USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY
-#include "esphome/components/mipi_dsi/mipi_dsi.h"
-#endif
 #include "lvgl.h"
 
 #include <atomic>
@@ -63,7 +60,7 @@ public:
     this->max_decode_height_ = value;
   }
 #ifdef USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY
-  void set_direct_display(mipi_dsi::MipiDsi *value) {
+  void set_direct_display(display::Display *value) {
     this->direct_display_ = value;
   }
   void set_display_rotation(uint16_t value) {

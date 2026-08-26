@@ -2,7 +2,7 @@
 
 `esp_h264_video_source` converts raw ESP32-P4 CSI frames into H.264 access
 units. PPA performs crop, rotation and scaling in hardware. Espressif
-`esp_h264` 1.3.6 performs the hardware encode.
+`esp_h264` 1.3.8 performs the hardware encode.
 
 ## Example
 

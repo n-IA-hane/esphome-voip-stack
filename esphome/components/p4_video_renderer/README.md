@@ -32,7 +32,7 @@ p4_video_renderer:
 | `width` / `height` | Preferred receive geometry advertised in SDP. |
 | `framerate` | Preferred receive frame rate. |
 | `max_decode_width` / `max_decode_height` | Hard decode and surface allocation bounds. |
-| `display_id` | Direct display used for H.264 presentation. Required when `codec: h264`. |
+| `display_id` | ESPHome display used for H.264 presentation through the public display API. Required when `codec: h264`. |
 | `display_rotation` | Direct display rotation: 0, 90, 180 or 270 degrees. |
 | `on_first_frame` | Runs when the first remote frame becomes presentable. |
 | `on_video_ended` | Runs after the active remote video stream ends. |
