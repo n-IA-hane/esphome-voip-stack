@@ -499,9 +499,10 @@ bool P4VideoRenderer::present_surface_direct_(int index) {
     return false;
   }
   this->front_surface_.store(index, std::memory_order_release);
-  return this->direct_mipi_display_->present_buffer_region(
-      this->surfaces_[index], native_x, native_y, output_width,
-      output_height);
+  this->direct_display_->draw_pixels_at(
+      native_x, native_y, output_width, output_height, this->surfaces_[index],
+      display::COLOR_ORDER_RGB, display::COLOR_BITNESS_565, false);
+  return true;
 #else
   if (index < 0 || index > 1 || this->direct_display_ == nullptr ||
       this->direct_display_ppa_ == nullptr ||
@@ -788,12 +789,14 @@ bool P4VideoRenderer::allocate_session_resources_() {
     this->free_unpublished_surfaces_();
     return false;
   }
-  const size_t surface_bytes =
-      this->direct_mipi_display_->get_frame_buffer_size();
-  if (surface_bytes == 0) {
+  const int native_width = this->direct_display_->get_native_width();
+  const int native_height = this->direct_display_->get_native_height();
+  if (native_width <= 0 || native_height <= 0) {
     this->free_codec_resources_();
     return false;
   }
+  const size_t surface_bytes =
+      static_cast<size_t>(native_width) * native_height * sizeof(uint16_t);
 #endif
 
   this->surface_capacity_bytes_ = surface_bytes;
@@ -1599,7 +1602,7 @@ bool P4VideoRenderer::render_i420_(const uint8_t *i420, size_t size,
   if (i420 == nullptr || !this->h264_resolution_fits_(width, height) ||
       size < decoded_bytes || this->optimized_yuv420_ == nullptr ||
       this->optimized_yuv420_capacity_ < decoded_bytes ||
-      this->ppa_ == nullptr || this->direct_mipi_display_ == nullptr ||
+      this->ppa_ == nullptr || this->direct_display_ == nullptr ||
       this->surfaces_[0] == nullptr ||
       this->pending_surface_.load(std::memory_order_acquire) >= 0) {
     return false;

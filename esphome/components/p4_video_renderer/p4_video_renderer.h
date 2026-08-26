@@ -65,9 +65,6 @@ public:
 #ifdef USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY
   void set_direct_display(mipi_dsi::MipiDsi *value) {
     this->direct_display_ = value;
-#ifdef USE_P4_VIDEO_RENDERER_H264
-    this->direct_mipi_display_ = value;
-#endif
   }
   void set_display_rotation(uint16_t value) {
     this->display_rotation_ = value;
@@ -226,7 +223,6 @@ protected:
   display::Display *direct_display_{nullptr};
   uint16_t display_rotation_{0};
 #ifdef USE_P4_VIDEO_RENDERER_H264
-  mipi_dsi::MipiDsi *direct_mipi_display_{nullptr};
   std::atomic<uint64_t> direct_layout_area_{0};
   std::atomic<uint32_t> direct_layout_native_size_{0};
 #endif
