@@ -108,6 +108,7 @@ class EspH264VideoSource
     uint32_t generation{0};
     uint32_t sequence{0};
   };
+  void release_tx_slot_(TxSlot *slot);
   TxSlot tx_slots_[2]{};
   uint8_t *tx_encoded_{nullptr};
   std::string profile_level_id_;

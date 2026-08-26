@@ -393,6 +393,21 @@ def test_video_media_tasks_are_event_driven_and_bounded() -> None:
     assert "start_stream(camera::WEB_REQUESTER)" not in camera_source
 
 
+def test_h264_camera_callback_completes_the_shared_idle_barrier() -> None:
+    source = read("../esp_h264_video_source/esp_h264_video_source.cpp")
+
+    release = cpp_method(source, r"EspH264VideoSource::release_tx_slot_")
+    assert "slot->state.store(0, std::memory_order_release);" in release
+    assert "!this->tx_active_.load(std::memory_order_acquire)" in release
+    assert "this->tx_slots_idle_()" in release
+    assert "xSemaphoreGive(this->tx_idle_);" in release
+
+    callback = cpp_method(
+        source, r"EspH264VideoSource::consume_raw_video_frame"
+    )
+    assert callback.count("this->release_tx_slot_(slot);") == 2
+
+
 def test_video_rtp_latches_only_codec_valid_media_packets() -> None:
     header = read("video_rtp.h")
     source = read("video_rtp.cpp")

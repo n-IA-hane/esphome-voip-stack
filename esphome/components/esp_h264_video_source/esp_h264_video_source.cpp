@@ -651,7 +651,7 @@ void EspH264VideoSource::consume_raw_video_frame(
   if (!this->transform_to_encoder_yuv_(
           frame, slot->yuv)) {
     ESP_LOGE(TAG, "Unable to transform H.264 camera frame");
-    slot->state.store(0, std::memory_order_release);
+    this->release_tx_slot_(slot);
     return;
   }
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
@@ -665,7 +665,7 @@ void EspH264VideoSource::consume_raw_video_frame(
 #endif
   if (!this->tx_active_.load(std::memory_order_acquire) ||
       generation != this->tx_generation_.load(std::memory_order_acquire)) {
-    slot->state.store(0, std::memory_order_release);
+    this->release_tx_slot_(slot);
     return;
   }
   slot->timestamp_90khz = frame.timestamp_90khz;
@@ -701,6 +701,17 @@ bool EspH264VideoSource::tx_slots_idle_() const {
       return false;
   }
   return true;
+}
+
+void EspH264VideoSource::release_tx_slot_(TxSlot *slot) {
+  slot->state.store(0, std::memory_order_release);
+  // A camera callback can own a slot while the encoder worker is already
+  // asleep. If teardown invalidates that callback generation, the callback is
+  // the last owner and must complete the same idle barrier as the worker.
+  if (!this->tx_active_.load(std::memory_order_acquire) &&
+      this->tx_slots_idle_()) {
+    xSemaphoreGive(this->tx_idle_);
+  }
 }
 
 bool EspH264VideoSource::wait_for_tx_idle_() {
@@ -762,7 +773,7 @@ void EspH264VideoSource::tx_task_() {
     const uint32_t generation = slot->generation;
     if (!this->tx_active_.load(std::memory_order_acquire) ||
         generation != this->tx_generation_.load(std::memory_order_acquire)) {
-      slot->state.store(0, std::memory_order_release);
+      this->release_tx_slot_(slot);
       continue;
     }
     const uint32_t requested_bitrate =
@@ -789,11 +800,7 @@ void EspH264VideoSource::tx_task_() {
     }
     if (force_idr && !this->set_encoder_gop_(this->gop_))
       ESP_LOGE(TAG, "Unable to restore H.264 GOP");
-    slot->state.store(0, std::memory_order_release);
-    if (!this->tx_active_.load(std::memory_order_acquire) &&
-        this->tx_slots_idle_()) {
-      xSemaphoreGive(this->tx_idle_);
-    }
+    this->release_tx_slot_(slot);
   }
   for (auto &slot : this->tx_slots_)
     slot.state.store(0, std::memory_order_release);
