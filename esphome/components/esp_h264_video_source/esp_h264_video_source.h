@@ -98,7 +98,6 @@ class EspH264VideoSource
   uint32_t bitrate_{400000};
   std::atomic<uint32_t> active_bitrate_{400000};
   uint8_t gop_{30};
-
   ppa_client_handle_t ppa_{nullptr};
   esp_h264_enc_handle_t encoder_{nullptr};
   struct TxSlot {
@@ -143,6 +142,12 @@ class EspH264VideoSource
   std::atomic<uint32_t> encoded_frames_{0};
 
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+  std::atomic<uint32_t> raw_last_timestamp_{0};
+  std::atomic<uint32_t> raw_delta_samples_{0};
+  std::atomic<uint32_t> raw_delta_total_90khz_{0};
+  std::atomic<uint32_t> raw_delta_min_90khz_{UINT32_MAX};
+  std::atomic<uint32_t> raw_delta_max_90khz_{0};
+  std::atomic<uint32_t> cadence_drops_{0};
   std::atomic<uint32_t> converted_frames_{0};
   std::atomic<uint32_t> conversion_max_us_{0};
   std::atomic<uint32_t> conversion_total_us_{0};

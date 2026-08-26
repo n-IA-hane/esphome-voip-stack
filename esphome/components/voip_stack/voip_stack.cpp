@@ -303,6 +303,8 @@ bool VoipStack::setup_transport_() {
   this->transport_->set_connection_callback(VoipStack::transport_connection_callback_, this);
   this->transport_->set_accept_callback(VoipStack::transport_accept_callback_, this);
   this->transport_->set_dialog_active_callback(VoipStack::transport_dialog_active_callback_, this);
+  this->transport_->set_media_quiesced_callback(
+      VoipStack::transport_media_quiesced_callback_, this);
 
   if (!this->transport_->start()) {
     ESP_LOGE(TAG, "Transport failed to start");
@@ -333,6 +335,12 @@ bool VoipStack::transport_accept_callback_(void *ctx) {
 
 bool VoipStack::transport_dialog_active_callback_(void *ctx) {
   return static_cast<VoipStack *>(ctx)->is_active();
+}
+
+void VoipStack::transport_media_quiesced_callback_(void *ctx) {
+  auto *self = static_cast<VoipStack *>(ctx);
+  self->defer([self]() { self->finish_call_termination_(); });
+  self->enable_loop_soon_any_context();
 }
 
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO

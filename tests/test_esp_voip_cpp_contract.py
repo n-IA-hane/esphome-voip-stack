@@ -408,14 +408,19 @@ def test_h264_camera_callback_completes_the_shared_idle_barrier() -> None:
     assert callback.count("this->release_tx_slot_(slot);") == 2
 
 
-def test_p4_renderer_uses_only_the_public_display_contract() -> None:
+def test_p4_h264_renderer_uses_compact_surfaces_and_supported_display_copy() -> None:
     header = read("../p4_video_renderer/p4_video_renderer.h")
     codegen = read("../p4_video_renderer/__init__.py")
+    source = read("../p4_video_renderer/p4_video_renderer.cpp")
 
     assert "display::Display *value" in header
-    assert "mipi_dsi::MipiDsi" not in header
     assert 'components/mipi_dsi/mipi_dsi.h' not in header
-    assert "cv.use_id(display.Display)" in codegen
+    assert "cv.use_id(mipi_dsi_display.MipiDsi)" in codegen
+    assert "prepare_direct_frame_buffers" not in source
+    assert "present_direct_frame_buffer" not in source
+    assert "this->direct_display_->draw_pixels_at(" in source
+    assert "config.out.pic_w = geometry.surface_width;" in source
+    assert "config.out.pic_h = geometry.surface_height;" in source
 
 
 def test_video_rtp_latches_only_codec_valid_media_packets() -> None:
@@ -628,6 +633,12 @@ def test_rtp_frame_cadence_host_behavioral_contract(tmp_path: Path) -> None:
               cadence.reset(30);
               if (!cadence.accept(1234U) || cadence.accept(2234U) ||
                   !cadence.accept(4234U)) return 4;
+
+                  cadence.reset(10);
+                  if (!cadence.accept(0U) || cadence.accept(5000U) ||
+                      !cadence.accept(10000U) || !cadence.accept(70000U) ||
+                      cadence.accept(74000U) || cadence.accept(78000U) ||
+                      !cadence.accept(79000U)) return 5;
               return 0;
             }
             """
@@ -3107,7 +3118,8 @@ def test_terminal_sip_transaction_remains_owned_until_peer_completion() -> None:
     start = cpp_method(fsm, r"VoipStack::start")
     assert "snapshot().terminal_transaction_pending" in start
     finish = cpp_method(fsm, r"VoipStack::finish_call_termination_")
-    assert "snapshot().terminal_transaction_pending" in finish
+    assert "transport.terminal_transaction_pending" in finish
+    assert "transport.media_lifecycle_phase != 0" in finish
     assert finish.index("return;") < finish.index("CallState::IDLE")
     terminal_signal = cpp_method(fsm, r"VoipStack::on_sip_signal_received_")
     assert "case SipSignalType::TERMINAL_COMPLETE:" in terminal_signal
@@ -3148,6 +3160,21 @@ def test_terminal_sip_transaction_remains_owned_until_peer_completion() -> None:
     worker_failure = worker[worker.index('signal.reason = "rtp_worker_failed"') :]
     assert "this->send_bye_unlocked_(signal.call_id)" in worker_failure
     assert "signal.terminal_transaction_pending" in worker_failure
+
+
+def test_media_cleanup_completion_releases_terminal_state_event_driven() -> None:
+    transport_h = read("transport.h")
+    sip_cpp = read("sip_transport.cpp")
+    stack_cpp = read("voip_stack.cpp")
+
+    assert "TransportMediaQuiescedCallback" in transport_h
+    assert "set_media_quiesced_callback" in transport_h
+    assert "emit_media_quiesced_();" in sip_cpp
+    callback = cpp_method(
+        stack_cpp, r"VoipStack::transport_media_quiesced_callback_"
+    )
+    assert "finish_call_termination_();" in callback
+    assert "enable_loop_soon_any_context();" in callback
 
 
 def test_dialog_strings_are_serialized_off_the_media_hot_path() -> None:

@@ -29,6 +29,7 @@ using TransportSipSignalCallback = void (*)(void *ctx, SipSignal signal);
 using TransportConnectionCallback = void (*)(void *ctx, bool connected);
 using TransportAcceptCallback = bool (*)(void *ctx);
 using TransportDialogActiveCallback = bool (*)(void *ctx);
+using TransportMediaQuiescedCallback = void (*)(void *ctx);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 using TransportVideoSendStateCallback =
     void (*)(void *ctx, bool enabled, bool pending);
@@ -48,8 +49,8 @@ struct SipTransportSnapshot {
   uint32_t video_rx_packets{0};
   uint32_t video_tx_access_units{0};
   uint32_t video_rx_access_units{0};
-  uint8_t media_lifecycle_phase{0};
 #endif
+  uint8_t media_lifecycle_phase{0};
   bool call_active{false};
   bool pending_invite{false};
   bool sip_tcp{false};
@@ -199,6 +200,12 @@ class SipPhoneTransport {
     this->dialog_active_ctx_ = ctx;
   }
 
+  void set_media_quiesced_callback(TransportMediaQuiescedCallback cb,
+                                    void *ctx) {
+    this->on_media_quiesced_ = cb;
+    this->on_media_quiesced_ctx_ = ctx;
+  }
+
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   void set_video_send_state_callback(TransportVideoSendStateCallback cb,
                                      void *ctx) {
@@ -256,6 +263,11 @@ class SipPhoneTransport {
     return this->dialog_active_cb_ != nullptr && this->dialog_active_cb_(this->dialog_active_ctx_);
   }
 
+  void emit_media_quiesced_() {
+    if (this->on_media_quiesced_ != nullptr)
+      this->on_media_quiesced_(this->on_media_quiesced_ctx_);
+  }
+
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   void emit_video_send_state_(bool enabled, bool pending) {
     if (this->on_video_send_state_ != nullptr) {
@@ -282,6 +294,8 @@ class SipPhoneTransport {
   void *should_accept_session_ctx_{nullptr};
   TransportDialogActiveCallback dialog_active_cb_{nullptr};
   void *dialog_active_ctx_{nullptr};
+  TransportMediaQuiescedCallback on_media_quiesced_{nullptr};
+  void *on_media_quiesced_ctx_{nullptr};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   TransportVideoSendStateCallback on_video_send_state_{nullptr};
   void *on_video_send_state_ctx_{nullptr};

@@ -725,11 +725,18 @@ void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
 }
 
 void VoipStack::finish_call_termination_() {
-  if (this->transport_ != nullptr &&
-      this->transport_->snapshot().terminal_transaction_pending) {
-    ESP_LOGD(TAG, "%s: terminal SIP transaction pending, retaining terminal state",
-             this->device_name_.c_str());
-    return;
+  if (this->transport_ != nullptr) {
+    const auto transport = this->transport_->snapshot();
+    if (transport.terminal_transaction_pending) {
+      ESP_LOGD(TAG, "%s: terminal SIP transaction pending, retaining terminal state",
+               this->device_name_.c_str());
+      return;
+    }
+    if (transport.media_lifecycle_phase != 0) {
+      ESP_LOGD(TAG, "%s: media cleanup pending, retaining terminal state",
+               this->device_name_.c_str());
+      return;
+    }
   }
   const CallState state = this->call_state_.load(std::memory_order_acquire);
   switch (state) {

@@ -458,6 +458,7 @@ class VoipStack : public Component {
   static void transport_connection_callback_(void *ctx, bool connected);
   static bool transport_accept_callback_(void *ctx);
   static bool transport_dialog_active_callback_(void *ctx);
+  static void transport_media_quiesced_callback_(void *ctx);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   static void transport_video_send_state_callback_(void *ctx, bool enabled,
                                                    bool pending);

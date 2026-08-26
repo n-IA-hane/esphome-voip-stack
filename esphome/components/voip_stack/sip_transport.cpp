@@ -135,10 +135,10 @@ SipTransportSnapshot SipTransport::snapshot() const {
       out.video_rx_access_units =
           this->video_session_->rx_access_units();
     }
-    out.media_lifecycle_phase = static_cast<uint8_t>(
-        this->media_lifecycle_phase_.load(std::memory_order_acquire));
 #endif
   }
+  out.media_lifecycle_phase = static_cast<uint8_t>(
+      this->media_lifecycle_phase_.load(std::memory_order_acquire));
   out.call_active = this->media_active_.load(std::memory_order_acquire);
   out.pending_invite = this->outgoing_invite_pending_.load(std::memory_order_acquire);
   out.sip_tcp = this->remote_sip_tcp_.load(std::memory_order_acquire);
@@ -4142,6 +4142,7 @@ void SipTransport::rtp_task_() {
       this->rtp_task_quiesced_.store(true, std::memory_order_release);
       if (this->rtp_cleanup_done_ != nullptr)
         xSemaphoreGive(this->rtp_cleanup_done_);
+      this->emit_media_quiesced_();
     }
 
     if (worker_failed) {

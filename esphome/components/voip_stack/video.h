@@ -33,7 +33,7 @@ struct EncodedVideoAccessUnit {
   bool key_frame{false};
 };
 
-/// Frame-driven RTP clock gate with an ideal, wrap-safe 90 kHz timeline.
+/// Wrap-safe 90 kHz token bucket with one frame of bounded recovery credit.
 class RtpFrameCadence90k {
  public:
   void reset(uint8_t frames_per_second) {
@@ -41,26 +41,39 @@ class RtpFrameCadence90k {
     this->interval_.store((90000U + fps - 1U) / fps,
                           std::memory_order_relaxed);
     this->seen_.store(false, std::memory_order_release);
+    this->credit_.store(0, std::memory_order_relaxed);
   }
 
   bool accept(uint32_t timestamp) {
     const uint32_t interval = this->interval_.load(std::memory_order_relaxed);
     if (!this->seen_.exchange(true, std::memory_order_acq_rel)) {
-      this->next_.store(timestamp + interval, std::memory_order_relaxed);
+      this->last_.store(timestamp, std::memory_order_relaxed);
       return true;
     }
-    uint32_t next = this->next_.load(std::memory_order_relaxed);
-    const int32_t delta = static_cast<int32_t>(timestamp - next);
-    if (delta < 0)
+    const uint32_t previous = this->last_.exchange(
+        timestamp, std::memory_order_acq_rel);
+    const uint32_t elapsed = timestamp - previous;
+    uint32_t credit = this->credit_.load(std::memory_order_relaxed);
+    // Preserve fractional phase during normal source cadence. After a long
+    // stall, reset to one due frame instead of retaining catch-up credit that
+    // would burst expensive codec/PPA work back-to-back.
+    if (elapsed >= interval * 2U) {
+      credit = interval;
+    } else {
+      credit = elapsed >= UINT32_MAX - credit ? UINT32_MAX : credit + elapsed;
+    }
+    if (credit < interval) {
+      this->credit_.store(credit, std::memory_order_relaxed);
       return false;
-    next += (static_cast<uint32_t>(delta) / interval + 1U) * interval;
-    this->next_.store(next, std::memory_order_relaxed);
+    }
+    this->credit_.store(credit - interval, std::memory_order_relaxed);
     return true;
   }
 
  protected:
   std::atomic<uint32_t> interval_{9000};
-  std::atomic<uint32_t> next_{0};
+  std::atomic<uint32_t> last_{0};
+  std::atomic<uint32_t> credit_{0};
   std::atomic<bool> seen_{false};
 };
 

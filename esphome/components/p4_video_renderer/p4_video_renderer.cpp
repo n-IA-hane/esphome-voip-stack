@@ -390,10 +390,6 @@ P4VideoRenderer::get_receive_video_capability() const {
 bool P4VideoRenderer::init_ppa_() {
   if (this->ppa_ != nullptr)
     return true;
-  // The driver recommends one client per task; it does not bind a client to
-  // the task that registered it. This component has exactly one runtime PPA
-  // caller (the RX worker), never submits concurrently, and retains the
-  // client across calls to avoid lifecycle allocation churn.
   ppa_client_config_t config{};
   config.oper_type = PPA_OPERATION_SRM;
   const esp_err_t error = ppa_register_client(&config, &this->ppa_);
@@ -404,6 +400,7 @@ bool P4VideoRenderer::init_ppa_() {
   }
   return true;
 }
+
 #endif
 
 #ifdef USE_P4_VIDEO_RENDERER_JPEG
@@ -439,10 +436,9 @@ bool P4VideoRenderer::init_direct_display_ppa_() {
     return true;
   // This client is used only by loopTask. Camera conversion has its own client
   // and the IDF driver serializes SRM transactions across callers. A short
-  // burst gives the realtime audio path access to PSRAM between video blocks.
+  // transaction keeps presentation outside the normal LVGL composition path.
   ppa_client_config_t config{};
   config.oper_type = PPA_OPERATION_SRM;
-  config.data_burst_length = PPA_DATA_BURST_LENGTH_16;
   const esp_err_t error =
       ppa_register_client(&config, &this->direct_display_ppa_);
   if (error != ESP_OK || this->direct_display_ppa_ == nullptr) {
@@ -1679,7 +1675,8 @@ bool P4VideoRenderer::render_i420_(const uint8_t *i420, size_t size,
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   const uint32_t ppa_started_us = micros();
 #endif
-  const esp_err_t ppa_error = ppa_do_scale_rotate_mirror(this->ppa_, &config);
+  const esp_err_t ppa_error =
+      ppa_do_scale_rotate_mirror(this->ppa_, &config);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   update_max(this->rx_ppa_max_us_, micros() - ppa_started_us);
 #endif

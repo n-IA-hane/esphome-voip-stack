@@ -84,7 +84,8 @@ void EspH264VideoSource::setup() {
   if (this->camera_ == nullptr || this->control_mutex_ == nullptr ||
       this->tx_done_ == nullptr || this->tx_idle_ == nullptr ||
       (this->width_ & 15U) != 0 ||
-      (this->height_ & 15U) != 0 || !this->init_ppa_() ||
+      (this->height_ & 15U) != 0 ||
+      !this->init_ppa_() ||
       !this->init_encoder_and_probe_() ||
       !this->camera_->register_raw_frame_consumer(
           this,
@@ -204,6 +205,12 @@ bool EspH264VideoSource::start_video(
   this->queue_drops_.store(0, std::memory_order_release);
   this->encoded_frames_.store(0, std::memory_order_release);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+  this->raw_last_timestamp_.store(0, std::memory_order_release);
+  this->raw_delta_samples_.store(0, std::memory_order_release);
+  this->raw_delta_total_90khz_.store(0, std::memory_order_release);
+  this->raw_delta_min_90khz_.store(UINT32_MAX, std::memory_order_release);
+  this->raw_delta_max_90khz_.store(0, std::memory_order_release);
+  this->cadence_drops_.store(0, std::memory_order_release);
   this->converted_frames_.store(0, std::memory_order_release);
   this->conversion_max_us_.store(0, std::memory_order_release);
   this->conversion_total_us_.store(0, std::memory_order_release);
@@ -273,6 +280,21 @@ void EspH264VideoSource::stop_video() {
         this->converted_frames_.load(std::memory_order_relaxed);
     const uint32_t encoded =
         this->encoded_frames_.load(std::memory_order_relaxed);
+    const uint32_t delta_samples =
+        this->raw_delta_samples_.load(std::memory_order_relaxed);
+    ESP_LOGI(TAG,
+             "H.264 camera cadence: samples=%u avg=%u min=%u max=%u "
+             "ticks90k gate_drop=%u",
+             (unsigned) delta_samples,
+             (unsigned) (this->raw_delta_total_90khz_.load(
+                              std::memory_order_relaxed) /
+                         std::max<uint32_t>(1, delta_samples)),
+             (unsigned) this->raw_delta_min_90khz_.load(
+                 std::memory_order_relaxed),
+             (unsigned) this->raw_delta_max_90khz_.load(
+                 std::memory_order_relaxed),
+             (unsigned) this->cadence_drops_.load(
+                 std::memory_order_relaxed));
     ESP_LOGI(TAG,
              "H.264 TX stats: raw=%u converted=%u encoded=%u "
              "convert_avg_us=%u convert_max_us=%u "
@@ -625,11 +647,30 @@ void EspH264VideoSource::consume_raw_video_frame(
     return;
   }
   this->raw_frames_.fetch_add(1, std::memory_order_relaxed);
-  if (!this->cadence_.accept(frame.timestamp_90khz))
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+  const uint32_t previous_timestamp = this->raw_last_timestamp_.exchange(
+      frame.timestamp_90khz, std::memory_order_acq_rel);
+  if (previous_timestamp != 0) {
+    const uint32_t delta = frame.timestamp_90khz - previous_timestamp;
+    this->raw_delta_samples_.fetch_add(1, std::memory_order_relaxed);
+    this->raw_delta_total_90khz_.fetch_add(delta, std::memory_order_relaxed);
+    update_max(this->raw_delta_max_90khz_, delta);
+    uint32_t minimum =
+        this->raw_delta_min_90khz_.load(std::memory_order_relaxed);
+    while (delta < minimum &&
+           !this->raw_delta_min_90khz_.compare_exchange_weak(
+               minimum, delta, std::memory_order_relaxed)) {
+    }
+  }
+#endif
+  if (!this->cadence_.accept(frame.timestamp_90khz)) {
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
+    this->cadence_drops_.fetch_add(1, std::memory_order_relaxed);
+#endif
     return;
-  // Advance the ideal clock before doing any work. PPA copies the borrowed
-  // camera frame into an owned bounded slot. Encoding then runs independently,
-  // so capture never retains a CSI buffer for the full encoder latency.
+  }
+  // PPA copies the borrowed camera frame into an owned bounded slot. Encoding
+  // then runs independently in the persistent worker.
   const uint32_t generation =
       this->tx_generation_.load(std::memory_order_acquire);
   TxSlot *slot = nullptr;
@@ -648,16 +689,14 @@ void EspH264VideoSource::consume_raw_video_frame(
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   const int64_t conversion_started_us = esp_timer_get_time();
 #endif
-  if (!this->transform_to_encoder_yuv_(
-          frame, slot->yuv)) {
+  if (!this->transform_to_encoder_yuv_(frame, slot->yuv)) {
     ESP_LOGE(TAG, "Unable to transform H.264 camera frame");
     this->release_tx_slot_(slot);
     return;
   }
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
-  const uint32_t conversion_us =
-      static_cast<uint32_t>(
-          esp_timer_get_time() - conversion_started_us);
+  const uint32_t conversion_us = static_cast<uint32_t>(
+      esp_timer_get_time() - conversion_started_us);
   this->converted_frames_.fetch_add(1, std::memory_order_relaxed);
   this->conversion_total_us_.fetch_add(
       conversion_us, std::memory_order_relaxed);
