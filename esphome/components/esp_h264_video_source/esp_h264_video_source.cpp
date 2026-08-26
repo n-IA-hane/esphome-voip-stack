@@ -12,26 +12,22 @@
 #include <algorithm>
 #include <cstring>
 
-extern "C" void *__real_esp_h264_calloc_prefer(
+extern "C" void *__real_esp_h264_malloc_prefer(
     uint32_t n, uint32_t size, uint32_t *actual_size, uint32_t caps1,
     uint32_t caps2);
 
-extern "C" void *__wrap_esp_h264_calloc_prefer(
+extern "C" void *__wrap_esp_h264_malloc_prefer(
     uint32_t n, uint32_t size, uint32_t *actual_size, uint32_t caps1,
     uint32_t caps2) {
   constexpr uint32_t kLargeAllocationBytes = 64U * 1024U;
   const uint64_t bytes = static_cast<uint64_t>(n) * size;
   if (bytes >= kLargeAllocationBytes && caps1 == MALLOC_CAP_INTERNAL &&
       caps2 == MALLOC_CAP_SPIRAM) {
-    // esp_h264's large internal-first allocation is the hardware encoder's
-    // deblocking buffer. Its own fallback already permits PSRAM, and the P4
-    // VGA path uses that placement. Prefer it explicitly at smaller sizes so
-    // API, TLS, lwIP and realtime audio retain bounded internal headroom.
-    return __real_esp_h264_calloc_prefer(
-        n, size, actual_size, caps2, caps1);
+    // This is the hardware encoder deblocking buffer. Prefer PSRAM so API,
+    // TLS, lwIP and realtime audio retain bounded internal headroom.
+    return __real_esp_h264_malloc_prefer(n, size, actual_size, caps2, caps1);
   }
-  return __real_esp_h264_calloc_prefer(
-      n, size, actual_size, caps1, caps2);
+  return __real_esp_h264_malloc_prefer(n, size, actual_size, caps1, caps2);
 }
 
 namespace esphome::esp_h264_video_source {

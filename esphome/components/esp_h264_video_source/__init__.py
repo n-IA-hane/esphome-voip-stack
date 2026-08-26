@@ -101,10 +101,9 @@ async def to_code(config):
     # The implementation uses only Espressif's public P4 hardware encoder API.
     # Keeping the managed-component dependency here lets builds without this
     # source omit every H.264 symbol and buffer.
-    add_idf_component(name="espressif/esp_h264", ref="1.3.6")
-    # Espressif's encoder prefers its large deblocking buffer in internal RAM
-    # and falls back to PSRAM only when the allocation does not fit. At small
-    # resolutions that policy can consume nearly all P4 internal RAM. Keep the
-    # component unchanged and override only that large-allocation preference.
-    cg.add_build_flag("-Wl,--wrap=esp_h264_calloc_prefer")
+    add_idf_component(name="espressif/esp_h264", ref="1.3.8")
+    # esp_h264 1.3.8 prefers its large deblocking buffer in internal RAM and
+    # falls back to PSRAM only when the allocation does not fit. Reverse only
+    # that allocation until the component exposes this policy directly.
+    cg.add_build_flag("-Wl,--wrap=esp_h264_malloc_prefer")
     cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_H264")
