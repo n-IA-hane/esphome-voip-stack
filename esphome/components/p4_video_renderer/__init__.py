@@ -159,7 +159,9 @@ async def to_code(config):
         cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_H264")
         add_idf_component(
             name="espressif/esp_h264",
-            path="/home/codex/esp-h264-pr-work/esp_h264",
+            repo="https://github.com/n-IA-hane/esp-h264-component.git",
+            ref="cabfb05c1e20b08975b21544d67f61f483d023f5",
+            path="esp_h264",
         )
         # esp_h264 decodes to planar I420. Use Espressif's cache-aligned P4
         # conversion kernel for the PPA-native O_UYY_E_VYY layout instead of

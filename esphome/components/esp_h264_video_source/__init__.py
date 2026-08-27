@@ -101,11 +101,12 @@ async def to_code(config):
     # The implementation uses only Espressif's public P4 hardware encoder API.
     # Keeping the managed-component dependency here lets builds without this
     # source omit every H.264 symbol and buffer.
-    # The local candidate tracks Espressif 1.3.8 plus the narrowly scoped
-    # deblocking-buffer placement option. Publication will replace this local
-    # path with an immutable upstream commit after explicit authorization.
+    # This immutable fork commit tracks Espressif 1.3.8 plus the narrowly
+    # scoped deblocking-buffer placement option used by the P4 encoder.
     add_idf_component(
         name="espressif/esp_h264",
-        path="/home/codex/esp-h264-pr-work/esp_h264",
+        repo="https://github.com/n-IA-hane/esp-h264-component.git",
+        ref="cabfb05c1e20b08975b21544d67f61f483d023f5",
+        path="esp_h264",
     )
     cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_H264")
