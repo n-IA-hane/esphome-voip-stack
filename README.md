@@ -91,7 +91,7 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-voip-stack@v2026.7.0
+  - source: github://n-IA-hane/esphome-voip-stack@v2026.9.0
     components: [voip_stack]
 ```
 
@@ -101,9 +101,9 @@ When pairing with the audio stack, pull both:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@main
+  - source: github://n-IA-hane/esphome-audio-stack@v2026.9.0
     components: [esp_audio_stack, esp_aec]
-  - source: github://n-IA-hane/esphome-voip-stack@v2026.7.0
+  - source: github://n-IA-hane/esphome-voip-stack@v2026.9.0
     components: [voip_stack]
 ```
 
@@ -143,9 +143,9 @@ This is the maintained path when software AEC/AFE, media player, Voice Assistant
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@main
+  - source: github://n-IA-hane/esphome-audio-stack@v2026.9.0
     components: [esp_audio_stack, esp_aec]
-  - source: github://n-IA-hane/esphome-voip-stack@v2026.7.0
+  - source: github://n-IA-hane/esphome-voip-stack@v2026.9.0
     components: [voip_stack]
 
 esp_aec:
@@ -184,9 +184,9 @@ point `processor_id` at that processor:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@main
+  - source: github://n-IA-hane/esphome-audio-stack@v2026.9.0
     components: [esp_audio_stack, esp_afe]
-  - source: github://n-IA-hane/esphome-voip-stack@v2026.7.0
+  - source: github://n-IA-hane/esphome-voip-stack@v2026.9.0
     components: [voip_stack]
 
 esp_afe:

@@ -123,9 +123,9 @@ processor you want, attach that processor to `esp_audio_stack`, then give
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@main
+  - source: github://n-IA-hane/esphome-audio-stack@v2026.9.0
     components: [esp_audio_stack, esp_aec]
-  - source: github://n-IA-hane/esphome-voip-stack@main
+  - source: github://n-IA-hane/esphome-voip-stack@v2026.9.0
     components: [voip_stack]
 
 esp_aec:
@@ -162,9 +162,9 @@ For the full Espressif AFE pipeline, import `esp_afe` instead of `esp_aec`:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@main
+  - source: github://n-IA-hane/esphome-audio-stack@v2026.9.0
     components: [esp_audio_stack, esp_afe]
-  - source: github://n-IA-hane/esphome-voip-stack@main
+  - source: github://n-IA-hane/esphome-voip-stack@v2026.9.0
     components: [voip_stack]
 
 esp_afe:
