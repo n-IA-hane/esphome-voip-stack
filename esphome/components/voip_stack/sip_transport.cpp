@@ -125,6 +125,8 @@ SipTransportSnapshot SipTransport::snapshot() const {
         this->video_negotiated_ &&
         (this->video_send_enabled_ || this->video_receive_enabled_);
     out.video_send_enabled = this->video_send_enabled_;
+    out.video_send_requested =
+        this->video_send_requested_.load(std::memory_order_acquire);
     out.video_send_change_pending =
         this->pending_video_direction_invite_.pending();
     if (this->video_session_ != nullptr) {
@@ -1560,6 +1562,17 @@ bool SipTransport::send_video_direction_reinvite_unlocked_(bool enabled,
 
 bool SipTransport::request_video_send(bool enabled) {
   LockGuard lock(this->dialog_mutex_);
+  // Before a dialog exists this is the preference used by the initial SDP.
+  // Do not turn an in-progress INVITE or teardown into an idle settings write.
+  if (this->call_id_.empty() && this->video_source_ != nullptr &&
+      !this->media_active_.load(std::memory_order_acquire) &&
+      !this->outgoing_invite_pending_.load(std::memory_order_acquire) &&
+      !this->transport_stopping_.load(std::memory_order_acquire) &&
+      !this->terminal_transaction_pending_locked_()) {
+    this->video_send_requested_.store(enabled, std::memory_order_release);
+    this->emit_video_send_state_(enabled, false);
+    return true;
+  }
   if (!this->running_.load(std::memory_order_acquire) ||
       this->transport_stopping_.load(std::memory_order_acquire) ||
       !this->media_active_.load(std::memory_order_acquire) ||

@@ -527,7 +527,7 @@ void VoipStack::loop() {
       (video_send_event & 0x04U) == 0 &&
       this->video_send_switch_ != nullptr) {
     this->video_send_switch_->publish_state(
-        (video_send_event & 0x02U) != 0);
+        this->get_video_send());
   }
 #endif
 #endif
@@ -640,10 +640,10 @@ void VoipStack::set_remote_endpoint(const std::string &ip, uint16_t port, uint16
 
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 bool VoipStack::set_video_send(bool enabled) {
-  if (this->call_state_.load(std::memory_order_acquire) !=
-          CallState::IN_CALL ||
+  const CallState state = this->call_state_.load(std::memory_order_acquire);
+  if ((state != CallState::IDLE && state != CallState::IN_CALL) ||
       this->transport_ == nullptr) {
-    ESP_LOGW(TAG, "Video send direction can only change during an active call");
+    ESP_LOGW(TAG, "Video send preference can only change while idle or in a call");
     return false;
   }
   return this->transport_->request_video_send(enabled);
@@ -1009,6 +1009,12 @@ void VoipStack::publish_entity_states() {
   }
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   if (this->video_send_switch_ != nullptr) {
+    if (apply_restore) {
+      auto initial = this->video_send_switch_->get_initial_state_with_restore_mode();
+      if (initial.has_value()) {
+        this->set_video_send(*initial);
+      }
+    }
     this->video_send_switch_->publish_state(this->get_video_send());
   }
 #endif

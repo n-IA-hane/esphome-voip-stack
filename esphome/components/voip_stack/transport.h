@@ -44,6 +44,7 @@ struct SipTransportSnapshot {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   bool video_running{false};
   bool video_send_enabled{false};
+  bool video_send_requested{false};
   bool video_send_change_pending{false};
   uint32_t video_tx_packets{0};
   uint32_t video_rx_packets{0};

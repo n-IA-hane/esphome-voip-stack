@@ -258,7 +258,7 @@ class VoipStack : public Component {
   bool set_video_send(bool enabled);
   bool get_video_send() const {
     return this->transport_ != nullptr &&
-           this->transport_->snapshot().video_send_enabled;
+           this->transport_->snapshot().video_send_requested;
   }
   bool is_video_send_change_pending() const {
     return this->transport_ != nullptr &&
