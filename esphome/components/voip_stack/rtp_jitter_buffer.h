@@ -247,8 +247,10 @@ inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t ca
   }
 
   if (this->valid_count_ == 0) {
-    this->buffering_ = true;
-    this->next_sequence_valid_ = false;
+    // Downstream audio remains buffered between network arrivals. Preserve
+    // the established sequence so its next packet can play immediately;
+    // restarting prefetch here manufactures periodic silence at 20 ms ptime.
+    // Explicit reset and discontinuity realignment still own startup prefetch.
     return ReadResult::BUFFERING;
   }
 
