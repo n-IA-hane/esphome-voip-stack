@@ -96,6 +96,7 @@ CONF_SAMPLE_RATE = "sample_rate"
 CONF_PCM_FORMAT = "pcm_format"
 CONF_CHANNELS = "channels"
 CONF_FRAME_MS = "frame_ms"
+CONF_AUDIO_CODEC = "codec"
 CONF_NETWORK_SOCKET_HEADROOM = "network_socket_headroom"
 CONF_UDP_MAX_PAYLOAD = "udp_max_payload"
 CONF_AUTO = "auto"
@@ -115,11 +116,14 @@ TRANSPORT_TCP = "tcp"
 TRANSPORT_UDP = "udp"
 VIDEO_CODEC_JPEG = "jpeg"
 VIDEO_CODEC_H264 = "h264"
+AUDIO_CODEC_PCM = "pcm"
+AUDIO_CODEC_OPUS = "opus"
 
 voip_stack_ns = cg.esphome_ns.namespace("voip_stack")
 VoipStack = voip_stack_ns.class_("VoipStack", cg.Component)
 TransportType = voip_stack_ns.enum("TransportType", is_class=True)
 PcmFormat = voip_stack_ns.enum("PcmFormat", is_class=True)
+AudioCodec = voip_stack_ns.enum("AudioCodec", is_class=True)
 EncodedVideoSource = voip_stack_ns.class_("EncodedVideoSource")
 EncodedVideoSink = voip_stack_ns.class_("EncodedVideoSink")
 VideoCodec = voip_stack_ns.enum("VideoCodec", is_class=True)
@@ -130,6 +134,10 @@ PCM_FORMAT_IDS = {
     "s24le": 2,
     "s24le_in_s32": 3,
     "s32le": 4,
+}
+AUDIO_CODEC_IDS = {
+    AUDIO_CODEC_PCM: 0,
+    AUDIO_CODEC_OPUS: 1,
 }
 
 SUPPORTED_PHONE_SAMPLE_RATES = (8000, 12000, 16000, 24000, 32000, 44100, 48000)
@@ -196,6 +204,13 @@ def _validate_voip_audio_format(value):
             f"sample_rate {value[CONF_SAMPLE_RATE]} and frame_ms {value[CONF_FRAME_MS]} "
             "do not form whole PCM frames"
         )
+    if value[CONF_AUDIO_CODEC] == AUDIO_CODEC_OPUS:
+        if value[CONF_SAMPLE_RATE] not in (8000, 12000, 16000, 24000, 48000):
+            raise cv.Invalid("Opus supports sample_rate 8000, 12000, 16000, 24000 or 48000")
+        if value[CONF_PCM_FORMAT] != "s16le" or value[CONF_CHANNELS] != 1:
+            raise cv.Invalid("Opus RTP requires mono s16le PCM at the ESP audio boundary")
+        if value[CONF_FRAME_MS] not in (10, 20):
+            raise cv.Invalid("Opus RTP currently supports frame_ms 10 or 20")
     return value
 
 
@@ -244,6 +259,9 @@ PHONE_AUDIO_FORMAT_SCHEMA = cv.All(cv.Any(cv.one_of(CONF_AUTO, lower=True), cv.S
         ),
         cv.Optional(CONF_FRAME_MS, default=CONF_AUTO): cv.Any(
             cv.one_of(CONF_AUTO, lower=True), cv.one_of(10, 16, 20, 32, int=True)
+        ),
+        cv.Optional(CONF_AUDIO_CODEC, default=AUDIO_CODEC_PCM): cv.one_of(
+            *AUDIO_CODEC_IDS.keys(), lower=True
         ),
     }
 )), _validate_voip_audio_format)
@@ -325,6 +343,8 @@ def _format_container_bits(fmt: dict) -> int:
 
 
 def _format_rtp_payload_bytes(fmt: dict) -> int:
+    if fmt[CONF_AUDIO_CODEC] == AUDIO_CODEC_OPUS:
+        return 0
     samples = (fmt[CONF_SAMPLE_RATE] * fmt[CONF_FRAME_MS]) // 1000
     sample_bytes = 3 if fmt[CONF_PCM_FORMAT] == "s24le_in_s32" else (_format_container_bits(fmt) // 8)
     return samples * fmt[CONF_CHANNELS] * sample_bytes
@@ -382,6 +402,7 @@ def _derive_stream_format_from_device(device_config: dict, *, direction: str) ->
                 CONF_PCM_FORMAT: _pcm_from_bits(bits),
                 CONF_CHANNELS: channels,
                 CONF_FRAME_MS: 16,
+                CONF_AUDIO_CODEC: AUDIO_CODEC_PCM,
             }
 
     sample_rate = _single_stream_value(
@@ -409,6 +430,7 @@ def _derive_stream_format_from_device(device_config: dict, *, direction: str) ->
         CONF_PCM_FORMAT: _pcm_from_bits(int(bits)),
         CONF_CHANNELS: channels,
         CONF_FRAME_MS: 16,
+        CONF_AUDIO_CODEC: AUDIO_CODEC_PCM,
     }
 
 
@@ -466,6 +488,7 @@ def _resolve_audio_format(config: dict, direction: str, value) -> dict:
                 CONF_PCM_FORMAT: "s16le",
                 CONF_CHANNELS: 1,
                 CONF_FRAME_MS: 16,
+                CONF_AUDIO_CODEC: AUDIO_CODEC_PCM,
             }
         source = "microphone/source" if direction == CONF_TX else "speaker"
         raise cv.Invalid(
@@ -486,6 +509,7 @@ def _resolve_audio_format(config: dict, direction: str, value) -> dict:
                 CONF_PCM_FORMAT: "s16le",
                 CONF_CHANNELS: 1,
                 CONF_FRAME_MS: 16,
+                CONF_AUDIO_CODEC: AUDIO_CODEC_PCM,
             }
         if derived is None:
             source = "microphone/source" if direction == CONF_TX else "speaker"
@@ -521,6 +545,7 @@ RemoveContactAction = voip_stack_ns.class_("RemoveContactAction", automation.Act
 FlushContactsAction = voip_stack_ns.class_("FlushContactsAction", automation.Action)
 UpdateContactsAction = voip_stack_ns.class_("UpdateContactsAction", automation.Action)
 SetHaPeerNameAction = voip_stack_ns.class_("SetHaPeerNameAction", automation.Action)
+SetMediaRouteAction = voip_stack_ns.class_("SetMediaRouteAction", automation.Action)
 
 # === Condition classes (for YAML: voip_stack.is_idle, etc.) ===
 VoipIsIdleCondition = voip_stack_ns.class_("VoipIsIdleCondition", automation.Condition)
@@ -828,6 +853,23 @@ def _final_validate(config):
                     "intentionally configured for larger datagrams; the default limit is 1200 bytes."
                 )
 
+    opus_enabled = any(
+        fmt[CONF_AUDIO_CODEC] == AUDIO_CODEC_OPUS
+        for fmt in (
+            audio_cfg[CONF_TX],
+            audio_cfg[CONF_RX],
+            *audio_cfg[CONF_TX_FORMATS],
+            *audio_cfg[CONF_RX_FORMATS],
+        )
+    )
+    if opus_enabled:
+        if esp32.get_esp32_variant() == "ESP32P4":
+            raise cv.Invalid("ESP32-P4 profiles use PCM; Opus is excluded on P4")
+        if any(name in fv.full_config.get() for name in ("voice_assistant", "micro_wake_word", "sendspin")):
+            raise cv.Invalid("Opus is reserved for VoIP-only profiles; full profiles use PCM")
+        if "psram" not in fv.full_config.get():
+            raise cv.Invalid("voip_stack Opus requires PSRAM for codec state and working memory")
+
     if CONF_MICROPHONE in config:
         try:
             audio.final_validate_audio_schema(
@@ -997,6 +1039,7 @@ async def _add_core_settings(var, config):
                 PCM_FORMAT_IDS[fmt[CONF_PCM_FORMAT]],
                 fmt[CONF_CHANNELS],
                 fmt[CONF_FRAME_MS],
+                AUDIO_CODEC_IDS[fmt[CONF_AUDIO_CODEC]],
             )
         )
     for key, setter in (
@@ -1010,8 +1053,25 @@ async def _add_core_settings(var, config):
                     PCM_FORMAT_IDS[fmt[CONF_PCM_FORMAT]],
                     fmt[CONF_CHANNELS],
                     fmt[CONF_FRAME_MS],
+                    AUDIO_CODEC_IDS[fmt[CONF_AUDIO_CODEC]],
                 )
             )
+    if any(
+        fmt[CONF_AUDIO_CODEC] == AUDIO_CODEC_OPUS
+        for fmt in (
+            audio_cfg[CONF_TX],
+            audio_cfg[CONF_RX],
+            *audio_cfg[CONF_TX_FORMATS],
+            *audio_cfg[CONF_RX_FORMATS],
+        )
+    ):
+        cg.add_define("USE_ESPHOME_VOIP_STACK_OPUS")
+        esp32.add_idf_component(
+            name="esphome/micro-opus",
+            repo="https://github.com/esphome-libs/micro-opus.git",
+            ref="93bf9c10196e368405ee1501bfd72f0be2518741",
+        )
+        esp32.add_idf_sdkconfig_option("CONFIG_OPUS_FLOATING_POINT", False)
     cg.add_define("USE_ESPHOME_VOIP_SIP_TRANSPORT")
 
 
@@ -1415,6 +1475,23 @@ _register_templated_action(
     cg.std_string,
     lambda var, value: var.set_name(value),
 )
+
+
+@automation.register_action(
+    "voip_stack.set_media_route",
+    SetMediaRouteAction,
+    cv.Schema({
+        cv.GenerateID(): cv.use_id(VoipStack),
+        cv.Required("call_id"): cv.templatable(cv.string_strict),
+        cv.Required("route"): cv.templatable(cv.one_of("direct", "ha_transcoding")),
+    }),
+    synchronous=True,
+)
+async def set_media_route_action_to_code(config, action_id, template_arg, args):
+    var = await _new_parented_action(config, action_id, template_arg)
+    cg.add(var.set_call_id(await cg.templatable(config["call_id"], args, cg.std_string)))
+    cg.add(var.set_route(await cg.templatable(config["route"], args, cg.std_string)))
+    return var
 
 
 _register_simple_action("voip_stack.flush_contacts", FlushContactsAction)

@@ -55,6 +55,7 @@ struct SipTransportSnapshot {
   bool call_active{false};
   bool pending_invite{false};
   bool sip_tcp{false};
+  uint32_t remote_ip_v4{0};  // Host byte order, matching parse_remote_().
   uint16_t remote_sip_port{0};
   uint16_t remote_rtp_port{0};
   AudioFormat selected_tx_format{DEFAULT_AUDIO_FORMAT};
@@ -94,6 +95,21 @@ class SipPhoneTransport {
   /// Safe from a high-priority audio task; may drop on backpressure.
   virtual void send_audio_frame(const uint8_t *pcm, size_t bytes) = 0;
 
+  /// Decode one negotiated encoded RTP payload after jitter reordering. A
+  /// null payload requests codec packet-loss concealment for one frame.
+  virtual size_t decode_audio_payload(const uint8_t *payload,
+                                      size_t payload_bytes,
+                                      const AudioFormat &format, uint8_t *pcm,
+                                      size_t pcm_capacity) {
+    (void) payload;
+    (void) payload_bytes;
+    (void) format;
+    (void) pcm;
+    (void) pcm_capacity;
+    return 0;
+  }
+  virtual void reset_audio_decoder() {}
+
   /// SIP dialog commands. Return true when the message was committed to the wire.
   virtual bool send_invite(const std::string &call_id,
                            const std::string &caller_route,
@@ -128,6 +144,10 @@ class SipPhoneTransport {
   /// SIP-only: select TCP or UDP for SIP signaling. Audio remains RTP/UDP.
   /// Other transports ignore this because their protocol is fixed by type.
   virtual void set_sip_signaling_transport(bool tcp) { (void) tcp; }
+
+  /// Enable the optional directional-payload SDP extension only for a peer
+  /// that advertised support for it in the authoritative roster.
+  virtual void set_peer_directional_audio_v1(bool enabled) { (void) enabled; }
 
   /// Open an outbound leg for an originating call. TCP connects to the
   /// peer; UDP no-op (control_socket_ is already bound, set_remote

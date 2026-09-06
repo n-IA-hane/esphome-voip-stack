@@ -301,8 +301,10 @@ void VoipStack::rx_task(void *param) {
 void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
   if (this->rx_jitter_buffer_ == nullptr || frame.pcm == nullptr || frame.bytes == 0)
     return;
-  const size_t expected = this->get_current_rx_audio_format_().nominal_frame_bytes();
-  if (frame.bytes != expected || frame.bytes > this->rx_audio_chunk_alloc_bytes_)
+  const AudioFormat rx_format = this->get_current_rx_audio_format_();
+  const size_t expected = rx_format.nominal_frame_bytes();
+  if ((rx_format.codec == AudioCodec::PCM && frame.bytes != expected) ||
+      frame.bytes > this->rx_jitter_frame_alloc_bytes_)
     return;
   if (frame.source_changed) {
     this->rx_jitter_buffer_->reset();
@@ -315,6 +317,7 @@ void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
   jitter_frame.sequence = frame.sequence;
   jitter_frame.timestamp = frame.timestamp;
   jitter_frame.has_metadata = frame.has_rtp_metadata;
+  jitter_frame.source_changed = frame.source_changed;
   if (this->rx_jitter_buffer_->push(jitter_frame)) {
     if (this->rx_task_handle_ != nullptr) {
       xTaskNotifyGive(this->rx_task_handle_);
@@ -405,8 +408,21 @@ void VoipStack::rx_task_() {
       continue;
     }
 #endif
+    uint8_t *network_buffer = this->rx_audio_chunk_;
+    size_t network_capacity = rx_format.nominal_frame_bytes();
+    size_t network_bytes = 0;
+    bool source_changed = false;
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+    if (rx_format.codec == AudioCodec::OPUS) {
+      network_buffer = this->rx_network_chunk_;
+      network_capacity = this->rx_jitter_frame_alloc_bytes_;
+    }
+#endif
     const auto read_result = this->rx_jitter_buffer_ != nullptr
-                                 ? this->rx_jitter_buffer_->read(this->rx_audio_chunk_, rx_format.nominal_frame_bytes())
+                                 ? this->rx_jitter_buffer_->read(network_buffer, network_capacity,
+                                       nullptr, nullptr, nullptr,
+                                       rx_format.codec == AudioCodec::OPUS ? &network_bytes : nullptr,
+                                       &source_changed)
                                  : RtpJitterBuffer::ReadResult::BUFFERING;
     if (this->rx_jitter_buffer_ != nullptr) {
       this->media_rx_queue_depth_.store(this->rx_jitter_buffer_->depth(), std::memory_order_relaxed);
@@ -417,7 +433,16 @@ void VoipStack::rx_task_() {
       // for up to one frame gives backpressure when that buffer is full; adding
       // an unconditional delay after a successful write double-paces playout
       // and lets the RTP queue grow until audible gaps appear.
-      const size_t frame_bytes = rx_format.nominal_frame_bytes();
+      size_t frame_bytes = rx_format.nominal_frame_bytes();
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+      if (rx_format.codec == AudioCodec::OPUS) {
+        if (source_changed) this->transport_->reset_audio_decoder();
+        frame_bytes = this->transport_->decode_audio_payload(
+            network_buffer, network_bytes, rx_format,
+            this->rx_audio_chunk_, this->rx_audio_chunk_alloc_bytes_);
+        if (frame_bytes != rx_format.nominal_frame_bytes()) continue;
+      }
+#endif
       this->play_rx_frame_(this->rx_audio_chunk_, frame_bytes, SilenceReason::NONE, frame_ticks);
     } else {
       // Initial prebuffering must stay quiet, but BUFFERING is also returned
@@ -465,6 +490,16 @@ void VoipStack::rx_task_() {
           this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL) {
         // The notification wait above already owns this frame's cadence.
         // Do not add a second blocking budget in the speaker sink.
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+        if (read_result == RtpJitterBuffer::ReadResult::MISSING && rx_format.codec == AudioCodec::OPUS) {
+          const size_t concealed = this->transport_->decode_audio_payload(
+              nullptr, 0, rx_format, this->rx_audio_chunk_, this->rx_audio_chunk_alloc_bytes_);
+          if (concealed == rx_format.nominal_frame_bytes()) {
+            this->play_rx_frame_(this->rx_audio_chunk_, concealed, SilenceReason::NONE, 0);
+            continue;
+          }
+        }
+#endif
         this->play_silence_frame_(SilenceReason::NETWORK_GAP, 0);
       }
       continue;

@@ -25,6 +25,7 @@ class RtpJitterBuffer {
     uint16_t sequence{0};
     uint32_t timestamp{0};
     bool has_metadata{false};
+    bool source_changed{false};
   };
 
   struct Counters {
@@ -39,8 +40,10 @@ class RtpJitterBuffer {
 
   void reset();
   bool push(const Frame &frame);
-  ReadResult read(uint8_t *out, size_t expected_bytes, uint16_t *sequence = nullptr,
-                  uint32_t *timestamp = nullptr, bool *has_metadata = nullptr);
+  ReadResult read(uint8_t *out, size_t capacity, uint16_t *sequence = nullptr,
+                  uint32_t *timestamp = nullptr, bool *has_metadata = nullptr,
+                  size_t *actual_bytes = nullptr,
+                  bool *source_changed = nullptr);
   Counters counters() const;
   uint32_t depth() const;
 
@@ -48,6 +51,7 @@ class RtpJitterBuffer {
   struct Slot {
     bool valid{false};
     bool has_metadata{false};
+    bool source_changed{false};
     uint16_t sequence{0};
     uint32_t timestamp{0};
     size_t bytes{0};
@@ -176,6 +180,7 @@ inline bool RtpJitterBuffer::push(const Frame &frame) {
   memcpy(slot.pcm, frame.pcm, frame.bytes);
   slot.valid = true;
   slot.has_metadata = frame.has_metadata;
+  slot.source_changed = frame.source_changed;
   slot.sequence = sequence;
   slot.timestamp = frame.timestamp;
   slot.bytes = frame.bytes;
@@ -200,9 +205,11 @@ inline bool RtpJitterBuffer::push(const Frame &frame) {
   return true;
 }
 
-inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t expected_bytes, uint16_t *sequence,
-                                                         uint32_t *timestamp, bool *has_metadata) {
-  if (this->slot_count_ == 0 || out == nullptr || expected_bytes == 0 || expected_bytes > this->frame_capacity_) {
+inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t capacity, uint16_t *sequence,
+                                                         uint32_t *timestamp, bool *has_metadata,
+                                                         size_t *actual_bytes,
+                                                         bool *source_changed) {
+  if (this->slot_count_ == 0 || out == nullptr || capacity == 0 || capacity > this->frame_capacity_) {
     return ReadResult::BUFFERING;
   }
 
@@ -217,7 +224,7 @@ inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t ex
 
   Slot &slot = this->slots_[this->next_sequence_ % this->slot_count_];
   if (slot.valid && slot.sequence == this->next_sequence_) {
-    if (slot.bytes != expected_bytes) {
+    if (slot.bytes > capacity || (actual_bytes == nullptr && slot.bytes != capacity)) {
       slot.valid = false;
       slot.bytes = 0;
       if (this->valid_count_ > 0) this->valid_count_--;
@@ -229,6 +236,8 @@ inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t ex
     if (timestamp != nullptr) *timestamp = slot.timestamp;
     if (has_metadata != nullptr)
       *has_metadata = slot.has_metadata;
+    if (actual_bytes != nullptr) *actual_bytes = slot.bytes;
+    if (source_changed != nullptr) *source_changed = slot.source_changed;
     memcpy(out, slot.pcm, slot.bytes);
     slot.valid = false;
     slot.bytes = 0;

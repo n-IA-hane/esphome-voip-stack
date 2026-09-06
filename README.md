@@ -505,7 +505,8 @@ Removed options rejected with migration guidance: `processor_id`, `aec_reference
 - No SIP registration or digest authentication. Calls that hit an auth challenge terminate in `AUTH_REQUIRED_UNSUPPORTED`.
 - SIP over UDP/TCP only; no TLS signaling and no SRTP.
 - RTP media is UDP in both signaling modes and requires UDP reachability.
-- Audio is uncompressed PCM within the supported rate/format matrix; there are no compressed codecs.
+- Audio supports PCM and compile-time optional Opus within the supported
+  rate/format matrix. Opus is restricted to ESP32-S3 VoIP-only profiles.
 - In-dialog re-INVITE, including ordinary hold or codec renegotiation, receives
   `488 Not Acceptable Here`. The established dialog/media remains active and a
   later BYE still terminates the original call.
@@ -522,3 +523,60 @@ The repository also carries a small internal `ring_buffer` component used by
 component.
 
 MIT license.
+
+## Codec profiles and media route
+
+Maintained ESP32-S3 VoIP-only examples prefer Opus with 20 ms packets. Their
+commented PCM blocks preserve the alternative configuration. Full profiles
+use PCM. ESP32-P4 always uses PCM. Its maintained profiles configure a
+16 kHz microphone/TX stream, a 48 kHz speaker and preferred 10 ms packets.
+These are profile choices, not fixed rates in the media engine. The 16 kHz
+RX alternative remains available through the existing
+resampler for direct PCM calls with other ESP devices. Opus is rejected at
+configuration time on P4 or with Voice Assistant, micro wake word or Sendspin.
+Only PCM and Opus are supported by the ESP codec implementation.
+
+PCM accepts the documented 8/12/16/24/32/44.1/48 kHz rates. The Opus PCM
+boundary accepts 8/12/16/24/48 kHz, matching the
+[Opus encoder API](https://opus-codec.org/docs/opus_api-1.5/group__opus__encoder.html).
+For other hardware rates, configure the existing microphone/speaker resampler
+to expose a supported codec rate; `audio.tx` or `audio.rx` set directly to
+32 kHz Opus is rejected. Opus RTP always uses `opus/48000/2`, even for mono
+16 kHz input, as required by
+[RFC 7587](https://www.rfc-editor.org/rfc/rfc7587). This RTP clock does not
+imply that the microphone captured fullband audio. Neither codec silently
+changes to the other when a peer is incompatible.
+
+SIP registration is not required for direct calls. A compatible SIP peer can
+call or be called without Home Assistant. HA conversion is a fallback when
+the two legs cannot negotiate compatible media; an attempted fallback alone
+does not prove that conversion is active.
+
+The optional text sensor projects the existing call lifecycle:
+
+```yaml
+text_sensor:
+  - platform: voip_stack
+    type: media_route
+    name: VoIP Media Route
+    on_value:
+      then:
+        - lambda: |-
+            const char *label = x == "ha_transcoding" ? "HA transcoding" :
+                                x == "direct" ? "Direct" : "";
+            ESP_LOGI("call", "Media route: %s", label);
+```
+
+Values are `direct`, `ha_transcoding`, or empty outside a confirmed call or
+while waiting for HA's media owner. `direct` means compatible media without
+HA conversion; an HA packet relay can preserve media unchanged. The sensor
+is a presentation hook, not a second call state machine. For a display, use
+`x` in its `on_value` action. The shared HA package already creates
+`voip_media_route`, so extend that id instead of adding a second sensor.
+
+The companion integration reports actual committed audio/video conversion
+through the existing authenticated ESPHome API action `set_media_route`.
+It supplies the SIP Call-ID of that physical leg. Firmware rejects unknown
+values, updates outside a call and updates for an earlier Call-ID, then clears
+the route at termination. This notification never negotiates codecs or starts
+a separate media path.

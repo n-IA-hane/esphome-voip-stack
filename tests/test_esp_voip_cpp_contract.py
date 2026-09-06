@@ -1928,7 +1928,8 @@ def test_media_timeout_is_a_terminal_phone_reason() -> None:
     ]
     assert "watchdog_start = seed_from_transport ? millis() : 0" in watchdog
     rtp_rx = read("sip_transport.cpp")
-    assert "out_len != rx_format.nominal_frame_bytes()" in rtp_rx
+    assert "audio_bytes != rx_format.nominal_frame_bytes()" in rtp_rx
+    assert "if (rx_format.codec == AudioCodec::PCM)" in rtp_rx
 
 
 def test_sip_udp_transactions_are_minimal_and_explicit() -> None:
@@ -2225,7 +2226,13 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
 
     endpoint = stack_cpp[stack_cpp.index("std::string VoipStack::build_endpoint_string_"):]
     assert "char buf[640]" in endpoint
-    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s%s"' in endpoint
+    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s%s%s"' in endpoint
+    assert 'audio_extra += " | at=" + rtp_tx' in endpoint
+    assert 'audio_extra += " | ar=" + rtp_rx' in endpoint
+    assert 'audio_extra += " | sf=d1"' in endpoint
+    assert "if (has_non_pcm)" in endpoint
+    assert "tx.clear()" in endpoint
+    assert "rx.clear()" in endpoint
     assert 'video_extra = " | video=jpeg"' in endpoint
     assert 'video_extra = " | video=h264"' in endpoint
     assert 'video_extra = ""' in endpoint
@@ -2553,7 +2560,7 @@ def test_rtp_clock_advances_without_consuming_sequence_for_a_local_payload_drop(
     drop = audio.index("if (bytes == 0 || bytes > this->udp_max_payload_)")
     sequence = audio.index("this->rtp_sequence_.fetch_add")
     assert drop < sequence
-    assert "this->rtp_timestamp_.fetch_add(samples" in audio[drop:sequence]
+    assert "this->rtp_timestamp_.fetch_add(timestamp_samples" in audio[drop:sequence]
 
 
 def test_jitter_prebuffer_handles_initial_reordering_and_preserves_metadata() -> None:
@@ -2567,7 +2574,8 @@ def test_jitter_prebuffer_handles_initial_reordering_and_preserves_metadata() ->
     assert "this->next_sequence_ = sequence;" in jitter
     assert "slot.has_metadata = frame.has_metadata;" in jitter
     assert "*has_metadata = slot.has_metadata;" in jitter
-    assert "if (slot.bytes != expected_bytes)" in jitter
+    assert "slot.bytes > capacity" in jitter
+    assert "actual_bytes == nullptr && slot.bytes != capacity" in jitter
     assert "return ReadResult::MISSING;" in jitter
 
 
@@ -3395,7 +3403,7 @@ def test_long_diagnostic_text_sensors_have_wrapping_separators() -> None:
 
     assert 'out += "; ";' in stack
     assert 'out += ";";' not in stack
-    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s%s"' in stack
+    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s%s%s"' in stack
     assert '"st=%s; id=%s; dir=%s; from=%s; to=%s; ct=%s; tr=%s; sc=%u; "' in stack
     assert '"tx=%s; rx=%s; pt=%u; pr=%u; "' in stack
     assert '"tqd=%u; tqdrop=%u; rqd=%u; rqdrop=%u; rs=%s; ev=%s"' in stack

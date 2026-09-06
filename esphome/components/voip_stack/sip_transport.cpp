@@ -144,6 +144,7 @@ SipTransportSnapshot SipTransport::snapshot() const {
   out.call_active = this->media_active_.load(std::memory_order_acquire);
   out.pending_invite = this->outgoing_invite_pending_.load(std::memory_order_acquire);
   out.sip_tcp = this->remote_sip_tcp_.load(std::memory_order_acquire);
+  out.remote_ip_v4 = this->remote_ip_v4_.load(std::memory_order_acquire);
   out.remote_sip_port = this->remote_sip_port_.load(std::memory_order_acquire);
   out.remote_rtp_port = this->remote_rtp_port_.load(std::memory_order_acquire);
   this->get_media_config_(&out.selected_tx_format, &out.selected_rx_format, nullptr, nullptr);
@@ -182,6 +183,18 @@ void SipTransport::set_audio_formats(const AudioFormatList &tx, const AudioForma
   this->offer_rx_formats_ = rx;
   if (this->offer_tx_formats_.count == 0) audio_format_list_default(&this->offer_tx_formats_);
   if (this->offer_rx_formats_.count == 0) audio_format_list_default(&this->offer_rx_formats_);
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  const AudioFormat *opus_tx = nullptr;
+  const AudioFormat *opus_rx = nullptr;
+  for (uint8_t i = 0; i < this->offer_tx_formats_.count && opus_tx == nullptr; i++)
+    if (this->offer_tx_formats_.formats[i].codec == AudioCodec::OPUS)
+      opus_tx = &this->offer_tx_formats_.formats[i];
+  for (uint8_t i = 0; i < this->offer_rx_formats_.count && opus_rx == nullptr; i++)
+    if (this->offer_rx_formats_.formats[i].codec == AudioCodec::OPUS)
+      opus_rx = &this->offer_rx_formats_.formats[i];
+  this->opus_codec_ready_ = this->opus_codec_.configure(
+      opus_tx, opus_rx, this->udp_max_payload_);
+#endif
   ESP_LOGI(TAG, "SIP media capabilities: tx=%u rx=%u",
            (unsigned) this->offer_tx_formats_.count,
            (unsigned) this->offer_rx_formats_.count);
@@ -427,6 +440,12 @@ bool SipTransport::bind_tcp_(int *fd, uint16_t port, const char *label) {
 
 bool SipTransport::start() {
   if (this->running_.load(std::memory_order_acquire)) return true;
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  if (!this->opus_codec_ready_) {
+    ESP_LOGE(TAG, "Opus codec resources are unavailable");
+    return false;
+  }
+#endif
   if (this->sip_task_handle_ != nullptr || this->rtp_task_handle_ != nullptr) {
     ESP_LOGE(TAG, "Cannot start SIP transport while a previous task is still owned");
     return false;
@@ -755,6 +774,16 @@ bool SipTransport::prepare_media_path_locked_() {
   this->rtp_sequence_.store(static_cast<uint16_t>(esp_random()), std::memory_order_release);
   this->rtp_timestamp_.store(esp_random(), std::memory_order_release);
   this->rtp_ssrc_ = esp_random();
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  AudioFormat prepared_tx;
+  AudioFormat prepared_rx;
+  this->get_media_config_(&prepared_tx, &prepared_rx, nullptr, nullptr);
+  if (!this->opus_codec_.ready_for(prepared_tx, prepared_rx)) {
+    ESP_LOGE(TAG, "Negotiated Opus format was not preallocated at setup");
+    return false;
+  }
+  this->opus_codec_.reset();
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   this->audio_tx_slow_send_calls_ = 0;
   this->audio_tx_send_failures_ = 0;
@@ -1045,6 +1074,8 @@ void SipTransport::reset_dialog_media_locked_() {
   this->peer_supports_from_change_ = false;
   this->connected_identity_sent_ = false;
   this->dialog_originated_ = false;
+  this->delayed_offer_pending_ = false;
+  this->remote_directional_audio_v1_ = false;
   this->remote_media_shape_.clear();
   this->close_media_session_();
   this->outgoing_invite_pending_.store(false, std::memory_order_release);
@@ -1826,19 +1857,31 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
   uint8_t packet[1500];
   const uint8_t bps = tx_format.container_bytes_per_sample();
   const size_t input_bytes = bytes;
-  const uint32_t samples = bps == 0 || tx_format.channels == 0
+  const uint32_t pcm_samples = bps == 0 || tx_format.channels == 0
       ? 0
       : static_cast<uint32_t>(input_bytes / bps / tx_format.channels);
-  bytes = pcm_to_rtp_payload(pcm, bytes, tx_format, packet + 12, sizeof(packet) - 12);
+  const uint32_t timestamp_samples = tx_format.codec == AudioCodec::OPUS
+      ? static_cast<uint32_t>((48000ULL * tx_format.frame_ms) / 1000U)
+      : pcm_samples;
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  if (tx_format.codec == AudioCodec::OPUS) {
+    bytes = this->opus_codec_.encode(pcm, bytes, tx_format, packet + 12,
+                                     sizeof(packet) - 12);
+  } else
+#endif
+  {
+    bytes = pcm_to_rtp_payload(pcm, bytes, tx_format, packet + 12,
+                               sizeof(packet) - 12);
+  }
   if (bytes == 0 || bytes > this->udp_max_payload_) {
     // Sequence numbers count packets, while timestamps follow the sampling
     // clock. A locally discarded PCM frame therefore advances only time.
-    this->rtp_timestamp_.fetch_add(samples, std::memory_order_acq_rel);
+    this->rtp_timestamp_.fetch_add(timestamp_samples, std::memory_order_acq_rel);
     return;
   }
   if (this->media_proposal_epoch_.load(std::memory_order_acquire) !=
       proposal_epoch) {
-    this->rtp_timestamp_.fetch_add(samples, std::memory_order_acq_rel);
+    this->rtp_timestamp_.fetch_add(timestamp_samples, std::memory_order_acq_rel);
     return;
   }
   LockGuard socket_lock(this->rtp_socket_mutex_);
@@ -1848,7 +1891,7 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
   if (ip == 0 || port == 0) return;
   if (this->media_proposal_epoch_.load(std::memory_order_acquire) !=
       proposal_epoch) {
-    this->rtp_timestamp_.fetch_add(samples, std::memory_order_acq_rel);
+    this->rtp_timestamp_.fetch_add(timestamp_samples, std::memory_order_acq_rel);
     return;
   }
   packet[0] = 0x80;
@@ -1856,7 +1899,7 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
   const uint16_t seq = this->rtp_sequence_.fetch_add(1, std::memory_order_acq_rel);
   packet[2] = static_cast<uint8_t>(seq >> 8);
   packet[3] = static_cast<uint8_t>(seq & 0xFF);
-  const uint32_t ts = this->rtp_timestamp_.fetch_add(samples, std::memory_order_acq_rel);
+  const uint32_t ts = this->rtp_timestamp_.fetch_add(timestamp_samples, std::memory_order_acq_rel);
   packet[4] = static_cast<uint8_t>(ts >> 24);
   packet[5] = static_cast<uint8_t>((ts >> 16) & 0xFF);
   packet[6] = static_cast<uint8_t>((ts >> 8) & 0xFF);
@@ -1903,6 +1946,22 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
 #endif
   }
 }
+
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+size_t SipTransport::decode_audio_payload(const uint8_t *payload,
+                                          size_t payload_bytes,
+                                          const AudioFormat &format,
+                                          uint8_t *pcm,
+                                          size_t pcm_capacity) {
+  if (format.codec != AudioCodec::OPUS) return 0;
+  return this->opus_codec_.decode(payload, payload_bytes, format, pcm,
+                                  pcm_capacity);
+}
+
+void SipTransport::reset_audio_decoder() {
+  this->opus_codec_.reset_decoder();
+}
+#endif
 
 bool SipTransport::send_ringing(const std::string &call_id) {
   LockGuard lock(this->dialog_mutex_);
@@ -1951,7 +2010,8 @@ bool SipTransport::send_answer(const std::string &call_id,
         phase == MediaLifecyclePhase::SHUTTING_DOWN) {
       return false;
     }
-    answer = this->build_sdp_answer_();
+    answer = this->delayed_offer_pending_ ? this->build_sdp_offer_()
+                                          : this->build_sdp_answer_();
   }
   if (answer.empty()) {
     const bool sent = this->send_response_(488, "Not Acceptable Here", "", "media_incompatible");
@@ -1963,7 +2023,7 @@ bool SipTransport::send_answer(const std::string &call_id,
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
     this->confirmed_local_sdp_ = answer;
 #endif
-    this->open_media_session_();
+    if (!this->delayed_offer_pending_) this->open_media_session_();
   }
   return sent;
 }
@@ -2398,7 +2458,18 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   bool media_compatible = false;
   {
     LockGuard media_lock(this->media_lifecycle_mutex_);
-    media_compatible = this->learn_remote_rtp_from_sdp_(body, src_ip);
+    if (body.empty()) {
+      AudioFormat shared;
+      media_compatible = choose_common_audio_format(
+          this->offer_rx_formats_, this->offer_tx_formats_, &shared);
+      if (media_compatible) {
+        this->set_media_config_(shared, shared, 96, 96);
+        this->delayed_offer_pending_ = true;
+      }
+    } else {
+      this->delayed_offer_pending_ = false;
+      media_compatible = this->learn_remote_rtp_from_sdp_(body, src_ip);
+    }
   }
   if (!media_compatible) {
     const bool sent = this->send_response_(488, "Not Acceptable Here");
@@ -3462,6 +3533,21 @@ void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sock
                this->call_id_.empty() ? "(none)" : this->call_id_.c_str());
       return;
     }
+    if (this->delayed_offer_pending_) {
+      const std::string answer = message_body(msg);
+      bool accepted = false;
+      if (!answer.empty()) {
+        LockGuard media_lock(this->media_lifecycle_mutex_);
+        accepted = this->learn_remote_rtp_from_sdp_(
+            answer, ntohl(src.sin_addr.s_addr), true);
+      }
+      this->delayed_offer_pending_ = false;
+      if (!accepted) {
+        ESP_LOGW(TAG, "SIP delayed offer ACK missing a compatible SDP answer");
+        if (!this->send_bye_unlocked_(this->call_id_)) this->reset_dialog_();
+        return;
+      }
+    }
     this->outgoing_invite_pending_.store(false, std::memory_order_release);
     this->open_media_session_();
     this->send_connected_identity_update_();
@@ -4066,8 +4152,15 @@ void SipTransport::rtp_task_() {
                             (static_cast<uint32_t>(buf[9]) << 16) |
                             (static_cast<uint32_t>(buf[10]) << 8) |
                             static_cast<uint32_t>(buf[11]);
-      const size_t out_len = rtp_payload_to_pcm(payload, payload_len, rx_format, pcm, sizeof(pcm));
-      if (out_len == 0 || out_len != rx_format.nominal_frame_bytes()) continue;
+      const uint8_t *audio_data = payload;
+      size_t audio_bytes = payload_len;
+      if (rx_format.codec == AudioCodec::PCM) {
+        audio_bytes = rtp_payload_to_pcm(payload, payload_len, rx_format, pcm,
+                                         sizeof(pcm));
+        audio_data = pcm;
+        if (audio_bytes == 0 ||
+            audio_bytes != rx_format.nominal_frame_bytes()) continue;
+      }
       if (this->media_proposal_epoch_.load(std::memory_order_acquire) !=
           proposal_epoch) {
         continue;
@@ -4108,7 +4201,7 @@ void SipTransport::rtp_task_() {
       }
       this->rtp_rx_packets_.fetch_add(1, std::memory_order_acq_rel);
       this->rtp_rx_bytes_.fetch_add(static_cast<uint32_t>(n), std::memory_order_acq_rel);
-      this->emit_audio_frame_(pcm, out_len, sequence, timestamp,
+      this->emit_audio_frame_(audio_data, audio_bytes, sequence, timestamp,
                               source_changed);
     }
 

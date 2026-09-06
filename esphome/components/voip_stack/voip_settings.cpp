@@ -30,6 +30,7 @@ struct JsonRosterSlot {
   std::string sip_transport;
   bool ha_bridge{false};
   bool local_ha{false};
+  bool directional_audio_v1{false};
   uint16_t sip_port{0};
   uint16_t rtp_port{0};
 };
@@ -125,6 +126,22 @@ bool json_metadata_bool(const cJSON *obj, const char *key) {
   return json_bool(meta, key);
 }
 
+bool json_metadata_string_array_contains(const cJSON *obj, const char *key,
+                                         const char *expected) {
+  const cJSON *meta = json_metadata(obj);
+  const cJSON *values = meta == nullptr
+                            ? nullptr
+                            : cJSON_GetObjectItemCaseSensitive(meta, key);
+  if (!cJSON_IsArray(values)) return false;
+  const cJSON *item = nullptr;
+  cJSON_ArrayForEach(item, values) {
+    if (cJSON_IsString(item) && item->valuestring != nullptr &&
+        std::strcmp(item->valuestring, expected) == 0)
+      return true;
+  }
+  return false;
+}
+
 bool parse_json_roster_slot(const cJSON *obj, JsonRosterSlot *slot) {
   if (!cJSON_IsObject(obj)) return false;
   std::string id = Phonebook::trim(json_string(obj, "id"));
@@ -157,6 +174,8 @@ bool parse_json_roster_slot(const cJSON *obj, JsonRosterSlot *slot) {
   }
   slot->local_ha = json_metadata_bool(obj, "local_ha");
   slot->ha_bridge = json_bool(obj, "ha_bridge");
+  slot->directional_audio_v1 =
+      json_metadata_string_array_contains(obj, "sdp_features", "directional_audio_v1");
   if (!slot->address.empty()) {
     slot->endpoint_type = "sip";
   }
@@ -541,6 +560,8 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
       continue;
     }
 
+    entry.directional_audio_v1 = slot.directional_audio_v1;
+
     if (this->cycle_active_) this->seen_in_cycle_.insert(entry.name);
     entries.push_back(std::move(entry));
   }
@@ -716,6 +737,11 @@ uint16_t VoipStack::get_current_contact_rtp_port() const {
 bool VoipStack::get_current_contact_sip_transport_tcp() const {
   const auto *c = this->phonebook_.current();
   return c != nullptr && c->endpoint_type == ContactEndpointType::SIP && c->sip_transport_tcp;
+}
+
+bool VoipStack::get_current_contact_directional_audio_v1() const {
+  const auto *c = this->phonebook_.current();
+  return c != nullptr && c->directional_audio_v1;
 }
 
 void VoipStack::publish_destination_() {

@@ -154,9 +154,16 @@ void VoipStack::cleanup_partial_setup_() {
     rx_u8_alloc.deallocate(this->rx_audio_chunk_, this->rx_audio_chunk_alloc_bytes_);
     this->rx_audio_chunk_ = nullptr;
   }
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  if (this->rx_network_chunk_ != nullptr) {
+    rx_u8_alloc.deallocate(this->rx_network_chunk_,
+                           this->rx_jitter_frame_alloc_bytes_);
+    this->rx_network_chunk_ = nullptr;
+  }
+#endif
   if (this->rx_jitter_pcm_storage_ != nullptr) {
     rx_u8_alloc.deallocate(this->rx_jitter_pcm_storage_,
-                           this->rx_audio_chunk_alloc_bytes_ * VoipStack::kRxQueuedFrames);
+                           this->rx_jitter_frame_alloc_bytes_ * VoipStack::kRxQueuedFrames);
     this->rx_jitter_pcm_storage_ = nullptr;
   }
   if (this->rx_silence_chunk_ != nullptr) {
@@ -164,6 +171,7 @@ void VoipStack::cleanup_partial_setup_() {
     this->rx_silence_chunk_ = nullptr;
   }
   this->rx_audio_chunk_alloc_bytes_ = 0;
+  this->rx_jitter_frame_alloc_bytes_ = 0;
 #endif
   this->transport_.reset();
 }
@@ -213,19 +221,32 @@ bool VoipStack::allocate_setup_buffers_() {
       rx_frame_bytes = std::max(rx_frame_bytes, this->rx_audio_formats_.formats[i].nominal_frame_bytes());
     }
     this->rx_audio_chunk_alloc_bytes_ = rx_frame_bytes;
+    this->rx_jitter_frame_alloc_bytes_ = rx_frame_bytes;
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+    this->rx_jitter_frame_alloc_bytes_ =
+        std::max<size_t>(this->rx_jitter_frame_alloc_bytes_, 1275U);
+#endif
     RAMAllocator<uint8_t> psram_u8 = this->buffers_in_psram_
         ? RAMAllocator<uint8_t>()
         : RAMAllocator<uint8_t>(RAMAllocator<uint8_t>::ALLOC_INTERNAL);
     this->rx_audio_chunk_ = psram_u8.allocate(this->rx_audio_chunk_alloc_bytes_);
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+    this->rx_network_chunk_ =
+        psram_u8.allocate(this->rx_jitter_frame_alloc_bytes_);
+#endif
     this->rx_jitter_pcm_storage_ =
-        psram_u8.allocate(this->rx_audio_chunk_alloc_bytes_ * VoipStack::kRxQueuedFrames);
+        psram_u8.allocate(this->rx_jitter_frame_alloc_bytes_ * VoipStack::kRxQueuedFrames);
     this->rx_silence_chunk_ = psram_u8.allocate(this->rx_audio_chunk_alloc_bytes_);
-    if (!this->rx_audio_chunk_ || !this->rx_jitter_pcm_storage_ || !this->rx_silence_chunk_) {
+    if (!this->rx_audio_chunk_ || !this->rx_jitter_pcm_storage_ || !this->rx_silence_chunk_
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+        || !this->rx_network_chunk_
+#endif
+    ) {
       ESP_LOGE(TAG, "Failed to allocate RX playout buffers");
       return false;
     }
     this->rx_jitter_buffer_ = std::make_unique<RtpJitterBuffer>(
-        this->rx_jitter_pcm_storage_, this->rx_audio_chunk_alloc_bytes_,
+        this->rx_jitter_pcm_storage_, this->rx_jitter_frame_alloc_bytes_,
         static_cast<uint8_t>(VoipStack::kRxQueuedFrames),
         static_cast<uint8_t>(VoipStack::kRxPrebufferFrames));
     memset(this->rx_silence_chunk_, 0, this->rx_audio_chunk_alloc_bytes_);
@@ -325,7 +346,12 @@ void VoipStack::transport_sip_signal_callback_(void *ctx, SipSignal signal) {
 
 void VoipStack::transport_connection_callback_(void *ctx, bool connected) {
   auto *self = static_cast<VoipStack *>(ctx);
-  self->defer([self, connected]() { self->on_connection_change_(connected); });
+  const std::string call_id = self->get_current_call_id_();
+  self->defer([self, connected, call_id]() {
+    // A disconnect from the retired attempt must not terminate its successor.
+    if (!connected && self->get_current_call_id_() != call_id) return;
+    self->on_connection_change_(connected);
+  });
   self->enable_loop_soon_any_context();
 }
 
@@ -691,6 +717,25 @@ std::string VoipStack::audio_format_token_(const AudioFormat &fmt) {
   return token;
 }
 
+std::string VoipStack::audio_rtp_format_token_(const AudioFormat &fmt) {
+  const char *encoding = audio_format_rtp_encoding(fmt, UDP_SAFE_AUDIO_PAYLOAD_BYTES);
+  if (encoding == nullptr) return "";
+  const char *compact = nullptr;
+  if (strcmp(encoding, "opus") == 0) compact = "o";
+  else if (strcmp(encoding, "L16") == 0) compact = "l";
+  else if (strcmp(encoding, "L24") == 0) compact = "h";
+  else if (strcmp(encoding, "PCMA") == 0) compact = "a";
+  else if (strcmp(encoding, "PCMU") == 0) compact = "u";
+  else if (strcmp(encoding, "G722") == 0) compact = "g";
+  if (compact == nullptr) return "";
+  char token[48];
+  snprintf(token, sizeof(token), "%s/%u/%u/%u", compact,
+           (unsigned) (audio_format_rtp_clock_rate(fmt) / 1000),
+           (unsigned) audio_format_rtp_channels(fmt),
+           (unsigned) fmt.frame_ms);
+  return token;
+}
+
 std::string VoipStack::local_ip_string_() const {
   char ip[network::IP_ADDRESS_BUFFER_SIZE];
   for (auto &address : network::get_ip_addresses()) {
@@ -712,16 +757,49 @@ std::string VoipStack::build_endpoint_string_() const {
     return "";
   }
 
-  auto format_list_token = [&](const AudioFormatList &list) -> std::string {
+  auto pcm_format_list_token = [&](const AudioFormatList &list) -> std::string {
     std::string out;
     for (uint8_t i = 0; i < list.count; i++) {
+      if (list.formats[i].codec != AudioCodec::PCM) continue;
       if (!out.empty()) out += "; ";
       out += VoipStack::audio_format_token_(list.formats[i]);
     }
     return out;
   };
-  const std::string tx = format_list_token(this->tx_audio_formats_);
-  const std::string rx = format_list_token(this->rx_audio_formats_);
+  auto rtp_format_list_token = [&](const AudioFormatList &list) -> std::string {
+    std::string out;
+    for (uint8_t i = 0; i < list.count; i++) {
+      const std::string token = VoipStack::audio_rtp_format_token_(list.formats[i]);
+      if (token.empty()) continue;
+      if (!out.empty()) out += ",";
+      out += token;
+    }
+    return out;
+  };
+  std::string tx = pcm_format_list_token(this->tx_audio_formats_);
+  std::string rx = pcm_format_list_token(this->rx_audio_formats_);
+  const std::string rtp_tx = rtp_format_list_token(this->tx_audio_formats_);
+  const std::string rtp_rx = rtp_format_list_token(this->rx_audio_formats_);
+  const bool has_non_pcm = [&]() {
+    for (uint8_t i = 0; i < this->tx_audio_formats_.count; i++)
+      if (this->tx_audio_formats_.formats[i].codec != AudioCodec::PCM) return true;
+    for (uint8_t i = 0; i < this->rx_audio_formats_.count; i++)
+      if (this->rx_audio_formats_.formats[i].codec != AudioCodec::PCM) return true;
+    return false;
+  }();
+  std::string audio_extra;
+  if (has_non_pcm) {
+    // Home Assistant limits entity state strings to 255 characters. The RTP
+    // list is authoritative for codec-aware phones, so do not duplicate its
+    // PCM subset in the two legacy fields.
+    tx.clear();
+    rx.clear();
+    if (!rtp_tx.empty()) audio_extra += " | at=" + rtp_tx;
+    if (!rtp_rx.empty()) audio_extra += " | ar=" + rtp_rx;
+  }
+  // Capability negotiation is independent of codec selection. PCM-only P4
+  // also supports the explicitly negotiated asymmetric SDP extension.
+  audio_extra += " | sf=d1";
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   constexpr const char *video_extra = " | video=jpeg";
 #elif defined(USE_ESPHOME_VOIP_STACK_VIDEO_H264)
@@ -731,11 +809,11 @@ std::string VoipStack::build_endpoint_string_() const {
 #endif
   char buf[640];
   const int written = snprintf(
-      buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s%s",
+      buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s%s%s",
       name.c_str(), ip.c_str(), (unsigned) this->sip_port_, (unsigned) this->rtp_port_,
       this->audio_capability_(), tx.c_str(), rx.c_str(),
       this->protocol_ == TransportType::TCP ? "sip_tcp" : "sip_udp",
-      this->extension_.c_str(), video_extra);
+      this->extension_.c_str(), audio_extra.c_str(), video_extra);
   if (written < 0 || written >= (int) sizeof(buf)) {
     ESP_LOGW(TAG, "VoIP endpoint string truncated; endpoint will not be published");
     return "";
@@ -903,10 +981,15 @@ std::string VoipStack::build_sip_snapshot_string_() const {
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
   if (this->audio_debug_) {
-    char debug[48];
-    snprintf(debug, sizeof(debug), "; rsil=%u; spkshort=%u",
+    RtpJitterBuffer::Counters jitter{};
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+    if (this->rx_jitter_buffer_ != nullptr) jitter = this->rx_jitter_buffer_->counters();
+#endif
+    char debug[112];
+    snprintf(debug, sizeof(debug), "; rsil=%u; spkshort=%u; rlate=%u; rmiss=%u; rdrop=%u",
              (unsigned) this->audio_debug_rx_silence_frames_.load(std::memory_order_relaxed),
-             (unsigned) this->audio_debug_speaker_short_writes_.load(std::memory_order_relaxed));
+             (unsigned) this->audio_debug_speaker_short_writes_.load(std::memory_order_relaxed),
+             (unsigned) jitter.late, (unsigned) jitter.missing, (unsigned) jitter.drops);
     result += debug;
   }
 #endif

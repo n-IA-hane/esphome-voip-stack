@@ -6,6 +6,9 @@
 
 #include "transport.h"
 #include "sip_signaling_string.h"
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+#include "opus_rtp_codec.h"
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 #include "video_rtp.h"
 #endif
@@ -51,6 +54,12 @@ class SipTransport : public SipPhoneTransport {
   void disconnect() override;
   bool is_connected() const override;
   void send_audio_frame(const uint8_t *pcm, size_t bytes) override;
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  size_t decode_audio_payload(const uint8_t *payload, size_t payload_bytes,
+                              const AudioFormat &format, uint8_t *pcm,
+                              size_t pcm_capacity) override;
+  void reset_audio_decoder() override;
+#endif
   bool send_invite(const std::string &call_id,
                    const std::string &caller_route,
                    const std::string &caller_name,
@@ -76,6 +85,9 @@ class SipTransport : public SipPhoneTransport {
   bool originate(const std::string &host, uint16_t port) override;
   void set_remote(const std::string &ip, uint16_t port, uint16_t rtp_port = 0) override;
   void set_sip_signaling_transport(bool tcp) override;
+  void set_peer_directional_audio_v1(bool enabled) override {
+    this->peer_directional_audio_v1_ = enabled;
+  }
   void set_audio_formats(const AudioFormatList &tx, const AudioFormatList &rx) override;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   void set_video_endpoints(EncodedVideoSource *source,
@@ -429,6 +441,9 @@ class SipTransport : public SipPhoneTransport {
   bool peer_supports_from_change_{false};
   bool connected_identity_sent_{false};
   bool dialog_originated_{false};
+  bool peer_directional_audio_v1_{false};
+  bool remote_directional_audio_v1_{false};
+  bool delayed_offer_pending_{false};
   CompletedServerTransaction completed_invite_;
   CompletedServerTransaction completed_control_;
   CompletedInviteClientTransaction completed_invite_client_;
@@ -441,6 +456,10 @@ class SipTransport : public SipPhoneTransport {
   uint8_t rtp_tx_payload_type_{96};
   uint8_t rtp_rx_payload_type_{96};
   mutable portMUX_TYPE media_config_lock_ = portMUX_INITIALIZER_UNLOCKED;
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  OpusRtpCodec opus_codec_{};
+  bool opus_codec_ready_{false};
+#endif
   // Even values are stable; odd values mean an SDP proposal is being parsed
   // into temporary live fields. Realtime readers compare the epoch before
   // publishing a packet/frame, which avoids both blocking and ABA races.

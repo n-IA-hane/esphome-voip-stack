@@ -591,13 +591,23 @@ bool parse_rtpmap_format(const std::string &line, AudioFormat *fmt, uint8_t *pay
     return false;
   }
   AudioFormat candidate;
-  candidate.sample_rate = rate;
-  candidate.channels = static_cast<uint8_t>(channels);
   candidate.frame_ms = 20;
   if (enc == "L16" || enc == "l16") {
+    candidate.sample_rate = rate;
+    candidate.channels = static_cast<uint8_t>(channels);
     candidate.pcm_format = PcmFormat::S16LE;
   } else if (enc == "L24" || enc == "l24") {
+    candidate.sample_rate = rate;
+    candidate.channels = static_cast<uint8_t>(channels);
     candidate.pcm_format = PcmFormat::S24LE;
+  } else if (enc == "opus" || enc == "OPUS") {
+    // RFC 7587 fixes the SDP/RTP clock and channel token independently of
+    // the mono PCM rate selected by each local encoder or decoder.
+    if (rate != 48000 || channels != 2) return false;
+    candidate.sample_rate = 48000;
+    candidate.channels = 1;
+    candidate.pcm_format = PcmFormat::S16LE;
+    candidate.codec = AudioCodec::OPUS;
   } else {
     return false;
   }

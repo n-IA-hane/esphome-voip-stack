@@ -178,6 +178,16 @@ class SetHaPeerNameAction : public Action<Ts...>, public Parented<VoipStack> {
 };
 
 template<typename... Ts>
+class SetMediaRouteAction : public Action<Ts...>, public Parented<VoipStack> {
+ public:
+  TEMPLATABLE_VALUE(std::string, call_id)
+  TEMPLATABLE_VALUE(std::string, route)
+  void play(const Ts &...x) override {
+    this->parent_->set_media_route(this->call_id_.value(x...), this->route_.value(x...));
+  }
+};
+
+template<typename... Ts>
 class SetRemoteEndpointAction : public Action<Ts...>, public Parented<VoipStack> {
  public:
   TEMPLATABLE_VALUE(std::string, ip)

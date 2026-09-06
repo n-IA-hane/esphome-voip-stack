@@ -187,25 +187,33 @@ class VoipStack : public Component {
   // are routed through HA as a SIP B2BUA bridge.
   void set_use_ha_as_first_contact(bool enabled) { this->use_ha_as_first_contact_ = enabled; }
   void set_audio_debug(bool enabled) { this->audio_debug_ = enabled; }
-  void set_tx_audio_format(uint32_t sample_rate, uint8_t pcm_format, uint8_t channels, uint16_t frame_ms) {
-    this->tx_audio_format_ = AudioFormat{sample_rate, static_cast<PcmFormat>(pcm_format), channels, frame_ms};
+  void set_tx_audio_format(uint32_t sample_rate, uint8_t pcm_format, uint8_t channels, uint16_t frame_ms,
+                           uint8_t codec = 0) {
+    this->tx_audio_format_ = AudioFormat{sample_rate, static_cast<PcmFormat>(pcm_format), channels, frame_ms,
+                                        static_cast<AudioCodec>(codec)};
     this->tx_audio_formats_.formats[0] = this->tx_audio_format_;
     this->tx_audio_formats_.count = 1;
     this->set_current_tx_audio_format_(this->tx_audio_format_);
   }
-  void set_rx_audio_format(uint32_t sample_rate, uint8_t pcm_format, uint8_t channels, uint16_t frame_ms) {
-    this->rx_audio_format_ = AudioFormat{sample_rate, static_cast<PcmFormat>(pcm_format), channels, frame_ms};
+  void set_rx_audio_format(uint32_t sample_rate, uint8_t pcm_format, uint8_t channels, uint16_t frame_ms,
+                           uint8_t codec = 0) {
+    this->rx_audio_format_ = AudioFormat{sample_rate, static_cast<PcmFormat>(pcm_format), channels, frame_ms,
+                                        static_cast<AudioCodec>(codec)};
     this->rx_audio_formats_.formats[0] = this->rx_audio_format_;
     this->rx_audio_formats_.count = 1;
     this->set_current_rx_audio_format_(this->rx_audio_format_);
   }
-  void add_supported_tx_audio_format(uint32_t sample_rate, uint8_t pcm_format, uint8_t channels, uint16_t frame_ms) {
+  void add_supported_tx_audio_format(uint32_t sample_rate, uint8_t pcm_format, uint8_t channels, uint16_t frame_ms,
+                                     uint8_t codec = 0) {
     this->append_audio_format_(&this->tx_audio_formats_,
-                               AudioFormat{sample_rate, static_cast<PcmFormat>(pcm_format), channels, frame_ms});
+                               AudioFormat{sample_rate, static_cast<PcmFormat>(pcm_format), channels, frame_ms,
+                                           static_cast<AudioCodec>(codec)});
   }
-  void add_supported_rx_audio_format(uint32_t sample_rate, uint8_t pcm_format, uint8_t channels, uint16_t frame_ms) {
+  void add_supported_rx_audio_format(uint32_t sample_rate, uint8_t pcm_format, uint8_t channels, uint16_t frame_ms,
+                                     uint8_t codec = 0) {
     this->append_audio_format_(&this->rx_audio_formats_,
-                               AudioFormat{sample_rate, static_cast<PcmFormat>(pcm_format), channels, frame_ms});
+                               AudioFormat{sample_rate, static_cast<PcmFormat>(pcm_format), channels, frame_ms,
+                                           static_cast<AudioCodec>(codec)});
   }
   /// Update the selected SIP peer endpoint at runtime. `port` is SIP signaling;
   /// `rtp_port` is the peer RTP media port.
@@ -290,10 +298,13 @@ class VoipStack : public Component {
                : ConnectionState::CONNECTED;
   }
   const char *get_state_str() const;
+  const char *get_media_route_str() const;
+  bool set_media_route(const std::string &call_id, const std::string &route);
 
 #ifdef USE_TEXT_SENSOR
   // Optional text-sensor platform registration.
   void set_state_sensor(text_sensor::TextSensor *sensor) { this->state_sensor_ = sensor; }
+  void set_media_route_sensor(text_sensor::TextSensor *sensor) { this->media_route_sensor_ = sensor; }
   void set_destination_sensor(text_sensor::TextSensor *sensor) { this->destination_sensor_ = sensor; }
   void set_caller_sensor(text_sensor::TextSensor *sensor) { this->caller_sensor_ = sensor; }
   void set_contacts_sensor(text_sensor::TextSensor *sensor) { this->contacts_sensor_ = sensor; }
@@ -359,6 +370,7 @@ class VoipStack : public Component {
   uint16_t get_current_contact_port() const;
   uint16_t get_current_contact_rtp_port() const;
   bool get_current_contact_sip_transport_tcp() const;
+  bool get_current_contact_directional_audio_v1() const;
   std::string get_caller() const { return this->current_caller_name_; }
   size_t get_contact_count() const { return this->phonebook_.size(); }
   std::string get_contacts_csv() const;
@@ -495,6 +507,7 @@ class VoipStack : public Component {
   void notify_audio_tasks_();
 
   void publish_state_();
+  void publish_media_route_();
   void publish_last_reason_(const std::string &reason);
   void publish_destination_();
   void publish_caller_(const std::string &caller_name);
@@ -510,6 +523,7 @@ class VoipStack : public Component {
   std::string build_endpoint_string_() const;
   std::string build_sip_snapshot_string_() const;
   static std::string audio_format_token_(const AudioFormat &fmt);
+  static std::string audio_rtp_format_token_(const AudioFormat &fmt);
 
   void set_call_state_(CallState new_state);
   void request_call_termination_(const TerminationIntent &intent);
@@ -570,6 +584,7 @@ class VoipStack : public Component {
 #ifdef USE_TEXT_SENSOR
   // Optional text-sensor entities.
   text_sensor::TextSensor *state_sensor_{nullptr};
+  text_sensor::TextSensor *media_route_sensor_{nullptr};
   text_sensor::TextSensor *destination_sensor_{nullptr};  // full: selected contact
   text_sensor::TextSensor *caller_sensor_{nullptr};       // full: who is calling
   text_sensor::TextSensor *contacts_sensor_{nullptr};     // full: contact count (e.g. "3 contacts")
@@ -642,6 +657,11 @@ class VoipStack : public Component {
   // One-shot dialplan target used when call("target") cannot resolve locally
   // and must route through the HA peer.
   std::string pending_dialplan_target_;
+  bool ha_media_fallback_pending_{false};
+  bool ha_media_fallback_attempted_{false};
+  // This is a projection of the current call, not another call lifecycle.
+  enum class MediaRoute : uint8_t { UNKNOWN, DIRECT, HA_TRANSCODING };
+  std::atomic<MediaRoute> media_route_{MediaRoute::UNKNOWN};
   std::string device_route_id_;  // routing key (yaml node name slug)
 
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
@@ -679,9 +699,13 @@ class VoipStack : public Component {
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   uint8_t *rx_audio_chunk_{nullptr};
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  uint8_t *rx_network_chunk_{nullptr};
+#endif
   uint8_t *rx_jitter_pcm_storage_{nullptr};
   uint8_t *rx_silence_chunk_{nullptr};
   size_t rx_audio_chunk_alloc_bytes_{0};
+  size_t rx_jitter_frame_alloc_bytes_{0};
   std::unique_ptr<RtpJitterBuffer> rx_jitter_buffer_;
   TaskHandle_t rx_task_handle_{nullptr};
   StaticTask_t rx_task_tcb_{};
@@ -825,6 +849,7 @@ class VoipStack : public Component {
                           const std::string &caller_route, const std::string &caller_name,
                           const std::string &dest_route, const std::string &dest_name);
   void clear_call_identity_();
+  void start_call_attempt_(bool via_ha);
   CallSnapshot snapshot_call_identity_() const;
   std::string get_current_call_id_() const;
   void set_terminal_response_(const std::string &call_id, const std::string &reason);

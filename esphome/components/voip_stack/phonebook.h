@@ -43,6 +43,7 @@ struct ContactEntry {
   uint16_t port{0};
   uint16_t rtp_port{0};
   bool sip_transport_tcp{false};
+  bool directional_audio_v1{false};
   std::string audio_capability;
   uint8_t missing_count{0};
 };
@@ -292,6 +293,7 @@ class Phonebook {
           existing.rtp_port == incoming.rtp_port &&
           existing.endpoint_type == incoming.endpoint_type &&
           existing.sip_transport_tcp == incoming.sip_transport_tcp &&
+          existing.directional_audio_v1 == incoming.directional_audio_v1 &&
           existing.audio_capability == incoming.audio_capability &&
           existing.name == incoming.name) {
         return AddResult::Noop;
@@ -304,6 +306,7 @@ class Phonebook {
       existing.port = incoming.port;
       existing.rtp_port = incoming.rtp_port;
       existing.sip_transport_tcp = incoming.sip_transport_tcp;
+      existing.directional_audio_v1 = incoming.directional_audio_v1;
       existing.audio_capability = incoming.audio_capability;
       return was_unset ? AddResult::Upgraded : AddResult::EndpointReplaced;
     }
@@ -318,6 +321,7 @@ class Phonebook {
            a.endpoint_type == b.endpoint_type &&
            a.port == b.port && a.rtp_port == b.rtp_port &&
            a.sip_transport_tcp == b.sip_transport_tcp &&
+           a.directional_audio_v1 == b.directional_audio_v1 &&
            a.audio_capability == b.audio_capability;
   }
 

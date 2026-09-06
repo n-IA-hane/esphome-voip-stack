@@ -6,6 +6,7 @@
 
 #include <esp_random.h>
 #include <esp_system.h>
+#include <lwip/inet.h>
 
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
@@ -174,22 +175,38 @@ void VoipStack::start() {
              "Cannot start call: prior SIP dialog is still terminating");
     return;
   }
+  this->ha_media_fallback_pending_ = false;
+  this->ha_media_fallback_attempted_ = false;
+  this->start_call_attempt_(false);
+}
 
+void VoipStack::start_call_attempt_(bool via_ha) {
+  const CallSnapshot previous = this->snapshot_call_identity_();
   std::string dial_ip = this->get_current_contact_ip();
   uint16_t dial_port = this->get_current_contact_port();
   uint16_t dial_rtp_port = this->get_current_contact_rtp_port();
   bool dial_sip_tcp = this->get_current_contact_sip_transport_tcp();
+  bool dial_directional_audio_v1 =
+      this->get_current_contact_directional_audio_v1();
 
+  if (via_ha) {
+    const auto *ha = this->phonebook_.find(this->ha_peer_name_);
+    dial_ip = ha != nullptr ? ha->ip : "";
+    dial_port = ha != nullptr ? ha->port : 0;
+    dial_rtp_port = ha != nullptr ? ha->rtp_port : 0;
+    dial_sip_tcp = ha != nullptr && ha->sip_transport_tcp;
+    dial_directional_audio_v1 = ha != nullptr && ha->directional_audio_v1;
+  }
   const std::string selected_dest = this->get_current_destination();
-  const bool route_via_ha = !this->ha_peer_name_.empty() && selected_dest == this->ha_peer_name_;
-  const std::string dest_name = !this->pending_dialplan_target_.empty()
+  const bool route_via_ha = via_ha || (!this->ha_peer_name_.empty() && selected_dest == this->ha_peer_name_);
+  const std::string dest_name = via_ha ? previous.dest_name : !this->pending_dialplan_target_.empty()
       ? this->pending_dialplan_target_
       : selected_dest.empty()
       ? (this->ha_peer_name_.empty() ? std::string("(unknown)") : this->ha_peer_name_)
       : selected_dest;
   const std::string caller_route =
       this->device_route_id_.empty() ? this->device_name_ : this->device_route_id_;
-  const std::string dest_route = !this->pending_dialplan_target_.empty()
+  const std::string dest_route = via_ha ? previous.dest_route : !this->pending_dialplan_target_.empty()
       ? this->pending_dialplan_target_
       : (this->get_current_destination_route().empty()
              ? dest_name
@@ -198,6 +215,7 @@ void VoipStack::start() {
                               std::to_string(static_cast<unsigned>(esp_random())) +
                               "@" + (this->device_route_id_.empty() ? std::string("esp") : this->device_route_id_);
   if (dial_ip.empty() || dial_port == 0) {
+    this->ha_media_fallback_pending_ = false;
     ESP_LOGE(TAG, "%s: SIP outgoing needs a SIP contact with host+port for '%s'", this->device_name_.c_str(),
              dest_name.c_str());
     // end_call_ intentionally ignores IDLE. Publish a short-lived CALLING
@@ -217,14 +235,16 @@ void VoipStack::start() {
 
   this->clear_terminal_call_snapshot_();
   this->set_remote_sip_transport_tcp(dial_sip_tcp);
+  if (this->transport_ != nullptr)
+    this->transport_->set_peer_directional_audio_v1(dial_directional_audio_v1);
   this->set_remote_endpoint(dial_ip, dial_port, dial_rtp_port);
   this->set_call_identity_(call_id, caller_route, this->device_name_,
                             dest_route, dest_name);
   this->clear_terminal_response_();
 
   const std::string remote_uri = "sip:" + dest_route + "@" + dial_ip + ":" + std::to_string(dial_port);
-  this->defer([this, call_id, caller = this->device_name_, dest_name, remote_uri, route_via_ha]() {
-    this->outgoing_call_trigger_.trigger(call_id, caller, dest_name, remote_uri);
+  this->defer([this, call_id, caller = this->device_name_, dest_name, remote_uri, route_via_ha, via_ha]() {
+    if (!via_ha) this->outgoing_call_trigger_.trigger(call_id, caller, dest_name, remote_uri);
     if (route_via_ha) {
       this->bridge_request_trigger_.trigger(call_id, caller, dest_name, remote_uri);
     }
@@ -237,6 +257,7 @@ void VoipStack::start() {
   this->set_audio_devices_active_(true);
   this->set_call_state_(CallState::CALLING);
   this->calling_start_time_ = millis();
+  this->ha_media_fallback_pending_ = false;
 
   if (this->transport_ == nullptr || !this->transport_->originate(dial_ip, dial_port)) {
     ESP_LOGE(TAG, "%s: SIP originate to %s:%u failed",
@@ -376,6 +397,39 @@ const char *VoipStack::get_state_str() const {
   return call_state_to_str(this->call_state_.load(std::memory_order_acquire));
 }
 
+const char *VoipStack::get_media_route_str() const {
+  if (this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL) return "";
+  switch (this->media_route_.load(std::memory_order_acquire)) {
+    case MediaRoute::DIRECT: return "direct";
+    case MediaRoute::HA_TRANSCODING: return "ha_transcoding";
+    default: return "";
+  }
+}
+
+bool VoipStack::set_media_route(const std::string &call_id, const std::string &route) {
+  if (call_id.empty() || this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL ||
+      call_id != this->get_current_call_id_()) return false;
+  MediaRoute selected;
+  if (route == "direct") selected = MediaRoute::DIRECT;
+  else if (route == "ha_transcoding") selected = MediaRoute::HA_TRANSCODING;
+  else return false;
+  if (this->media_route_.exchange(selected, std::memory_order_acq_rel) != selected) {
+    this->publish_media_route_();
+  }
+  return true;
+}
+
+void VoipStack::publish_media_route_() {
+#ifdef USE_TEXT_SENSOR
+  if (this->media_route_sensor_ != nullptr) {
+    const char *route = this->get_media_route_str();
+    if (!this->media_route_sensor_->has_state() || this->media_route_sensor_->state != route) {
+      this->media_route_sensor_->publish_state(route);
+    }
+  }
+#endif
+}
+
 void VoipStack::publish_state_() {
 #ifdef USE_TEXT_SENSOR
   if (this->state_sensor_ != nullptr) {
@@ -383,6 +437,7 @@ void VoipStack::publish_state_() {
   }
 #endif
   this->publish_sip_snapshot_();
+  this->defer([this]() { this->publish_media_route_(); });
 }
 
 void VoipStack::clear_terminal_call_snapshot_() {
@@ -542,14 +597,20 @@ void VoipStack::set_call_state_(CallState new_state) {
   // old==new and returns.
   CallState old_state = this->call_state_.exchange(new_state, std::memory_order_acq_rel);
   if (old_state == new_state) return;
+  this->media_route_.store(MediaRoute::UNKNOWN, std::memory_order_release);
   if ((old_state == CallState::IN_CALL) != (new_state == CallState::IN_CALL)) {
     this->notify_audio_tasks_();
   }
 
-  if (new_state == CallState::IN_CALL && !this->current_caller_name_.empty()) {
+  const CallSnapshot trigger_call = this->snapshot_call_identity_();
+  std::string trigger_peer = trigger_call.caller_name == this->device_name_
+                                 ? trigger_call.dest_name
+                                 : trigger_call.caller_name;
+  if (trigger_peer.empty()) trigger_peer = this->get_current_destination();
+  if (new_state == CallState::IN_CALL && !trigger_peer.empty()) {
     ESP_LOGI(TAG, "%s: %s -> %s with %s", this->device_name_.c_str(),
              call_state_to_str(old_state), call_state_to_str(new_state),
-             this->current_caller_name_.c_str());
+             trigger_peer.c_str());
   } else {
     ESP_LOGI(TAG, "%s: %s -> %s", this->device_name_.c_str(),
              call_state_to_str(old_state), call_state_to_str(new_state));
@@ -559,11 +620,6 @@ void VoipStack::set_call_state_(CallState new_state) {
   // the voip_srv task on Core 1, but on_* actions often touch LVGL
   // which must run on the main loop. Running inline trips the WD.
   this->defer([this, new_state]() { this->state_callback_.call(new_state); });
-  const CallSnapshot trigger_call = this->snapshot_call_identity_();
-  std::string trigger_peer = trigger_call.caller_name == this->device_name_
-                                 ? trigger_call.dest_name
-                                 : trigger_call.caller_name;
-  if (trigger_peer.empty()) trigger_peer = this->get_current_destination();
   switch (new_state) {
     case CallState::IDLE:
       this->defer([this]() { this->idle_trigger_.trigger(); });
@@ -586,6 +642,18 @@ void VoipStack::set_call_state_(CallState new_state) {
       break;
     case CallState::IN_CALL:
       this->publish_last_reason_("");
+      this->defer([this, call_id = trigger_call.call_id]() {
+        // A call with HA needs confirmation from its committed media owner.
+        // Compatibility or a fallback attempt alone does not prove conversion.
+        const auto *ha = this->ha_peer_name_.empty() ? nullptr : this->phonebook_.find(this->ha_peer_name_);
+        in_addr address{};
+        const uint32_t peer_ip = this->transport_ != nullptr ? this->transport_->snapshot().remote_ip_v4 : 0;
+        const bool ha_peer = ha != nullptr && inet_aton(ha->ip.c_str(), &address) != 0 &&
+                             ntohl(address.s_addr) == peer_ip;
+        if (peer_ip != 0 && !ha_peer && this->media_route_.load(std::memory_order_acquire) == MediaRoute::UNKNOWN) {
+          this->set_media_route(call_id, "direct");
+        }
+      });
       this->defer([this, trigger_peer]() { this->in_call_trigger_.trigger(trigger_peer); });
       break;
     case CallState::TERMINATING:
@@ -650,6 +718,18 @@ void VoipStack::request_call_termination_(const TerminationIntent &intent) {
 void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
   if (this->call_state_.load(std::memory_order_acquire) == CallState::IDLE) return;
   this->pending_dialplan_target_.clear();
+  if (reason == CallEndReason::MEDIA_INCOMPATIBLE && this->ha_media_fallback_pending_) {
+    // End only this SIP attempt. The user is still placing the same call.
+    // Retain its destination, but reject late signals from the old dialog.
+    {
+      LockGuard lock(this->call_state_mutex_);
+      this->current_call_id_.clear();
+    }
+    this->set_call_state_(CallState::CALLING);
+    this->defer([this]() { this->finish_call_termination_(); });
+    return;
+  }
+  this->ha_media_fallback_pending_ = false;
 
   std::string reason_str = detail.empty() ? call_end_reason_to_str(reason) : detail;
   const CallSnapshot call = this->snapshot_call_identity_();
@@ -739,6 +819,10 @@ void VoipStack::finish_call_termination_() {
     }
   }
   const CallState state = this->call_state_.load(std::memory_order_acquire);
+  if (this->ha_media_fallback_pending_ && state == CallState::CALLING) {
+    this->start_call_attempt_(true);
+    return;
+  }
   switch (state) {
     case CallState::TERMINATING:
     case CallState::BUSY:
@@ -764,7 +848,8 @@ void VoipStack::on_audio_received_(const TransportAudioFrame &frame) {
   }
   const AudioFormat rx_format = this->get_current_rx_audio_format_();
   const size_t expected = rx_format.nominal_frame_bytes();
-  if (frame.bytes != expected) {
+  if ((rx_format.codec == AudioCodec::PCM && frame.bytes != expected) ||
+      (rx_format.codec == AudioCodec::OPUS && frame.bytes > 1275U)) {
     ESP_LOGW(TAG,
              "Dropping VoIP audio frame with wrong size: got %u bytes, "
              "expected %u for rx format %u:%u:%u:%u",
@@ -772,14 +857,6 @@ void VoipStack::on_audio_received_(const TransportAudioFrame &frame) {
              (unsigned) rx_format.pcm_format, (unsigned) rx_format.channels, (unsigned) rx_format.frame_ms);
     return;
   }
-#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
-  if (this->audio_debug_) {
-    this->debug_log_pcm_level_("rx_network", frame.pcm, frame.bytes,
-                               rx_format,
-                               this->audio_debug_last_rx_log_ms_, this->audio_debug_rx_frames_);
-  }
-#endif
-
   // First inbound audio is the strongest "call established" signal; gates
   // the 200 OK echo loop in on_sip_signal_received_() and arms media timeout.
   this->first_audio_received_.store(true, std::memory_order_release);
@@ -1064,6 +1141,18 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
                this->device_name_.c_str(), (unsigned) msg.status_code,
                detail.empty() ? call_end_reason_to_str(reason) : detail.c_str(),
                in_call_id.c_str());
+      const CallSnapshot failed_attempt = this->snapshot_call_identity_();
+      const CallState failed_state = this->call_state_.load(std::memory_order_acquire);
+      if (reason == CallEndReason::MEDIA_INCOMPATIBLE &&
+          (failed_state == CallState::CALLING || failed_state == CallState::REMOTE_RINGING ||
+           failed_state == CallState::CONNECTING) &&
+          !failed_attempt.dialed_dest_name.empty() && !this->ha_media_fallback_attempted_ &&
+          !this->ha_peer_name_.empty() && this->get_current_destination() != this->ha_peer_name_ &&
+          this->phonebook_.find(this->ha_peer_name_) != nullptr) {
+        this->ha_media_fallback_pending_ = true;
+        this->ha_media_fallback_attempted_ = true;
+        ESP_LOGI(TAG, "No common direct format; continuing the call through HA");
+      }
       this->request_call_termination_(
           {reason, detail.empty() ? nullptr : detail.c_str(),
            SipTerminationAction::NONE, false});
@@ -1102,6 +1191,10 @@ void VoipStack::on_connection_change_(bool connected) {
   }
 
   ESP_LOGI(TAG, "Transport disconnected");
+  if (this->ha_media_fallback_pending_) {
+    this->finish_call_termination_();
+    return;
+  }
   if (this->call_state_.load(std::memory_order_acquire) != CallState::IDLE) {
     this->request_call_termination_(
         {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
@@ -1114,6 +1207,7 @@ void VoipStack::on_connection_change_(bool connected) {
 }
 
 bool VoipStack::can_accept_session_() const {
+  if (this->ha_media_fallback_pending_) return false;
   // This is only the coarse application-state gate. SipTransport separately
   // freezes the selected signaling transport while it owns an INVITE/dialog
   // or terminal transaction, so CALLING can never replace that session.

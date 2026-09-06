@@ -21,11 +21,17 @@ enum class PcmFormat : uint8_t {
   S32LE = 4,
 };
 
+enum class AudioCodec : uint8_t {
+  PCM = 0,
+  OPUS = 1,
+};
+
 struct AudioFormat {
   uint32_t sample_rate{16000};
   PcmFormat pcm_format{PcmFormat::S16LE};
   uint8_t channels{1};
   uint16_t frame_ms{16};
+  AudioCodec codec{AudioCodec::PCM};
 
   uint8_t container_bytes_per_sample() const {
     switch (this->pcm_format) {
@@ -67,32 +73,51 @@ struct AudioFormat {
     const bool valid_frame = this->frame_ms == 10 || this->frame_ms == 16 ||
                              this->frame_ms == 20 || this->frame_ms == 32;
     const bool whole_frames = (static_cast<uint64_t>(this->sample_rate) * this->frame_ms) % 1000u == 0;
-    return valid_rate && valid_channels && valid_frame && whole_frames && this->container_bytes_per_sample() != 0;
+    const bool valid_opus_rate = this->sample_rate == 8000 || this->sample_rate == 12000 ||
+                                 this->sample_rate == 16000 || this->sample_rate == 24000 ||
+                                 this->sample_rate == 48000;
+    const bool valid_codec = this->codec == AudioCodec::PCM ||
+                             (this->codec == AudioCodec::OPUS && valid_opus_rate &&
+                              this->pcm_format == PcmFormat::S16LE && this->channels == 1 &&
+                              (this->frame_ms == 10 || this->frame_ms == 20));
+    return valid_rate && valid_channels && valid_frame && whole_frames && valid_codec &&
+           this->container_bytes_per_sample() != 0;
   }
 
   bool operator==(const AudioFormat &other) const {
     return this->sample_rate == other.sample_rate &&
            this->pcm_format == other.pcm_format &&
            this->channels == other.channels &&
-           this->frame_ms == other.frame_ms;
+           this->frame_ms == other.frame_ms &&
+           this->codec == other.codec;
   }
 };
 
 static constexpr AudioFormat DEFAULT_AUDIO_FORMAT{};
 static constexpr size_t VOIP_STACK_MAX_AUDIO_FORMATS = 8;
 
+inline constexpr uint8_t pack_audio_frame_ms(uint16_t frame_ms) {
+  return frame_ms == 10 ? 0 : frame_ms == 16 ? 1 : frame_ms == 20 ? 2 : 3;
+}
+
+inline constexpr uint16_t unpack_audio_frame_ms(uint8_t packed) {
+  return packed == 0 ? 10 : packed == 1 ? 16 : packed == 2 ? 20 : 32;
+}
+
 inline constexpr uint32_t pack_audio_format(const AudioFormat &format) {
-  return (format.sample_rate & 0xFFFFU) | (static_cast<uint32_t>(format.pcm_format) << 16) |
-         (static_cast<uint32_t>(format.channels & 0x03U) << 24) |
-         (static_cast<uint32_t>(format.frame_ms & 0x3FU) << 26);
+  return (format.sample_rate & 0xFFFFU) | ((static_cast<uint32_t>(format.pcm_format) & 0x07U) << 16) |
+         (static_cast<uint32_t>(format.channels & 0x03U) << 19) |
+         (static_cast<uint32_t>(pack_audio_frame_ms(format.frame_ms)) << 21) |
+         (static_cast<uint32_t>(format.codec) << 23);
 }
 
 inline constexpr AudioFormat unpack_audio_format(uint32_t packed) {
   return AudioFormat{
       packed & 0xFFFFU,
-      static_cast<PcmFormat>((packed >> 16) & 0xFFU),
-      static_cast<uint8_t>((packed >> 24) & 0x03U),
-      static_cast<uint16_t>((packed >> 26) & 0x3FU),
+      static_cast<PcmFormat>((packed >> 16) & 0x07U),
+      static_cast<uint8_t>((packed >> 19) & 0x03U),
+      unpack_audio_frame_ms((packed >> 21) & 0x03U),
+      static_cast<AudioCodec>((packed >> 23) & 0x03U),
   };
 }
 
@@ -182,10 +207,27 @@ inline uint8_t audio_format_bits_per_sample(const AudioFormat &format) {
 
 inline const char *audio_format_rtp_encoding(const AudioFormat &format,
                                              size_t max_payload = UDP_SAFE_AUDIO_PAYLOAD_BYTES) {
+  if (format.codec == AudioCodec::OPUS) return "opus";
   if (format.nominal_rtp_payload_bytes() > max_payload) return nullptr;
   if (format.pcm_format == PcmFormat::S16LE) return "L16";
   if (format.pcm_format == PcmFormat::S24LE || format.pcm_format == PcmFormat::S24LE_IN_S32) return "L24";
   return nullptr;
+}
+
+inline uint32_t audio_format_rtp_clock_rate(const AudioFormat &format) {
+  return format.codec == AudioCodec::OPUS ? 48000U : format.sample_rate;
+}
+
+inline uint8_t audio_format_rtp_channels(const AudioFormat &format) {
+  // RFC 7587 requires opus/48000/2 even when the encoded signal is mono.
+  return format.codec == AudioCodec::OPUS ? 2 : format.channels;
+}
+
+inline bool audio_formats_share_wire_encoding(const AudioFormat &left, const AudioFormat &right) {
+  if (left.codec != right.codec || left.frame_ms != right.frame_ms) return false;
+  if (left.codec == AudioCodec::OPUS) return true;
+  return left.sample_rate == right.sample_rate && left.channels == right.channels &&
+         left.pcm_format == right.pcm_format;
 }
 
 inline bool audio_format_list_contains(const AudioFormatList &list, const AudioFormat &format) {
@@ -230,15 +272,13 @@ inline uint8_t choose_common_audio_ptime(const AudioFormatList &tx, const AudioF
 inline bool audio_format_list_match_udp_safe(const AudioFormatList &list, const AudioFormat &remote,
                                              AudioFormat *local,
                                              size_t max_payload = UDP_SAFE_AUDIO_PAYLOAD_BYTES) {
-  if (remote.nominal_rtp_payload_bytes() > max_payload) return false;
+  if (remote.codec == AudioCodec::PCM && remote.nominal_rtp_payload_bytes() > max_payload) return false;
   const char *remote_encoding = audio_format_rtp_encoding(remote, max_payload);
   if (remote_encoding == nullptr) return false;
   for (uint8_t i = 0; i < list.count; i++) {
     const AudioFormat &candidate = list.formats[i];
     const char *candidate_encoding = audio_format_rtp_encoding(candidate, max_payload);
-    const bool same_wire_format = candidate.sample_rate == remote.sample_rate &&
-                                  candidate.channels == remote.channels &&
-                                  candidate.frame_ms == remote.frame_ms &&
+    const bool same_wire_format = audio_formats_share_wire_encoding(candidate, remote) &&
                                   candidate_encoding != nullptr && remote_encoding != nullptr &&
                                   std::strcmp(candidate_encoding, remote_encoding) == 0;
     if (same_wire_format) {
