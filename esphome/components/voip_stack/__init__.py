@@ -3,7 +3,7 @@ import logging
 import esphome.codegen as cg
 import esphome.config_validation as cv
 import esphome.final_validate as fv
-from esphome import automation
+from esphome import automation, git
 from esphome.core import CORE
 from esphome.const import (
     CONF_ID,
@@ -22,6 +22,26 @@ def AUTO_LOAD(config):
     return ["ring_buffer"]
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def add_h264_component():
+    """Use one pinned local component for direct and transitive H.264 users."""
+    # esp_video also requires the registry component. A Git dependency alone
+    # can resolve alongside it and leave the registry copy in the build.
+    # IDF's local-component override applies to the whole dependency graph.
+    repository = CORE.data.get("voip_stack_h264_repository")
+    if repository is None:
+        repository, _ = git.clone_or_update(
+            url="https://github.com/n-IA-hane/esp-h264-component.git",
+            ref="cabfb05c1e20b08975b21544d67f61f483d023f5",
+            refresh=None,
+            domain="idf_components",
+        )
+        CORE.data["voip_stack_h264_repository"] = repository
+    esp32.add_idf_component(
+        name="espressif/esp_h264", path=str(repository / "esp_h264")
+    )
+
 
 CONF_VOIP_STACK_ID = "voip_stack_id"
 CONF_DC_OFFSET_REMOVAL = "dc_offset_removal"

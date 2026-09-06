@@ -6,7 +6,6 @@ import esphome.final_validate as fv
 from esphome.components import esp_video_camera, voip_stack
 from esphome.components.esp32 import (
     VARIANT_ESP32P4,
-    add_idf_component,
     only_on_variant,
 )
 from esphome.const import CONF_DEVICE, CONF_ID
@@ -103,10 +102,5 @@ async def to_code(config):
     # source omit every H.264 symbol and buffer.
     # This immutable fork commit tracks Espressif 1.3.8 plus the narrowly
     # scoped deblocking-buffer placement option used by the P4 encoder.
-    add_idf_component(
-        name="espressif/esp_h264",
-        repo="https://github.com/n-IA-hane/esp-h264-component.git",
-        ref="cabfb05c1e20b08975b21544d67f61f483d023f5",
-        path="esp_h264",
-    )
+    voip_stack.add_h264_component()
     cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_H264")
