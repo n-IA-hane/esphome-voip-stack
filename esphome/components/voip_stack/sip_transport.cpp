@@ -3630,7 +3630,7 @@ bool SipTransport::reject_if_stale_dialog_(const std::string &request, const soc
 }
 
 void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
-  char buf[1024];
+  char *const buf = this->sip_rx_scratch_.data();
   auto drop_tcp_stream = [&](const char *reason) {
     char ip[16];
     inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
@@ -3638,7 +3638,7 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
     this->handle_tcp_peer_loss_();
   };
   while (true) {
-    const int n = recv(socket, buf, sizeof(buf), 0);
+    const int n = recv(socket, buf, 1024, 0);
     if (n > 0) {
       this->sip_tcp_rx_buffer_.append(buf, static_cast<size_t>(n));
       if (this->sip_tcp_rx_buffer_.size() > MAX_SIP_TCP_RX_BUFFER) {
@@ -3693,7 +3693,7 @@ void SipTransport::rtp_task_trampoline_(void *param) {
 }
 
 void SipTransport::sip_task_() {
-  uint8_t buf[2048];
+  char *const buf = this->sip_rx_scratch_.data();
   int connecting_fd = -1;
   uint32_t connect_deadline_ms = 0;
   uint32_t connecting_ip_v4 = 0;
@@ -4016,7 +4016,7 @@ void SipTransport::sip_task_() {
     if (this->sip_socket_ >= 0 && FD_ISSET(this->sip_socket_, &readfds)) {
       struct sockaddr_in src{};
       socklen_t slen = sizeof(src);
-      int n = recvfrom(this->sip_socket_, buf, sizeof(buf) - 1, 0,
+      int n = recvfrom(this->sip_socket_, buf, this->sip_rx_scratch_.size() - 1, 0,
                        reinterpret_cast<struct sockaddr *>(&src), &slen);
       if (n > 0) {
         bool tcp_call_active = false;

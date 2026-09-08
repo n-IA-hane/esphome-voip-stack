@@ -21,6 +21,7 @@
 #include <freertos/task.h>
 #include <lwip/sockets.h>
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -448,6 +449,9 @@ class SipTransport : public SipPhoneTransport {
   CompletedServerTransaction completed_control_;
   CompletedInviteClientTransaction completed_invite_client_;
   bool terminate_after_invite_ack_{false};
+  // Only the SIP task reads sockets. Share its TCP/UDP receive scratch so
+  // nested parsing and logging do not retain 3 KiB of task-local buffers.
+  std::array<char, 2048> sip_rx_scratch_{};
   SipSignalingString sip_tcp_rx_buffer_;
   AudioFormatList offer_tx_formats_{};
   AudioFormatList offer_rx_formats_{};
