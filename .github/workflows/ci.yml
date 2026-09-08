@@ -34,8 +34,7 @@ jobs:
       - name: Run static checks
         run: >-
           python -m ruff check
-          esphome/components/voip_stack
-          esphome/components/ring_buffer
+          esphome/components
           tests
 
       - name: Run contract tests
