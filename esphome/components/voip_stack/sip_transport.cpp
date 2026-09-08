@@ -15,6 +15,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <esp_system.h>
+#include <esp_heap_caps.h>
 
 #include "audio_core_task_utils.h"
 #include "esphome/components/network/util.h"
@@ -66,6 +67,12 @@ class ScopedMediaProposal {
 };
 
 }  // namespace
+
+void *SipTransport::operator new(size_t size) noexcept {
+  return heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+void SipTransport::operator delete(void *ptr) noexcept { heap_caps_free(ptr); }
 
 SipTransport::SipTransport(uint16_t sip_port, uint16_t rtp_port, size_t udp_max_payload,
                            const std::string &remote_host,

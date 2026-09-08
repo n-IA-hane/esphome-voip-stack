@@ -46,6 +46,10 @@ class SipTransport : public SipPhoneTransport {
   static constexpr uint8_t kRtpTaskPriority = 9;
   static constexpr int kRtpSocketRxBufferBytes = 65536;
 
+  // Embedded FreeRTOS task control blocks must never follow malloc into PSRAM.
+  static void *operator new(size_t size) noexcept;
+  static void operator delete(void *ptr) noexcept;
+
   SipTransport(uint16_t sip_port, uint16_t rtp_port, size_t udp_max_payload, const std::string &remote_host,
                bool task_stacks_in_psram);
   ~SipTransport() override;
