@@ -402,12 +402,9 @@ void VoipStack::rx_task_() {
         static_cast<uint64_t>(rx_format.frame_ms) * configTICK_RATE_HZ;
     const TickType_t frame_ticks = static_cast<TickType_t>(
         std::max<uint64_t>(1, (frame_tick_numerator + 999) / 1000));
-#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
-    if (this->speaker_ != nullptr && !this->speaker_->is_running()) {
-      ulTaskNotifyTake(pdTRUE, frame_ticks);
-      continue;
-    }
-#endif
+    // A sink may go idle before the first RTP packet arrives. Deliver media
+    // through play(), whose speaker contract starts it again as needed; waiting
+    // for is_running() here would prevent that restart indefinitely.
     uint8_t *network_buffer = this->rx_audio_chunk_;
     size_t network_capacity = rx_format.nominal_frame_bytes();
     size_t network_bytes = 0;
