@@ -405,7 +405,13 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
         const bool rx_ok = peer_can_send &&
                            audio_format_list_match_udp_safe(this->offer_rx_formats_, fmt, &local_rx,
                                                             this->udp_max_payload_);
-        if (!selected_rx && rx_ok) {
+        // Ordinary sendrecv SDP lists formats usable in both directions.
+        // Match build_sdp_offer_(): asymmetric local PCM choices require the
+        // explicitly negotiated per-payload flow extension. Opus matching is
+        // by wire format, so independent local PCM rates remain supported.
+        const bool common_required = !this->remote_directional_audio_v1_ && media_flow == 0x03;
+        const bool eligible = !common_required || (tx_ok && rx_ok);
+        if (!selected_rx && rx_ok && eligible) {
           selected_rx_format = local_rx;
           selected_rx_payload_type = pt;
           selected_rx = true;
@@ -415,7 +421,7 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
                    (unsigned) audio_format_rtp_channels(selected_rx_format),
                    (unsigned) selected_rx_format.frame_ms);
         }
-        if (!selected_tx && tx_ok) {
+        if (!selected_tx && tx_ok && eligible) {
           selected_tx_format = local_tx;
           selected_tx_payload_type = pt;
           selected_tx = true;
