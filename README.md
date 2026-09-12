@@ -1,5 +1,7 @@
 # ESPHome VoIP Stack
 
+Current stable release: [2026.9.2](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.9.2).
+
 A native SIP phone component for ESPHome. `voip_stack` turns an ESP32 device into a real SIP endpoint: SIP signaling over UDP or TCP, SDP offer/answer, RTP media, a local phonebook and dial plan, explicit per-direction PCM negotiation, and a full set of ESPHome entities, triggers, actions and conditions on top.
 
 It binds to standard ESPHome `microphone` and `speaker` components, so the audio source can be anything from a bare I2S MEMS microphone to the echo-cancelled output of [`esphome-audio-stack`](https://github.com/n-IA-hane/esphome-audio-stack). The component is a complete SIP phone on its own; the optional Home Assistant integration from [`esphome-intercom`](https://github.com/n-IA-hane/esphome-intercom) adds central phonebook management, call routing, a softphone/B2BUA and a Lovelace card on top of the same devices.
@@ -91,7 +93,7 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-voip-stack@v2026.9.0
+  - source: github://n-IA-hane/esphome-voip-stack@main
     components: [voip_stack]
 ```
 
@@ -101,9 +103,9 @@ When pairing with the audio stack, pull both:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@v2026.9.0
+  - source: github://n-IA-hane/esphome-audio-stack@main
     components: [esp_audio_stack, esp_aec]
-  - source: github://n-IA-hane/esphome-voip-stack@v2026.9.0
+  - source: github://n-IA-hane/esphome-voip-stack@main
     components: [voip_stack]
 ```
 
@@ -143,9 +145,9 @@ This is the maintained path when software AEC/AFE, media player, Voice Assistant
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@v2026.9.0
+  - source: github://n-IA-hane/esphome-audio-stack@main
     components: [esp_audio_stack, esp_aec]
-  - source: github://n-IA-hane/esphome-voip-stack@v2026.9.0
+  - source: github://n-IA-hane/esphome-voip-stack@main
     components: [voip_stack]
 
 esp_aec:
@@ -184,9 +186,9 @@ point `processor_id` at that processor:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@v2026.9.0
+  - source: github://n-IA-hane/esphome-audio-stack@main
     components: [esp_audio_stack, esp_afe]
-  - source: github://n-IA-hane/esphome-voip-stack@v2026.9.0
+  - source: github://n-IA-hane/esphome-voip-stack@main
     components: [voip_stack]
 
 esp_afe:
