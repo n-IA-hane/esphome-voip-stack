@@ -539,13 +539,9 @@ bool P4VideoRenderer::present_surface_direct_(int index) {
   if (scale_units < 1)
     return false;
 
-  // Both decode buffers alternate as the PPA target. Bound enlargement to the
-  // already allocated surface instead of reserving another display-sized
-  // framebuffer. Also cap each presentation to a quarter-megapixel: PPA and
-  // the DPI DMA copy share PSRAM with camera, JPEG and AFE, and a stale video
-  // frame is less useful than uninterrupted call audio. Geometry selection is
-  // a short integer-only binary search; every pixel operation remains in PPA.
-  static constexpr size_t kMaxPresentationPixels = 256U * 1024U;
+  // Both decode buffers alternate as the PPA target. Fit within their existing
+  // capacity and the video container, preserving aspect ratio without another
+  // framebuffer. Geometry selection uses integers; scaling remains in PPA.
   const auto output_fits = [&](int units) {
     const size_t width =
         static_cast<size_t>(content_width) * units / kPpaScaleUnits;
@@ -553,11 +549,9 @@ bool P4VideoRenderer::present_surface_direct_(int index) {
         static_cast<size_t>(content_height) * units / kPpaScaleUnits;
     if (width == 0 || height == 0)
       return false;
-    const size_t pixels = width * height;
     const size_t pixel_capacity =
         this->surface_capacity_bytes_ / sizeof(uint16_t);
-    return width <= pixel_capacity / height &&
-           pixels <= kMaxPresentationPixels;
+    return width <= pixel_capacity / height;
   };
   if (!output_fits(scale_units)) {
     int low = 1;
