@@ -341,7 +341,8 @@ void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
 #endif
 }
 
-void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason silence_reason, TickType_t ticks_to_wait) {
+void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason silence_reason, TickType_t ticks_to_wait,
+                             uint32_t revision) {
   if (this->speaker_ == nullptr || pcm == nullptr || bytes == 0)
     return;
   if (silence_reason == SilenceReason::NONE && this->rx_silence_chunk_ != nullptr &&
@@ -351,17 +352,23 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
   }
 
   size_t offset = 0;
-  uint8_t stalls = 0;
-  TickType_t wait_budget = ticks_to_wait;
-  while (offset < bytes && this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL) {
-    const size_t written = this->speaker_->play(pcm + offset, bytes - offset, wait_budget);
-    wait_budget = 0;
+  while (offset < bytes && this->audio_devices_active_.load(std::memory_order_acquire) &&
+         this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL &&
+         this->rx_audio_revision_.load(std::memory_order_acquire) == revision) {
+    const TickType_t started = xTaskGetTickCount();
+    const size_t written = this->speaker_->play(pcm + offset, bytes - offset, ticks_to_wait);
     if (written == 0) {
-      if (++stalls >= 4) {
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
-        this->audio_debug_speaker_short_writes_.fetch_add(1, std::memory_order_relaxed);
+      this->audio_debug_speaker_short_writes_.fetch_add(1, std::memory_order_relaxed);
 #endif
-        break;
+      // Silence/PLC callers already own their frame deadline. Real received
+      // audio stays in the existing decode buffer until the sink accepts it.
+      if (ticks_to_wait == 0) break;
+      const TickType_t elapsed = xTaskGetTickCount() - started;
+      if (elapsed < ticks_to_wait) {
+        // A stopped or failed sink may return immediately instead of waiting.
+        // Yield cooperatively; call termination wakes this same RX task.
+        ulTaskNotifyTake(pdTRUE, ticks_to_wait - elapsed);
       }
       continue;
     }
@@ -370,7 +377,6 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
       this->audio_debug_speaker_short_writes_.fetch_add(1, std::memory_order_relaxed);
 #endif
     }
-    stalls = 0;
     offset += written;
   }
   if (silence_reason != SilenceReason::NONE) {
@@ -380,10 +386,10 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
   }
 }
 
-void VoipStack::play_silence_frame_(SilenceReason reason, TickType_t ticks_to_wait) {
+void VoipStack::play_silence_frame_(SilenceReason reason, TickType_t ticks_to_wait, uint32_t revision) {
   const size_t silence_bytes = this->get_current_rx_audio_format_().nominal_frame_bytes();
   if (this->rx_silence_chunk_ != nullptr && silence_bytes <= this->rx_audio_chunk_alloc_bytes_) {
-    this->play_rx_frame_(this->rx_silence_chunk_, silence_bytes, reason, ticks_to_wait);
+    this->play_rx_frame_(this->rx_silence_chunk_, silence_bytes, reason, ticks_to_wait, revision);
   }
 }
 
@@ -397,6 +403,7 @@ void VoipStack::rx_task_() {
       continue;
     }
 
+    const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
     const AudioFormat rx_format = this->get_current_rx_audio_format_();
     const uint64_t frame_tick_numerator =
         static_cast<uint64_t>(rx_format.frame_ms) * configTICK_RATE_HZ;
@@ -421,6 +428,7 @@ void VoipStack::rx_task_() {
                                        rx_format.codec == AudioCodec::OPUS ? &network_bytes : nullptr,
                                        &source_changed)
                                  : RtpJitterBuffer::ReadResult::BUFFERING;
+    if (this->rx_audio_revision_.load(std::memory_order_acquire) != revision) continue;
     if (this->rx_jitter_buffer_ != nullptr) {
       this->media_rx_queue_depth_.store(this->rx_jitter_buffer_->depth(), std::memory_order_relaxed);
     }
@@ -440,7 +448,7 @@ void VoipStack::rx_task_() {
         if (frame_bytes != rx_format.nominal_frame_bytes()) continue;
       }
 #endif
-      this->play_rx_frame_(this->rx_audio_chunk_, frame_bytes, SilenceReason::NONE, frame_ticks);
+      this->play_rx_frame_(this->rx_audio_chunk_, frame_bytes, SilenceReason::NONE, frame_ticks, revision);
     } else {
       // Initial prebuffering must stay quiet, but BUFFERING is also returned
       // after an established stream drains completely. In that second case we
@@ -464,7 +472,8 @@ void VoipStack::rx_task_() {
       while (remaining > 0) {
         ulTaskNotifyTake(pdTRUE, remaining);
         if (!this->audio_devices_active_.load(std::memory_order_acquire) ||
-            this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL) {
+            this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL ||
+            this->rx_audio_revision_.load(std::memory_order_acquire) != revision) {
           break;
         }
         const TickType_t elapsed = xTaskGetTickCount() - wait_started;
@@ -472,7 +481,8 @@ void VoipStack::rx_task_() {
         remaining = frame_ticks - elapsed;
       }
       if (!this->audio_devices_active_.load(std::memory_order_acquire) ||
-          this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL) {
+          this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL ||
+          this->rx_audio_revision_.load(std::memory_order_acquire) != revision) {
         continue;
       }
       const uint32_t now = millis();
@@ -492,12 +502,12 @@ void VoipStack::rx_task_() {
           const size_t concealed = this->transport_->decode_audio_payload(
               nullptr, 0, rx_format, this->rx_audio_chunk_, this->rx_audio_chunk_alloc_bytes_);
           if (concealed == rx_format.nominal_frame_bytes()) {
-            this->play_rx_frame_(this->rx_audio_chunk_, concealed, SilenceReason::NONE, 0);
+            this->play_rx_frame_(this->rx_audio_chunk_, concealed, SilenceReason::NONE, 0, revision);
             continue;
           }
         }
 #endif
-        this->play_silence_frame_(SilenceReason::NETWORK_GAP, 0);
+        this->play_silence_frame_(SilenceReason::NETWORK_GAP, 0, revision);
       }
       continue;
     }
@@ -505,6 +515,7 @@ void VoipStack::rx_task_() {
 }
 
 void VoipStack::reset_rx_audio_() {
+  this->rx_audio_revision_.fetch_add(1, std::memory_order_acq_rel);
   if (this->rx_jitter_buffer_ != nullptr) {
     this->rx_jitter_buffer_->reset();
   }

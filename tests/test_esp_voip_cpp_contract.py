@@ -1841,9 +1841,9 @@ def test_audio_path_uses_event_driven_tx_pacing_and_sink_backpressure() -> None:
     assert "sent_at_us - next_send_at_us" not in tx_task
     assert "next_send_at_us = sent_at_us + frame_interval_us" not in tx_task
     assert "vTaskDelay" not in tx_task
-    assert "TickType_t wait_budget = ticks_to_wait" in audio
-    assert "speaker_->play(pcm + offset, bytes - offset, wait_budget)" in audio
-    assert "wait_budget = 0" in audio
+    assert "speaker_->play(pcm + offset, bytes - offset, ticks_to_wait)" in audio
+    assert "if (ticks_to_wait == 0) break;" in audio
+    assert "ulTaskNotifyTake(pdTRUE, ticks_to_wait - elapsed);" in audio
     assert "offset += written" in audio
     assert "written == 0" in audio
     assert "media_tx_queue_drops_" in audio
@@ -2350,8 +2350,8 @@ def test_rx_gap_playout_has_only_one_blocking_frame_budget() -> None:
 
     rx_task = audio[audio.index("void VoipStack::rx_task_()") : audio.index("\nvoid VoipStack::reset_rx_audio_()")]
     assert "ulTaskNotifyTake(pdTRUE, frame_ticks);" in rx_task
-    assert "play_silence_frame_(SilenceReason::NETWORK_GAP, 0);" in rx_task
-    assert "play_silence_frame_(SilenceReason::NETWORK_GAP, frame_ticks);" not in rx_task
+    assert "play_silence_frame_(SilenceReason::NETWORK_GAP, 0, revision);" in rx_task
+    assert "play_silence_frame_(SilenceReason::NETWORK_GAP, frame_ticks, revision);" not in rx_task
     assert "const TickType_t wait_started = xTaskGetTickCount();" in rx_task
     assert "remaining = frame_ticks - elapsed;" in rx_task
     assert "vTaskDelay(" not in rx_task

@@ -495,8 +495,9 @@ class VoipStack : public Component {
     NETWORK_GAP,
     MUTED_SINK,
   };
-  void play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason silence_reason, TickType_t ticks_to_wait);
-  void play_silence_frame_(SilenceReason reason, TickType_t ticks_to_wait);
+  void play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason silence_reason, TickType_t ticks_to_wait,
+                      uint32_t revision);
+  void play_silence_frame_(SilenceReason reason, TickType_t ticks_to_wait, uint32_t revision);
   void reset_rx_audio_();
 #endif
 
@@ -707,6 +708,8 @@ class VoipStack : public Component {
   size_t rx_audio_chunk_alloc_bytes_{0};
   size_t rx_jitter_frame_alloc_bytes_{0};
   std::unique_ptr<RtpJitterBuffer> rx_jitter_buffer_;
+  // A pending speaker write belongs to the receive session that supplied it.
+  std::atomic<uint32_t> rx_audio_revision_{0};
   TaskHandle_t rx_task_handle_{nullptr};
   StaticTask_t rx_task_tcb_{};
   StackType_t *rx_task_stack_{nullptr};

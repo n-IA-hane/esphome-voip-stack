@@ -47,6 +47,7 @@ struct RtpJitterBuffer {
 struct VoipStack {
  Speaker *speaker_;RtpJitterBuffer *rx_jitter_buffer_;
  std::atomic<bool> audio_devices_active_{true},first_audio_received_{true};
+ std::atomic<uint32_t> rx_audio_revision_{0};
  std::atomic<CallState> call_state_{CallState::IN_CALL};
  std::atomic<uint32_t> rx_underrun_start_ms_{0},media_rx_queue_depth_{0};
  std::atomic<float> volume_{1};
@@ -54,8 +55,8 @@ struct VoipStack {
  size_t rx_audio_chunk_alloc_bytes_=320;
  static constexpr unsigned kRxSilenceAfterMs=100;
  AudioFormat get_current_rx_audio_format_(){return {};}
- void play_rx_frame_(const uint8_t*,size_t,SilenceReason,TickType_t);
- void play_silence_frame_(SilenceReason,TickType_t);
+ void play_rx_frame_(const uint8_t*,size_t,SilenceReason,TickType_t,uint32_t);
+ void play_silence_frame_(SilenceReason,TickType_t,uint32_t);
  void rx_task_();
 };
 """

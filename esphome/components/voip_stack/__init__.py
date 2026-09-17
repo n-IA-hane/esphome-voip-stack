@@ -1227,6 +1227,8 @@ async def _bind_ha_phonebook_sensor(var, config):
 
 
 async def to_code(config):
+    # Settings and SIP phonebook serialization use ESP-IDF's cJSON component.
+    esp32.include_builtin_idf_component("json")
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
 

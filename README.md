@@ -109,6 +109,30 @@ external_components:
     components: [voip_stack]
 ```
 
+### Add a custom ESP phone to Home Assistant
+
+Connecting the device through the ESPHome integration establishes the API
+connection. VoIP Stack also needs the phone's endpoint entity and call-control
+actions to discover it and deliver the central phonebook.
+
+For a custom YAML with `voip_stack` id `phone`, add:
+
+```yaml
+packages:
+  voip_ha_phone: github://n-IA-hane/esphome-intercom/packages/voip/ha_phone.yaml@main
+```
+
+Keep your existing `api:`, network and audio configuration. This package works
+with native ESPHome microphone/speaker components; it does not require Audio
+Stack or Voice Assistant. Maintained profiles already include the appropriate
+HA packages, so do not add it a second time to those profiles.
+
+After uploading, check that HA has a **VoIP Endpoint** entity with an available
+value. Being online in ESPHome alone is not sufficient for VoIP discovery.
+See the [ESP entity guide](https://github.com/n-IA-hane/esphome-intercom/blob/main/docs/ESP_ENTITY_SURFACE.md)
+for the individual entities and actions. Standalone SIP phones that do not use
+HA can continue without this package.
+
 ## Audio wiring
 
 ### Standalone native ESPHome audio
