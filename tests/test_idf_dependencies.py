@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib.util
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
@@ -13,7 +14,10 @@ def test_codegen_keeps_cjson_available_with_idf_exclusions(monkeypatch):
     path = Path(__file__).resolve().parents[1] / "esphome/components/voip_stack/__init__.py"
     spec = importlib.util.spec_from_file_location("voip_dependency_test", path)
     module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
+
+    monkeypatch.setattr(module.ha_integration, "to_code", AsyncMock())
 
     excluded = {"json", "console"}
     monkeypatch.setitem(CORE.data, esp32.KEY_ESP32, {esp32.KEY_EXCLUDE_COMPONENTS: excluded})

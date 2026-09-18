@@ -93,9 +93,11 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-voip-stack@main
+  - source: github://n-IA-hane/esphome-voip-stack@dev
     components: [voip_stack]
 ```
+
+Development `dev` targets 2026.10.0 and requires ESPHome 2026.9.0 or newer.
 
 Requirements: ESP-IDF framework. PSRAM is recommended for full-duplex profiles and required by co-resident AEC/AFE processing. RTP media requires UDP reachability between peers in both signaling modes.
 
@@ -103,35 +105,31 @@ When pairing with the audio stack, pull both:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@main
+  - source: github://n-IA-hane/esphome-audio-stack@dev
     components: [esp_audio_stack, esp_aec]
-  - source: github://n-IA-hane/esphome-voip-stack@main
+  - source: github://n-IA-hane/esphome-voip-stack@dev
     components: [voip_stack]
 ```
 
 ### Add a custom ESP phone to Home Assistant
 
-Connecting the device through the ESPHome integration establishes the API
-connection. VoIP Stack also needs the phone's endpoint entity and call-control
-actions to discover it and deliver the central phonebook.
-
-For a custom YAML with `voip_stack` id `phone`, add:
+With ESPHome 2026.9.0 or newer, `voip_stack` provides discovery entities,
+call-control actions and HA phonebook reception directly. No VoIP HA package
+is needed. Enable native service registration alongside any API encryption:
 
 ```yaml
-packages:
-  voip_ha_phone: github://n-IA-hane/esphome-intercom/packages/voip/ha_phone.yaml@main
+api:
+  custom_services: true
 ```
 
-Keep your existing `api:`, network and audio configuration. This package works
-with native ESPHome microphone/speaker components; it does not require Audio
-Stack or Voice Assistant. Maintained profiles already include the appropriate
-HA packages, so do not add it a second time to those profiles.
+Keep your microphone and/or speaker configuration. The component works with
+native ESPHome audio as well as Audio Stack. HA integration is enabled when
+API is configured; use `voip_stack.ha_integration: false` for standalone SIP.
+Routing through HA remains controlled separately by `use_ha_as_first_contact`.
 
-After uploading, check that HA has a **VoIP Endpoint** entity with an available
-value. Being online in ESPHome alone is not sufficient for VoIP discovery.
-See the [ESP entity guide](https://github.com/n-IA-hane/esphome-intercom/blob/main/docs/ESP_ENTITY_SURFACE.md)
-for the individual entities and actions. Standalone SIP phones that do not use
-HA can continue without this package.
+See the [entity and migration guide](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_ENTITY_SURFACE.md)
+for the retired packages and entity customization. Old package/action
+declarations are rejected rather than silently creating duplicate controls.
 
 ## Audio wiring
 
@@ -169,9 +167,9 @@ This is the maintained path when software AEC/AFE, media player, Voice Assistant
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@main
+  - source: github://n-IA-hane/esphome-audio-stack@dev
     components: [esp_audio_stack, esp_aec]
-  - source: github://n-IA-hane/esphome-voip-stack@main
+  - source: github://n-IA-hane/esphome-voip-stack@dev
     components: [voip_stack]
 
 esp_aec:
@@ -210,9 +208,9 @@ point `processor_id` at that processor:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@main
+  - source: github://n-IA-hane/esphome-audio-stack@dev
     components: [esp_audio_stack, esp_afe]
-  - source: github://n-IA-hane/esphome-voip-stack@main
+  - source: github://n-IA-hane/esphome-voip-stack@dev
     components: [voip_stack]
 
 esp_afe:
@@ -289,7 +287,7 @@ voip_stack:
     - name: Front Gate
 ```
 
-`name` is required; everything else is optional. Static contacts serve offline installs, diagnostics and direct SIP peers. Normal installs use the HA-managed roster through `ha_phonebook_text_sensor_id`.
+`name` is required; everything else is optional. Static contacts serve offline installs, diagnostics and direct SIP peers. Normal installs receive the HA-managed roster through the native `set_roster_json` action.
 
 Inbound INVITEs carry caller and destination identity and are not rejected for being unknown. ESP devices never register to an HA or provider trunk; trunk numbers and inbound DTMF routes are mapped by HA to local phonebook targets.
 

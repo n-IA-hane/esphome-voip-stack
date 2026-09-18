@@ -12,14 +12,17 @@ from esphome.const import (
     CONF_SPEAKER,
     CONF_NAME,
 )
-from esphome.components import audio, esp32, microphone, psram, speaker, text_sensor
+from esphome.components import audio, esp32, microphone, psram, speaker, text_sensor as esphome_text_sensor
+
+from . import ha_integration
 
 CODEOWNERS = ["@n-IA-hane"]
 DEPENDENCIES = ["esp32"]
 
 
 def AUTO_LOAD(config):
-    return ["ring_buffer"]
+    from .ha_integration import enabled
+    return ["ring_buffer"] + (["text_sensor", "text", "switch"] if enabled(config) else [])
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,9 +74,8 @@ CONF_ON_PHONEBOOK_UPDATE = "on_phonebook_update"
 CONF_DELETE_CONTACT_MISSING_FROM = "delete_contact_missing_from"
 CONF_UPDATES_NUMBER = "updates_number"
 CONF_HA_PHONEBOOK_TEXT_SENSOR_ID = "ha_phonebook_text_sensor_id"
-# HA publishes one SIP roster at `sensor.voip_phonebook`. The shipped
-# subscription package binds that HA text_sensor here; voip_stack then
-# normalizes each contact into the local SIP/UDP or SIP/TCP dial plan.
+# Legacy optional sensor binding for standalone custom configurations.
+# The integrated HA interface receives the roster through set_roster_json.
 
 CONF_ON_RINGING = "on_ringing"
 CONF_ON_IN_CALL = "on_in_call"
@@ -609,8 +611,13 @@ def _static_contact_entry(contact, default_transport: str) -> str:
     transport = "sip_tcp" if transport == TRANSPORT_TCP else "sip_udp"
     return f"{name}|{ip}|{contact[CONF_PORT]}|{contact[CONF_RTP_PORT_ACTION]}|{transport}"
 
-CONFIG_SCHEMA = cv.Schema(
+VoipHAIntegration = voip_stack_ns.class_("VoipHAIntegration", cg.Component, cg.Parented.template(VoipStack))
+
+CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 9, 0), ha_integration.prepare, cv.Schema(
     {
+        cv.Optional("ha_integration"): ha_integration.schema,
+        cv.GenerateID("ha_adapter_id"): cv.declare_id(VoipHAIntegration),
+        cv.Optional("legacy_ha_package"): cv.invalid("This VoIP HA package is retired in 2026.10.0. Remove its packages entry and enable api: custom_services: true; voip_stack now provides discovery, actions and phonebook integration."),
         cv.GenerateID(): cv.declare_id(VoipStack),
         # SIP signaling transport. Use transport: tcp for SIP/TCP or
         # transport: udp for SIP/UDP. Audio remains RTP/UDP.
@@ -738,7 +745,7 @@ CONFIG_SCHEMA = cv.Schema(
         # packages/voip/phonebook_subscribe.yaml) as the authoritative
         # HA-side source. Optional: when absent the HA path is skipped.
         cv.Optional(CONF_HA_PHONEBOOK_TEXT_SENSOR_ID): cv.use_id(
-            text_sensor.TextSensor
+            esphome_text_sensor.TextSensor
         ),
         # Contact pruning: delete a contact after N consecutive update cycles
         # in which no source reported it. Optional - absent means pruning is
@@ -756,7 +763,7 @@ CONFIG_SCHEMA = cv.Schema(
             min=0, max=32
         ),
     }
-).extend(cv.COMPONENT_SCHEMA)
+).extend(cv.COMPONENT_SCHEMA))
 
 
 def _consume_voip_sockets(config):
@@ -786,6 +793,7 @@ def _consume_voip_sockets(config):
 
 def _final_validate(config):
     """Cross-component validation + socket reservation."""
+    ha_integration.validate(config, fv.full_config.get())
     protocol = config.get(CONF_TRANSPORT, TRANSPORT_UDP)
     audio_task_stacks_in_psram = config[CONF_AUDIO_TASK_STACKS_IN_PSRAM]
     if config[CONF_TASK_STACKS_IN_PSRAM] or audio_task_stacks_in_psram:
@@ -1238,6 +1246,7 @@ async def to_code(config):
     _add_static_contacts(var, config)
     await _build_voip_automations(var, config)
     await _bind_ha_phonebook_sensor(var, config)
+    await ha_integration.to_code(var, config)
 
 
 # === Action registrations ===

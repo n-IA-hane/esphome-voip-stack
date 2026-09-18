@@ -71,6 +71,8 @@ int main(){
  }
 }
 '''
-    cpp=tmp_path/'sink.cpp';cpp.write_text(harness+method+checks);exe=tmp_path/'sink'
+    cpp = tmp_path / 'sink.cpp'
+    cpp.write_text(harness + method + checks)
+    exe = tmp_path / 'sink'
     subprocess.run(['g++','-std=c++17','-O2','-Wall','-Wextra','-Werror',str(cpp),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)

@@ -10,6 +10,7 @@ disappears, and minimal SIP transaction behavior for UDP.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 import re
 import subprocess
@@ -157,11 +158,12 @@ def test_video_rtp_burst_capacity_is_compile_time_gated() -> None:
     assert re.search(r"recvfrom\(\s*this->rtp_socket_", video_rtp)
 
 
-def test_video_codec_schema_and_codegen_are_one_codec_per_build() -> None:
+def test_video_codec_schema_and_codegen_are_one_codec_per_build(monkeypatch) -> None:
     init_path = VOIP / "__init__.py"
     spec = importlib.util.spec_from_file_location("voip_stack_codec_init", init_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
 
     jpeg = module._validate_video_config(
@@ -567,11 +569,12 @@ def test_video_rtp_keeps_directional_endpoint_capabilities() -> None:
     assert "new_capability.height == old_capability.height" not in direction_answer
 
 
-def test_rtp_jpeg_dimension_limit_matches_rfc2435_encoding() -> None:
+def test_rtp_jpeg_dimension_limit_matches_rfc2435_encoding(monkeypatch) -> None:
     init_path = VOIP / "__init__.py"
     spec = importlib.util.spec_from_file_location("voip_stack_local_init", init_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
 
     jpeg = {
@@ -1770,12 +1773,13 @@ def test_endpoint_requires_at_least_one_audio_direction() -> None:
     assert 'return "control_only"' not in header
 
 
-def test_optional_entity_platforms_are_feature_gated_not_autoloaded() -> None:
+def test_entity_platforms_are_gated_by_native_ha_integration() -> None:
     init_py = read("__init__.py")
     header = read("voip_stack.h")
     autoload = init_py.split("def AUTO_LOAD", 1)[1].split("\n\n", 1)[0]
-    for platform in ("button", "number", "switch", "text", "text_sensor"):
+    for platform in ("button", "number"):
         assert f'"{platform}"' not in autoload
+    assert "if enabled(config) else []" in autoload
     for flag, component in (
         ("USE_BUTTON", "button"),
         ("USE_NUMBER", "number"),
