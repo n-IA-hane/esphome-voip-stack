@@ -236,7 +236,7 @@ void P4VideoRenderer::loop() {
 #endif
   }
   xSemaphoreGive(this->presentation_mutex_);
-  if (first_frame)
+  if (first_frame && this->has_remote_frame())
     this->first_frame_trigger_.trigger();
 }
 
@@ -1002,14 +1002,15 @@ bool P4VideoRenderer::set_video_active(bool active) {
 #endif
   if (this->rx_task_handle_ != nullptr)
     xTaskNotifyGive(this->rx_task_handle_);
+  // UI ownership ends immediately, even while the last surface is in flight.
+  const bool was_visible =
+      this->remote_frame_visible_.exchange(false, std::memory_order_acq_rel);
   if (xSemaphoreTake(this->presentation_mutex_, 0) != pdTRUE) {
     this->video_ended_pending_.store(true, std::memory_order_release);
     this->enable_loop_soon_any_context();
     return true;
   }
   this->pending_surface_.store(-1, std::memory_order_release);
-  const bool was_visible =
-      this->remote_frame_visible_.exchange(false, std::memory_order_acq_rel);
   xSemaphoreGive(this->presentation_mutex_);
   if (was_visible) {
     this->video_ended_pending_.store(true, std::memory_order_release);

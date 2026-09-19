@@ -71,7 +71,8 @@ public:
   /// Called from lvgl.on_boot after the YAML container exists.
   void attach_video_container(lv_obj_t *container);
   bool has_remote_frame() const {
-    return this->remote_frame_visible_.load(std::memory_order_acquire);
+    return this->rx_active_.load(std::memory_order_acquire) &&
+           this->remote_frame_visible_.load(std::memory_order_acquire);
   }
   Trigger<> *get_first_frame_trigger() { return &this->first_frame_trigger_; }
   Trigger<> *get_video_ended_trigger() { return &this->video_ended_trigger_; }
