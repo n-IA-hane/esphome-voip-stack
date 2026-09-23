@@ -1,5 +1,7 @@
 # ESPHome VoIP Stack
 
+Development preview: [2026.10.0-dev](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.10.0-dev).
+
 Current stable release: [2026.9.2](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.9.2).
 
 A native SIP phone component for ESPHome. `voip_stack` turns an ESP32 device into a real SIP endpoint: SIP signaling over UDP or TCP, SDP offer/answer, RTP media, a local phonebook and dial plan, explicit per-direction PCM negotiation, and a full set of ESPHome entities, triggers, actions and conditions on top.
@@ -604,3 +606,7 @@ It supplies the SIP Call-ID of that physical leg. Firmware rejects unknown
 values, updates outside a call and updates for an earlier Call-ID, then clears
 the route at termination. This notification never negotiates codecs or starts
 a separate media path.
+
+## Support the project
+
+If this project is useful to you, [consider sponsoring its development](https://github.com/sponsors/n-IA-hane). Contributions help fund development tools, services and test hardware.

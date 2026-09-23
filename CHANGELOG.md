@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026.10.0-dev: native ESP phone integration
+
+This development preview accompanies Intercom 2026.10.0-dev and requires ESPHome 2026.9.0 or newer with the maintained profiles.
+
+- Home Assistant discovery, phonebook delivery and call actions are built into the component. Remove the retired VoIP HA packages and enable `api: custom_services: true` as described in the migration guide.
+- Audio accepted only partially by a speaker is retained for the next write.
+- P4 JPEG calls make better use of the existing display area.
+- P4 clears the video-call display state before deferred cleanup, including when the next destination supports audio only.
+
+PCM and Opus remain separate firmware choices. Full and P4 profiles retain PCM. The component continues to work with native ESPHome microphone/speaker components and with ESP Audio Stack.
+
+Direct calls were retested between Waveshare S3 Audio and Spotpear alongside the updated full-profile packages.
+
+[Migration instructions](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_ENTITY_SURFACE.md) and [complete platform preview](https://github.com/n-IA-hane/esphome-intercom/releases/tag/v2026.10.0-dev).
+
+Thank you to everyone supporting the project through GitHub Sponsors, including the latest donation, and to the contributors sharing fixes and hardware feedback.
+
+---
+
 ## ESPHome VoIP Stack 2026.9.2
 
 This release fixes microphone-only calls and silent playback after a speaker has become idle.
