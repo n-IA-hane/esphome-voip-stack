@@ -15,8 +15,6 @@ Direct calls were retested between Waveshare S3 Audio and Spotpear alongside the
 
 [Migration instructions](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_ENTITY_SURFACE.md) and [complete platform preview](https://github.com/n-IA-hane/esphome-intercom/releases/tag/v2026.10.0-dev).
 
-Thank you to everyone supporting the project through GitHub Sponsors, including the latest donation, and to the contributors sharing fixes and hardware feedback.
-
 ---
 
 ## ESPHome VoIP Stack 2026.9.2
