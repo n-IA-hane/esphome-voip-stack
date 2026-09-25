@@ -34,6 +34,12 @@ class StopAction : public Action<Ts...>, public Parented<VoipStack> {
 };
 
 template<typename... Ts>
+class DumpDiagnosticsAction : public Action<Ts...>, public Parented<VoipStack> {
+ public:
+  void play(const Ts &...x) override { this->parent_->dump_diagnostics(); }
+};
+
+template<typename... Ts>
 class AnswerCallAction : public Action<Ts...>, public Parented<VoipStack> {
  public:
   void play(const Ts &...x) override { this->parent_->answer_call(); }

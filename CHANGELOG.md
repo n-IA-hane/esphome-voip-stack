@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add an on-demand runtime diagnostic action that works without verbose audio tracing.
+- Exercise failure cleanup and retries with behavioral tests.
+
+
 ## 2026.10.0-dev: native ESP phone integration
 
 This development preview accompanies Intercom 2026.10.0-dev and requires ESPHome 2026.9.0 or newer with the maintained profiles.

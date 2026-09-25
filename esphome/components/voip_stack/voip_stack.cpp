@@ -616,6 +616,12 @@ void VoipStack::fire_timeout_decline_() {
 
 void VoipStack::dump_config() {
   ESP_LOGCONFIG(TAG, "VoIP Stack:");
+  ESP_LOGCONFIG(TAG, "  Runtime dump: voip_stack.dump_diagnostics (INFO level, audio_debug optional)");
+#if ESPHOME_LOG_LEVEL < ESPHOME_LOG_LEVEL_CONFIG
+  ESP_LOGI(TAG, "Configured: SIP=%s/%u RTP=%u audio=%s auto_answer=%s",
+           this->configured_sip_transport_name(), (unsigned) this->sip_port_, (unsigned) this->rtp_port_,
+           this->audio_capability_(), YESNO(this->auto_answer_));
+#endif
   if (this->transport_) {
     ESP_LOGCONFIG(TAG, "  Transport: %s", this->transport_->transport_name());
   } else {

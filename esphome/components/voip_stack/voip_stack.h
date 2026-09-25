@@ -103,6 +103,7 @@ class VoipStack : public Component {
   void setup() override;
   void loop() override;
   void dump_config() override;
+  void dump_diagnostics();
   // AFTER_CONNECTION: bind sockets and publish initial state only after
   // the HA API is up (AFTER_WIFI would race the API connection).
   float get_setup_priority() const override { return setup_priority::AFTER_CONNECTION; }
@@ -435,6 +436,24 @@ class VoipStack : public Component {
     // the only remaining supported role is speaker-only.
     return "speaker_only";
   }
+
+  uint32_t last_diagnostics_ms_{0};
+  struct DiagnosticDump {
+    SipTransportSnapshot transport;
+    AudioFormat tx, rx;
+    uint32_t requested_ms{0}, call_hash{0};
+    uint32_t tx_depth{0}, tx_drops{0}, rx_depth{0}, rx_drops{0};
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+    RtpJitterBuffer::Counters jitter{};
+#endif
+    CallState state{CallState::IDLE};
+    uint8_t step{0};
+    bool has_transport{false}, has_jitter{false}, changed{false}, audio_active{false};
+    char last_reason[48]{};
+    const char *route{""};
+  };
+  std::unique_ptr<DiagnosticDump> diagnostic_dump_;
+  void emit_diagnostic_section_();
 
   // setup() phases. Kept separate so setup() reads as a transaction and the
   // failure cleanup stays in one place.

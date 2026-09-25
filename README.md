@@ -607,6 +607,60 @@ values, updates outside a call and updates for an earlier Call-ID, then clears
 the route at termination. This notification never negotiates codecs or starts
 a separate media path.
 
+## Before opening an issue
+
+Reproduce the problem with the current maintained release/profile. Open the
+ESPHome device logs and, on development firmware with runtime diagnostics,
+press **VoIP Diagnostics** during the fault and again after hangup. For a
+custom configuration, use:
+
+```yaml
+button:
+  - platform: template
+    name: VoIP Diagnostics
+    entity_category: diagnostic
+    on_press:
+      - voip_stack.dump_diagnostics:
+          id: voip
+```
+
+Replace `voip` with your configured ID (`phone` in maintained Intercom profiles).
+Keep the logger at INFO or above and attach each complete `BEGIN v=1` / `END v=1`
+block. This action works with `audio_debug: false`; it does not enable SIP/RTP
+packet tracing. Overlapping requests and requests within one second are ignored. Output is
+split across normal ESPHome loop turns. Call state, media configuration and
+counters are collected when requested, retained in one bounded temporary
+snapshot, and released when printing finishes. Untracked metrics are unavailable, not zero. The short call hash is
+for correlating a dump without printing the complete Call-ID.
+
+This action is new on `dev`; older firmware must be updated before it can
+expose it. Include the exact version you tested.
+
+For device-wide memory information, include the native ESPHome `debug` sensor
+readings when available. The component dump reports its own buffers and state;
+system heap and PSRAM measurements remain with ESPHome/ESP-IDF diagnostics.
+
+Include:
+
+- Exact board/model and ESP32 variant/revision, if known.
+- ESPHome version and ESP VoIP Stack tag or commit.
+- Complete relevant VoIP YAML and the microphone/speaker configuration.
+- Calling direction, SIP transport (`udp` or `tcp`), and peer/PBX software and
+  version. If a registrar belongs to the other system, identify it there;
+  the ESP component itself operates without SIP registration.
+- Negotiated codec and packet time (`ptime`), if known.
+- Category: signaling, RTP, audio, DTMF, re-INVITE, video, teardown or other.
+- Reproduction steps, expected behavior, actual behavior, boot log, diagnostic
+  blocks and relevant SIP/RTP logs. Include both sides where available.
+
+Never publish SIP passwords, authentication headers, API keys, tokens or other
+credentials. Review YAML, logs and packet captures before uploading them.
+A dump describes state and counters; packet captures may still be needed to
+investigate protocol timing. Issues without enough information to reproduce
+or classify the problem may be closed as incomplete.
+
+If you ignore these instructions and open a useless issue anyway, I’ll get pissed off like there’s no tomorrow.
+
 ## Support the project
 
 If this project is useful to you, [consider sponsoring its development](https://github.com/sponsors/n-IA-hane). Contributions help fund development tools, services and test hardware.
