@@ -3,6 +3,7 @@ substitutions:
   friendly_name: VoIP Native Example
 
 esphome:
+  min_version: 2026.9.0
   name: ${name}
   friendly_name: ${friendly_name}
 
@@ -15,6 +16,7 @@ esp32:
 logger:
 
 api:
+  custom_services: true
 
 wifi:
   ssid: !secret wifi_ssid
