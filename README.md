@@ -1,5 +1,7 @@
 # ESPHome VoIP Stack
 
+Preparing the **2026.10.0 stable candidate**. Publication is pending final qualification.
+
 Development preview: [2026.10.0-dev](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.10.0-dev).
 
 Current stable release: [2026.9.2](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.9.2).

@@ -1,14 +1,12 @@
 # Changelog
 
-## Unreleased
+## 2026.10.0: native ESP phone integration and diagnostics
 
 - Add an on-demand runtime diagnostic action that works without verbose audio tracing.
 - Exercise failure cleanup and retries with behavioral tests.
 
 
-## 2026.10.0-dev: native ESP phone integration
-
-This development preview accompanies Intercom 2026.10.0-dev and requires ESPHome 2026.9.0 or newer with the maintained profiles.
+This release candidate accompanies Intercom 2026.10.0 and requires ESPHome 2026.9.0 or newer with the maintained profiles.
 
 - Home Assistant discovery, phonebook delivery and call actions are built into the component. Remove the retired VoIP HA packages and enable `api: custom_services: true` as described in the migration guide.
 - Audio accepted only partially by a speaker is retained for the next write.
