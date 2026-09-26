@@ -10,8 +10,13 @@ Home Assistant discovery metadata, phonebook reception and call-control API
 services are now provided by `voip_stack` itself. Custom firmware no longer
 needs the separate VoIP HA packages to connect these functions.
 
-**Breaking change for custom YAMLs:** comment out or remove the entries in
-`packages:` that include any of these retired files:
+**Upgrading your firmware:** start from one of our updated
+[maintained YAML profiles](https://github.com/n-IA-hane/esphome-intercom/tree/dev/yamls)
+and reapply your board settings and customizations. These profiles already
+include the migration changes.
+
+**Alternatively, migrate your existing YAML as follows.** Comment out or remove
+the entries in `packages:` that include any of these retired files:
 
 - `voip/ha_phone.yaml`
 - `voip/ha_integration.yaml`
