@@ -2,7 +2,7 @@
 
 ## 2026.10.0: built-in HA phone integration, playback fixes and diagnostics
 
-Release candidate. Changes since stable **2026.9.2**.
+Changes since stable **2026.9.2**.
 
 ### Home Assistant integration built into the component
 

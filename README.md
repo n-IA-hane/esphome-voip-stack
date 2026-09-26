@@ -1,10 +1,7 @@
 # ESPHome VoIP Stack
 
-Preparing the **2026.10.0 stable candidate**. Publication is pending final qualification.
-
-Development preview: [2026.10.0-dev](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.10.0-dev).
-
-Current stable release: [2026.9.2](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.9.2).
+Stable release: [2026.10.0](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.10.0).
+See the [changes since 2026.9.2](CHANGELOG.md) and firmware migration instructions.
 
 A native SIP phone component for ESPHome. `voip_stack` turns an ESP32 device into a real SIP endpoint: SIP signaling over UDP or TCP, SDP offer/answer, RTP media, a local phonebook and dial plan, explicit per-direction PCM negotiation, and a full set of ESPHome entities, triggers, actions and conditions on top.
 
@@ -612,7 +609,7 @@ a separate media path.
 ## Before opening an issue
 
 Reproduce the problem with the current maintained release/profile. Open the
-ESPHome device logs and, on development firmware with runtime diagnostics,
+ESPHome device logs and, on firmware built with ESP VoIP Stack 2026.10.0 or newer,
 press **VoIP Diagnostics** during the fault and again after hangup. For a
 custom configuration, use:
 
@@ -635,8 +632,8 @@ counters are collected when requested, retained in one bounded temporary
 snapshot, and released when printing finishes. Untracked metrics are unavailable, not zero. The short call hash is
 for correlating a dump without printing the complete Call-ID.
 
-This action is new on `dev`; older firmware must be updated before it can
-expose it. Include the exact version you tested.
+This action is available from 2026.10.0; older firmware must be rebuilt and
+uploaded before it can expose it. Include the exact version you tested.
 
 For device-wide memory information, include the native ESPHome `debug` sensor
 readings when available. The component dump reports its own buffers and state;
@@ -661,7 +658,7 @@ A dump describes state and counters; packet captures may still be needed to
 investigate protocol timing. Issues without enough information to reproduce
 or classify the problem may be closed as incomplete.
 
-If you ignore these instructions and open a useless issue anyway, I’ll get pissed off like there’s no tomorrow.
+If you ignore these instructions and open a useless issue anyway, I'll get pissed off like there's no tomorrow.
 
 ## Support the project
 
