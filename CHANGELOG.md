@@ -11,7 +11,7 @@ services are now provided by `voip_stack` itself. Custom firmware no longer
 needs the separate VoIP HA packages to connect these functions.
 
 **Upgrading your firmware:** start from one of our updated
-[maintained YAML profiles](https://github.com/n-IA-hane/esphome-intercom/tree/dev/yamls)
+[maintained YAML profiles](https://github.com/n-IA-hane/esphome-intercom/tree/main/yamls)
 and reapply your board settings and customizations. These profiles already
 include the migration changes.
 
@@ -43,7 +43,7 @@ Use **ESPHome 2026.9.0 or newer** with the maintained profiles. The native
 microphone/speaker example now declares this minimum version and enables the
 required API services.
 
-[Migration instructions](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_ENTITY_SURFACE.md)
+[Migration instructions](https://github.com/n-IA-hane/esphome-intercom/blob/main/docs/ESP_ENTITY_SURFACE.md)
 
 ### Audio playback fixes
 
