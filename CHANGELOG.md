@@ -10,8 +10,24 @@ Home Assistant discovery metadata, phonebook reception and call-control API
 services are now provided by `voip_stack` itself. Custom firmware no longer
 needs the separate VoIP HA packages to connect these functions.
 
-**Migration:** remove the retired VoIP HA packages and add `custom_services: true`
-to your existing `api:` block:
+**Breaking change for custom YAMLs:** comment out or remove the entries in
+`packages:` that include any of these retired files:
+
+- `voip/ha_phone.yaml`
+- `voip/ha_integration.yaml`
+- `voip/ha_actions.yaml`
+- `voip/ha_api.yaml`
+- `voip/phonebook_subscribe.yaml`
+
+Leaving these includes enabled causes configuration validation to fail. Also
+remove any copied definitions of the call-control actions or managed entities
+now supplied by the component.
+
+For full profiles, replace `voip/ha_api_runtime.yaml` with
+`runtime/ha_connectivity.yaml`. Keep the `voip_stack:` component configuration
+and the hardware, audio, display and ringtone packages.
+
+Then add `custom_services: true` to your existing `api:` block:
 
 ```yaml
 api:
