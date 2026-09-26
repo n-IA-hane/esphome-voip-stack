@@ -1,23 +1,66 @@
 # Changelog
 
-## 2026.10.0: native ESP phone integration and diagnostics
+## 2026.10.0: built-in HA phone integration, playback fixes and diagnostics
 
-- Add an on-demand runtime diagnostic action that works without verbose audio tracing.
-- Exercise failure cleanup and retries with behavioral tests.
+Release candidate. Changes since stable **2026.9.2**.
 
+### Home Assistant integration built into the component
 
-This release candidate accompanies Intercom 2026.10.0 and requires ESPHome 2026.9.0 or newer with the maintained profiles.
+Home Assistant discovery metadata, phonebook reception and call-control API
+services are now provided by `voip_stack` itself. Custom firmware no longer
+needs the separate VoIP HA packages to connect these functions.
 
-- Home Assistant discovery, phonebook delivery and call actions are built into the component. Remove the retired VoIP HA packages and enable `api: custom_services: true` as described in the migration guide.
-- Audio accepted only partially by a speaker is retained for the next write.
-- P4 JPEG calls make better use of the existing display area.
-- P4 clears the video-call display state before deferred cleanup, including when the next destination supports audio only.
+**Migration:** remove the retired VoIP HA packages and add `custom_services: true`
+to your existing `api:` block:
 
-PCM and Opus remain separate firmware choices. Full and P4 profiles retain PCM. The component continues to work with native ESPHome microphone/speaker components and with ESP Audio Stack.
+```yaml
+api:
+  custom_services: true
+```
 
-Direct calls were retested between Waveshare S3 Audio and Spotpear alongside the updated full-profile packages.
+Use **ESPHome 2026.9.0 or newer** with the maintained profiles. The native
+microphone/speaker example now declares this minimum version and enables the
+required API services.
 
-[Migration instructions](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_ENTITY_SURFACE.md) and [complete platform preview](https://github.com/n-IA-hane/esphome-intercom/releases/tag/v2026.10.0-dev).
+[Migration instructions](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_ENTITY_SURFACE.md)
+
+### Audio playback fixes
+
+When a speaker accepts only part of a received audio frame, the remaining samples
+are retained and retried instead of being discarded after a few unsuccessful
+writes. Pending writes stop when the call ends or the receive stream is reset,
+so old audio cannot continue into the replacement stream.
+
+### P4 video display fixes
+
+- Received JPEG video can occupy more of the P4 screen, scaled proportionally to
+  the available display area and allocated surface capacity.
+- Ending a video call clears its display state immediately, before deferred
+  cleanup. A following audio-only call therefore opens the audio interface
+  instead of inheriting the previous video screen.
+
+### On-demand diagnostics
+
+The new `voip_stack.dump_diagnostics` action captures call state, SIP status,
+negotiated audio formats, RTP counters, queue drops and the last termination
+reason. Video builds also report video activity and frame counters.
+
+```yaml
+- voip_stack.dump_diagnostics:
+    id: voip
+```
+
+Use your component's configured ID in place of `voip`. The action uses existing
+runtime state and counters; it does not enable verbose audio or packet tracing.
+The README now explains which configuration details and diagnostic logs to
+include in an issue.
+
+### Build and regression coverage
+
+- Declare the ESP-IDF JSON dependency explicitly.
+- Add behavioral tests for partial setup cleanup, retries after allocation and
+  socket failures, SIP send failures, TCP recovery, Opus failures, RTP fault
+  sequences and diagnostic snapshots.
 
 Thanks to everyone who donated to support the project.
 
