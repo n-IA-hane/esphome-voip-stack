@@ -571,6 +571,7 @@ SetHaPeerNameAction = voip_stack_ns.class_("SetHaPeerNameAction", automation.Act
 SetMediaRouteAction = voip_stack_ns.class_("SetMediaRouteAction", automation.Action)
 
 # === Condition classes (for YAML: voip_stack.is_idle, etc.) ===
+VoipIsActiveCondition = voip_stack_ns.class_("VoipIsActiveCondition", automation.Condition)
 VoipIsIdleCondition = voip_stack_ns.class_("VoipIsIdleCondition", automation.Condition)
 VoipIsRingingCondition = voip_stack_ns.class_("VoipIsRingingCondition", automation.Condition)
 VoipIsInCallCondition = voip_stack_ns.class_("VoipIsInCallCondition", automation.Condition)
@@ -1550,6 +1551,7 @@ def _register_simple_condition(name, condition_class):
     return _to_code
 
 
+_register_simple_condition("voip_stack.is_active", VoipIsActiveCondition)
 _register_simple_condition("voip_stack.is_idle", VoipIsIdleCondition)
 _register_simple_condition("voip_stack.is_ringing", VoipIsRingingCondition)
 _register_simple_condition("voip_stack.is_in_call", VoipIsInCallCondition)

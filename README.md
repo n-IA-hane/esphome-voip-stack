@@ -383,6 +383,11 @@ Triggers:
 | `on_destination_changed` | Selected destination changed; provides `destination`. |
 | `on_phonebook_update` | Contact list changed; provides `destination`. |
 
+Development adds `voip_stack.is_active`, which is true during call setup,
+ringing and an established call. It is false during termination and terminal
+states. Use `voip_stack.is_idle` when you specifically need the idle state.
+Both conditions resolve the single stack automatically when no ID is supplied.
+
 Conditions: `voip_stack.is_idle`, `voip_stack.is_ringing`,
 `voip_stack.is_in_call`, `voip_stack.is_calling`, `voip_stack.is_incoming`,
 `voip_stack.destination_is`, and `voip_stack.is_ha_destination`.

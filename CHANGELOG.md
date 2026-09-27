@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+Add the `voip_stack.is_active` YAML condition, delegating to the existing call
+state predicate. Unlike `is_idle`, it excludes termination and terminal phases
+from active calling/ringing states. It supports automatic parent binding.
+
 ## 2026.10.0: built-in HA phone integration, playback fixes and diagnostics
 
 Changes since stable **2026.9.2**.

@@ -213,6 +213,12 @@ class PublishEntityStatesAction : public Action<Ts...>, public Parented<VoipStac
 };
 
 template<typename... Ts>
+class VoipIsActiveCondition : public Condition<Ts...>, public Parented<VoipStack> {
+ public:
+  bool check(const Ts &...x) override { return this->parent_->is_active(); }
+};
+
+template<typename... Ts>
 class VoipIsIdleCondition : public Condition<Ts...>, public Parented<VoipStack> {
  public:
   bool check(const Ts &...x) override { return this->parent_->is_idle(); }
