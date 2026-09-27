@@ -6,7 +6,6 @@ esphome:
 
 switch:
   - platform: voip_stack
-    voip_stack_id: phone
     auto_answer:
       name: Auto Answer
     dnd:
@@ -14,7 +13,6 @@ switch:
 
 number:
   - platform: voip_stack
-    voip_stack_id: phone
     master_volume:
       name: Master Volume
     mic_gain:
@@ -22,7 +20,6 @@ number:
 
 button:
   - platform: voip_stack
-    voip_stack_id: phone
     call:
       name: Call
     decline:
@@ -30,12 +27,10 @@ button:
 
 text:
   - platform: voip_stack
-    voip_stack_id: phone
     type: extension
     name: Extension
 
 text_sensor:
   - platform: voip_stack
-    voip_stack_id: phone
     type: state
     name: State

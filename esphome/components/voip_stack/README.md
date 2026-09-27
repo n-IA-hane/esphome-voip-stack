@@ -22,6 +22,15 @@ internal no-audio placeholder is `16000:s16le:1:16` and is not used to repair
 missing endpoint formats. AFE/AEC-backed branches remain
 16 kHz/s16/mono because Espressif esp-sr exposes that surface.
 
+## One VoIP stack per ESP
+
+The component currently supports one `voip_stack` instance per ESP firmware.
+Its switches, numbers, buttons, text entities and text sensors resolve that
+instance automatically, so examples omit the optional `voip_stack_id` field.
+Keep the stack's explicit `id`, such as `phone`, when actions or lambdas refer
+to it. Microphone and speaker IDs still select the actual audio endpoints and
+must be kept where needed.
+
 ## Audio capabilities
 
 The endpoint capability is inferred from the YAML wiring:
@@ -142,12 +151,10 @@ esp_audio_stack:
 microphone:
   - platform: esp_audio_stack
     id: clean_mic
-    esp_audio_stack_id: audio_stack
 
 speaker:
   - platform: esp_audio_stack
     id: stack_speaker
-    esp_audio_stack_id: audio_stack
 
 voip_stack:
   id: phone
@@ -157,6 +164,10 @@ voip_stack:
     tx: auto
     rx: auto
 ```
+
+Audio Stack currently supports one instance per ESP. Its microphone and speaker
+bind to it automatically; `esp_audio_stack_id` can be omitted.
+
 
 For the full Espressif AFE pipeline, import `esp_afe` instead of `esp_aec`:
 

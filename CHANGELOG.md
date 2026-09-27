@@ -6,6 +6,10 @@ Changes since stable **2026.9.2**.
 
 ### Home Assistant integration built into the component
 
+The maintained entity examples also omit redundant `voip_stack_id` references.
+Only one stack instance is supported per ESP, and entity platforms already
+resolve it automatically.
+
 Home Assistant discovery metadata, phonebook reception and call-control API
 services are now provided by `voip_stack` itself. Custom firmware no longer
 needs the separate VoIP HA packages to connect these functions.

@@ -7,6 +7,15 @@ A native SIP phone component for ESPHome. `voip_stack` turns an ESP32 device int
 
 It binds to standard ESPHome `microphone` and `speaker` components, so the audio source can be anything from a bare I2S MEMS microphone to the echo-cancelled output of [`esphome-audio-stack`](https://github.com/n-IA-hane/esphome-audio-stack). The component is a complete SIP phone on its own; the optional Home Assistant integration from [`esphome-intercom`](https://github.com/n-IA-hane/esphome-intercom) adds central phonebook management, call routing, a softphone/B2BUA and a Lovelace card on top of the same devices.
 
+## One VoIP stack per ESP
+
+The component currently supports one `voip_stack` instance per ESP firmware.
+Its switches, numbers, buttons, text entities and text sensors resolve that
+instance automatically, so examples omit the optional `voip_stack_id` field.
+Keep the stack's explicit `id`, such as `phone`, when actions or lambdas refer
+to it. Microphone and speaker IDs still select the actual audio endpoints and
+must be kept where needed.
+
 ## What this is
 
 ESPHome has excellent building blocks for voice devices, but no native way to make two devices call each other or carry a two-way conversation with a phone, PBX extension, Home Assistant dashboard, or another ESP. `voip_stack` fills that layer with the protocol the rest of the telephony world already speaks: SIP for call control, SDP for capability negotiation, RTP for media.
@@ -186,12 +195,10 @@ esp_audio_stack:
 microphone:
   - platform: esp_audio_stack
     id: clean_mic
-    esp_audio_stack_id: audio_stack
 
 speaker:
   - platform: esp_audio_stack
     id: stack_speaker
-    esp_audio_stack_id: audio_stack
 
 voip_stack:
   id: phone
@@ -201,6 +208,10 @@ voip_stack:
     tx: auto
     rx: auto
 ```
+
+Audio Stack currently supports one instance per ESP. Its microphone and speaker
+bind to it automatically; `esp_audio_stack_id` can be omitted.
+
 
 During a call, the far end hears near-end speech after echo cancellation. Wake word keeps working locally because the same clean stream feeds it.
 
@@ -462,20 +473,17 @@ Declared entities:
 ```yaml
 switch:
   - platform: voip_stack
-    voip_stack_id: phone
     active: { name: Call Active }
     auto_answer: { name: Auto Answer }
     dnd: { name: Do Not Disturb }
 
 number:
   - platform: voip_stack
-    voip_stack_id: phone
     master_volume: { name: Call Volume }
     mic_gain: { name: Call Mic Gain }
 
 button:
   - platform: voip_stack
-    voip_stack_id: phone
     call: { name: Call }
     next_contact: { name: Next Contact }
     previous_contact: { name: Previous Contact }
