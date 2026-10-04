@@ -1,10 +1,44 @@
 # Changelog
 
-## Unreleased
+## 2026.10.1
 
-Add the `voip_stack.is_active` YAML condition, delegating to the existing call
-state predicate. Unlike `is_idle`, it excludes termination and terminal phases
-from active calling/ringing states. It supports automatic parent binding.
+Changes since stable **2026.10.0**.
+
+### ☎️ Check whether a call is active directly in YAML
+
+The new `voip_stack.is_active` condition lets automations check the component's
+existing active-call state without repeating it in a C++ lambda.
+
+It includes setup and ringing as well as an established call. Termination and
+terminal states are excluded, so it is more precise than negating `is_idle`.
+Use `voip_stack.is_in_call` when an action requires an answered call specifically.
+
+```yaml
+- if:
+    condition:
+      voip_stack.is_active:
+    then:
+      - voip_stack.stop:
+```
+
+### 🧩 Less instance wiring in examples
+
+The updated entity examples and documentation omit redundant parent IDs where
+the component already supports automatic binding. Custom configurations can keep
+explicit IDs when needed.
+
+### 🧪 Validation
+
+Behavioral tests exercise the new condition against the production call-state
+predicate, including setup, ringing, established and terminal states. The updated
+component was also used in the Spotpear, WS3 Audio and Waveshare BOX V2 call tests.
+
+### 📦 Updating
+
+Use `main` or tag `v2026.10.1` for the external component, then rebuild and upload.
+Requires ESPHome **2026.9.0 or newer**.
+
+[Documentation](https://github.com/n-IA-hane/esphome-voip-stack/blob/main/README.md)
 
 ## 2026.10.0: built-in HA phone integration, playback fixes and diagnostics
 

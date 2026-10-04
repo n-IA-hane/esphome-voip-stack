@@ -21,7 +21,7 @@ Even a small contribution helps cover the real costs of keeping the project acti
 
 # ESPHome VoIP Stack
 
-Stable release: [2026.10.0](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.10.0).
+Stable release: [2026.10.1](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.10.1).
 See the [changes since 2026.9.2](CHANGELOG.md) and firmware migration instructions.
 
 A native SIP phone component for ESPHome. `voip_stack` turns an ESP32 device into a real SIP endpoint: SIP signaling over UDP or TCP, SDP offer/answer, RTP media, a local phonebook and dial plan, explicit per-direction PCM negotiation, and a full set of ESPHome entities, triggers, actions and conditions on top.
@@ -128,7 +128,7 @@ external_components:
     components: [voip_stack]
 ```
 
-Development `dev` targets 2026.10.0 and requires ESPHome 2026.9.0 or newer.
+This release requires ESPHome 2026.9.0 or newer.
 
 Requirements: ESP-IDF framework. PSRAM is recommended for full-duplex profiles and required by co-resident AEC/AFE processing. RTP media requires UDP reachability between peers in both signaling modes.
 
@@ -404,12 +404,12 @@ Triggers:
 | `on_destination_changed` | Selected destination changed; provides `destination`. |
 | `on_phonebook_update` | Contact list changed; provides `destination`. |
 
-Development adds `voip_stack.is_active`, which is true during call setup,
+Version 2026.10.1 adds `voip_stack.is_active`, which is true during call setup,
 ringing and an established call. It is false during termination and terminal
 states. Use `voip_stack.is_idle` when you specifically need the idle state.
 Both conditions resolve the single stack automatically when no ID is supplied.
 
-Conditions: `voip_stack.is_idle`, `voip_stack.is_ringing`,
+Conditions: `voip_stack.is_active`, `voip_stack.is_idle`, `voip_stack.is_ringing`,
 `voip_stack.is_in_call`, `voip_stack.is_calling`, `voip_stack.is_incoming`,
 `voip_stack.destination_is`, and `voip_stack.is_ha_destination`.
 
