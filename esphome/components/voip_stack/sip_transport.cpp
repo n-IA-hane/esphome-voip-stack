@@ -1661,6 +1661,9 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
   ScopedMediaProposal proposal_scope(this->media_proposal_epoch_);
   const bool parsed =
       this->learn_remote_rtp_from_sdp_(sdp, default_ip, true);
+  ESP_LOGD(TAG, "apply_video_direction_answer_: parsed=%d video_negotiated_=%d video_send=%d video_receive=%d remote_video_port=%u",
+           (int) parsed, (int) this->video_negotiated_, (int) this->video_send_enabled_,
+           (int) this->video_receive_enabled_, (unsigned) this->remote_video_rtp_port_);
   AudioFormat new_tx;
   AudioFormat new_rx;
   uint8_t new_tx_pt = 0;
@@ -1695,6 +1698,9 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
   this->negotiated_video_capability_ = old_capability;
   proposal_scope.finish();
 
+  ESP_LOGD(TAG, "apply_video_direction_answer_: new_video_negotiated=%d new_video_send=%d new_video_receive=%d new_video_port=%u",
+           (int) new_video_negotiated, (int) new_video_send, (int) new_video_receive,
+           (unsigned) new_video_port);
   const bool same_audio =
       parsed && new_tx == old_tx && new_rx == old_rx &&
       new_tx_pt == old_tx_pt && new_rx_pt == old_rx_pt &&

@@ -446,7 +446,13 @@ void VoipStack::setup() {
 
 #if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
     defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
+  ESP_LOGD(TAG, "Video: JPEG camera source configured");
   this->video_camera_source_.register_listener();
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  ESP_LOGD(TAG, "Video build defines: source=%p sink=%p codec=%d rtp_port=%u",
+           (void *) this->video_source_, (void *) this->video_sink_,
+           (int) this->video_codec_, (unsigned) this->video_rtp_port_);
 #endif
 
   ESP_LOGI(TAG, "Audio capability: %s (SIP/%s, tasks: %s)",

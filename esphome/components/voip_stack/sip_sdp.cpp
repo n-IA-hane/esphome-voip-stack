@@ -34,6 +34,7 @@ std::string SipTransport::wrap_sdp_envelope_(const std::string &local_ip, const 
 }
 
 void SipTransport::capture_remote_media_shape_(const std::string &sdp) {
+  ESP_LOGD(TAG, "capture_remote_media_shape_: remote SDP (%u bytes):\n%s", (unsigned) sdp.size(), sdp.c_str());
   this->remote_media_shape_.clear();
   size_t pos = 0;
   while (pos < sdp.size()) {
@@ -49,6 +50,7 @@ void SipTransport::capture_remote_media_shape_(const std::string &sdp) {
           if (parse_audio_media_line(line, &port, payloads))
             this->remote_media_shape_.audio_index = index;
         }
+        ESP_LOGD(TAG, "capture_remote_media_shape_: media line: %s", line.c_str());
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
         if (this->remote_media_shape_.video_index < 0) {
           bool payloads[128]{};
@@ -62,6 +64,9 @@ void SipTransport::capture_remote_media_shape_(const std::string &sdp) {
     if (end == sdp.size()) break;
     pos = end + 2;
   }
+  ESP_LOGD(TAG, "capture_remote_media_shape_: media lines=%d audio_index=%d video_index=%d",
+           this->remote_media_shape_.count, this->remote_media_shape_.audio_index,
+           this->remote_media_shape_.video_index);
 }
 
 std::string SipTransport::rejected_media_answer_(
@@ -80,8 +85,13 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
                                             const std::string &local_ip,
                                             bool answer) const {
   if (this->video_source_ == nullptr && this->video_sink_ == nullptr) {
+    ESP_LOGW(TAG, "append_video_sdp_(answer=%d): skipped, no video source/sink", (int) answer);
     return sdp;
   }
+  ESP_LOGD(TAG, "append_video_sdp_(answer=%d): source=%p sink=%p send_req=%d offered=%d negotiated=%d",
+           (int) answer, (void *) this->video_source_, (void *) this->video_sink_,
+           (int) this->video_send_requested_.load(std::memory_order_acquire),
+           (int) this->video_offered_, (int) this->video_negotiated_);
   if (answer && this->video_offered_ && !this->video_negotiated_) {
     return sdp + "m=video 0 RTP/AVP " +
            std::to_string(this->negotiated_video_capability_.payload_type) +
@@ -95,6 +105,13 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
       this->video_source_ != nullptr && local_send.valid();
   const bool offer_receive =
       this->video_sink_ != nullptr && local_receive.valid();
+  ESP_LOGI(TAG,
+           "append_video_sdp_(answer=%d): local_send valid=%d enc=%s %ux%u@%u pt=%u, local_receive valid=%d enc=%s, offer_send=%d offer_receive=%d",
+           (int) answer, (int) local_send.valid(), local_send.encoding.c_str(),
+           (unsigned) local_send.width, (unsigned) local_send.height,
+           (unsigned) local_send.max_fps, (unsigned) local_send.payload_type,
+           (int) local_receive.valid(), local_receive.encoding.c_str(),
+           (int) offer_send, (int) offer_receive);
   // RFC 6184 profile-level-id in a unicast offer declares the highest level
   // the offerer can receive. With bilateral level asymmetry the answer
   // independently declares the answerer's receive level, allowing a P4
@@ -114,7 +131,12 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
       answer ? this->video_receive_enabled_
              : offer_receive &&
                    local_receive.encoding == capability.encoding;
-  if (!send && !receive && !answer) return sdp;
+  if (!send && !receive && !answer) {
+    ESP_LOGW(TAG, "append_video_sdp_: skipped, send=%d receive=%d answer=%d", (int) send, (int) receive, (int) answer);
+    return sdp;
+  }
+  ESP_LOGD(TAG, "append_video_sdp_: adding m=video, send=%d receive=%d capability valid=%d enc=%s pt=%u",
+           (int) send, (int) receive, (int) capability.valid(), capability.encoding.c_str(), (unsigned) capability.payload_type);
   const char *direction =
       send && receive ? "sendrecv"
                       : send ? "sendonly" : receive ? "recvonly" : "inactive";
@@ -216,6 +238,7 @@ std::string SipTransport::build_sdp_offer_() const {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   sdp = this->append_video_sdp_(sdp, local_ip, false);
 #endif
+  ESP_LOGD(TAG, "SDP offer built (%u bytes):\n%s", (unsigned) sdp.size(), sdp.c_str());
   return sdp;
 }
 
