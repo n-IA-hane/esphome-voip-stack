@@ -15,12 +15,18 @@ namespace voip_stack {
 static const char *const TAG = "voip_stack.camera_video";
 
 void CameraJpegVideoSource::register_listener() {
-  if (this->camera_ == nullptr || this->listener_registered_) return;
+  if (this->camera_ == nullptr) {
+    ESP_LOGW(TAG, "register_listener: camera is null, video source disabled");
+    return;
+  }
+  if (this->listener_registered_) return;
   this->camera_->add_listener(this);
   this->listener_registered_ = true;
+  ESP_LOGD(TAG, "register_listener: listener added to camera %p", (void *) this->camera_);
 }
 
 VideoCapability CameraJpegVideoSource::get_video_capability() const {
+  ESP_LOGD(TAG, "get_video_capability: %ux%u@%u", (unsigned) this->width_, (unsigned) this->height_, (unsigned) this->max_fps_);
   VideoCapability capability;
   capability.payload_type = 26;
   capability.encoding = "JPEG";
@@ -45,6 +51,10 @@ bool CameraJpegVideoSource::prepare_video(
 bool CameraJpegVideoSource::start_video(
     EncodedVideoAccessUnitCallback callback, void *ctx,
     const VideoCapability &capability) {
+  ESP_LOGD(TAG, "start_video: capability valid=%d jpeg=%d %ux%u@%u pt=%u",
+           (int) capability.valid(), (int) capability.is_jpeg(),
+           (unsigned) capability.width, (unsigned) capability.height, (unsigned) capability.max_fps,
+           (unsigned) capability.payload_type);
   {
     LockGuard lock(this->callback_mutex_);
     if (this->camera_ == nullptr || callback == nullptr ||
@@ -61,7 +71,12 @@ bool CameraJpegVideoSource::start_video(
     this->last_emitted_timestamp_ = 0;
     this->active_ = true;
   }
-  this->request_next_();
+  // Continuous stream rather than a one-shot request_image(): a one-shot
+  // WEB_REQUESTER request issued from inside the image callback is cleared by
+  // the camera loop right after listener callbacks run (it zeroes
+  // single_requesters_ after the listener loop), which silently kills the
+  // request chain after the first frame.
+  this->camera_->start_stream(camera::WEB_REQUESTER);
   ESP_LOGI(TAG, "Standard ESPHome camera JPEG source started");
   return true;
 }
@@ -71,6 +86,9 @@ void CameraJpegVideoSource::stop_video() {
   this->active_ = false;
   this->callback_ = nullptr;
   this->callback_ctx_ = nullptr;
+  if (this->camera_ != nullptr) {
+    this->camera_->stop_stream(camera::WEB_REQUESTER);
+  }
 }
 
 void CameraJpegVideoSource::request_next_() {
@@ -80,6 +98,7 @@ void CameraJpegVideoSource::request_next_() {
     if (this->active_) camera_component = this->camera_;
   }
   if (camera_component != nullptr) {
+    ESP_LOGD(TAG, "request_next_: requesting WEB_REQUESTER image");
     // A one-shot WEB_REQUESTER request deliberately avoids borrowing either
     // persistent stream bit. stop_video() therefore cannot stop an API/web
     // stream owned by another consumer of the same standard camera entity.
@@ -89,10 +108,12 @@ void CameraJpegVideoSource::request_next_() {
 
 void CameraJpegVideoSource::on_camera_image(
     const std::shared_ptr<camera::CameraImage> &image) {
-  if (image == nullptr ||
-      !image->was_requested_by(camera::WEB_REQUESTER)) {
+  if (image == nullptr) return;
+  if (!image->was_requested_by(camera::WEB_REQUESTER)) {
+    ESP_LOGD(TAG, "on_camera_image: ignored, not WEB_REQUESTER");
     return;
   }
+  ESP_LOGD(TAG, "on_camera_image: WEB_REQUESTER frame received");
   {
     LockGuard lock(this->callback_mutex_);
     if (!this->active_ || this->callback_ == nullptr) return;
@@ -113,7 +134,6 @@ void CameraJpegVideoSource::on_camera_image(
       this->last_emitted_timestamp_ = timestamp;
     }
   }
-  this->request_next_();
 }
 
 }  // namespace voip_stack

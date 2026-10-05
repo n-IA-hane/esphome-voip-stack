@@ -12,7 +12,7 @@ from esphome.const import (
     CONF_SPEAKER,
     CONF_NAME,
 )
-from esphome.components import audio, esp32, microphone, psram, speaker, text_sensor as esphome_text_sensor
+from esphome.components import audio, esp32, microphone, psram, speaker, text_sensor as esphome_text_sensor, esp32_camera as esp32_camera_component
 
 from . import ha_integration
 
@@ -341,7 +341,11 @@ PHONE_VIDEO_SCHEMA = cv.All(cv.Schema(
         # ESPHome's camera base currently has no Python codegen declaration,
         # but it is a stable C++ platform interface. Declare that exact base
         # type locally so schema validation accepts camera entities only.
-        cv.Optional(CONF_CAMERA_ID): cv.use_id(Camera),
+        # ESPHome declares esp32_camera's ESP32Camera with bases
+        # (PollingComponent, EntityBase) and never lists the camera::Camera
+        # codegen base, so cv.use_id(Camera) would reject a real
+        # esp32_camera id even though it satisfies the C++ interface.
+        cv.Optional(CONF_CAMERA_ID): cv.use_id(esp32_camera_component.ESP32Camera),
         cv.Optional(CONF_SINK): cv.use_id(EncodedVideoSink),
         cv.Optional(CONF_WIDTH, default=640): cv.int_range(min=8, max=2048),
         cv.Optional(CONF_HEIGHT, default=480): cv.int_range(min=8, max=2048),
