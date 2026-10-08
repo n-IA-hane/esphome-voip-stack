@@ -546,6 +546,10 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
 }
 
 void VoipStack::loop() {
+#if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
+    defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
+  this->video_camera_source_.loop();
+#endif
   uint32_t now = millis();
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   const uint8_t video_send_event =

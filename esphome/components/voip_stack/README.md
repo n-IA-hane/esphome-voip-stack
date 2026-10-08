@@ -370,12 +370,36 @@ One encoded video codec is compiled into each firmware:
 voip_stack:
   video:
     codec: jpeg
-    camera_id: p4_camera
-    sink: p4_video
+    camera_id: esp32_cam
+    width: 640
+    height: 480
+    framerate: 10
     rtp_port: 40002
 ```
 
-`jpeg` uses ESPHome's standard camera platform and static RTP payload type 26.
+`camera_id` references an existing native `esp32_camera` component configured
+to produce JPEG. Set the video dimensions to the camera resolution and keep
+`framerate` within its configured `max_framerate`. This sends the camera's
+images using static RTP/JPEG payload type 26; it does not resize the images or
+add a video display to an S3 board.
+
+The adapter requests individual images from the existing main loop. It waits
+until camera listener callbacks have completed before requesting another frame,
+because ESPHome clears one-shot requests after those callbacks. It does not
+start or stop the shared web/API camera streams, allocate another camera frame
+buffer or create a capture task. Stopping a call therefore leaves other camera
+consumers running.
+
+The camera ID/codegen correction and the lost-request diagnosis came from
+[@jayfan0's PR #6](https://github.com/n-IA-hane/esphome-voip-stack/pull/6).
+The local implementation preserves separate ownership of web streams. Host
+tests exercise that behavior and native ESP32-S3 camera YAML generation; they
+do not replace a real-device video retest.
+
+Encoded camera components, including the maintained P4 profiles, continue to
+use `source: <encoded_source_id>` instead of `camera_id`. The two input choices
+are mutually exclusive.
+
 An H.264 build instead declares `codec: h264` with an encoded `source` and/or
 `sink`; its offer payload type defaults to dynamic PT 103. Codec-specific RTP
 code and camera adapters are compile-time gated, so an audio-only or JPEG

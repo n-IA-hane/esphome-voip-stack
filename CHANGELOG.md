@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Accept native ESPHome camera IDs for the JPEG source and request subsequent
+  images from the existing main loop after camera callbacks finish. Hanging up
+  does not stop another web/API camera stream. Based on
+  [#6](https://github.com/n-IA-hane/esphome-voip-stack/pull/6). Host and native S3
+  code-generation tests pass; physical camera retesting is still requested.
+
 ## 2026.10.1
 
 Changes since stable **2026.10.0**.

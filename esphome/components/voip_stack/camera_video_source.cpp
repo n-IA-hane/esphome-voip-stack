@@ -60,8 +60,8 @@ bool CameraJpegVideoSource::start_video(
         std::max<uint8_t>(1, std::min(this->max_fps_, capability.max_fps));
     this->last_emitted_timestamp_ = 0;
     this->active_ = true;
+    this->request_pending_ = true;
   }
-  this->request_next_();
   ESP_LOGI(TAG, "Standard ESPHome camera JPEG source started");
   return true;
 }
@@ -69,21 +69,19 @@ bool CameraJpegVideoSource::start_video(
 void CameraJpegVideoSource::stop_video() {
   LockGuard lock(this->callback_mutex_);
   this->active_ = false;
+  this->request_pending_ = false;
   this->callback_ = nullptr;
   this->callback_ctx_ = nullptr;
 }
 
-void CameraJpegVideoSource::request_next_() {
-  camera::Camera *camera_component = nullptr;
-  {
-    LockGuard lock(this->callback_mutex_);
-    if (this->active_) camera_component = this->camera_;
-  }
-  if (camera_component != nullptr) {
+void CameraJpegVideoSource::loop() {
+  LockGuard lock(this->callback_mutex_);
+  if (this->active_ && this->request_pending_ && this->camera_ != nullptr) {
+    this->request_pending_ = false;
     // A one-shot WEB_REQUESTER request deliberately avoids borrowing either
     // persistent stream bit. stop_video() therefore cannot stop an API/web
     // stream owned by another consumer of the same standard camera entity.
-    camera_component->request_image(camera::WEB_REQUESTER);
+    this->camera_->request_image(camera::WEB_REQUESTER);
   }
 }
 
@@ -96,6 +94,9 @@ void CameraJpegVideoSource::on_camera_image(
   {
     LockGuard lock(this->callback_mutex_);
     if (!this->active_ || this->callback_ == nullptr) return;
+    // ESP32Camera clears one-shot requester bits after notifying listeners.
+    // Rearm from the main loop after that callback batch has completed.
+    this->request_pending_ = true;
     uint8_t *data = image->get_data_buffer();
     const size_t size = image->get_data_length();
     const uint32_t timestamp = static_cast<uint32_t>(millis() * 90U);
@@ -113,7 +114,6 @@ void CameraJpegVideoSource::on_camera_image(
       this->last_emitted_timestamp_ = timestamp;
     }
   }
-  this->request_next_();
 }
 
 }  // namespace voip_stack

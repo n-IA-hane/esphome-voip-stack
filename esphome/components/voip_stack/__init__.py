@@ -15,6 +15,7 @@ from esphome.const import (
 from esphome.components import audio, esp32, microphone, psram, speaker, text_sensor as esphome_text_sensor
 
 from . import ha_integration
+from esphome.components import esp32_camera as esp32_camera_component
 
 CODEOWNERS = ["@n-IA-hane"]
 DEPENDENCIES = ["esp32"]
@@ -149,7 +150,6 @@ AudioCodec = voip_stack_ns.enum("AudioCodec", is_class=True)
 EncodedVideoSource = voip_stack_ns.class_("EncodedVideoSource")
 EncodedVideoSink = voip_stack_ns.class_("EncodedVideoSink")
 VideoCodec = voip_stack_ns.enum("VideoCodec", is_class=True)
-Camera = cg.esphome_ns.namespace("camera").class_("Camera", cg.Component)
 
 PCM_FORMAT_IDS = {
     "s16le": 1,
@@ -338,10 +338,9 @@ PHONE_VIDEO_SCHEMA = cv.All(cv.Schema(
             VIDEO_CODEC_JPEG, VIDEO_CODEC_H264, lower=True
         ),
         cv.Optional(CONF_SOURCE): cv.use_id(EncodedVideoSource),
-        # ESPHome's camera base currently has no Python codegen declaration,
-        # but it is a stable C++ platform interface. Declare that exact base
-        # type locally so schema validation accepts camera entities only.
-        cv.Optional(CONF_CAMERA_ID): cv.use_id(Camera),
+        # ESP32Camera implements camera::Camera in C++, but its Python codegen
+        # declaration does not include that base. Use the real declared ID type.
+        cv.Optional(CONF_CAMERA_ID): cv.use_id(esp32_camera_component.ESP32Camera),
         cv.Optional(CONF_SINK): cv.use_id(EncodedVideoSink),
         cv.Optional(CONF_WIDTH, default=640): cv.int_range(min=8, max=2048),
         cv.Optional(CONF_HEIGHT, default=480): cv.int_range(min=8, max=2048),

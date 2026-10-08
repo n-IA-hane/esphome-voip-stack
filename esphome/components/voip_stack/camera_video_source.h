@@ -29,6 +29,7 @@ class CameraJpegVideoSource : public EncodedVideoSource,
   }
   void set_max_fps(uint8_t max_fps) { this->max_fps_ = max_fps; }
   void register_listener();
+  void loop();
 
   VideoCapability get_video_capability() const override;
   bool prepare_video(const VideoCapability &capability) override;
@@ -39,8 +40,6 @@ class CameraJpegVideoSource : public EncodedVideoSource,
       const std::shared_ptr<camera::CameraImage> &image) override;
 
  protected:
-  void request_next_();
-
   camera::Camera *camera_{nullptr};
   uint16_t width_{640};
   uint16_t height_{480};
@@ -48,6 +47,7 @@ class CameraJpegVideoSource : public EncodedVideoSource,
   bool listener_registered_{false};
   Mutex callback_mutex_;
   bool active_{false};
+  bool request_pending_{false};
   uint8_t negotiated_fps_{10};
   uint32_t last_emitted_timestamp_{0};
   EncodedVideoAccessUnitCallback callback_{nullptr};
