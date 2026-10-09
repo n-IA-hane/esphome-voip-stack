@@ -5,6 +5,8 @@
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_SIP_TRANSPORT)
 
 #include "transport.h"
+#include "rtp_audio_payloads.h"
+#include "pcm_receive_converter.h"
 #include "sip_signaling_string.h"
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
 #include "opus_rtp_codec.h"
@@ -63,8 +65,10 @@ class SipTransport : public SipPhoneTransport {
   size_t decode_audio_payload(const uint8_t *payload, size_t payload_bytes,
                               const AudioFormat &format, uint8_t *pcm,
                               size_t pcm_capacity) override;
-  void reset_audio_decoder() override;
 #endif
+  void reset_audio_decoder() override;
+  size_t convert_received_pcm(const AudioFormat &source, const uint8_t *pcm, size_t bytes,
+                              uint8_t *output, size_t capacity) override;
   bool send_invite(const std::string &call_id,
                    const std::string &caller_route,
                    const std::string &caller_name,
@@ -179,7 +183,7 @@ class SipTransport : public SipPhoneTransport {
   bool handle_update_(const std::string &message, const sockaddr_in &src);
   bool handle_response_(const std::string &message, const sockaddr_in &src);
   bool send_connected_identity_update_();
-  std::string build_sdp_offer_() const;
+  std::string build_sdp_offer_();
   std::string build_sdp_answer_() const;
   std::string wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
                                  const std::string &maps, const std::string &flows,
@@ -259,9 +263,12 @@ class SipTransport : public SipPhoneTransport {
   static SipEvent sip_event_from_method_(const std::string &method);
   static const char *sip_event_name_(SipEvent event);
   void set_media_config_(const AudioFormat &tx, const AudioFormat &rx,
-                         uint8_t tx_payload_type, uint8_t rx_payload_type);
+                         uint8_t tx_payload_type, uint8_t rx_payload_type,
+                         const RtpAudioPayloads *rx_payloads = nullptr);
   void get_media_config_(AudioFormat *tx, AudioFormat *rx,
-                         uint8_t *tx_payload_type, uint8_t *rx_payload_type) const;
+                         uint8_t *tx_payload_type, uint8_t *rx_payload_type,
+                         RtpAudioPayloads *rx_payloads = nullptr) const;
+  bool received_audio_format_(uint8_t pt, AudioFormat *format) const;
 
   struct UdpTransaction {
     SipSignalingString request;
@@ -459,6 +466,13 @@ class SipTransport : public SipPhoneTransport {
   SipSignalingString sip_tcp_rx_buffer_;
   AudioFormatList offer_tx_formats_{};
   AudioFormatList offer_rx_formats_{};
+  RtpAudioPayloads negotiated_rx_payloads_{};
+  RtpAudioPayloads local_offered_rx_payloads_{};
+  AudioFormatList local_offered_tx_formats_{};
+  bool local_offered_directional_audio_v1_{false};
+#if defined(USE_ESPHOME_VOIP_STACK_SPEAKER) && !defined(USE_ESPHOME_VOIP_STACK_OPUS)
+  PcmReceiveConverter pcm_receive_converter_;
+#endif
   AudioFormat selected_tx_format_{DEFAULT_AUDIO_FORMAT};
   AudioFormat selected_rx_format_{DEFAULT_AUDIO_FORMAT};
   uint8_t rtp_tx_payload_type_{96};

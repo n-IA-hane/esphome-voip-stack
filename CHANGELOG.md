@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Negotiate separate PCM transmit and receive rates with ordinary SIP peers,
+  including static Asterisk endpoints. Retain negotiated receive payload
+  mappings and their formats through the jitter queue; convert alternate S16
+  rates with ESPHome's audio resampler before speaker playback. Reject
+  conflicting mappings and unoffered formats in answers, preserve receive
+  payload numbers from the local offer, and follow m-line codec preference.
+  Existing single-format calls and the HA directional extension remain supported.
+
 - Accept native ESPHome camera IDs for the JPEG source and request subsequent
   images from the existing main loop after camera callbacks finish. Hanging up
   does not stop another web/API camera stream. Based on

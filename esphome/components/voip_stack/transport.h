@@ -22,6 +22,7 @@ struct TransportAudioFrame {
   uint32_t timestamp{0};
   bool has_rtp_metadata{false};
   bool source_changed{false};
+  uint32_t format_packed{0};
 };
 
 using TransportAudioCallback = void (*)(void *ctx, const TransportAudioFrame &frame);
@@ -109,6 +110,8 @@ class SipPhoneTransport {
     return 0;
   }
   virtual void reset_audio_decoder() {}
+  virtual size_t convert_received_pcm(const AudioFormat &, const uint8_t *, size_t,
+                                      uint8_t *, size_t) { return 0; }
 
   /// SIP dialog commands. Return true when the message was committed to the wire.
   virtual bool send_invite(const std::string &call_id,
@@ -251,7 +254,7 @@ class SipPhoneTransport {
   }
 
   void emit_audio_frame_(const uint8_t *pcm, size_t bytes, uint16_t sequence,
-                         uint32_t timestamp, bool source_changed = false) {
+                         uint32_t timestamp, bool source_changed = false, uint32_t format_packed = 0) {
     TransportAudioFrame frame;
     frame.pcm = pcm;
     frame.bytes = bytes;
@@ -259,6 +262,7 @@ class SipPhoneTransport {
     frame.timestamp = timestamp;
     frame.has_rtp_metadata = true;
     frame.source_changed = source_changed;
+    frame.format_packed = format_packed;
     if (this->on_audio_frame_ != nullptr) this->on_audio_frame_(this->on_audio_frame_ctx_, frame);
   }
 

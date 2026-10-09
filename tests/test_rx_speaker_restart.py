@@ -18,6 +18,11 @@ def test_rx_task_recovers_idle_speaker(tmp_path):
 #include <cassert>
 #include <cstdint>
 #include <cstddef>
+#include "esphome/components/voip_stack/sip_types.h"
+using esphome::voip_stack::AudioFormat;
+using esphome::voip_stack::AudioCodec;
+using esphome::voip_stack::unpack_audio_format;
+using esphome::voip_stack::pack_audio_format;
 #define USE_ESPHOME_VOIP_STACK_SPEAKER
 #define ESP_LOGD(...) ((void)0)
 #define pdTRUE 1
@@ -30,9 +35,8 @@ uint32_t millis(){return tick;}
 uint32_t xTaskGetTickCount(){return tick;}
 void ulTaskNotifyTake(int,uint32_t duration){tick+=duration;if(++waits>100)throw Done{};}
 enum class CallState{IN_CALL,IDLE};
-enum class AudioCodec{PCM,OPUS};
 enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP};
-struct AudioFormat{unsigned frame_ms=10;AudioCodec codec=AudioCodec::PCM;size_t nominal_frame_bytes() const{return 320;}};
+struct Transport{void reset_audio_decoder(){} size_t convert_received_pcm(const AudioFormat&,const uint8_t*,size_t,uint8_t*,size_t){return 0;}};
 struct Speaker {
  bool running=false;unsigned played=0,restarts=0;
  bool is_running(){return running;}
@@ -41,20 +45,21 @@ struct Speaker {
 struct RtpJitterBuffer {
  enum class ReadResult{FRAME,BUFFERING,MISSING};
  unsigned reads=0;
- ReadResult read(uint8_t*,size_t,void*,void*,void*,size_t*,bool*){if(++reads>3)throw Done{};return ReadResult::FRAME;}
+ ReadResult read(uint8_t*,size_t,void*,void*,void*,size_t* bytes,bool*,uint32_t*){*bytes=320;if(++reads>3)throw Done{};return ReadResult::FRAME;}
  unsigned depth(){return 2;}
 };
 struct VoipStack {
- Speaker *speaker_;RtpJitterBuffer *rx_jitter_buffer_;
+ Speaker *speaker_;RtpJitterBuffer *rx_jitter_buffer_;Transport transport;Transport *transport_=&transport;
  std::atomic<bool> audio_devices_active_{true},first_audio_received_{true};
  std::atomic<uint32_t> rx_audio_revision_{0};
  std::atomic<CallState> call_state_{CallState::IN_CALL};
  std::atomic<uint32_t> rx_underrun_start_ms_{0},media_rx_queue_depth_{0};
  std::atomic<float> volume_{1};
  uint8_t data[320]{},silence[320]{};uint8_t *rx_audio_chunk_=data,*rx_silence_chunk_=silence;
- size_t rx_audio_chunk_alloc_bytes_=320;
+ uint8_t *rx_network_chunk_=data;
+ size_t rx_audio_chunk_alloc_bytes_=320,rx_jitter_frame_alloc_bytes_=320;
  static constexpr unsigned kRxSilenceAfterMs=100;
- AudioFormat get_current_rx_audio_format_(){return {};}
+ AudioFormat get_current_rx_audio_format_(){AudioFormat f;f.frame_ms=10;return f;}
  void play_rx_frame_(const uint8_t*,size_t,SilenceReason,TickType_t,uint32_t);
  void play_silence_frame_(SilenceReason,TickType_t,uint32_t);
  void rx_task_();
@@ -74,7 +79,7 @@ int main(){
     cpp.write_text(harness + methods + check)
     binary = tmp_path / "rx"
     subprocess.run(
-        ["g++", "-std=c++17", str(cpp), "-o", str(binary)],
+        ["g++", "-std=c++17", "-I", str(ROOT), str(cpp), "-o", str(binary)],
         check=True,
         capture_output=True,
         text=True,

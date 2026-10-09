@@ -26,6 +26,7 @@ class RtpJitterBuffer {
     uint32_t timestamp{0};
     bool has_metadata{false};
     bool source_changed{false};
+    uint32_t format_packed{0};
   };
 
   struct Counters {
@@ -43,7 +44,7 @@ class RtpJitterBuffer {
   ReadResult read(uint8_t *out, size_t capacity, uint16_t *sequence = nullptr,
                   uint32_t *timestamp = nullptr, bool *has_metadata = nullptr,
                   size_t *actual_bytes = nullptr,
-                  bool *source_changed = nullptr);
+                  bool *source_changed = nullptr, uint32_t *format_packed = nullptr);
   Counters counters() const;
   uint32_t depth() const;
 
@@ -52,6 +53,7 @@ class RtpJitterBuffer {
     bool valid{false};
     bool has_metadata{false};
     bool source_changed{false};
+    uint32_t format_packed{0};
     uint16_t sequence{0};
     uint32_t timestamp{0};
     size_t bytes{0};
@@ -181,6 +183,7 @@ inline bool RtpJitterBuffer::push(const Frame &frame) {
   slot.valid = true;
   slot.has_metadata = frame.has_metadata;
   slot.source_changed = frame.source_changed;
+  slot.format_packed = frame.format_packed;
   slot.sequence = sequence;
   slot.timestamp = frame.timestamp;
   slot.bytes = frame.bytes;
@@ -208,7 +211,7 @@ inline bool RtpJitterBuffer::push(const Frame &frame) {
 inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t capacity, uint16_t *sequence,
                                                          uint32_t *timestamp, bool *has_metadata,
                                                          size_t *actual_bytes,
-                                                         bool *source_changed) {
+                                                         bool *source_changed, uint32_t *format_packed) {
   if (this->slot_count_ == 0 || out == nullptr || capacity == 0 || capacity > this->frame_capacity_) {
     return ReadResult::BUFFERING;
   }
@@ -238,6 +241,7 @@ inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t ca
       *has_metadata = slot.has_metadata;
     if (actual_bytes != nullptr) *actual_bytes = slot.bytes;
     if (source_changed != nullptr) *source_changed = slot.source_changed;
+    if (format_packed != nullptr) *format_packed = slot.format_packed;
     memcpy(out, slot.pcm, slot.bytes);
     slot.valid = false;
     slot.bytes = 0;

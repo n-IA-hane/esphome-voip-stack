@@ -37,5 +37,14 @@ jobs:
           esphome/components
           tests
 
+      - name: Fetch the firmware's audio resampler for native DSP tests
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: esphome-libs/esp-audio-libs
+          ref: 3079cd0576d563c955e412937a91782ab4eaf516 # 3.2.1
+          path: .test-deps/esp-audio-libs
+
       - name: Run contract tests
+        env:
+          ESP_AUDIO_LIBS_SOURCE: ${{ github.workspace }}/.test-deps/esp-audio-libs
         run: python -m pytest -q

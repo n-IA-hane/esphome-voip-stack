@@ -719,9 +719,7 @@ class VoipStack : public Component {
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   uint8_t *rx_audio_chunk_{nullptr};
-#ifdef USE_ESPHOME_VOIP_STACK_OPUS
   uint8_t *rx_network_chunk_{nullptr};
-#endif
   uint8_t *rx_jitter_pcm_storage_{nullptr};
   uint8_t *rx_silence_chunk_{nullptr};
   size_t rx_audio_chunk_alloc_bytes_{0};

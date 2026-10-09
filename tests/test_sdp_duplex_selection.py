@@ -6,31 +6,33 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_plain_pcm_uses_common_format_and_opus_keeps_local_rates(tmp_path):
+def test_plain_pcm_negotiates_independent_rates_and_opus_keeps_local_rates(tmp_path):
     source = (ROOT / "esphome/components/voip_stack/sip_sdp.cpp").read_text()
     start = source.index("        AudioFormat local_rx;")
     end = source.index("        } else if (!selected_tx && !selected_rx)", start)
     selection = source[start:end] + "        }\n"
     harness = r'''
-#include "esphome/components/voip_stack/sip_types.h"
+#include "esphome/components/voip_stack/rtp_audio_payloads.h"
 #include <cassert>
 #include <vector>
 #define ESP_LOGI(...) ((void)0)
 using namespace esphome::voip_stack;
 struct Selector {
- AudioFormatList offer_tx_formats_,offer_rx_formats_;
+ AudioFormatList offer_tx_formats_,offer_rx_formats_,local_offered_tx_formats_;
+ RtpAudioPayloads local_offered_rx_payloads_;
  bool remote_directional_audio_v1_=false;
  size_t udp_max_payload_=1200;
  AudioFormat selected_rx_format,selected_tx_format;
  uint8_t selected_rx_payload_type=0,selected_tx_payload_type=0;
  bool run(std::vector<AudioFormat> offer) {
-  bool selected_rx=false,selected_tx=false;
-  uint8_t payload_flow[128]{},media_flow=3,pt=95;
+  bool selected_rx=false,selected_tx=false,shared_format=false,remote_is_answer=false;
+  RtpAudioPayloads received_payloads;
+  uint8_t payload_flow[128]{},payload_rank[128]{},media_flow=3,pt=95,selected_tx_rank=255;
   for(const auto &fmt:offer) { ++pt;
 '''
     tail = r'''
   }
-  return selected_rx && selected_tx;
+  return selected_rx && selected_tx && (remote_directional_audio_v1_ || shared_format);
  }
 };
 AudioFormat pcm(unsigned rate) {AudioFormat f;f.sample_rate=rate;f.frame_ms=10;return f;}
@@ -39,8 +41,8 @@ int main(){
   Selector s;s.offer_tx_formats_.count=1;s.offer_tx_formats_.formats[0]=pcm(rate);
   s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[0]=pcm(48000);s.offer_rx_formats_.formats[1]=pcm(rate);
   assert(s.run({pcm(48000),pcm(rate)}));
-  assert(s.selected_tx_format.sample_rate==rate && s.selected_rx_format.sample_rate==rate);
-  assert(s.selected_rx_payload_type==s.selected_tx_payload_type);
+  assert(s.selected_tx_format.sample_rate==rate && s.selected_rx_format.sample_rate==48000);
+  assert(s.selected_rx_payload_type!=s.selected_tx_payload_type);
   s.remote_directional_audio_v1_=true;assert(s.run({pcm(48000),pcm(rate)}));
   assert(s.selected_tx_format.sample_rate==rate && s.selected_rx_format.sample_rate==48000);
  }
@@ -57,6 +59,6 @@ int main(){
     cpp = tmp_path / "sdp.cpp"
     cpp.write_text(harness + selection + tail)
     exe = tmp_path / "sdp"
-    subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT),
+    subprocess.run(["g++", "-std=c++17", "-DUSE_ESPHOME_VOIP_STACK_SPEAKER", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT),
                     str(cpp), "-o", str(exe)], check=True)
     subprocess.run([str(exe)], check=True)

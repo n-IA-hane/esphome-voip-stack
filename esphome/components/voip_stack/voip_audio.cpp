@@ -301,7 +301,9 @@ void VoipStack::rx_task(void *param) {
 void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
   if (this->rx_jitter_buffer_ == nullptr || frame.pcm == nullptr || frame.bytes == 0)
     return;
-  const AudioFormat rx_format = this->get_current_rx_audio_format_();
+  const AudioFormat rx_format = frame.format_packed != 0
+                                    ? unpack_audio_format(frame.format_packed)
+                                    : this->get_current_rx_audio_format_();
   const size_t expected = rx_format.nominal_frame_bytes();
   if ((rx_format.codec == AudioCodec::PCM && frame.bytes != expected) ||
       frame.bytes > this->rx_jitter_frame_alloc_bytes_)
@@ -318,6 +320,7 @@ void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
   jitter_frame.timestamp = frame.timestamp;
   jitter_frame.has_metadata = frame.has_rtp_metadata;
   jitter_frame.source_changed = frame.source_changed;
+  jitter_frame.format_packed = frame.format_packed;
   if (this->rx_jitter_buffer_->push(jitter_frame)) {
     if (this->rx_task_handle_ != nullptr) {
       xTaskNotifyGive(this->rx_task_handle_);
@@ -395,6 +398,7 @@ void VoipStack::play_silence_frame_(SilenceReason reason, TickType_t ticks_to_wa
 
 void VoipStack::rx_task_() {
   ESP_LOGD(TAG, "RX playout task started");
+  uint32_t previous_format_packed = 0;
 
   while (true) {
     if (!this->audio_devices_active_.load(std::memory_order_acquire) ||
@@ -412,21 +416,14 @@ void VoipStack::rx_task_() {
     // A sink may go idle before the first RTP packet arrives. Deliver media
     // through play(), whose speaker contract starts it again as needed; waiting
     // for is_running() here would prevent that restart indefinitely.
-    uint8_t *network_buffer = this->rx_audio_chunk_;
-    size_t network_capacity = rx_format.nominal_frame_bytes();
+    uint8_t *network_buffer = this->rx_network_chunk_;
     size_t network_bytes = 0;
+    uint32_t format_packed = 0;
     bool source_changed = false;
-#ifdef USE_ESPHOME_VOIP_STACK_OPUS
-    if (rx_format.codec == AudioCodec::OPUS) {
-      network_buffer = this->rx_network_chunk_;
-      network_capacity = this->rx_jitter_frame_alloc_bytes_;
-    }
-#endif
     const auto read_result = this->rx_jitter_buffer_ != nullptr
-                                 ? this->rx_jitter_buffer_->read(network_buffer, network_capacity,
-                                       nullptr, nullptr, nullptr,
-                                       rx_format.codec == AudioCodec::OPUS ? &network_bytes : nullptr,
-                                       &source_changed)
+                                 ? this->rx_jitter_buffer_->read(network_buffer, this->rx_jitter_frame_alloc_bytes_,
+                                       nullptr, nullptr, nullptr, &network_bytes,
+                                       &source_changed, &format_packed)
                                  : RtpJitterBuffer::ReadResult::BUFFERING;
     if (this->rx_audio_revision_.load(std::memory_order_acquire) != revision) continue;
     if (this->rx_jitter_buffer_ != nullptr) {
@@ -438,17 +435,35 @@ void VoipStack::rx_task_() {
       // for up to one frame gives backpressure when that buffer is full; adding
       // an unconditional delay after a successful write double-paces playout
       // and lets the RTP queue grow until audible gaps appear.
-      size_t frame_bytes = rx_format.nominal_frame_bytes();
+      const AudioFormat frame_format = format_packed != 0 ? unpack_audio_format(format_packed) : rx_format;
+      size_t frame_bytes = network_bytes;
+      const uint8_t *playout = network_buffer;
+      const uint32_t current_format_packed = pack_audio_format(frame_format);
+      if (source_changed || previous_format_packed != current_format_packed) {
+        this->transport_->reset_audio_decoder();
+        if (frame_format.codec == AudioCodec::PCM)
+          ESP_LOGD(TAG, "RX wire PCM=%uHz playout=%uHz frame=%ums",
+                   (unsigned) frame_format.sample_rate, (unsigned) rx_format.sample_rate,
+                   (unsigned) frame_format.frame_ms);
+      }
+      previous_format_packed = current_format_packed;
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
       if (rx_format.codec == AudioCodec::OPUS) {
-        if (source_changed) this->transport_->reset_audio_decoder();
         frame_bytes = this->transport_->decode_audio_payload(
             network_buffer, network_bytes, rx_format,
             this->rx_audio_chunk_, this->rx_audio_chunk_alloc_bytes_);
         if (frame_bytes != rx_format.nominal_frame_bytes()) continue;
+        playout = this->rx_audio_chunk_;
       }
 #endif
-      this->play_rx_frame_(this->rx_audio_chunk_, frame_bytes, SilenceReason::NONE, frame_ticks, revision);
+      if (rx_format.codec == AudioCodec::PCM && !(frame_format == rx_format)) {
+        frame_bytes = this->transport_->convert_received_pcm(
+            frame_format, network_buffer, network_bytes,
+            this->rx_audio_chunk_, this->rx_audio_chunk_alloc_bytes_);
+        playout = this->rx_audio_chunk_;
+      }
+      if (frame_bytes == 0) continue;
+      this->play_rx_frame_(playout, frame_bytes, SilenceReason::NONE, frame_ticks, revision);
     } else {
       // Initial prebuffering must stay quiet, but BUFFERING is also returned
       // after an established stream drains completely. In that second case we

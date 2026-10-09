@@ -846,7 +846,9 @@ void VoipStack::on_audio_received_(const TransportAudioFrame &frame) {
   if (state != CallState::CONNECTING && state != CallState::IN_CALL) {
     return;
   }
-  const AudioFormat rx_format = this->get_current_rx_audio_format_();
+  const AudioFormat rx_format = frame.format_packed != 0
+                                    ? unpack_audio_format(frame.format_packed)
+                                    : this->get_current_rx_audio_format_();
   const size_t expected = rx_format.nominal_frame_bytes();
   if ((rx_format.codec == AudioCodec::PCM && frame.bytes != expected) ||
       (rx_format.codec == AudioCodec::OPUS && frame.bytes > 1275U)) {

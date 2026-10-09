@@ -19,6 +19,22 @@ def test_rtp_fault_sequences_preserve_samples_and_recover(tmp_path):
 #include "esphome/components/voip_stack/rtp_jitter_buffer.h"
 using B=esphome::voip_stack::RtpJitterBuffer;
 int main(){
+ // Reordered frames retain their own format and byte count, not the newest
+ // received packet's format. No stale metadata survives reset.
+ {
+  uint8_t storage[8*8]{},a[4]{1,2,3,4},b[8]{5,6,7,8,9,10,11,12},out[8]{};
+  B buffer(storage,8,8,2);
+  B::Frame first{a,4,10,160,true,false,16000};
+  B::Frame second{b,8,11,480,true,false,48000};
+  assert(buffer.push(second));assert(buffer.push(first));
+  size_t bytes=0;uint32_t format=0;
+  assert(buffer.read(out,8,nullptr,nullptr,nullptr,&bytes,nullptr,&format)==B::ReadResult::FRAME);
+  assert(bytes==4 && format==16000 && !memcmp(out,a,4));
+  assert(buffer.read(out,8,nullptr,nullptr,nullptr,&bytes,nullptr,&format)==B::ReadResult::FRAME);
+  assert(bytes==8 && format==48000 && !memcmp(out,b,8));
+  buffer.reset();assert(buffer.depth()==0);
+ }
+
  for(unsigned base:{100U,65534U}){
   uint8_t storage[8*4]{},payload[4]{1,2,3,4},out[4]{};B b(storage,4,8,1);
   auto push=[&](unsigned seq,uint32_t stamp){return b.push({payload,4,static_cast<uint16_t>(seq),stamp,true,false});};

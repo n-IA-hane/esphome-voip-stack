@@ -289,6 +289,20 @@ relative to `audio.tx`, because the microphone path only reframes its native
 stream; RX extras may describe other supported speaker-side formats. Validation
 rejects the eighth extra entry.
 
+For standard SIP peers, S16 PCM reception can negotiate a higher sample rate
+than microphone transmission, such as RX 48 kHz and TX 16 kHz. The SDP must
+retain a shared bidirectional format. The receiver keeps the accepted payload
+mappings, and converts alternate negotiated rates to the selected speaker
+rate after jitter reordering. Payload numbers outside that negotiation remain
+invalid. Opus continues to use its standard 48 kHz RTP clock independently of
+the local PCM rates.
+
+With Asterisk, use `allow=slin48:10,slin16:10`, `asymmetric_rtp_codec=yes`,
+`direct_media=no` and `use_ptime=yes` on the static ESP endpoint. See the
+[classic PBX guide](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/CLASSIC_PBX.md)
+for static routing without REGISTER and the separate codec choices for other
+phones.
+
 RTP packet sizes are guarded by `udp_max_payload` (default 1200 bytes), enforced at validation.
 
 ## Transport
