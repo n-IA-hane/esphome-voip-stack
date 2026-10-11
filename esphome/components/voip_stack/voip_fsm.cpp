@@ -164,23 +164,34 @@ bool VoipStack::ignore_if_idle_or_stale_(const char *message_name,
 
 // === Lifecycle / user actions ===
 
-void VoipStack::start() {
+bool VoipStack::can_start_call_() const {
   if (this->call_state_.load(std::memory_order_acquire) != CallState::IDLE) {
     ESP_LOGW(TAG, "Cannot start call: already %s", this->get_call_state_str());
-    return;
+    return false;
   }
   if (this->transport_ != nullptr &&
       this->transport_->snapshot().terminal_transaction_pending) {
     ESP_LOGW(TAG,
              "Cannot start call: prior SIP dialog is still terminating");
+    return false;
+  }
+  return true;
+}
+
+void VoipStack::start() { this->start_with_id_({}); }
+
+void VoipStack::start_with_id_(const std::string &call_id) {
+  // Publishing a selected contact can run user automations before we get here.
+  if (!this->can_start_call_()) {
+    this->pending_dialplan_target_.clear();
     return;
   }
   this->ha_media_fallback_pending_ = false;
   this->ha_media_fallback_attempted_ = false;
-  this->start_call_attempt_(false);
+  this->start_call_attempt_(false, call_id);
 }
 
-void VoipStack::start_call_attempt_(bool via_ha) {
+void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_call_id) {
   const CallSnapshot previous = this->snapshot_call_identity_();
   std::string dial_ip = this->get_current_contact_ip();
   uint16_t dial_port = this->get_current_contact_port();
@@ -211,7 +222,7 @@ void VoipStack::start_call_attempt_(bool via_ha) {
       : (this->get_current_destination_route().empty()
              ? dest_name
              : this->get_current_destination_route());
-  const std::string call_id = caller_route + "-" + std::to_string(millis()) + "-" +
+  const std::string call_id = !requested_call_id.empty() ? requested_call_id : caller_route + "-" + std::to_string(millis()) + "-" +
                               std::to_string(static_cast<unsigned>(esp_random())) +
                               "@" + (this->device_route_id_.empty() ? std::string("esp") : this->device_route_id_);
   if (dial_ip.empty() || dial_port == 0) {

@@ -158,3 +158,18 @@ See Also
 - :doc:`/components/micro_wake_word`
 - :apiref:`voip_stack/voip_stack.h`
 - :ghedit:`Edit`
+
+
+Correlated Home Assistant calls
+-------------------------------
+
+With the native HA API adapter enabled, ``start_call_via_ha`` accepts ``dest``
+and ``call_id``. It routes that destination through the configured HA peer and
+uses the supplied globally unique SIP Call-ID. Home Assistant uses the identity
+to bind an explicit trunk choice to one actual call. ``hangup_call_if_id`` ends
+only a call whose current identity matches exactly. Empty, stale and differently
+cased identifiers cannot hang up another call.
+
+The existing ``start_call`` action remains available for ordinary phonebook
+calls. Neither action changes the audio pipeline. The correlated identity is
+passed as a call-setup argument, without a persistent next-call override.

@@ -361,6 +361,8 @@ class VoipStack : public Component {
   void update_contacts();
   bool set_contact(const std::string &name);
   void call(const std::string &target);
+  void call_via_ha(const std::string &target, const std::string &call_id);
+  void hangup_call_if_id(const std::string &call_id);
   void next_contact();
   void prev_contact();
   const std::string &get_current_destination() const;
@@ -869,7 +871,10 @@ class VoipStack : public Component {
                           const std::string &caller_route, const std::string &caller_name,
                           const std::string &dest_route, const std::string &dest_name);
   void clear_call_identity_();
-  void start_call_attempt_(bool via_ha);
+  bool can_start_call_() const;
+  void start_with_id_(const std::string &call_id);
+  void call_(const std::string &target, const std::string &call_id);
+  void start_call_attempt_(bool via_ha, const std::string &requested_call_id = {});
   CallSnapshot snapshot_call_identity_() const;
   std::string get_current_call_id_() const;
   void set_terminal_response_(const std::string &call_id, const std::string &reason);

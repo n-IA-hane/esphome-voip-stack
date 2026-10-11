@@ -657,7 +657,28 @@ bool VoipStack::set_contact(const std::string &name) {
   return false;
 }
 
-void VoipStack::call(const std::string &value) {
+void VoipStack::call(const std::string &value) { this->call_(value, {}); }
+
+void VoipStack::call_via_ha(const std::string &value, const std::string &call_id) {
+  // HA supplies a globally unique, case-sensitive Call-ID for this action.
+  // Bound the native API argument without changing incoming SIP parsing.
+  if (call_id.empty() || call_id.size() > 128) return;
+  const size_t at = call_id.find('@');
+  if (at != std::string::npos && (at == 0 || at + 1 == call_id.size() ||
+      call_id.find('@', at + 1) != std::string::npos)) return;
+  for (const unsigned char ch : call_id) {
+    if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+          (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' || ch == '@')) return;
+  }
+  this->call_(value, call_id);
+}
+
+void VoipStack::hangup_call_if_id(const std::string &call_id) {
+  if (!call_id.empty() && call_id == this->get_current_call_id_()) this->stop();
+}
+
+void VoipStack::call_(const std::string &value, const std::string &call_id) {
+  if (!this->can_start_call_()) return;
   const std::string target = Phonebook::trim(value);
   if (target.empty()) {
     ESP_LOGW(TAG, "call failed: empty target");
@@ -671,7 +692,7 @@ void VoipStack::call(const std::string &value) {
     return;
   }
 
-  if (this->phonebook_.select(target)) {
+  if (call_id.empty() && this->phonebook_.select(target)) {
     this->pending_dialplan_target_.clear();
     this->publish_destination_();
     ESP_LOGI(TAG, "Selected contact: %s", target.c_str());
@@ -692,7 +713,7 @@ void VoipStack::call(const std::string &value) {
   this->publish_destination_();
   ESP_LOGI(TAG, "Routing target '%s' through HA peer '%s'",
            target.c_str(), this->ha_peer_name_.c_str());
-  this->start();
+  this->start_with_id_(call_id);
 }
 
 void VoipStack::next_contact() {

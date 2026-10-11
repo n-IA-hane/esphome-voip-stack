@@ -158,6 +158,20 @@ native ESPHome audio as well as Audio Stack. HA integration is enabled when
 API is configured; use `voip_stack.ha_integration: false` for standalone SIP.
 Routing through HA remains controlled separately by `use_ha_as_first_contact`.
 
+For an HA action that selects an outgoing trunk for one call, the native API also
+provides `start_call_via_ha(dest, call_id)` and `hangup_call_if_id(call_id)`.
+The HA integration supplies a fresh SIP Call-ID, binds its selected line to that
+call and routes the request through the configured HA peer. Scoped cancellation
+cannot hang up a later call with another identity. Ordinary `start_call(dest)`
+keeps its existing phonebook/direct-call behavior.
+
+These additional actions are compiled with the HA API adapter. They add no audio
+task, audio buffer or per-frame processing. The requested identity is passed
+through the existing call setup; there is no stored override for a future call.
+Call-IDs supplied through this API must be globally unique and case-sensitive,
+with at most 128 ASCII letters, digits, dots, underscores, hyphens and one optional
+`@` separator between non-empty parts. Incoming SIP parsing is unchanged.
+
 See the [entity and migration guide](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_ENTITY_SURFACE.md)
 for the retired packages and entity customization. Old package/action
 declarations are rejected rather than silently creating duplicate controls.

@@ -9,7 +9,7 @@ from esphome.const import CONF_ID, CONF_NAME
 CONF_HA_INTEGRATION = "ha_integration"
 LEGACY_PACKAGE = "legacy_ha_package"
 ACTIONS = {
-    "start_call", "answer_call", "decline_call", "hangup_call", "set_media_route",
+    "start_call", "start_call_via_ha", "hangup_call_if_id", "answer_call", "decline_call", "hangup_call", "set_media_route",
     "set_ha_peer_name", "set_roster_json", "set_contacts", "add_contact",
     "remove_contact", "flush_contacts", "update_contacts",
 }

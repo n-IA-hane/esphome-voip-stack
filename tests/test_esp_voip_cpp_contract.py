@@ -3147,7 +3147,10 @@ def test_terminal_sip_transaction_remains_owned_until_peer_completion() -> None:
     assert disconnect.index("return;") < disconnect.index("this->reset_dialog_();")
 
     start = cpp_method(fsm, r"VoipStack::start")
-    assert "snapshot().terminal_transaction_pending" in start
+    assert "start_with_id_" in start
+    assert "can_start_call_()" in cpp_method(fsm, r"VoipStack::start_with_id_")
+    readiness = cpp_method(fsm, r"VoipStack::can_start_call_")
+    assert "snapshot().terminal_transaction_pending" in readiness
     finish = cpp_method(fsm, r"VoipStack::finish_call_termination_")
     assert "transport.terminal_transaction_pending" in finish
     assert "transport.media_lifecycle_phase != 0" in finish
