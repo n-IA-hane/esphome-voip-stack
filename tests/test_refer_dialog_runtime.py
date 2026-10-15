@@ -170,7 +170,8 @@ int main(){
   assert(s.cancel_count==1 && s.delivered.empty());clock_ms=s.refer_expires_;s.pump_refer_();assert(!s.refer_dialog_);}
 }
 '''
-    cpp=tmp_path/'refer.cpp';cpp.write_text(code)
-    binary=tmp_path/'refer'
+    cpp = tmp_path / 'refer.cpp'
+    cpp.write_text(code)
+    binary = tmp_path / 'refer'
     subprocess.run(['g++','-std=c++17','-fsanitize=address,undefined','-I',str(ROOT),str(cpp),'-o',str(binary)],check=True,capture_output=True,text=True)
     subprocess.run([str(binary)],check=True,capture_output=True,text=True)
