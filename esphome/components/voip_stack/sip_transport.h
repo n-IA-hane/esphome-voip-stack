@@ -137,6 +137,8 @@ class SipTransport : public SipPhoneTransport {
     bool remember_transaction{true};
     bool remember_invite_ack{true};
     std::string *formatted_request{nullptr};
+    std::string extra_headers;
+    const char *content_type{"application/sdp"};
   };
 
   static void sip_task_trampoline_(void *param);
@@ -176,6 +178,28 @@ class SipTransport : public SipPhoneTransport {
                                const std::string &body, bool add_contact_ua,
                                bool add_to_tag, bool stateless,
                                int retry_after_seconds);
+  struct ReferDialog;
+  struct ReferDeleter {
+    template<typename T> void operator()(T *value) const {
+      if (value == nullptr) return;
+      value->~T();
+      RAMAllocator<T>().deallocate(value, 1);
+    }
+  };
+  class ReferScope;
+  bool send_invite_unlocked_(const std::string &call_id, const std::string &caller_route,
+                             const std::string &caller_name, const std::string &dest_route,
+                             const std::string &dest_name);
+  void handle_sip_datagram_unlocked_(const char *data, size_t len, const sockaddr_in &src);
+  void pump_udp_retransmits_unlocked_();
+  void swap_negotiation_(ReferDialog &other);
+  bool prepare_refer_media_(ReferDialog &other);
+  bool handle_refer_(const std::string &message, const sockaddr_in &src);
+  void pump_refer_();
+  void swap_dialog_(ReferDialog &other);
+  void notify_refer_(uint32_t refer_cseq, uint16_t status, const char *reason);
+  void emit_sip_signal_(SipSignal signal);
+
   void handle_sip_datagram_(const char *data, size_t len, const sockaddr_in &src);
   void handle_sip_stream_(int socket, const sockaddr_in &src);
   bool handle_invite_(const std::string &message, const sockaddr_in &src);
@@ -413,6 +437,18 @@ class SipTransport : public SipPhoneTransport {
   };
 #endif
 
+  std::unique_ptr<ReferDialog, ReferDeleter> refer_dialog_;
+  bool refer_context_active_{false};
+  bool refer_retiring_{false};
+  uint32_t refer_cseq_{0};
+  uint32_t refer_expires_{0};
+  SipSignalType refer_signal_type_{SipSignalType::PROTOCOL_ERROR};
+  uint16_t refer_status_{0};
+  bool refer_signal_pending_{false};
+  std::string logical_call_id_;
+  std::string logical_wire_id_;
+  std::string refer_wire_id_;
+
   uint16_t sip_port_{5060};
   uint16_t rtp_port_{40000};
   size_t udp_max_payload_{UDP_SAFE_AUDIO_PAYLOAD_BYTES};
@@ -528,6 +564,53 @@ class SipTransport : public SipPhoneTransport {
                                     this->offsets[index]);
     }
   } remote_media_shape_;
+  struct ReferDialog {
+    std::string owner_call_id;
+    CompletedServerTransaction accepted_refer;
+    std::string call_id_, local_tag_, remote_tag_, branch_;
+    std::string local_uri_, local_contact_uri_, remote_uri_, remote_target_uri_;
+    std::string last_invite_via_, last_invite_from_, last_invite_to_, last_invite_cseq_;
+    SipSignalingString last_invite_response_;
+    uint32_t last_invite_cseq_number_{0}, remote_dialog_cseq_{0}, last_invite_peer_ip_v4_{0};
+    uint16_t last_invite_peer_port_{0};
+    SipIdentity caller_, destination_;
+    bool dialog_originated_{false}, peer_supports_from_change_{false}, connected_identity_sent_{false};
+    bool outgoing_invite_pending_{false}, cancel_requested_{false};
+    bool delayed_offer_pending_{false}, terminate_after_invite_ack_{false}, peer_directional_audio_v1_{false};
+    uint32_t cseq_{1}, invite_cseq_{1}, sdp_session_id_{0}, sdp_session_version_{0};
+    uint32_t remote_ip_v4_{0};
+    uint16_t remote_sip_port_{5060};
+    CompletedServerTransaction completed_invite_, completed_control_;
+    CompletedInviteClientTransaction completed_invite_client_;
+    UdpTransaction pending_invite_, pending_cancel_, pending_bye_, pending_update_;
+    UdpTransaction pending_notify_, pending_notify_final_;
+    AudioFormat selected_tx_format_{DEFAULT_AUDIO_FORMAT}, selected_rx_format_{DEFAULT_AUDIO_FORMAT};
+    uint8_t rtp_tx_payload_type_{96}, rtp_rx_payload_type_{96};
+    RtpAudioPayloads negotiated_rx_payloads_, local_offered_rx_payloads_;
+    AudioFormatList local_offered_tx_formats_;
+    bool remote_directional_audio_v1_{false}, local_offered_directional_audio_v1_{false};
+    uint32_t remote_rtp_ip_v4_{0};
+    uint16_t remote_rtp_port_{0};
+    RemoteMediaShape remote_media_shape_;
+  };
+
+  struct CompletedRefer {
+    CompletedServerTransaction accepted, control;
+    CompletedInviteClientTransaction invite;
+    uint32_t expires_ms{0};
+  };
+  std::array<std::unique_ptr<CompletedRefer, ReferDeleter>, 4> completed_refers_{};
+
+  class ReferScope {
+   public:
+    explicit ReferScope(SipTransport &transport);
+    ~ReferScope();
+    void commit() { this->committed_ = true; }
+   private:
+    SipTransport &transport_;
+    bool committed_{false};
+  };
+
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   EncodedVideoSource *video_source_{nullptr};
   EncodedVideoSink *video_sink_{nullptr};

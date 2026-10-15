@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Receive blind in-dialog SIP REFER for IPv4 UDP audio calls. Keep the original
+  conversation during destination setup, send the actual result through NOTIFY,
+  and reuse the existing media path after a successful answer. Dialog staging
+  and completed transaction caches add no audio task or second transport.
+  Prepare any additional PCM receive conversion before switching peers.
+  Spotpear Ball V2 FULL to Waveshare S3 Audio passed successful transfer,
+  busy/retry and hangup checks. See the README for supported transfer scope.
+
 - Negotiate separate PCM transmit and receive rates with ordinary SIP peers,
   including static Asterisk endpoints. Retain negotiated receive payload
   mappings and their formats through the jitter queue; convert alternate S16

@@ -172,6 +172,7 @@ struct SipSignal {
   // The transport already owns the terminal ACK/BYE transaction. Consumers
   // may end UI/media state but must not reset the dialog prematurely.
   bool terminal_transaction_pending{false};
+  bool media_source_changed{false};
   std::string call_id;
   std::string caller_route;
   std::string caller_name;

@@ -46,6 +46,15 @@ int main() {
       assert(converter.prepare(map,output));
       std::vector<int16_t> source(input.nominal_frame_samples()), sink(480), captured;
       for (unsigned packet=0;packet<100;++packet) {
+        if (packet==50) {
+          RtpAudioPayloads extra;
+          extra.add(98, format(rate==32000 ? 24000 : 32000));
+          fail_allocation=true;
+          assert(!converter.prepare_additional(extra,output));
+          fail_allocation=false;
+          assert(converter.prepare_additional(extra,output));
+          assert(!converter.prepare_additional(extra,format(16000)));
+        }
         for (unsigned i=0;i<source.size();++i)
           source[i]=static_cast<int16_t>(8000*std::sin(2*M_PI*660*(packet*source.size()+i)/rate));
         size_t bytes=converter.convert(input,reinterpret_cast<uint8_t*>(source.data()),source.size()*2,

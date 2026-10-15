@@ -19,6 +19,13 @@ class SipSignalingString {
 #endif
 
   SipSignalingString() = default;
+  // Every instance uses the same fixed allocation policy. Swap the backing
+  // storage so dialog handoff does not copy retained signaling messages.
+  SipSignalingString(SipSignalingString &&other) noexcept { this->value_.swap(other.value_); }
+  SipSignalingString &operator=(SipSignalingString &&other) noexcept {
+    if (this != &other) this->value_.swap(other.value_);
+    return *this;
+  }
   SipSignalingString(const SipSignalingString &other) {
     this->assign(other.data(), other.size());
   }

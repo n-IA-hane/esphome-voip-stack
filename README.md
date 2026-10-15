@@ -96,6 +96,30 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 **Full ESPHome automation surface.** Triggers, actions and conditions are normal ESPHome automations.
 
+## Call transfer in development builds
+
+An established audio call over UDP can receive a blind SIP REFER from a PBX
+or another SIP phone. The ESP calls the supplied IPv4 SIP destination and
+reports the outcome with NOTIFY (`message/sipfrag`). The existing conversation
+continues while the destination rings. A rejection or failed attempt leaves
+that conversation available; a successful answer switches to the new peer.
+
+The transfer reuses the SIP task, sockets, SDP negotiation and audio path.
+Only dialog state and bounded transaction history are retained separately.
+Receive-rate conversion uses the existing PCM converter, prepared before the
+handoff. The established transmit format and speaker format remain unchanged.
+
+This initial receiver supports **in-dialog blind transfers of UDP audio calls
+to IPv4 SIP addresses**. TCP transfers, video transfers, hostname targets and
+attended-transfer URI headers are not supported by this receiver. Unsupported
+requests are rejected without replacing the current conversation.
+
+Rebuild the ESP with the development component to use this capability.
+Updating the Home Assistant integration alone does not update ESP firmware.
+The Spotpear Ball V2 FULL profile has been checked with Waveshare S3 Audio,
+including an occupied destination, immediate retry and hangup from both ends.
+Other hardware and PBX combinations still need their own runtime tests.
+
 ## Scenarios
 
 | Goal | Shape |

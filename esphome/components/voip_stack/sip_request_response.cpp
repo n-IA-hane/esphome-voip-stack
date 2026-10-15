@@ -85,7 +85,7 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
                                            : this->local_contact_uri_) +
          "\r\n";
   msg += "User-Agent: ESPHome-VoIP-Stack-SIP\r\n";
-  msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS, UPDATE\r\n";
+  msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS, UPDATE, REFER\r\n";
   msg += "Supported: from-change\r\n";
   if (method == "INVITE") {
     msg += "X-Voip-Stack-Caller-Route: " +
@@ -101,8 +101,9 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
            sip_header_token(this->destination_.name, VOIP_STACK_MAX_NAME_LEN) +
            "\r\n";
   }
+  msg += options.extra_headers;
   if (!body.empty())
-    msg += "Content-Type: application/sdp\r\n";
+    msg += "Content-Type: " + std::string(options.content_type) + "\r\n";
   msg += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
   msg += body;
   if (options.formatted_request != nullptr)
@@ -113,7 +114,7 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
   const bool transaction_request =
       options.remember_transaction &&
       (method == "INVITE" || method == "CANCEL" || method == "BYE" ||
-       method == "UPDATE");
+       method == "UPDATE" || method == "NOTIFY");
   const bool udp_transaction =
       transaction_request &&
       !this->remote_sip_tcp_.load(std::memory_order_acquire);
@@ -195,7 +196,7 @@ std::string SipTransport::format_response_(
     msg += "X-Voip-Stack-Decline-Reason: " + clean_reason + "\r\n";
   }
   if (status == 405) {
-    msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS, UPDATE\r\n";
+    msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS, UPDATE, REFER\r\n";
   }
   if (retry_after_seconds >= 0) {
     msg += "Retry-After: " + std::to_string(retry_after_seconds) +
@@ -272,7 +273,7 @@ bool SipTransport::send_stateless_response_(
             : this->local_tag_;
     response_to += ";tag=" + tag;
   }
-  const bool add_contact = method == "UPDATE" &&
+  const bool add_contact = (method == "UPDATE" || method == "REFER") &&
                            status >= 200 && status < 300;
   const std::string msg = this->format_response_(
       status, reason, response_via_with_rport(via, ip, port), from,

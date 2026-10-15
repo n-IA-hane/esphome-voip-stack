@@ -31,6 +31,7 @@ def read(name: str) -> str:
             (VOIP / helper).read_text(encoding="utf-8")
             for helper in (
                 "sip_message.cpp",
+                "sip_message.h",
                 "sip_request_response.cpp",
                 "sip_sdp.cpp",
             )
@@ -1603,7 +1604,7 @@ def test_incoming_answer_prepares_before_200_and_commits_after_send() -> None:
         source.index("uint16_t SipTransport::acknowledge_completed_invite_") :
         source.index("\nbool SipTransport::replay_completed_invite_ack_")
     ]
-    datagram = cpp_method(source, r"SipTransport::handle_sip_datagram_")
+    datagram = cpp_method(source, r"SipTransport::handle_sip_datagram_unlocked_")
     assert "this->terminate_after_invite_ack_" in acknowledge
     assert "if (terminate_after_ack)" in datagram
     assert "this->send_bye_unlocked_(call_id)" in datagram
@@ -1992,7 +1993,7 @@ def test_uas_bye_waits_for_final_response_ack() -> None:
     )
     assert "this->pending_update_.clear();" in bye
 
-    datagram = cpp_method(sip_cpp, r"SipTransport::handle_sip_datagram_")
+    datagram = cpp_method(sip_cpp, r"SipTransport::handle_sip_datagram_unlocked_")
     assert datagram.index("if (terminate_after_ack)") < datagram.index(
         "this->open_media_session_();"
     )
@@ -3009,7 +3010,7 @@ def test_sip_transactions_keep_deadlines_on_tcp_and_ack_replay_is_transport_safe
     assert "txn->udp = !this->remote_sip_tcp_" in remember
     assert "remote_sip_tcp_" not in remember[: remember.index("UdpTransaction *txn")]
 
-    pump = cpp_method(sip_cpp, r"SipTransport::pump_udp_retransmits_")
+    pump = cpp_method(sip_cpp, r"SipTransport::pump_udp_retransmits_unlocked_")
     assert "if (!txn.udp)" in pump
     assert "txn.deadline_ms" in pump
     assert "this->completed_invite_.status < 300" in pump
@@ -3022,7 +3023,7 @@ def test_sip_transactions_keep_deadlines_on_tcp_and_ack_replay_is_transport_safe
     replay = cpp_method(
         sip_cpp, r"SipTransport::replay_completed_invite_ack_"
     )
-    assert "completed_invite_client_.udp" in replay
+    assert "completed->udp" in replay
     assert "transport_matches" in replay
     assert "if (this->remote_sip_tcp_" not in replay
 
@@ -3137,7 +3138,7 @@ def test_terminal_sip_transaction_remains_owned_until_peer_completion() -> None:
     ):
         assert token in pending
 
-    invite = cpp_method(sip_cpp, r"SipTransport::send_invite")
+    invite = cpp_method(sip_cpp, r"SipTransport::send_invite_unlocked_")
     assert (
         invite.index("terminal_transaction_pending_locked_()")
         < invite.index("this->reset_dialog_();")
@@ -3170,7 +3171,7 @@ def test_terminal_sip_transaction_remains_owned_until_peer_completion() -> None:
     assert 'same_dialog ? 500 : 503' in gate
     assert '"transaction_pending", false, 1' in gate
 
-    datagram = cpp_method(sip_cpp, r"SipTransport::handle_sip_datagram_")
+    datagram = cpp_method(sip_cpp, r"SipTransport::handle_sip_datagram_unlocked_")
     bye = datagram[datagram.index('} else if (method == "BYE")') :]
     assert "const bool local_bye_pending = !this->pending_bye_.empty();" in bye
     assert "!local_bye_pending" in bye
@@ -3185,7 +3186,7 @@ def test_terminal_sip_transaction_remains_owned_until_peer_completion() -> None:
         "emit_sip_signal_"
     )
 
-    retransmit = cpp_method(sip_cpp, r"SipTransport::pump_udp_retransmits_")
+    retransmit = cpp_method(sip_cpp, r"SipTransport::pump_udp_retransmits_unlocked_")
     timeout = retransmit[retransmit.index("if (reset_terminal_dialog)") :]
     assert "SipSignalType::TERMINAL_COMPLETE" in timeout
     assert 'signal.reason = "terminal_timeout"' in timeout
@@ -3308,7 +3309,7 @@ def test_connected_identity_uses_rfc4916_without_retargeting_contact() -> None:
     )
     assert "SipSignalType::CONNECTED_IDENTITY" in accept_update
 
-    datagram = cpp_method(sip_cpp, r"SipTransport::handle_sip_datagram_")
+    datagram = cpp_method(sip_cpp, r"SipTransport::handle_sip_datagram_unlocked_")
     initial_ack = datagram[
         datagram.index('if (method == "ACK")') :
         datagram.index('} else if (method == "BYE")')
@@ -3506,7 +3507,7 @@ def test_completed_sip_transactions_expire_and_release_large_payloads() -> None:
     assert "this->value_.swap(empty);" in storage
     assert "RETAINED_SIP_STRING_CAPACITY = 256" in source
     assert "value.capacity() > RETAINED_SIP_STRING_CAPACITY" in source
-    pump = cpp_method(source, r"SipTransport::pump_udp_retransmits_")
+    pump = cpp_method(source, r"SipTransport::pump_udp_retransmits_unlocked_")
     for field in (
         "completed_invite_",
         "completed_control_",
@@ -3532,7 +3533,7 @@ def test_udp_provisional_response_survives_transient_tx_pressure() -> None:
     assert "response_owned = true;" in response
     defer = cpp_method(source, r"SipTransport::defer_udp_provisional_response_")
     assert "this->wake_sip_task_();" in defer
-    pump = cpp_method(source, r"SipTransport::pump_udp_retransmits_")
+    pump = cpp_method(source, r"SipTransport::pump_udp_retransmits_unlocked_")
     assert "SIP UDP provisional response retry expired" in pump
     assert "provisional.clear();" in pump
     sip_task = cpp_method(source, r"SipTransport::sip_task_")
@@ -3578,3 +3579,12 @@ def test_yaml_calling_conditions_cover_remote_ringing() -> None:
     assert "VoipIsRemoteRingingCondition" in actions
     assert "CallState::REMOTE_RINGING" in actions
     assert '"voip_stack.is_remote_ringing"' in init
+
+
+def test_sip_shared_entrypoints_retain_the_dialog_lock():
+    source = read("sip_transport.cpp")
+    for method, worker in (("send_invite", "send_invite_unlocked_"),
+                           ("handle_sip_datagram_", "handle_sip_datagram_unlocked_"),
+                           ("pump_udp_retransmits_", "pump_udp_retransmits_unlocked_")):
+        body = cpp_method(source, "SipTransport::" + method)
+        assert body.index("LockGuard lock(this->dialog_mutex_)") < body.index("this->" + worker)

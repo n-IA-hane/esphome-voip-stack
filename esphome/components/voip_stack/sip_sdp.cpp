@@ -79,7 +79,7 @@ std::string SipTransport::rejected_media_answer_(
 std::string SipTransport::append_video_sdp_(const std::string &sdp,
                                             const std::string &local_ip,
                                             bool answer) const {
-  if (this->video_source_ == nullptr && this->video_sink_ == nullptr) {
+  if (this->refer_context_active_ || (this->video_source_ == nullptr && this->video_sink_ == nullptr)) {
     return sdp;
   }
   if (answer && this->video_offered_ && !this->video_negotiated_) {
@@ -575,7 +575,7 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
   this->remote_rtp_ip_v4_.store(media_ip, std::memory_order_release);
   this->remote_rtp_port_.store(media_port, std::memory_order_release);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  if (!this->learn_remote_video_from_sdp_(sdp, default_ip,
+  if (!this->refer_context_active_ && !this->learn_remote_video_from_sdp_(sdp, default_ip,
                                           remote_is_answer)) {
     // An unsupported video m-line is rejected independently. Audio remains
     // valid and build_sdp_answer_ will return m=video 0.

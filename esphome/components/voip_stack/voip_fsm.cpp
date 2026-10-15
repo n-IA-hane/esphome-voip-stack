@@ -1037,6 +1037,10 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
       if (this->ignore_if_idle_or_stale_("CONNECTED_IDENTITY", in_call_id)) {
         break;
       }
+      if (msg.media_source_changed) {
+        this->reset_rx_audio_();
+        this->reset_peer_audio_watchdog_(true);
+      }
       const CallSnapshot call = this->snapshot_call_identity_();
       const std::string connected_name = msg.connected_name.empty()
                                              ? msg.connected_route

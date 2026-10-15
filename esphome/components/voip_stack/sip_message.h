@@ -13,6 +13,10 @@
 namespace esphome {
 namespace voip_stack {
 
+static constexpr uint32_t SIP_T1_MS = 500;
+static constexpr uint32_t SIP_T2_MS = 4000;
+static constexpr uint32_t SIP_TRANSACTION_TIMEOUT_MS = 64 * SIP_T1_MS;
+
 static constexpr size_t MAX_SIP_BODY_BYTES = 4096;
 static constexpr size_t MAX_SIP_TCP_RX_BUFFER = 8192;
 
