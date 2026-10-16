@@ -152,6 +152,8 @@ class SipTransport : public SipPhoneTransport {
   bool send_sip_(const std::string &message, uint32_t ip_v4, uint16_t port);
   bool send_sip_(const SipSignalingString &message, uint32_t ip_v4,
                  uint16_t port);
+  bool send_sip_udp_bytes_(const char *data, size_t size, uint32_t ip_v4, uint16_t port);
+  void handle_sip_udp_datagram_(char *buf, int n, const sockaddr_in &src);
   bool send_sip_bytes_(const char *data, size_t size, uint32_t ip_v4,
                        uint16_t port);
   bool send_sip_tcp_(const std::string &message);
@@ -283,14 +285,14 @@ class SipTransport : public SipPhoneTransport {
   void reset_dialog_media_locked_();
   bool terminal_transaction_pending_locked_() const;
   bool replay_completed_response_(const std::string &request, const sockaddr_in &src,
-                                  const std::string &method);
+                                  const std::string &method, bool incoming_udp);
   void remember_completed_response_(const std::string &request, uint32_t peer_ip_v4,
                                     uint16_t peer_port, const std::string &method,
                                     const std::string &response);
   uint16_t acknowledge_completed_invite_(const std::string &request,
                                          const sockaddr_in &src,
                                          bool *terminate_after_ack);
-  bool replay_completed_invite_ack_(const std::string &response, const sockaddr_in &src);
+  bool replay_completed_invite_ack_(const std::string &response, const sockaddr_in &src, bool incoming_udp);
   void remember_completed_invite_ack_(const std::string &request, uint32_t target_ip_v4,
                                       uint16_t target_port);
   bool reject_if_stale_dialog_(const std::string &request, const sockaddr_in &src,

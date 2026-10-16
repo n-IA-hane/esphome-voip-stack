@@ -1519,6 +1519,11 @@ bool SipTransport::send_sip_bytes_(const char *data, size_t size,
   if (this->remote_sip_tcp_.load(std::memory_order_acquire)) {
     return this->send_sip_tcp_bytes_(data, size);
   }
+  return this->send_sip_udp_bytes_(data, size, ip_v4, port);
+}
+
+bool SipTransport::send_sip_udp_bytes_(const char *data, size_t size,
+                                      uint32_t ip_v4, uint16_t port) {
   if (this->sip_socket_ < 0 || ip_v4 == 0 || port == 0) return false;
   struct sockaddr_in dest{};
   dest.sin_family = AF_INET;
@@ -2345,7 +2350,13 @@ bool SipTransport::send_final_response(const std::string &call_id,
 }
 
 bool SipTransport::replay_completed_response_(const std::string &request, const sockaddr_in &src,
-                                              const std::string &method) {
+                                              const std::string &method, bool incoming_udp) {
+  size_t body_length = 0;
+  const size_t separator = request.find("\r\n\r\n");
+  const bool has_length = !header_value(request, "Content-Length").empty() ||
+                          !header_value(request, "l").empty();
+  if (separator == std::string::npos || !sip_content_length(request, &body_length) ||
+      (has_length && request.size() - separator - 4 != body_length)) return false;
   CompletedServerTransaction *completed = method == "REFER" && this->refer_dialog_
       ? &this->refer_dialog_->accepted_refer
       : method == "INVITE" ? &this->completed_invite_ : &this->completed_control_;
@@ -2368,7 +2379,7 @@ bool SipTransport::replay_completed_response_(const std::string &request, const 
   const std::string branch = via_branch(header_value(request, "Via"));
   const uint32_t peer_ip = ntohl(src.sin_addr.s_addr);
   const bool transport_matches =
-      completed->udp == !this->remote_sip_tcp_.load(std::memory_order_acquire);
+      completed->udp == incoming_udp;
   if (completed->method != method || completed->call_id != call_id ||
       completed->cseq != cseq_number(cseq) || cseq_method(cseq) != method ||
       completed->peer_ip_v4 != peer_ip || !transport_matches ||
@@ -2377,7 +2388,12 @@ bool SipTransport::replay_completed_response_(const std::string &request, const 
   }
   ESP_LOGI(TAG, "SIP %s retransmission replaying cached response for call_id=%s",
            method.c_str(), call_id.c_str());
-  this->send_sip_(completed->response, peer_ip, ntohs(src.sin_port));
+  if (incoming_udp) {
+    this->send_sip_udp_bytes_(completed->response.data(), completed->response.size(),
+                              peer_ip, ntohs(src.sin_port));
+  } else {
+    this->send_sip_(completed->response, peer_ip, ntohs(src.sin_port));
+  }
   return true;
 }
 
@@ -2467,7 +2483,13 @@ uint16_t SipTransport::acknowledge_completed_invite_(
 }
 
 bool SipTransport::replay_completed_invite_ack_(const std::string &response,
-                                                const sockaddr_in &src) {
+                                                const sockaddr_in &src, bool incoming_udp) {
+  size_t body_length = 0;
+  const size_t separator = response.find("\r\n\r\n");
+  const bool has_length = !header_value(response, "Content-Length").empty() ||
+                          !header_value(response, "l").empty();
+  if (separator == std::string::npos || !sip_content_length(response, &body_length) ||
+      (has_length && response.size() - separator - 4 != body_length)) return false;
   CompletedInviteClientTransaction *completed = &this->completed_invite_client_;
   for (auto &entry : this->completed_refers_) {
     if (entry && !time_reached(millis(), entry->expires_ms) &&
@@ -2487,8 +2509,7 @@ bool SipTransport::replay_completed_invite_ack_(const std::string &response,
   const std::string cseq = header_value(response, "CSeq");
   const uint32_t peer_ip = ntohl(src.sin_addr.s_addr);
   const bool transport_matches =
-      completed->udp ==
-      !this->remote_sip_tcp_.load(std::memory_order_acquire);
+      completed->udp == incoming_udp;
   if (status < 200 || cseq_method(cseq) != "INVITE" ||
       header_value(response, "Call-ID") != completed->call_id ||
       cseq_number(cseq) != completed->cseq ||
@@ -2500,9 +2521,12 @@ bool SipTransport::replay_completed_invite_ack_(const std::string &response,
   }
   ESP_LOGI(TAG, "SIP INVITE final retransmission replaying ACK for call_id=%s",
            completed->call_id.c_str());
-  this->send_sip_(completed->ack,
-                  completed->ack_ip_v4,
-                  completed->ack_port);
+  if (incoming_udp) {
+    this->send_sip_udp_bytes_(completed->ack.data(), completed->ack.size(),
+                              completed->ack_ip_v4, completed->ack_port);
+  } else {
+    this->send_sip_(completed->ack, completed->ack_ip_v4, completed->ack_port);
+  }
   return true;
 }
 
@@ -2538,7 +2562,7 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
     ESP_LOGW(TAG, "SIP INVITE rejected: missing or invalid transaction headers");
     return this->send_stateless_response_(message, src, 400, "Bad Request");
   }
-  if (this->replay_completed_response_(message, src, "INVITE")) {
+  if (this->replay_completed_response_(message, src, "INVITE", !this->remote_sip_tcp_.load(std::memory_order_acquire))) {
     return true;
   }
   if (this->terminal_transaction_pending_locked_()) {
@@ -3149,7 +3173,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
 
 bool SipTransport::handle_update_(const std::string &message,
                                   const sockaddr_in &src) {
-  if (this->replay_completed_response_(message, src, "UPDATE")) {
+  if (this->replay_completed_response_(message, src, "UPDATE", !this->remote_sip_tcp_.load(std::memory_order_acquire))) {
     return true;
   }
   const std::string call_id = header_value(message, "Call-ID");
@@ -3450,7 +3474,7 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   if (this->replay_completed_video_direction_ack_(message, src)) return true;
 #endif
-  if (this->replay_completed_invite_ack_(message, src)) return true;
+  if (this->replay_completed_invite_ack_(message, src, !this->remote_sip_tcp_.load(std::memory_order_acquire))) return true;
   if (cseq_method(header_value(message, "CSeq")) == "NOTIFY" && this->refer_dialog_) {
     for (auto *transaction : {&this->refer_dialog_->pending_notify_, &this->refer_dialog_->pending_notify_final_}) {
       if (!transaction->empty() &&
@@ -3750,7 +3774,7 @@ void SipTransport::handle_sip_datagram_unlocked_(const char *data, size_t len, c
   const std::string method = first_space == std::string::npos ? "" : msg.substr(0, first_space);
   ESP_LOGI(TAG, "SIP RX method=%s len=%u", method.c_str(), (unsigned) len);
   if ((method == "CANCEL" || method == "BYE" || method == "REFER") &&
-      this->replay_completed_response_(msg, src, method)) {
+      this->replay_completed_response_(msg, src, method, !this->remote_sip_tcp_.load(std::memory_order_acquire))) {
     return;
   }
   const SipEvent event = sip_event_from_method_(method);
@@ -3964,6 +3988,57 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
     flow->rx_buffer.erase(0, total);
     this->handle_sip_datagram_(msg.data(), msg.size(), src);
   }
+}
+
+void SipTransport::handle_sip_udp_datagram_(char *buf, int n, const sockaddr_in &src) {
+  // Retired transactions retain their own transport after a mixed handoff.
+  // Replay before the active-dialog gate, without retargeting that dialog.
+  {
+    LockGuard lock(this->dialog_mutex_);
+    const std::string message(buf, static_cast<size_t>(n));
+    const std::string method = message.substr(0, message.find(' '));
+    if (this->replay_completed_response_(message, src, method, true) ||
+        this->replay_completed_invite_ack_(message, src, true)) return;
+  }
+  bool tcp_call_active = false;
+  {
+    LockGuard lock(this->dialog_mutex_);
+    tcp_call_active =
+        !this->call_id_.empty() ||
+        this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
+        this->media_active_.load(std::memory_order_acquire) ||
+        this->terminal_transaction_pending_locked_();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+    tcp_call_active =
+        tcp_call_active ||
+        this->pending_video_direction_invite_.pending();
+#endif
+  }
+  const bool tcp_session_active =
+      tcp_call_active && this->remote_sip_tcp_.load(std::memory_order_acquire) &&
+      (this->tcp_flow_.socket.load(std::memory_order_acquire) >= 0 || this->tcp_flow_.connecting_socket >= 0 ||
+       this->tcp_flow_.connect_requested.load(std::memory_order_acquire));
+  bool refer_udp = false;
+  {
+    LockGuard lock(this->dialog_mutex_);
+    refer_udp = this->refer_dialog_ && !this->refer_dialog_->remote_sip_tcp_ &&
+        header_value(std::string(buf, static_cast<size_t>(n)), "Call-ID") == this->refer_wire_id_;
+  }
+  if (tcp_session_active && !refer_udp) {
+    ESP_LOGD(TAG, "SIP UDP datagram ignored while TCP signaling is active");
+    return;
+  }
+  if (!refer_udp && this->tcp_flow_.socket.load(std::memory_order_acquire) >= 0) {
+    // An idle keep-alive connection must not coexist with a new UDP
+    // dialog, otherwise later TCP traffic could retarget the call.
+    this->close_tcp_client_from_sip_task_();
+  }
+  if (!refer_udp) this->remote_sip_tcp_.store(false, std::memory_order_release);
+  buf[n] = 0;
+  char ip[16];
+  inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
+  ESP_LOGI(TAG, "SIP UDP RX %d bytes from %s:%u", n, ip, (unsigned) ntohs(src.sin_port));
+  this->handle_sip_datagram_(reinterpret_cast<const char *>(buf), static_cast<size_t>(n), src);
 }
 
 void SipTransport::sip_task_trampoline_(void *param) {
@@ -4213,45 +4288,7 @@ void SipTransport::sip_task_() {
       int n = recvfrom(this->sip_socket_, buf, this->sip_rx_scratch_.size() - 1, 0,
                        reinterpret_cast<struct sockaddr *>(&src), &slen);
       if (n > 0) {
-        bool tcp_call_active = false;
-        {
-          LockGuard lock(this->dialog_mutex_);
-          tcp_call_active =
-              !this->call_id_.empty() ||
-              this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
-              this->media_active_.load(std::memory_order_acquire) ||
-              this->terminal_transaction_pending_locked_();
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-          tcp_call_active =
-              tcp_call_active ||
-              this->pending_video_direction_invite_.pending();
-#endif
-        }
-        const bool tcp_session_active =
-            tcp_call_active && this->remote_sip_tcp_.load(std::memory_order_acquire) &&
-            (this->tcp_flow_.socket.load(std::memory_order_acquire) >= 0 || this->tcp_flow_.connecting_socket >= 0 ||
-             this->tcp_flow_.connect_requested.load(std::memory_order_acquire));
-        bool refer_udp = false;
-        {
-          LockGuard lock(this->dialog_mutex_);
-          refer_udp = this->refer_dialog_ && !this->refer_dialog_->remote_sip_tcp_ &&
-              header_value(std::string(buf, static_cast<size_t>(n)), "Call-ID") == this->refer_wire_id_;
-        }
-        if (tcp_session_active && !refer_udp) {
-          ESP_LOGD(TAG, "SIP UDP datagram ignored while TCP signaling is active");
-          continue;
-        }
-        if (!refer_udp && this->tcp_flow_.socket.load(std::memory_order_acquire) >= 0) {
-          // An idle keep-alive connection must not coexist with a new UDP
-          // dialog, otherwise later TCP traffic could retarget the call.
-          this->close_tcp_client_from_sip_task_();
-        }
-        if (!refer_udp) this->remote_sip_tcp_.store(false, std::memory_order_release);
-        buf[n] = 0;
-        char ip[16];
-        inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
-        ESP_LOGI(TAG, "SIP UDP RX %d bytes from %s:%u", n, ip, (unsigned) ntohs(src.sin_port));
-        this->handle_sip_datagram_(reinterpret_cast<const char *>(buf), static_cast<size_t>(n), src);
+        this->handle_sip_udp_datagram_(buf, n, src);
       }
     }
 

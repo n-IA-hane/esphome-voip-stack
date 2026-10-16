@@ -17,7 +17,7 @@ def block(source, marker):
     return source[start:end]
 
 
-def test_refer_keeps_one_media_owner_and_reports_actual_outcome(tmp_path):
+def refer_fixture_source():
     header = (SOURCE / 'sip_transport.h').read_text()
     parser = (SOURCE / 'sip_message.cpp').read_text()
     refer = (SOURCE / 'sip_refer.cpp').read_text()
@@ -131,6 +131,11 @@ struct SipTransport: SipPhoneTransport {
   selected_tx_format_=t;selected_rx_format_=r;rtp_tx_payload_type_=tp;rtp_rx_payload_type_=rp;negotiated_rx_payloads_=*p;}
 };
 ''' + block((SOURCE/'sip_transport.cpp').read_text(), 'bool SipTransport::reject_if_stale_dialog_(') + '\n' + block((SOURCE/'sip_request_response.cpp').read_text(), 'bool SipTransport::send_request_(const std::string &method, const std::string &body,') + '\n' + production
+    return code
+
+
+def test_refer_keeps_one_media_owner_and_reports_actual_outcome(tmp_path):
+    code = refer_fixture_source()
     code += r'''
 std::string request(const std::string&target="sip:room@192.0.2.20:5060",const std::string&tag="remote"){
  return "REFER sip:room@192.0.2.10 SIP/2.0\r\nCall-ID: original\r\nFrom: <sip:pbx@192.0.2.1>;tag="+tag+

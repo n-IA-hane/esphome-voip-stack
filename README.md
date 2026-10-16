@@ -124,7 +124,8 @@ REFER replacement path.
 
 A remote BYE ends the original conversation without cancelling an accepted
 transfer. The ESP continues calling the destination and reports the result.
-Hanging up on the ESP itself cancels the pending transfer. A destination failure
+Hanging up on the ESP itself cancels the pending transfer. Authentication challenges (401/407) fail the
+transfer explicitly: this receiver does not retry with SIP Digest credentials. A destination failure
 preserves the original conversation only if its caller has not already hung up.
 
 Rebuild the ESP with the development component to use this capability.

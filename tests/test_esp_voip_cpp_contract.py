@@ -2016,7 +2016,7 @@ def test_completed_sip_server_transactions_are_bounded_and_replayed() -> None:
     stale_bye = datagram.index('this->reject_if_stale_dialog_(msg, src, "BYE")')
     assert replay < stale_bye
     assert 'this->send_stateless_response_(msg, src, 200, "OK", "", true);' in datagram
-    assert 'this->replay_completed_response_(message, src, "INVITE")' in sip_cpp
+    assert 'this->replay_completed_response_(message, src, "INVITE", !this->remote_sip_tcp_.load' in sip_cpp
 
 
 def test_retransmitted_invite_final_replays_the_cached_ack() -> None:
@@ -2648,10 +2648,9 @@ def test_sip_response_validation_precedes_retarget_and_bad_sdp_closes_dialog() -
 
 def test_udp_listener_cannot_flip_an_active_tcp_dialog() -> None:
     sip_cpp = read("sip_transport.cpp")
-    udp_receive = sip_cpp[
-        sip_cpp.index("if (this->sip_socket_ >= 0 && FD_ISSET") :
-        sip_cpp.index("\n    // A commit can exchange", sip_cpp.index("if (this->sip_socket_ >= 0 && FD_ISSET"))
-    ]
+    udp_receive = cpp_method(sip_cpp, r"SipTransport::handle_sip_udp_datagram_")
+    assert "this->handle_sip_udp_datagram_(buf, n, src);" in sip_cpp
+    assert "replay_completed_response_(message, src, method, true)" in udp_receive
 
     active_guard = udp_receive.index("if (tcp_session_active && !refer_udp)")
     udp_mode_store = udp_receive.index("this->remote_sip_tcp_.store(false")

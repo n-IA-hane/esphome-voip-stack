@@ -289,7 +289,8 @@ void SipTransport::pump_refer_() {
       signal.connected_name = this->destination_.name;
       this->emit_sip_signal_(std::move(signal));
     } else if (type == SipSignalType::FINAL_RESPONSE || type == SipSignalType::PROTOCOL_ERROR ||
-               type == SipSignalType::MEDIA_INCOMPATIBLE) {
+               type == SipSignalType::MEDIA_INCOMPATIBLE || type == SipSignalType::AUTH_REQUIRED ||
+               type == SipSignalType::PROXY_AUTH_REQUIRED) {
       this->finish_failed_refer_(this->refer_status_ >= 300 ? this->refer_status_ : 500,
                                  "Transfer Failed");
     }
