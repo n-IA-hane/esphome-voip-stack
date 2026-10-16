@@ -30,7 +30,10 @@ using namespace esphome::voip_stack;
                       "bool parse_rtpmap_format(", "bool parse_audio_media_line("]:
         source += method(parser, signature) + "\n"
     source += r'''
+struct RetainedCall { AudioFormat selected_tx_format_; };
 struct SipTransport {
+ bool refer_context_active_=false;
+ RetainedCall *refer_dialog_=nullptr;
  AudioFormatList offer_tx_formats_,offer_rx_formats_,local_offered_tx_formats_;
  RtpAudioPayloads local_offered_rx_payloads_,accepted;
  bool remote_directional_audio_v1_=false,peer_directional_audio_v1_=false,local_offered_directional_audio_v1_=false;
@@ -82,6 +85,16 @@ int main(){
  // A peer selecting one common codec retains the old 16/16 behavior.
  assert(s.learn_remote_rtp_from_sdp_("v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 118\r\na=ptime:10\r\na=rtpmap:118 L16/16000/1\r\n",0,true));
  assert(s.tx.sample_rate==16000&&s.rx.sample_rate==16000&&s.accepted.count==1);
+ // The retained transmitter cannot change rate while its old call is live.
+ RetainedCall old{fmt(16000)};s.refer_context_active_=true;s.refer_dialog_=&old;
+ auto replacement=s.build_sdp_offer_();
+ assert(replacement.find("L16/16000/1")!=std::string::npos);
+ assert(replacement.find("L16/48000/1")==std::string::npos);
+ assert(s.local_offered_tx_formats_.count==1);
+ assert(s.learn_remote_rtp_from_sdp_("v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 96\r\na=ptime:10\r\na=rtpmap:96 L16/16000/1\r\n",0,true));
+ assert(!s.learn_remote_rtp_from_sdp_("v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 96\r\na=ptime:10\r\na=rtpmap:96 L16/48000/1\r\n",0,true));
+ s.refer_context_active_=false;
+ assert(s.build_sdp_offer_().find("L16/48000/1")!=std::string::npos);
 }
 '''
     cpp = tmp_path / "sdp.cpp"

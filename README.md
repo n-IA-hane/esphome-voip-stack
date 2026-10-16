@@ -98,26 +98,43 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 ## Call transfer in development builds
 
-An established audio call over UDP can receive a blind SIP REFER from a PBX
+An established audio call over UDP or TCP can receive a blind SIP REFER from a PBX
 or another SIP phone. The ESP calls the supplied IPv4 SIP destination and
 reports the outcome with NOTIFY (`message/sipfrag`). The existing conversation
 continues while the destination rings. A rejection or failed attempt leaves
 that conversation available; a successful answer switches to the new peer.
 
-The transfer reuses the SIP task, sockets, SDP negotiation and audio path.
-Only dialog state and bounded transaction history are retained separately.
+The transfer reuses the SIP task, SDP negotiation and audio path. During a TCP
+handoff, each dialog owns its own bounded signalling flow; no extra SIP task
+or media engine is started. Completed UDP transactions retain bounded replay
+history; completed reliable transactions do not occupy those replay slots.
 Receive-rate conversion uses the existing PCM converter, prepared before the
 handoff. The established transmit format and speaker format remain unchanged.
 
-This initial receiver supports **in-dialog blind transfers of UDP audio calls
-to IPv4 SIP addresses**. TCP transfers, video transfers, hostname targets and
-attended-transfer URI headers are not supported by this receiver. Unsupported
-requests are rejected without replacing the current conversation.
+This receiver supports **in-dialog blind transfers of UDP or TCP audio calls
+to IPv4 SIP addresses**, including a change of signalling transport. Video
+transfers, hostname targets and attended-transfer URI headers remain unsupported.
+Unsupported requests are rejected without replacing the current conversation.
+
+The replacement offer retains the active transmit codec and packet time. On
+Spotpear with a 16 kHz microphone, the tested replacement dialog uses L16/16000
+in both directions. Ordinary calls can still negotiate 48 kHz receive and
+16 kHz transmit; that asymmetric combination is not currently offered by the
+REFER replacement path.
+
+A remote BYE ends the original conversation without cancelling an accepted
+transfer. The ESP continues calling the destination and reports the result.
+Hanging up on the ESP itself cancels the pending transfer. A destination failure
+preserves the original conversation only if its caller has not already hung up.
 
 Rebuild the ESP with the development component to use this capability.
 Updating the Home Assistant integration alone does not update ESP firmware.
 The Spotpear Ball V2 FULL profile has been checked with Waveshare S3 Audio,
 including an occupied destination, immediate retry and hangup from both ends.
+The TCP-capable candidate was also tested on Spotpear Ball V2 FULL with real HA
+browser phones: all four UDP/TCP combinations, busy and connection-refused
+responses, timeout, caller BYE during transfer, local cancellation, immediate
+redial and parking/retrieval. SIP captures and decoded RTP were checked.
 Other hardware and PBX combinations still need their own runtime tests.
 
 ## Scenarios

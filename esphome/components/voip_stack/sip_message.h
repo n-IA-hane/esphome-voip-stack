@@ -49,6 +49,7 @@ std::string via_branch(const std::string &via);
 bool sip_method_known_(const std::string &method);
 std::string sip_failure_reason_(int status);
 std::string tag_from_header(const std::string &value);
+std::string name_addr_uri(const std::string &value);
 std::string strip_angle_uri(const std::string &value);
 bool sip_uri_ipv4_target(const std::string &value, uint32_t *ip_v4,
                          uint16_t *port);

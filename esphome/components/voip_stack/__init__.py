@@ -768,11 +768,11 @@ CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 9, 0), ha_integration.pr
 
 
 def _consume_voip_sockets(config):
-    """Reserve lwIP sockets for voip_stack at validation time.
+    """Reserve SIP/RTP sockets, including a bounded REFER handoff.
 
-    TCP mode: one TCP listening socket + up to three concurrent TCP client
-    sockets (mirrors the upstream api component pattern).
-    UDP mode: a single datagram socket (no listen, no per-peer connection).
+    The current TCP dialog and its replacement can coexist until commit or
+    rollback. A third client slot allows the listener to accept and reject an
+    unrelated connection without borrowing either dialog's socket.
     """
     from esphome.components import socket
 
@@ -780,7 +780,7 @@ def _consume_voip_sockets(config):
     # socket is a private event-driven wake channel included in the SIP
     # select() set, so command handling never needs a polling timeout.
     socket.consume_sockets(3, "voip_stack_sip", socket.SocketType.UDP)(config)
-    socket.consume_sockets(2, "voip_stack_sip_tcp")(config)
+    socket.consume_sockets(3, "voip_stack_sip_tcp")(config)
     socket.consume_sockets(1, "voip_stack_sip", socket.SocketType.TCP_LISTEN)(config)
     if CONF_VIDEO in config:
         # Separate RTP/RTCP sockets plus a private event-driven wake socket.

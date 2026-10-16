@@ -30,6 +30,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace esphome {
 namespace voip_stack {
@@ -178,6 +179,7 @@ class SipTransport : public SipPhoneTransport {
                                const std::string &body, bool add_contact_ua,
                                bool add_to_tag, bool stateless,
                                int retry_after_seconds);
+  struct SipTcpFlow;
   struct ReferDialog;
   struct ReferDeleter {
     template<typename T> void operator()(T *value) const {
@@ -198,6 +200,9 @@ class SipTransport : public SipPhoneTransport {
   void pump_refer_();
   void swap_dialog_(ReferDialog &other);
   void notify_refer_(uint32_t refer_cseq, uint16_t status, const char *reason);
+  bool end_refer_invite_usage_(bool reporter_available);
+  void cancel_refer_();
+  void finish_failed_refer_(uint16_t status, const char *reason);
   void emit_sip_signal_(SipSignal signal);
 
   void handle_sip_datagram_(const char *data, size_t len, const sockaddr_in &src);
@@ -259,7 +264,14 @@ class SipTransport : public SipPhoneTransport {
   void close_media_session_();
   void request_tcp_client_close_();
   void close_tcp_client_from_sip_task_();
-  void handle_tcp_peer_loss_();
+  void handle_tcp_peer_loss_(SipTcpFlow *flow = nullptr);
+  bool close_tcp_dialog_();
+  void close_tcp_flow_(SipTcpFlow &flow);
+  void prepare_tcp_flow_(SipTcpFlow &flow);
+  void promote_tcp_flow_(SipTcpFlow &flow);
+  void fail_tcp_flow_(SipTcpFlow &flow, int error);
+  SipTcpFlow *tcp_flow_for_socket_(int socket);
+  void release_refer_dialog_();
   void wake_sip_task_();
   void wake_rtp_task_();
   bool prepare_media_path_locked_();
@@ -499,7 +511,6 @@ class SipTransport : public SipPhoneTransport {
   // Only the SIP task reads sockets. Share its TCP/UDP receive scratch so
   // nested parsing and logging do not retain 3 KiB of task-local buffers.
   std::array<char, 2048> sip_rx_scratch_{};
-  SipSignalingString sip_tcp_rx_buffer_;
   AudioFormatList offer_tx_formats_{};
   AudioFormatList offer_rx_formats_{};
   RtpAudioPayloads negotiated_rx_payloads_{};
@@ -564,8 +575,42 @@ class SipTransport : public SipPhoneTransport {
                                     this->offsets[index]);
     }
   } remote_media_shape_;
+  struct SipTcpFlow {
+    std::atomic<int> socket{-1};
+    std::atomic<uint32_t> peer_ip{0}, target_ip{0};
+    std::atomic<uint16_t> target_port{0};
+    std::atomic<bool> connect_requested{false}, close_requested{false};
+    SipSignalingString rx_buffer, pending;
+    int connecting_socket{-1};
+    uint32_t connect_deadline{0}, connecting_ip{0};
+    uint16_t connecting_port{0};
+
+    void swap(SipTcpFlow &other) {
+      auto exchange = [](auto &left, auto &right) {
+        right.store(left.exchange(right.load(std::memory_order_acquire), std::memory_order_acq_rel),
+                    std::memory_order_release);
+      };
+      exchange(socket, other.socket);
+      exchange(peer_ip, other.peer_ip);
+      exchange(target_ip, other.target_ip);
+      exchange(target_port, other.target_port);
+      exchange(connect_requested, other.connect_requested);
+      exchange(close_requested, other.close_requested);
+      using std::swap;
+      swap(rx_buffer, other.rx_buffer);
+      swap(pending, other.pending);
+      swap(connecting_socket, other.connecting_socket);
+      swap(connect_deadline, other.connect_deadline);
+      swap(connecting_ip, other.connecting_ip);
+      swap(connecting_port, other.connecting_port);
+    }
+  };
+  SipTcpFlow tcp_flow_;
   struct ReferDialog {
-    std::string owner_call_id;
+    SipTcpFlow tcp_flow_;
+    bool remote_sip_tcp_{false};
+    std::string owner_call_id, target_uri;
+    bool owner_invite_ended{false}, reporter_available{true};
     CompletedServerTransaction accepted_refer;
     std::string call_id_, local_tag_, remote_tag_, branch_;
     std::string local_uri_, local_contact_uri_, remote_uri_, remote_target_uri_;
@@ -650,13 +695,7 @@ class SipTransport : public SipPhoneTransport {
   int sip_wake_socket_{-1};
   uint16_t sip_wake_port_{0};
   int sip_tcp_listener_socket_{-1};
-  std::atomic<int> sip_tcp_client_socket_{-1};
-  std::atomic<uint32_t> sip_tcp_client_ip_v4_{0};
-  std::atomic<uint32_t> tcp_connect_ip_v4_{0};
-  std::atomic<uint16_t> tcp_connect_port_{0};
-  std::atomic<bool> tcp_connect_requested_{false};
   mutable Mutex tcp_tx_pending_mutex_;
-  SipSignalingString tcp_tx_pending_;
   mutable Mutex tcp_send_mutex_;
   mutable Mutex dialog_mutex_;
   // The main-loop FSM starts media after deferred SIP signals, while the SIP
@@ -695,7 +734,6 @@ class SipTransport : public SipPhoneTransport {
   std::atomic<bool> outgoing_invite_pending_{false};
   std::atomic<bool> cancel_requested_{false};
   std::atomic<bool> remote_sip_tcp_{false};
-  std::atomic<bool> sip_tcp_client_close_requested_{false};
   std::atomic<uint32_t> rtp_tx_packets_{0};
   std::atomic<uint32_t> rtp_rx_packets_{0};
   std::atomic<uint32_t> rtp_tx_bytes_{0};

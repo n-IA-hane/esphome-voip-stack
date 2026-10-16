@@ -459,13 +459,26 @@ std::string tag_from_header(const std::string &value) {
   return "";
 }
 
-std::string strip_angle_uri(const std::string &value) {
+std::string name_addr_uri(const std::string &value) {
   std::string out = trim_copy(value);
+  if (out.find_first_of("\r\n") != std::string::npos) return "";
   const size_t left = out.find('<');
-  const size_t right = left == std::string::npos ? std::string::npos : out.find('>', left + 1);
-  if (left != std::string::npos && right != std::string::npos && right > left + 1) {
-    out = trim_copy(out.substr(left + 1, right - left - 1));
+  const size_t right = out.find('>');
+  if (left == std::string::npos) {
+    const size_t at = out.find('@');
+    const size_t comma = out.find(',', at == std::string::npos ? 0 : at);
+    return right == std::string::npos && comma == std::string::npos ? out : "";
   }
+  if (right == std::string::npos || right <= left + 1 ||
+      out.find('<', left + 1) != std::string::npos || out.find('>', right + 1) != std::string::npos)
+    return "";
+  const std::string suffix = trim_copy(out.substr(right + 1));
+  if (!suffix.empty() && suffix.front() != ';') return "";
+  return trim_copy(out.substr(left + 1, right - left - 1));
+}
+
+std::string strip_angle_uri(const std::string &value) {
+  std::string out = name_addr_uri(value);
   std::string lowered = out;
   for (char &ch : lowered) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
   const size_t tag = lowered.find(";tag=");

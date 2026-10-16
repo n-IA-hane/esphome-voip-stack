@@ -167,8 +167,10 @@ std::string SipTransport::build_sdp_offer_() {
   std::string maps;
   std::string flows;
   uint8_t pt = 96;
-  const uint8_t selected_ptime =
-      choose_common_audio_ptime(this->offer_tx_formats_, this->offer_rx_formats_, this->udp_max_payload_);
+  const AudioFormat *retained_tx = this->refer_context_active_ && this->refer_dialog_
+      ? &this->refer_dialog_->selected_tx_format_ : nullptr;
+  const uint8_t selected_ptime = retained_tx != nullptr ? retained_tx->frame_ms
+      : choose_common_audio_ptime(this->offer_tx_formats_, this->offer_rx_formats_, this->udp_max_payload_);
   if (selected_ptime == 0) {
     ESP_LOGW(TAG, "SIP SDP offer has no shared TX/RX RTP packet time");
     return "";
@@ -176,6 +178,9 @@ std::string SipTransport::build_sdp_offer_() {
   auto append_format = [&](const AudioFormat &fmt, const char *flow) {
     if (pt >= 120) return;
     if (fmt.frame_ms != selected_ptime) return;
+    // A REFER handoff retains the running transmitter until the new dialog commits.
+    // Its sendrecv offer must not let the answer select a receive-only format.
+    if (retained_tx != nullptr && !audio_formats_share_wire_encoding(fmt, *retained_tx)) return;
     const char *enc = audio_format_rtp_encoding(fmt, this->udp_max_payload_);
     if (enc == nullptr) return;
     if (!payloads.empty()) payloads.push_back(' ');

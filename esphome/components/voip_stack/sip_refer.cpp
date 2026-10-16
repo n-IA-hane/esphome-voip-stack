@@ -2,6 +2,8 @@
 #include "sip_message.h"
 
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_SIP_TRANSPORT)
+#include <algorithm>
+#include <cctype>
 #include <utility>
 #include "esphome/core/hal.h"
 
@@ -37,11 +39,45 @@ void SipTransport::emit_sip_signal_(SipSignal signal) {
 }
 
 void SipTransport::notify_refer_(uint32_t refer_cseq, uint16_t status, const char *reason) {
+  if (!this->refer_dialog_ || !this->refer_dialog_->reporter_available) return;
   SipRequestOptions options;
   options.content_type = "message/sipfrag;version=2.0";
   options.extra_headers = "Event: refer;id=" + std::to_string(refer_cseq) + "\r\nSubscription-State: " +
       (status < 200 ? "active;expires=32\r\n" : "terminated;reason=noresource\r\n");
   this->send_request_("NOTIFY", "SIP/2.0 " + std::to_string(status) + " " + reason + "\r\n", options);
+}
+
+bool SipTransport::end_refer_invite_usage_(bool reporter_available) {
+  if (this->refer_context_active_ || !this->refer_dialog_ || this->refer_retiring_ ||
+      this->call_id_ != this->refer_dialog_->owner_call_id) return false;
+  // REFER's subscription and action outlive the INVITE usage (RFC 3515/5057).
+  this->refer_dialog_->owner_invite_ended = true;
+  this->refer_dialog_->reporter_available &= reporter_available;
+  this->pending_update_.clear();
+  this->close_media_session_();
+  return true;
+}
+
+void SipTransport::cancel_refer_() {
+  if (this->refer_context_active_ || !this->refer_dialog_ || this->refer_retiring_) return;
+  this->notify_refer_(this->refer_cseq_, 487, "Request Terminated");
+  this->refer_retiring_ = true;
+  ReferScope scope(*this);
+  if (this->outgoing_invite_pending_.load()) this->send_cancel_unlocked_(this->call_id_);
+  else if (!this->call_id_.empty()) this->send_bye_unlocked_(this->call_id_);
+}
+
+void SipTransport::finish_failed_refer_(uint16_t status, const char *reason) {
+  this->notify_refer_(this->refer_cseq_, status, reason);
+  this->refer_retiring_ = true;
+  if (this->refer_dialog_->owner_invite_ended && this->call_id_ == this->refer_dialog_->owner_call_id) {
+    SipSignal signal;
+    signal.type = SipSignalType::BYE;
+    signal.call_id = this->call_id_;
+    signal.reason = "transfer_failed";
+    this->emit_sip_signal_(std::move(signal));
+    this->reset_dialog_();
+  }
 }
 
 bool SipTransport::handle_refer_(const std::string &message, const sockaddr_in &src) {
@@ -56,7 +92,7 @@ bool SipTransport::handle_refer_(const std::string &message, const sockaddr_in &
     this->send_stateless_response_(message, src, 400, "Bad Request");
     return false;
   }
-  const std::string target = strip_angle_uri(raw.empty() ? compact : raw);
+  const std::string target = name_addr_uri(raw.empty() ? compact : raw);
   uint32_t ip = 0;
   uint16_t port = 0;
   // Unsupported URI schemes and extensions must not turn into a different call.
@@ -64,9 +100,26 @@ bool SipTransport::handle_refer_(const std::string &message, const sockaddr_in &
     this->send_stateless_response_(message, src, 400, "Bad Request");
     return false;
   }
-  if (target.rfind("sip:", 0) != 0 || target.find('?') != std::string::npos ||
-      target.find(";transport=tcp") != std::string::npos ||
-      this->remote_sip_tcp_.load() || !sip_uri_ipv4_target(target, &ip, &port)) {
+  std::string normalized = target;
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  bool target_tcp = false;
+  bool supported = normalized.rfind("sip:", 0) == 0 && target.find('?') == std::string::npos;
+  size_t parameter = normalized.find(';', normalized.rfind('@') == std::string::npos ? 4 : normalized.rfind('@'));
+  while (parameter != std::string::npos) {
+    const size_t end = normalized.find(';', parameter + 1);
+    const std::string value = normalized.substr(parameter + 1, end - parameter - 1);
+    if (value.rfind("transport=", 0) == 0) {
+      supported &= value == "transport=udp" || value == "transport=tcp";
+      target_tcp = value == "transport=tcp";
+    } else if (value.rfind("method=", 0) == 0) {
+      supported &= value == "method=invite";
+    } else if (value.rfind("maddr=", 0) == 0 || value.rfind("ttl=", 0) == 0) {
+      supported = false;
+    }
+    parameter = end;
+  }
+  if (!supported || !sip_uri_ipv4_target(target, &ip, &port)) {
     this->send_stateless_response_(message, src, 416, "Unsupported URI Scheme");
     return false;
   }
@@ -88,10 +141,12 @@ bool SipTransport::handle_refer_(const std::string &message, const sockaddr_in &
   }
   std::unique_ptr<ReferDialog, ReferDeleter> candidate(::new (memory) ReferDialog());
   candidate->owner_call_id = this->call_id_;
+  candidate->target_uri = target;
+  candidate->remote_sip_tcp_ = target_tcp;
   candidate->remote_ip_v4_ = ip;
   candidate->remote_sip_port_ = port;
   this->refer_cseq_ = cseq_number(header_value(message, "CSeq"));
-  if (!this->send_stateless_response_(message, src, 202, "Accepted", "", true)) return false;
+  if (!this->send_stateless_response_(message, src, 200, "OK", "", true)) return false;
   candidate->accepted_refer = std::move(this->completed_control_);
   this->remote_dialog_cseq_ = this->refer_cseq_;
   this->refer_wire_id_ = make_token("refer-");
@@ -105,6 +160,11 @@ bool SipTransport::handle_refer_(const std::string &message, const sockaddr_in &
   bool sent;
   {
     ReferScope scope(*this);
+    if (target_tcp) {
+      this->tcp_flow_.target_ip.store(ip, std::memory_order_release);
+      this->tcp_flow_.target_port.store(port, std::memory_order_release);
+      this->tcp_flow_.connect_requested.store(true, std::memory_order_release);
+    }
     sent = this->send_invite_unlocked_(this->refer_wire_id_, local_user, local_name, user, user);
   }
   if (!sent) {
@@ -130,6 +190,12 @@ void SipTransport::swap_dialog_(ReferDialog &other) {
   SWAP_FIELD(pending_invite_); SWAP_FIELD(pending_cancel_); SWAP_FIELD(pending_bye_); SWAP_FIELD(pending_update_);
   SWAP_FIELD(delayed_offer_pending_); SWAP_FIELD(terminate_after_invite_ack_); SWAP_FIELD(peer_directional_audio_v1_);
 #undef SWAP_FIELD
+  other.remote_sip_tcp_ = this->remote_sip_tcp_.exchange(other.remote_sip_tcp_);
+  {
+    LockGuard send_lock(this->tcp_send_mutex_);
+    LockGuard pending_lock(this->tcp_tx_pending_mutex_);
+    this->tcp_flow_.swap(other.tcp_flow_);
+  }
   other.remote_ip_v4_ = this->remote_ip_v4_.exchange(other.remote_ip_v4_);
   other.remote_sip_port_ = this->remote_sip_port_.exchange(other.remote_sip_port_);
   other.outgoing_invite_pending_ = this->outgoing_invite_pending_.exchange(other.outgoing_invite_pending_);
@@ -190,20 +256,21 @@ void SipTransport::pump_refer_() {
   if (this->refer_signal_pending_ && !this->refer_retiring_) {
     this->refer_signal_pending_ = false;
     const auto type = this->refer_signal_type_;
-    if (type == SipSignalType::STATUS_200_OK && !this->call_id_.empty() && this->media_active_.load()) {
+    if (type == SipSignalType::STATUS_200_OK && !this->call_id_.empty() &&
+        (this->media_active_.load() || this->refer_dialog_->owner_invite_ended)) {
       if (!this->prepare_refer_media_(*this->refer_dialog_)) {
-        this->notify_refer_(this->refer_cseq_, 488, "Not Acceptable Here");
-        ReferScope scope(*this);
-        this->send_bye_unlocked_(this->call_id_);
-        this->refer_retiring_ = true;
+        { ReferScope scope(*this); this->send_bye_unlocked_(this->call_id_); }
+        this->finish_failed_refer_(488, "Not Acceptable Here");
         return;
       }
       const std::string original = this->call_id_;
+      const bool original_ended = this->refer_dialog_->owner_invite_ended;
       this->notify_refer_(this->refer_cseq_, 200, "OK");
       {
         ReferScope scope(*this);
         scope.commit();
       }
+      this->open_media_session_();
       this->reset_rtp_latch_();
       if (this->logical_call_id_.empty()) this->logical_call_id_ = original;
       this->logical_wire_id_ = this->call_id_;
@@ -211,7 +278,8 @@ void SipTransport::pump_refer_() {
       this->refer_retiring_ = true;
       {
         ReferScope scope(*this);
-        this->send_bye_unlocked_(this->call_id_);
+        if (original_ended) this->reset_dialog_();
+        else this->send_bye_unlocked_(this->call_id_);
       }
       SipSignal signal;
       signal.type = SipSignalType::CONNECTED_IDENTITY;
@@ -222,16 +290,23 @@ void SipTransport::pump_refer_() {
       this->emit_sip_signal_(std::move(signal));
     } else if (type == SipSignalType::FINAL_RESPONSE || type == SipSignalType::PROTOCOL_ERROR ||
                type == SipSignalType::MEDIA_INCOMPATIBLE) {
-      if (!this->call_id_.empty())
-        this->notify_refer_(this->refer_cseq_, this->refer_status_ >= 300 ? this->refer_status_ : 500,
-                            "Transfer Failed");
-      this->refer_retiring_ = true;
+      this->finish_failed_refer_(this->refer_status_ >= 300 ? this->refer_status_ : 500,
+                                 "Transfer Failed");
     }
   }
   const auto &dialog = *this->refer_dialog_;
   if (this->refer_retiring_ && dialog.call_id_.empty() && dialog.pending_invite_.empty() &&
       dialog.pending_cancel_.empty() && dialog.pending_bye_.empty() &&
       dialog.pending_notify_.empty() && dialog.pending_notify_final_.empty()) {
+    // RFC 3261 Timer J is zero on a reliable transport. Once both usages
+    // finish, retain only transactions which can still be retransmitted on UDP.
+    const bool udp_replay = (!dialog.accepted_refer.empty() && dialog.accepted_refer.udp) ||
+        (!dialog.completed_control_.empty() && dialog.completed_control_.udp) ||
+        (!dialog.completed_invite_client_.empty() && dialog.completed_invite_client_.udp);
+    if (!udp_replay) {
+      this->release_refer_dialog_();
+      return;
+    }
     for (auto &slot : this->completed_refers_) {
       if (slot) continue;
       auto *memory = RAMAllocator<CompletedRefer>().allocate(1);
@@ -241,11 +316,11 @@ void SipTransport::pump_refer_() {
       slot->control = std::move(this->refer_dialog_->completed_control_);
       slot->invite = std::move(this->refer_dialog_->completed_invite_client_);
       slot->expires_ms = millis() + SIP_TRANSACTION_TIMEOUT_MS;
-      this->refer_dialog_.reset();
+      this->release_refer_dialog_();
       break;
     }
   }
-  if (this->refer_dialog_ && time_reached(millis(), this->refer_expires_)) this->refer_dialog_.reset();
+  if (this->refer_dialog_ && time_reached(millis(), this->refer_expires_)) this->release_refer_dialog_();
 }
 
 }  // namespace voip_stack

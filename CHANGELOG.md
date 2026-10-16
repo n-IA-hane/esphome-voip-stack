@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Support blind audio REFER across UDP and TCP with one SIP task and bounded
+  per-dialog TCP flows. Preserve the original call on a failed attempt and
+  distinguish remote INVITE termination from local transfer cancellation.
+  Process complete buffered SIP messages before TCP EOF cleanup and release
+  completed reliable transactions without occupying UDP replay slots.
+  The replacement offer retains the running TX format; the tested Spotpear
+  replacement is L16/16000 in both directions. See the README for scope and
+  physical test coverage.
+
 - Receive blind in-dialog SIP REFER for IPv4 UDP audio calls. Keep the original
   conversation during destination setup, send the actual result through NOTIFY,
   and reuse the existing media path after a successful answer. Dialog staging

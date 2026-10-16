@@ -22,10 +22,11 @@ def test_refer_keeps_one_media_owner_and_reports_actual_outcome(tmp_path):
     parser = (SOURCE / 'sip_message.cpp').read_text()
     refer = (SOURCE / 'sip_refer.cpp').read_text()
     production = refer[refer.index('SipTransport::ReferScope::ReferScope'):refer.index('}  // namespace voip_stack')]
-    declarations = '\n'.join(block(header, 'struct ' + name) + ';' for name in (
-        'UdpTransaction', 'CompletedServerTransaction', 'CompletedInviteClientTransaction', 'SipIdentity', 'RemoteMediaShape'))
+    declarations = '\n'.join(block(header, 'struct ' + name + ' {') + ';' for name in (
+        'UdpTransaction', 'CompletedServerTransaction', 'CompletedInviteClientTransaction', 'SipIdentity', 'RemoteMediaShape', 'SipTcpFlow'))
     context = block(header, 'struct ReferDialog {')
     fields = context[context.index('{') + 1:-1]
+    fields = fields.replace('bool remote_sip_tcp_{false};', 'std::atomic<bool> remote_sip_tcp_{false};')
     fields = fields.replace('bool outgoing_invite_pending_{false}, cancel_requested_{false};',
                             'std::atomic<bool> outgoing_invite_pending_{false}, cancel_requested_{false};')
     for typ, name in [('uint32_t', 'remote_ip_v4_'), ('uint16_t', 'remote_sip_port_'),
@@ -65,7 +66,7 @@ std::string sip_route_id(const std::string &v,size_t){return v;}
 '''
     for signature in ['std::string trim_copy(', 'static uint8_t hex_value(', 'std::string sip_uri_user_decode(',
                       'std::string header_value(', 'std::string header_values(', 'bool parse_decimal_u32(', 'bool time_reached(',
-                      'std::string strip_angle_uri(', 'bool sip_uri_ipv4_target(', 'std::string sip_user_from_header(',
+                      'std::string name_addr_uri(', 'std::string strip_angle_uri(', 'bool sip_uri_ipv4_target(', 'std::string sip_user_from_header(',
                       'std::string cseq_method(', 'uint32_t cseq_number(', 'std::string tag_from_header(']:
         code += block(parser, signature) + '\n'
     code += 'std::string sip_display_name_from_header(const std::string&,size_t){return "Room";}\n'
@@ -88,18 +89,27 @@ struct SipTransport: SipPhoneTransport {
  SipSignalType refer_signal_type_=SipSignalType::PROTOCOL_ERROR;uint16_t refer_status_=0;
  uint32_t refer_cseq_=0,refer_expires_=0;
  std::string logical_call_id_,logical_wire_id_,refer_wire_id_;
- std::atomic<bool> media_active_{true},remote_sip_tcp_{false};
+ std::atomic<bool> media_active_{true};
+ struct Mutex{};struct LockGuard{explicit LockGuard(Mutex&) {}};
+ Mutex tcp_send_mutex_,tcp_tx_pending_mutex_;
  std::atomic<uint32_t> media_proposal_epoch_{0};
  bool fail_invite=false;
  struct Wire {std::string method,id,headers,body;};std::vector<Wire> wire;
  uint16_t response=0;unsigned bye_count=0,cancel_count=0;
  bool handle_refer_(const std::string&,const sockaddr_in&);
  void notify_refer_(uint32_t,uint16_t,const char*);
+ bool end_refer_invite_usage_(bool);
+ void cancel_refer_();void finish_failed_refer_(uint16_t,const char*);
+ void open_media_session_(){if(!refer_context_active_)media_active_=true;}
+ void close_media_session_(){if(!refer_context_active_)media_active_=false;}
+ void reset_dialog_(){call_id_.clear();outgoing_invite_pending_=false;if(!refer_context_active_)media_active_=false;}
  void emit_sip_signal_(SipSignal);
  bool prepare_refer_media_(ReferDialog&);
+ void release_refer_dialog_(){refer_dialog_.reset();}
  void pump_refer_();void swap_dialog_(ReferDialog&);void swap_negotiation_(ReferDialog&);
  bool reject_if_stale_dialog_(const std::string&,const sockaddr_in&,const char*);
- bool send_stateless_response_(const std::string&,const sockaddr_in&,uint16_t s,const char*,const std::string& = "",bool=false){response=s;return true;}
+ bool send_stateless_response_(const std::string&,const sockaddr_in&,uint16_t s,const char*,const std::string& = "",bool remember=false){
+  response=s;if(remember){completed_control_.call_id=call_id_;completed_control_.response="accepted";completed_control_.udp=!remote_sip_tcp_.load();}return true;}
  uint16_t sip_port_=5060;
  enum class SipEvent{NONE};
  static SipEvent sip_event_from_method_(const std::string&){return SipEvent::NONE;}
@@ -131,9 +141,55 @@ void setup(SipTransport&s){s.call_id_="original";s.local_tag_="local";s.remote_t
  s.local_uri_="<sip:room@192.0.2.10>";s.remote_uri_="<sip:pbx@192.0.2.1>";}
 int main(){
  sockaddr_in peer{};peer.sin_addr.s_addr=htonl(0xc0000201);peer.sin_port=htons(5060);
+ for(bool original_tcp:{false,true}) for(bool target_tcp:{false,true}) for(bool accepted:{false,true}) {
+  SipTransport s;setup(s);s.remote_sip_tcp_=original_tcp;s.tcp_flow_.socket=original_tcp?41:-1;
+  const std::string uri="sip:room@192.0.2.20:5060;transport="+std::string(target_tcp?"tcp":"udp")+";opaque=kept";
+  assert(s.handle_refer_(request(uri),peer));
+  assert(s.call_id_=="original" && s.remote_sip_tcp_==original_tcp);
+  assert(s.tcp_flow_.socket==(original_tcp?41:-1));
+  assert(s.refer_dialog_->target_uri==uri && s.refer_dialog_->remote_sip_tcp_==target_tcp);
+  assert(s.refer_dialog_->tcp_flow_.connect_requested==target_tcp);
+  {SipTransport::ReferScope scope(s);
+   assert(s.remote_sip_tcp_==target_tcp);s.tcp_flow_.socket=target_tcp?42:-1;
+   s.tcp_flow_.connect_requested=false;s.outgoing_invite_pending_=false;
+   SipSignal r;r.type=accepted?SipSignalType::STATUS_200_OK:SipSignalType::FINAL_RESPONSE;r.status_code=accepted?200:486;s.emit_sip_signal_(r);
+  }
+  s.pump_refer_();
+  assert(s.remote_sip_tcp_==(accepted?target_tcp:original_tcp));
+  assert(s.tcp_flow_.socket==(accepted?(target_tcp?42:-1):(original_tcp?41:-1)));
+  assert(s.call_id_==(accepted?"refer-new":"original"));
+ }
+ for(const auto &uri:{"sips:room@192.0.2.20","sip:room@192.0.2.20;transport=tls","sip:room@192.0.2.20;method=SUBSCRIBE"}) {
+  SipTransport s;setup(s);assert(!s.handle_refer_(request(uri),peer));assert(s.response==416 && s.call_id_=="original");
+ }
+ for(bool accepted:{false,true}) {
+  SipTransport s;setup(s);assert(s.handle_refer_(request(),peer));
+  assert(s.end_refer_invite_usage_(true));assert(!s.media_active_&&s.call_id_=="original"&&s.delivered.empty());
+  {SipTransport::ReferScope scope(s);s.outgoing_invite_pending_=false;
+   if(!accepted)s.call_id_.clear();
+   SipSignal r;r.type=accepted?SipSignalType::STATUS_200_OK:SipSignalType::FINAL_RESPONSE;r.status_code=accepted?200:486;s.emit_sip_signal_(r);
+  }
+  s.pump_refer_();assert(s.cancel_count==0&&s.bye_count==0);
+  if(accepted){assert(s.call_id_=="refer-new"&&s.media_active_&&s.delivered.back().type==SipSignalType::CONNECTED_IDENTITY);}
+  else{assert(s.call_id_.empty()&&!s.media_active_&&s.delivered.back().type==SipSignalType::BYE);}
+ }
+ {SipTransport s;setup(s);assert(s.handle_refer_(request(),peer));s.cancel_refer_();
+  assert(s.cancel_count==1&&s.refer_retiring_&&s.wire.back().body=="SIP/2.0 487 Request Terminated\r\n");}
+ {SipTransport s;setup(s);s.remote_sip_tcp_=true;
+  for(unsigned attempt=0;attempt<6;++attempt){
+   auto retry=request("sip:room@192.0.2.20;transport=tcp");
+   const std::string sequence="CSeq: "+std::to_string(attempt+2);
+   retry.replace(retry.find("CSeq: 2"),7,sequence);
+   assert(s.handle_refer_(retry,peer));s.refer_dialog_->accepted_refer.call_id="original";
+   s.refer_dialog_->accepted_refer.udp=false;
+   {SipTransport::ReferScope scope(s);s.call_id_.clear();s.outgoing_invite_pending_=false;
+    SipSignal r;r.type=SipSignalType::FINAL_RESPONSE;r.status_code=486;s.emit_sip_signal_(r);}
+   s.pump_refer_();assert(!s.refer_dialog_);assert(s.call_id_=="original");
+  }
+ }
  for(bool success:{false,true}){
   SipTransport s;setup(s);assert(s.handle_refer_(request(),peer));
-  assert(s.response==202 && s.call_id_=="original" && s.media_active_);
+  assert(s.response==200 && s.call_id_=="original" && s.media_active_);
   assert(s.remote_rtp_port_==40000 && s.media_proposal_epoch_==2);
   assert(s.wire.back().id=="original" && s.wire.back().body=="SIP/2.0 100 Trying\r\n");
   assert(s.wire.back().headers.find("Event: refer;id=2")!=std::string::npos);

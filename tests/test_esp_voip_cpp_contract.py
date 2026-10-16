@@ -288,8 +288,7 @@ def test_signaling_payload_psram_is_explicit_and_control_plane_only() -> None:
         "response",
         "ack",
         "last_invite_response_",
-        "sip_tcp_rx_buffer_",
-        "tcp_tx_pending_",
+        "SipSignalingString rx_buffer, pending;",
     ):
         assert payload in header
     assert "uint32_t next_ms" in header
@@ -2093,8 +2092,8 @@ def test_sip_tcp_originate_is_async() -> None:
     end = sip_cpp.index("\nvoid SipTransport::set_remote", start)
     originate = sip_cpp[start:end]
 
-    assert "tcp_connect_requested_" in originate
-    assert "tcp_tx_pending_" in sip_cpp
+    assert "tcp_flow_.connect_requested" in originate
+    assert "tcp_flow_.pending" in sip_cpp
     assert "delay(" not in originate
     assert "select(" not in originate
     assert "socket(" not in originate
@@ -2125,18 +2124,18 @@ def test_sip_tcp_rx_is_bounded_and_active_dialog_accept_is_guarded() -> None:
 
     assert "MAX_SIP_BODY_BYTES = 4096" in sip_message_h
     assert "MAX_SIP_TCP_RX_BUFFER = 8192" in sip_message_h
-    assert "sip_tcp_client_ip_v4_" in sip_h
+    assert "std::atomic<uint32_t> peer_ip" in sip_h
     assert "TransportDialogActiveCallback" in transport_h
     assert "set_dialog_active_callback" in transport_h
     assert "transport_dialog_active_callback_" in stack_cpp
 
     stream = sip_cpp[sip_cpp.index("void SipTransport::handle_sip_stream_") : sip_cpp.index("\nvoid SipTransport::sip_task_trampoline_", sip_cpp.index("void SipTransport::handle_sip_stream_"))]
-    assert "this->sip_tcp_rx_buffer_.size() > MAX_SIP_TCP_RX_BUFFER" in stream
+    assert "flow->rx_buffer.size() > MAX_SIP_TCP_RX_BUFFER" in stream
     assert "body_len > MAX_SIP_BODY_BYTES" in stream
     assert "drop_tcp_stream(\"SIP TCP RX buffer overflow\")" in stream
     assert "drop_tcp_stream(\"SIP TCP Content-Length exceeds limit\")" in stream
     assert "SIP TCP invalid or ambiguous Content-Length" in stream
-    assert stream.count("this->handle_tcp_peer_loss_();") >= 3
+    assert stream.count("this->handle_tcp_peer_loss_(flow);") >= 3
     assert 'normalized == "content-length" || normalized == "l"' in sip_cpp
 
     send = sip_cpp[
@@ -2144,22 +2143,18 @@ def test_sip_tcp_rx_is_bounded_and_active_dialog_accept_is_guarded() -> None:
         sip_cpp.index("\nstd::string SipTransport::wrap_sdp_envelope_")
     ]
     assert "const bool replacing_session" in send
-    assert "sip_tcp_client_close_requested_" in send
-    assert "tcp_connect_requested_" in send
+    assert "tcp_flow_.close_requested" in send
+    assert "tcp_flow_.connect_requested" in send
     assert "if (socket < 0 || replacing_session)" in send
     assert "send_sip_tcp_record_(data, size, socket)" in send
     assert "send_sip_tcp_bytes_(message.data(), message.size())" in send
     assert "this->wake_sip_task_();" in send
 
-    promote = sip_cpp[
-        sip_cpp.index("auto promote_tcp_connect") : sip_cpp.index(
-            "while (this->running_"
-        )
-    ]
+    promote = cpp_method(sip_cpp, r"SipTransport::promote_tcp_flow_")
     assert "LockGuard send_lock(this->tcp_send_mutex_);" in promote
-    assert "pending = this->tcp_tx_pending_.str();" in promote
-    assert "this->tcp_tx_pending_.clear();" in promote
-    assert "send_sip_tcp_record_(pending, promoted_fd)" in promote
+    assert "pending = flow.pending.str();" in promote
+    assert "flow.pending.clear();" in promote
+    assert "send_sip_tcp_record_(pending, flow.connecting_socket)" in promote
 
     accept = sip_cpp[
         sip_cpp.index("int client = accept(") : sip_cpp.index(
@@ -2174,7 +2169,7 @@ def test_sip_tcp_rx_is_bounded_and_active_dialog_accept_is_guarded() -> None:
     assert "replaces_owned_transport" in accept
     assert "SIP TCP accept rejected: signaling transport owned" in accept
 
-    peer_loss = cpp_method(sip_cpp, r"SipTransport::handle_tcp_peer_loss_")
+    peer_loss = cpp_method(sip_cpp, r"SipTransport::close_tcp_dialog_")
     assert "this->terminal_transaction_pending_locked_()" in peer_loss
     assert "!this->completed_invite_.udp" in peer_loss
     assert "this->completed_invite_.clear();" in peer_loss
@@ -2444,13 +2439,13 @@ def test_tcp_connect_queue_never_overwrites_the_pending_invite() -> None:
         sip_cpp.index("bool SipTransport::send_sip_tcp_") :
         sip_cpp.index("\nstd::string SipTransport::wrap_sdp_envelope_", sip_cpp.index("bool SipTransport::send_sip_tcp_"))
     ]
-    assert "if (!this->tcp_tx_pending_.empty())" in send_tcp
+    assert "if (!this->tcp_flow_.pending.empty())" in send_tcp
     assert "return false;" in send_tcp
     reset = sip_cpp[
         sip_cpp.index("void SipTransport::reset_dialog_()") :
         sip_cpp.index("\nvoid SipTransport::remember_udp_transaction_", sip_cpp.index("void SipTransport::reset_dialog_()"))
     ]
-    assert "reset_string(this->tcp_tx_pending_);" in reset
+    assert "reset_string(this->tcp_flow_.pending);" in reset
 
 
 def test_all_meaningful_invite_progress_responses_stop_local_calling_state() -> None:
@@ -2655,15 +2650,16 @@ def test_udp_listener_cannot_flip_an_active_tcp_dialog() -> None:
     sip_cpp = read("sip_transport.cpp")
     udp_receive = sip_cpp[
         sip_cpp.index("if (this->sip_socket_ >= 0 && FD_ISSET") :
-        sip_cpp.index("\n    const int active_tcp_client", sip_cpp.index("if (this->sip_socket_ >= 0 && FD_ISSET"))
+        sip_cpp.index("\n    // A commit can exchange", sip_cpp.index("if (this->sip_socket_ >= 0 && FD_ISSET"))
     ]
 
-    active_guard = udp_receive.index("if (tcp_session_active)")
+    active_guard = udp_receive.index("if (tcp_session_active && !refer_udp)")
     udp_mode_store = udp_receive.index("this->remote_sip_tcp_.store(false")
     assert active_guard < udp_mode_store
-    assert "sip_tcp_client_socket_" in udp_receive
-    assert "connecting_fd >= 0" in udp_receive
-    assert "tcp_connect_requested_" in udp_receive
+    assert "tcp_flow_.socket" in udp_receive
+    assert "tcp_flow_.connecting_socket >= 0" in udp_receive
+    assert 'header_value(std::string(buf, static_cast<size_t>(n)), "Call-ID") == this->refer_wire_id_' in udp_receive
+    assert "tcp_flow_.connect_requested" in udp_receive
     assert "bool tcp_call_active" in udp_receive
     assert "!this->call_id_.empty()" in udp_receive
     assert "terminal_transaction_pending_locked_()" in udp_receive
@@ -2673,19 +2669,16 @@ def test_udp_listener_cannot_flip_an_active_tcp_dialog() -> None:
 def test_tcp_invite_can_be_cancelled_atomically_before_connect_flush() -> None:
     sip_cpp = read("sip_transport.cpp")
     cancel = cpp_method(sip_cpp, r"SipTransport::send_cancel_unlocked_")
-    promote = sip_cpp[
-        sip_cpp.index("auto promote_tcp_connect") :
-        sip_cpp.index("while (this->running_")
-    ]
+    promote = cpp_method(sip_cpp, r"SipTransport::promote_tcp_flow_")
     reset = cpp_method(sip_cpp, r"SipTransport::reset_dialog_media_locked_")
 
     assert "LockGuard send_lock(this->tcp_send_mutex_);" in cancel
     assert "LockGuard pending_lock(this->tcp_tx_pending_mutex_);" in cancel
-    assert 'this->tcp_tx_pending_.rfind("INVITE ", 0) == 0' in cancel
-    assert 'header_value(this->tcp_tx_pending_, "Call-ID") == this->call_id_' in cancel
-    assert "reset_string(this->tcp_tx_pending_);" in cancel
-    assert "this->tcp_connect_requested_.store(false" in cancel
-    assert "this->sip_tcp_client_close_requested_.store(" in cancel
+    assert 'this->tcp_flow_.pending.rfind("INVITE ", 0) == 0' in cancel
+    assert 'header_value(this->tcp_flow_.pending, "Call-ID") == this->call_id_' in cancel
+    assert "reset_string(this->tcp_flow_.pending);" in cancel
+    assert "this->tcp_flow_.connect_requested.store(false" in cancel
+    assert "this->tcp_flow_.close_requested.store(" in cancel
     assert "if (cancelled_before_flush)" in cancel
     assert "this->reset_dialog_();" in cancel
     assert "return true;" in cancel
@@ -2693,8 +2686,8 @@ def test_tcp_invite_can_be_cancelled_atomically_before_connect_flush() -> None:
     # Promotion and cancellation share the same outer lock: either the queued
     # INVITE is retracted, or promotion owns and sends it before CANCEL.
     assert "LockGuard send_lock(this->tcp_send_mutex_);" in promote
-    assert "pending = this->tcp_tx_pending_.str();" in promote
-    assert "this->tcp_tx_pending_.clear();" in promote
+    assert "pending = flow.pending.str();" in promote
+    assert "flow.pending.clear();" in promote
     assert "LockGuard send_lock(this->tcp_send_mutex_);" in reset
     assert "abort_queued_tcp_record" in reset
 
@@ -2771,7 +2764,7 @@ def test_sip_compact_headers_and_tcp_close_are_centralized() -> None:
     assert 'canonical == "content-length"' in header_parser
 
     close = sip_cpp[
-        sip_cpp.index("void SipTransport::close_tcp_client_from_sip_task_") :
+        sip_cpp.index("void SipTransport::close_tcp_flow_") :
         sip_cpp.index("\nvoid SipTransport::wake_sip_task_")
     ]
     assert "LockGuard send_lock(this->tcp_send_mutex_);" in close
@@ -2780,7 +2773,8 @@ def test_sip_compact_headers_and_tcp_close_are_centralized() -> None:
         sip_cpp.index("\nvoid SipTransport::wake_sip_task_")
     ]
     assert "LockGuard lock(this->dialog_mutex_);" in peer_loss
-    assert "this->reset_dialog_();" in peer_loss
+    assert "this->close_tcp_dialog_();" in peer_loss
+    assert "this->reset_dialog_();" in cpp_method(sip_cpp, r"SipTransport::close_tcp_dialog_")
     assert "this->emit_connection_change_(false);" in peer_loss
 
 
@@ -2790,6 +2784,7 @@ def test_sip_worker_uses_a_dedicated_event_driven_wake_socket() -> None:
     sip_cpp = read("sip_transport.cpp")
 
     assert 'socket.consume_sockets(3, "voip_stack_sip", socket.SocketType.UDP)' in init_py
+    assert 'socket.consume_sockets(3, "voip_stack_sip_tcp")' in init_py
     assert "int sip_wake_socket_{-1};" in sip_h
     assert "uint16_t sip_wake_port_{0};" in sip_h
 

@@ -555,35 +555,42 @@ bool SipTransport::start() {
 
 void SipTransport::request_tcp_client_close_() {
   LockGuard send_lock(this->tcp_send_mutex_);
-  const int socket = this->sip_tcp_client_socket_.load(std::memory_order_acquire);
-  this->tcp_connect_requested_.store(false, std::memory_order_release);
+  const int socket = this->tcp_flow_.socket.load(std::memory_order_acquire);
+  this->tcp_flow_.connect_requested.store(false, std::memory_order_release);
   {
     LockGuard lock(this->tcp_tx_pending_mutex_);
-    reset_string(this->tcp_tx_pending_);
+    reset_string(this->tcp_flow_.pending);
   }
-  this->sip_tcp_client_close_requested_.store(true, std::memory_order_release);
+  this->tcp_flow_.close_requested.store(true, std::memory_order_release);
   if (socket >= 0) shutdown(socket, SHUT_RDWR);
   this->wake_sip_task_();
 }
 
-void SipTransport::close_tcp_client_from_sip_task_() {
+void SipTransport::close_tcp_flow_(SipTcpFlow &flow) {
   LockGuard send_lock(this->tcp_send_mutex_);
-  const int socket = this->sip_tcp_client_socket_.exchange(-1, std::memory_order_acq_rel);
-  this->sip_tcp_client_close_requested_.store(false, std::memory_order_release);
-  this->sip_tcp_client_ip_v4_.store(0, std::memory_order_release);
+  const int socket = flow.socket.exchange(-1, std::memory_order_acq_rel);
+  flow.close_requested.store(false, std::memory_order_release);
+  flow.peer_ip.store(0, std::memory_order_release);
   if (socket >= 0) close(socket);
-  reset_string(this->sip_tcp_rx_buffer_);
+  if (flow.connecting_socket >= 0) close(flow.connecting_socket);
+  flow.connecting_socket = -1;
+  flow.connect_deadline = 0;
+  flow.connecting_ip = 0;
+  flow.connecting_port = 0;
+  reset_string(flow.rx_buffer);
 }
 
-void SipTransport::handle_tcp_peer_loss_() {
-  bool dialog_lost = false;
-  {
-    LockGuard lock(this->dialog_mutex_);
-    dialog_lost = !this->call_id_.empty() ||
-                  this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
-                  this->media_active_.load(std::memory_order_acquire) ||
-                  this->terminal_transaction_pending_locked_();
-    this->close_tcp_client_from_sip_task_();
+void SipTransport::close_tcp_client_from_sip_task_() {
+  this->close_tcp_flow_(this->tcp_flow_);
+}
+
+bool SipTransport::close_tcp_dialog_() {
+  const bool dialog_lost = this->remote_sip_tcp_.load(std::memory_order_acquire) &&
+      (!this->call_id_.empty() || this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
+       this->media_active_.load(std::memory_order_acquire) || this->terminal_transaction_pending_locked_());
+  this->close_tcp_client_from_sip_task_();
+  this->tcp_flow_.connect_requested.store(false, std::memory_order_release);
+  { LockGuard pending_lock(this->tcp_tx_pending_mutex_); reset_string(this->tcp_flow_.pending); }
     // Completed transactions intentionally survive an ordinary dialog reset
     // so UDP retransmissions can still be answered. A dead TCP connection is
     // different: records tied to that byte stream can neither be completed nor
@@ -607,10 +614,110 @@ void SipTransport::handle_tcp_peer_loss_() {
       this->completed_video_direction_invite_.clear();
     }
 #endif
-    this->remote_sip_tcp_.store(false, std::memory_order_release);
-    if (dialog_lost) this->reset_dialog_();
+  if (dialog_lost && this->end_refer_invite_usage_(false)) return false;
+  this->remote_sip_tcp_.store(false, std::memory_order_release);
+  if (dialog_lost) this->reset_dialog_();
+  return dialog_lost;
+}
+
+void SipTransport::handle_tcp_peer_loss_(SipTcpFlow *flow) {
+  bool dialog_lost = false;
+  {
+    LockGuard lock(this->dialog_mutex_);
+    if (this->refer_dialog_ && flow == &this->refer_dialog_->tcp_flow_) {
+      {
+        ReferScope scope(*this);
+        if (this->close_tcp_dialog_()) {
+          SipSignal signal;
+          signal.type = SipSignalType::PROTOCOL_ERROR;
+          signal.status_code = 503;
+          this->emit_sip_signal_(std::move(signal));
+        }
+      }
+      this->pump_refer_();
+    } else {
+      dialog_lost = this->close_tcp_dialog_();
+    }
   }
   if (dialog_lost) this->emit_connection_change_(false);
+}
+
+SipTransport::SipTcpFlow *SipTransport::tcp_flow_for_socket_(int socket) {
+  if (socket < 0) return nullptr;
+  if (this->tcp_flow_.socket.load(std::memory_order_acquire) == socket) return &this->tcp_flow_;
+  if (this->refer_dialog_ && this->refer_dialog_->tcp_flow_.socket.load(std::memory_order_acquire) == socket)
+    return &this->refer_dialog_->tcp_flow_;
+  return nullptr;
+}
+
+void SipTransport::release_refer_dialog_() {
+  if (!this->refer_dialog_) return;
+  this->close_tcp_flow_(this->refer_dialog_->tcp_flow_);
+  this->refer_dialog_.reset();
+}
+
+void SipTransport::fail_tcp_flow_(SipTcpFlow &flow, int error) {
+  char ip[16];
+  struct in_addr address{};
+  address.s_addr = htonl(flow.connecting_ip);
+  inet_ntoa_r(address, ip, sizeof(ip));
+  ESP_LOGW(TAG, "SIP TCP connect to %s:%u failed: %s (%d: %s)", ip,
+           (unsigned) flow.connecting_port, socket_errno_name(error), error, socket_errno_text(error));
+  this->handle_tcp_peer_loss_(&flow);
+}
+
+void SipTransport::promote_tcp_flow_(SipTcpFlow &flow) {
+  bool sent = true;
+  {
+    LockGuard send_lock(this->tcp_send_mutex_);
+    flow.socket.store(flow.connecting_socket, std::memory_order_release);
+    flow.peer_ip.store(flow.connecting_ip, std::memory_order_release);
+    flow.close_requested.store(false, std::memory_order_release);
+    flow.connect_requested.store(false, std::memory_order_release);
+    reset_string(flow.rx_buffer);
+    std::string pending;
+    { LockGuard pending_lock(this->tcp_tx_pending_mutex_); pending = flow.pending.str(); flow.pending.clear(); }
+    if (!pending.empty()) sent = this->send_sip_tcp_record_(pending, flow.connecting_socket);
+    flow.connecting_socket = -1;
+    flow.connect_deadline = 0;
+    flow.connecting_ip = 0;
+    flow.connecting_port = 0;
+  }
+  if (!sent) this->handle_tcp_peer_loss_(&flow);
+}
+
+void SipTransport::prepare_tcp_flow_(SipTcpFlow &flow) {
+  if (flow.close_requested.load(std::memory_order_acquire)) this->close_tcp_flow_(flow);
+  if (!flow.connect_requested.load(std::memory_order_acquire)) return;
+  this->close_tcp_flow_(flow);
+  flow.connecting_ip = flow.target_ip.load(std::memory_order_acquire);
+  flow.connecting_port = flow.target_port.load(std::memory_order_acquire);
+  if (flow.connecting_ip == 0 || flow.connecting_port == 0) {
+    this->fail_tcp_flow_(flow, EINVAL);
+    return;
+  }
+  flow.connecting_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (flow.connecting_socket < 0) {
+    this->fail_tcp_flow_(flow, errno);
+    return;
+  }
+  int opt = 1;
+  setsockopt(flow.connecting_socket, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+  const int flags = fcntl(flow.connecting_socket, F_GETFL, 0);
+  fcntl(flow.connecting_socket, F_SETFL, flags | O_NONBLOCK);
+  struct sockaddr_in target{};
+  target.sin_family = AF_INET;
+  target.sin_addr.s_addr = htonl(flow.connecting_ip);
+  target.sin_port = htons(flow.connecting_port);
+  const int result = connect(flow.connecting_socket, reinterpret_cast<struct sockaddr *>(&target), sizeof(target));
+  if (result == 0) {
+    this->promote_tcp_flow_(flow);
+  } else if (errno == EINPROGRESS) {
+    flow.connect_deadline = millis() + 2000;
+    flow.connect_requested.store(false, std::memory_order_release);
+  } else {
+    this->fail_tcp_flow_(flow, errno);
+  }
 }
 
 void SipTransport::wake_sip_task_() {
@@ -665,12 +772,12 @@ void SipTransport::stop() {
   // Stop new SIP work first. A strong wait is required here because this
   // method is also the destructor boundary: returning with a worker that can
   // still dereference SipTransport would be a use-after-free, not a safe leak.
-  this->tcp_connect_requested_.store(false, std::memory_order_release);
+  this->tcp_flow_.connect_requested.store(false, std::memory_order_release);
   {
     LockGuard lock(this->tcp_tx_pending_mutex_);
-    reset_string(this->tcp_tx_pending_);
+    reset_string(this->tcp_flow_.pending);
   }
-  this->sip_tcp_client_close_requested_.store(true,
+  this->tcp_flow_.close_requested.store(true,
                                                std::memory_order_release);
   if (this->sip_task_handle_ != nullptr) {
     xSemaphoreTake(this->sip_task_done_, 0);
@@ -712,7 +819,7 @@ void SipTransport::stop() {
                                           &this->rtp_task_stack_,
                                           kRtpTaskStackBytes);
   }
-  this->refer_dialog_.reset();
+  this->release_refer_dialog_();
   for (auto &completed : this->completed_refers_) completed.reset();
   this->refer_signal_pending_ = false;
   this->logical_call_id_.clear();
@@ -1006,11 +1113,11 @@ bool SipTransport::originate(const std::string &host, uint16_t port) {
   if (ip_v4 == 0) return false;
   {
     LockGuard lock(this->tcp_tx_pending_mutex_);
-    reset_string(this->tcp_tx_pending_);
+    reset_string(this->tcp_flow_.pending);
   }
-  this->tcp_connect_ip_v4_.store(ip_v4, std::memory_order_release);
-  this->tcp_connect_port_.store(sip_port, std::memory_order_release);
-  this->tcp_connect_requested_.store(true, std::memory_order_release);
+  this->tcp_flow_.target_ip.store(ip_v4, std::memory_order_release);
+  this->tcp_flow_.target_port.store(sip_port, std::memory_order_release);
+  this->tcp_flow_.connect_requested.store(true, std::memory_order_release);
   this->wake_sip_task_();
   return true;
 }
@@ -1070,16 +1177,16 @@ void SipTransport::reset_dialog_media_locked_() {
   if (!this->refer_context_active_) this->request_audio_path_stop_locked_();
   bool abort_queued_tcp_record = false;
   {
-    // Serialize with promote_tcp_connect(): once that path swaps the queued
+    // Serialize with promote_tcp_flow_(): once that path swaps the queued
     // record it owns transmission; before the swap a reset can still retract
     // the record without leaving an orphan request at the peer.
     LockGuard send_lock(this->tcp_send_mutex_);
     LockGuard pending_lock(this->tcp_tx_pending_mutex_);
-    abort_queued_tcp_record = !this->tcp_tx_pending_.empty();
-    reset_string(this->tcp_tx_pending_);
+    abort_queued_tcp_record = !this->tcp_flow_.pending.empty();
+    reset_string(this->tcp_flow_.pending);
     if (abort_queued_tcp_record) {
-      this->tcp_connect_requested_.store(false, std::memory_order_release);
-      this->sip_tcp_client_close_requested_.store(true,
+      this->tcp_flow_.connect_requested.store(false, std::memory_order_release);
+      this->tcp_flow_.close_requested.store(true,
                                                    std::memory_order_release);
     }
   }
@@ -1454,19 +1561,19 @@ bool SipTransport::send_sip_tcp_bytes_(const char *data, size_t size) {
   LockGuard send_lock(this->tcp_send_mutex_);
   if (size == 0) return false;
   const bool replacing_session =
-      this->sip_tcp_client_close_requested_.load(std::memory_order_acquire) ||
-      this->tcp_connect_requested_.load(std::memory_order_acquire);
-  const int socket = this->sip_tcp_client_socket_.load(std::memory_order_acquire);
+      this->tcp_flow_.close_requested.load(std::memory_order_acquire) ||
+      this->tcp_flow_.connect_requested.load(std::memory_order_acquire);
+  const int socket = this->tcp_flow_.socket.load(std::memory_order_acquire);
   if (socket < 0 || replacing_session) {
     if (this->remote_sip_tcp_.load(std::memory_order_acquire)) {
       {
         LockGuard lock(this->tcp_tx_pending_mutex_);
-        if (!this->tcp_tx_pending_.empty()) {
+        if (!this->tcp_flow_.pending.empty()) {
           ESP_LOGW(TAG, "SIP TCP connect still pending; refusing to replace queued %s with a newer request",
-                   this->tcp_tx_pending_.rfind("INVITE ", 0) == 0 ? "INVITE" : "message");
+                   this->tcp_flow_.pending.rfind("INVITE ", 0) == 0 ? "INVITE" : "message");
           return false;
         }
-        this->tcp_tx_pending_.assign(data, size);
+        this->tcp_flow_.pending.assign(data, size);
       }
       this->wake_sip_task_();
       return true;
@@ -1881,8 +1988,9 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
   const std::string local_identity_uri =
       "sip:" + sip_uri_user_encode(this->caller_.route) + "@" + local_ip +
       ":" + std::to_string(this->sip_port_) + ";transport=" + uri_transport;
-  const std::string remote_identity_uri =
-      "sip:" + sip_uri_user_encode(this->destination_.route) + "@" +
+  const std::string remote_identity_uri = this->refer_context_active_ && this->refer_dialog_
+      ? this->refer_dialog_->target_uri
+      : "sip:" + sip_uri_user_encode(this->destination_.route) + "@" +
       std::string(ip_text) + ":" +
       std::to_string(this->remote_sip_port_.load(std::memory_order_acquire)) +
       ";transport=" + uri_transport;
@@ -2128,18 +2236,18 @@ bool SipTransport::send_cancel_unlocked_(const std::string &call_id) {
   if (this->remote_sip_tcp_.load(std::memory_order_acquire)) {
     bool cancelled_before_flush = false;
     {
-      // This lock is shared with promote_tcp_connect(). If the INVITE still
+      // This lock is shared with promote_tcp_flow_(). If the INVITE still
       // occupies the one pre-connect slot, it has not reached the wire and
       // must be retracted rather than followed by a meaningless CANCEL. If
       // promotion already owns/sent it, release the lock and send a real
       // CANCEL on the established stream below.
       LockGuard send_lock(this->tcp_send_mutex_);
       LockGuard pending_lock(this->tcp_tx_pending_mutex_);
-      if (this->tcp_tx_pending_.rfind("INVITE ", 0) == 0 &&
-          header_value(this->tcp_tx_pending_, "Call-ID") == this->call_id_) {
-        reset_string(this->tcp_tx_pending_);
-        this->tcp_connect_requested_.store(false, std::memory_order_release);
-        this->sip_tcp_client_close_requested_.store(
+      if (this->tcp_flow_.pending.rfind("INVITE ", 0) == 0 &&
+          header_value(this->tcp_flow_.pending, "Call-ID") == this->call_id_) {
+        reset_string(this->tcp_flow_.pending);
+        this->tcp_flow_.connect_requested.store(false, std::memory_order_release);
+        this->tcp_flow_.close_requested.store(
             true, std::memory_order_release);
         cancelled_before_flush = true;
       }
@@ -2172,6 +2280,18 @@ bool SipTransport::send_bye(const std::string &call_id) {
 
 bool SipTransport::send_bye_unlocked_(const std::string &call_id) {
   if (!call_id.empty() && call_id != this->logical_call_id_) this->call_id_ = call_id;
+  const bool ended_invite = !this->refer_context_active_ && this->refer_dialog_ &&
+      this->refer_dialog_->owner_invite_ended && this->call_id_ == this->refer_dialog_->owner_call_id;
+  this->cancel_refer_();
+  if (ended_invite) {
+    const std::string terminated = this->call_id_;
+    this->reset_dialog_();
+    SipSignal signal;
+    signal.type = SipSignalType::TERMINAL_COMPLETE;
+    signal.call_id = terminated;
+    this->emit_sip_signal_(std::move(signal));
+    return true;
+  }
   // A UAS dialog is not confirmed until the ACK for its 2xx arrives. A local
   // hangup can race the initial final-response send, especially when lwIP is
   // briefly short of pbuf memory. Retain the terminal intent under the INVITE
@@ -2637,6 +2757,8 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
 
 bool SipTransport::handle_reinvite_(const std::string &message,
                                     const sockaddr_in &src) {
+  if (this->refer_dialog_ && this->refer_dialog_->owner_invite_ended && !this->refer_retiring_)
+    return this->send_stateless_response_(message, src, 481, "Call/Transaction Does Not Exist");
   if (this->refer_dialog_ && !this->refer_retiring_)
     return this->send_stateless_response_(message, src, 491, "Request Pending");
   const uint32_t src_ip = ntohl(src.sin_addr.s_addr);
@@ -3705,6 +3827,10 @@ void SipTransport::handle_sip_datagram_unlocked_(const char *data, size_t len, c
       return;
     }
     this->send_stateless_response_(msg, src, 200, "OK", "", true);
+    if (!local_bye_pending && this->end_refer_invite_usage_(true)) {
+      this->remote_dialog_cseq_ = cseq_number(header_value(msg, "CSeq"));
+      return;
+    }
     SipSignal signal;
     signal.type = SipSignalType::BYE;
     signal.call_id = this->call_id_;
@@ -3776,17 +3902,20 @@ bool SipTransport::reject_if_stale_dialog_(const std::string &request, const soc
 
 void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
   char *const buf = this->sip_rx_scratch_.data();
+  auto *flow = this->tcp_flow_for_socket_(socket);
+  if (flow == nullptr) return;
   auto drop_tcp_stream = [&](const char *reason) {
     char ip[16];
     inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
     ESP_LOGW(TAG, "%s from %s, dropping connection", reason, ip);
-    this->handle_tcp_peer_loss_();
+    this->handle_tcp_peer_loss_(flow);
   };
+  bool peer_closed = false;
   while (true) {
     const int n = recv(socket, buf, 1024, 0);
     if (n > 0) {
-      this->sip_tcp_rx_buffer_.append(buf, static_cast<size_t>(n));
-      if (this->sip_tcp_rx_buffer_.size() > MAX_SIP_TCP_RX_BUFFER) {
+      flow->rx_buffer.append(buf, static_cast<size_t>(n));
+      if (flow->rx_buffer.size() > MAX_SIP_TCP_RX_BUFFER) {
         drop_tcp_stream("SIP TCP RX buffer overflow");
         return;
       }
@@ -3794,21 +3923,27 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
     }
     if (n == 0) {
       ESP_LOGI(TAG, "SIP TCP peer closed");
-      this->handle_tcp_peer_loss_();
-      return;
+      peer_closed = true;
+      break;
     }
     const int err = errno;
+    if (err == EINTR) continue;
     if (err == EWOULDBLOCK || err == EAGAIN || err == ENOTCONN || err == EINPROGRESS || err == EALREADY) break;
     ESP_LOGW(TAG, "SIP TCP RX failed: %s (%d: %s)", socket_errno_name(err), err, socket_errno_text(err));
-    this->handle_tcp_peer_loss_();
-    return;
+    peer_closed = true;
+    break;
   }
 
   while (true) {
-    const size_t sep = this->sip_tcp_rx_buffer_.find("\r\n\r\n");
-    if (sep == std::string::npos) return;
+    flow = this->tcp_flow_for_socket_(socket);
+    if (flow == nullptr) return;
+    const size_t sep = flow->rx_buffer.find("\r\n\r\n");
+    if (sep == std::string::npos) {
+      if (peer_closed) this->handle_tcp_peer_loss_(flow);
+      return;
+    }
     size_t body_len = 0;
-    if (!sip_content_length(this->sip_tcp_rx_buffer_, &body_len)) {
+    if (!sip_content_length(flow->rx_buffer, &body_len)) {
       drop_tcp_stream("SIP TCP invalid or ambiguous Content-Length");
       return;
     }
@@ -3821,10 +3956,12 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
       drop_tcp_stream("SIP TCP framed message exceeds RX buffer");
       return;
     }
-    if (this->sip_tcp_rx_buffer_.size() < total) return;
-    const std::string msg = this->sip_tcp_rx_buffer_.substr(0, total);
-    this->sip_tcp_rx_buffer_.erase(0, total);
-    this->remote_sip_tcp_.store(true, std::memory_order_release);
+    if (flow->rx_buffer.size() < total) {
+      if (peer_closed) this->handle_tcp_peer_loss_(flow);
+      return;
+    }
+    const std::string msg = flow->rx_buffer.substr(0, total);
+    flow->rx_buffer.erase(0, total);
     this->handle_sip_datagram_(msg.data(), msg.size(), src);
   }
 }
@@ -3839,115 +3976,10 @@ void SipTransport::rtp_task_trampoline_(void *param) {
 
 void SipTransport::sip_task_() {
   char *const buf = this->sip_rx_scratch_.data();
-  int connecting_fd = -1;
-  uint32_t connect_deadline_ms = 0;
-  uint32_t connecting_ip_v4 = 0;
-  uint16_t connecting_port = 0;
-  auto close_connecting = [&]() {
-    if (connecting_fd >= 0) close(connecting_fd);
-    connecting_fd = -1;
-    connect_deadline_ms = 0;
-    connecting_ip_v4 = 0;
-    connecting_port = 0;
-  };
-  auto drop_tcp_pending = [this]() {
-    LockGuard lock(this->tcp_tx_pending_mutex_);
-    reset_string(this->tcp_tx_pending_);
-  };
-  auto fail_tcp_connect = [&](int err) {
-    char ip[16];
-    struct in_addr a{};
-    a.s_addr = htonl(connecting_ip_v4);
-    inet_ntoa_r(a, ip, sizeof(ip));
-    ESP_LOGW(TAG, "SIP TCP connect to %s:%u failed: %s (%d: %s)",
-             ip, (unsigned) connecting_port, socket_errno_name(err), err, socket_errno_text(err));
-    close_connecting();
-    this->tcp_connect_requested_.store(false, std::memory_order_release);
-    drop_tcp_pending();
-    {
-      LockGuard lock(this->dialog_mutex_);
-      if (!this->call_id_.empty()) this->reset_dialog_();
-    }
-    this->emit_connection_change_(false);
-  };
-  auto promote_tcp_connect = [&]() {
-    const int promoted_fd = connecting_fd;
-    const uint32_t promoted_ip = connecting_ip_v4;
-    const uint16_t promoted_port = connecting_port;
-    std::string pending;
-    bool pending_sent = true;
-    {
-      LockGuard send_lock(this->tcp_send_mutex_);
-      this->sip_tcp_client_socket_.store(promoted_fd, std::memory_order_release);
-      this->sip_tcp_client_ip_v4_.store(promoted_ip, std::memory_order_release);
-      this->sip_tcp_client_close_requested_.store(false, std::memory_order_release);
-      this->tcp_connect_requested_.store(false, std::memory_order_release);
-      reset_string(this->sip_tcp_rx_buffer_);
-      {
-        LockGuard lock(this->tcp_tx_pending_mutex_);
-        pending = this->tcp_tx_pending_.str();
-        this->tcp_tx_pending_.clear();
-      }
-      if (!pending.empty()) {
-        pending_sent = this->send_sip_tcp_record_(pending, promoted_fd);
-      }
-    }
-    char ip[16];
-    struct in_addr a{};
-    a.s_addr = htonl(promoted_ip);
-    inet_ntoa_r(a, ip, sizeof(ip));
-    ESP_LOGI(TAG, "SIP TCP originate connected to %s:%u", ip, (unsigned) promoted_port);
-    connecting_fd = -1;
-    connect_deadline_ms = 0;
-    connecting_ip_v4 = 0;
-    connecting_port = 0;
-    if (!pending_sent) this->handle_tcp_peer_loss_();
-  };
   while (this->running_.load(std::memory_order_acquire)) {
     this->pump_udp_retransmits_();
-    if (this->sip_tcp_client_close_requested_.load(std::memory_order_acquire)) {
-      close_connecting();
-      this->close_tcp_client_from_sip_task_();
-    }
-    if (this->tcp_connect_requested_.load(std::memory_order_acquire)) {
-      close_connecting();
-      this->close_tcp_client_from_sip_task_();
-      connecting_ip_v4 = this->tcp_connect_ip_v4_.load(std::memory_order_acquire);
-      connecting_port = this->tcp_connect_port_.load(std::memory_order_acquire);
-      if (connecting_ip_v4 == 0 || connecting_port == 0) {
-        this->tcp_connect_requested_.store(false, std::memory_order_release);
-        drop_tcp_pending();
-        {
-          LockGuard lock(this->dialog_mutex_);
-          if (!this->call_id_.empty()) this->reset_dialog_();
-        }
-        this->emit_connection_change_(false);
-      } else {
-        connecting_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (connecting_fd < 0) {
-          fail_tcp_connect(errno);
-        } else {
-          int opt = 1;
-          setsockopt(connecting_fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
-          int flags = fcntl(connecting_fd, F_GETFL, 0);
-          fcntl(connecting_fd, F_SETFL, flags | O_NONBLOCK);
-
-          struct sockaddr_in dest{};
-          dest.sin_family = AF_INET;
-          dest.sin_addr.s_addr = htonl(connecting_ip_v4);
-          dest.sin_port = htons(connecting_port);
-          const int rc = connect(connecting_fd, reinterpret_cast<struct sockaddr *>(&dest), sizeof(dest));
-          if (rc == 0) {
-            promote_tcp_connect();
-          } else if (errno == EINPROGRESS) {
-            connect_deadline_ms = millis() + 2000;
-            this->tcp_connect_requested_.store(false, std::memory_order_release);
-          } else {
-            fail_tcp_connect(errno);
-          }
-        }
-      }
-    }
+    this->prepare_tcp_flow_(this->tcp_flow_);
+    if (this->refer_dialog_) this->prepare_tcp_flow_(this->refer_dialog_->tcp_flow_);
     fd_set readfds;
     fd_set writefds;
     FD_ZERO(&readfds);
@@ -3965,14 +3997,14 @@ void SipTransport::sip_task_() {
       FD_SET(this->sip_tcp_listener_socket_, &readfds);
       max_fd = std::max(max_fd, this->sip_tcp_listener_socket_);
     }
-    const int tcp_client = this->sip_tcp_client_socket_.load(std::memory_order_acquire);
-    if (tcp_client >= 0) {
-      FD_SET(tcp_client, &readfds);
-      max_fd = std::max(max_fd, tcp_client);
-    }
-    if (connecting_fd >= 0) {
-      FD_SET(connecting_fd, &writefds);
-      max_fd = std::max(max_fd, connecting_fd);
+    for (auto *flow : {&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}) {
+      if (flow == nullptr) continue;
+      const int socket = flow->socket.load(std::memory_order_acquire);
+      if (socket >= 0) { FD_SET(socket, &readfds); max_fd = std::max(max_fd, socket); }
+      if (flow->connecting_socket >= 0) {
+        FD_SET(flow->connecting_socket, &writefds);
+        max_fd = std::max(max_fd, flow->connecting_socket);
+      }
     }
     if (max_fd < 0) {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -3982,9 +4014,11 @@ void SipTransport::sip_task_() {
     struct timeval *timeout_ptr = nullptr;
     uint32_t timeout_ms = 0;
     bool have_timeout = false;
-    if (connecting_fd >= 0) {
+    for (auto *flow : {&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}) {
+      if (flow == nullptr || flow->connecting_socket < 0) continue;
       const uint32_t now = millis();
-      timeout_ms = time_reached(now, connect_deadline_ms) ? 0 : connect_deadline_ms - now;
+      const uint32_t remaining = time_reached(now, flow->connect_deadline) ? 0 : flow->connect_deadline - now;
+      if (!have_timeout || remaining < timeout_ms) timeout_ms = remaining;
       have_timeout = true;
       timeout_ptr = &timeout;
     }
@@ -4081,10 +4115,14 @@ void SipTransport::sip_task_() {
       timeout.tv_usec = (timeout_ms % 1000) * 1000;
     }
     const int ready = select(max_fd + 1, &readfds, &writefds, nullptr, timeout_ptr);
-    if (connecting_fd >= 0 && time_reached(millis(), connect_deadline_ms)) {
-      fail_tcp_connect(ETIMEDOUT);
-      continue;
+    bool connect_expired = false;
+    for (auto *flow : {&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}) {
+      if (flow != nullptr && flow->connecting_socket >= 0 && time_reached(millis(), flow->connect_deadline)) {
+        this->fail_tcp_flow_(*flow, ETIMEDOUT);
+        connect_expired = true;
+      }
     }
+    if (connect_expired) continue;
     if (ready <= 0) {
       continue;
     }
@@ -4098,14 +4136,14 @@ void SipTransport::sip_task_() {
       if (!this->running_.load(std::memory_order_acquire)) continue;
     }
 
-    if (connecting_fd >= 0 && FD_ISSET(connecting_fd, &writefds)) {
-      int so_error = 0;
-      socklen_t len = sizeof(so_error);
-      if (getsockopt(connecting_fd, SOL_SOCKET, SO_ERROR, &so_error, &len) == 0 && so_error == 0) {
-        promote_tcp_connect();
-      } else {
-        fail_tcp_connect(so_error == 0 ? errno : so_error);
-      }
+    for (auto *flow : {&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}) {
+      if (flow == nullptr || flow->connecting_socket < 0 || !FD_ISSET(flow->connecting_socket, &writefds)) continue;
+      int error = 0;
+      socklen_t len = sizeof(error);
+      if (getsockopt(flow->connecting_socket, SOL_SOCKET, SO_ERROR, &error, &len) == 0 && error == 0)
+        this->promote_tcp_flow_(*flow);
+      else
+        this->fail_tcp_flow_(*flow, error == 0 ? errno : error);
     }
 
     if (this->sip_tcp_listener_socket_ >= 0 && FD_ISSET(this->sip_tcp_listener_socket_, &readfds)) {
@@ -4118,8 +4156,8 @@ void SipTransport::sip_task_() {
         int flags = fcntl(client, F_GETFL, 0);
         fcntl(client, F_SETFL, flags | O_NONBLOCK);
         const uint32_t accepted_ip_v4 = ntohl(src.sin_addr.s_addr);
-        const int active_client = this->sip_tcp_client_socket_.load(std::memory_order_acquire);
-        const uint32_t active_ip_v4 = this->sip_tcp_client_ip_v4_.load(std::memory_order_acquire);
+        const int active_client = this->tcp_flow_.socket.load(std::memory_order_acquire);
+        const uint32_t active_ip_v4 = this->tcp_flow_.peer_ip.load(std::memory_order_acquire);
         bool signaling_owned = false;
         bool signaling_uses_tcp = false;
         {
@@ -4140,8 +4178,8 @@ void SipTransport::sip_task_() {
         const bool replaces_owned_transport =
             signaling_owned &&
             (!signaling_uses_tcp || active_client >= 0 ||
-             connecting_fd >= 0 ||
-             this->tcp_connect_requested_.load(std::memory_order_acquire));
+             this->tcp_flow_.connecting_socket >= 0 ||
+             this->tcp_flow_.connect_requested.load(std::memory_order_acquire));
         if (replaces_owned_transport ||
             (this->dialog_active_() && active_client >= 0 &&
              active_ip_v4 != 0 && active_ip_v4 != accepted_ip_v4)) {
@@ -4158,10 +4196,10 @@ void SipTransport::sip_task_() {
           continue;
         }
         this->close_tcp_client_from_sip_task_();
-        this->sip_tcp_client_socket_.store(client, std::memory_order_release);
-        this->sip_tcp_client_ip_v4_.store(accepted_ip_v4, std::memory_order_release);
-        this->sip_tcp_client_close_requested_.store(false, std::memory_order_release);
-        this->sip_tcp_rx_buffer_.clear();
+        this->tcp_flow_.socket.store(client, std::memory_order_release);
+        this->tcp_flow_.peer_ip.store(accepted_ip_v4, std::memory_order_release);
+        this->tcp_flow_.close_requested.store(false, std::memory_order_release);
+        this->tcp_flow_.rx_buffer.clear();
         this->remote_sip_tcp_.store(true, std::memory_order_release);
         char ip[16];
         inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
@@ -4191,20 +4229,24 @@ void SipTransport::sip_task_() {
         }
         const bool tcp_session_active =
             tcp_call_active && this->remote_sip_tcp_.load(std::memory_order_acquire) &&
-            (this->sip_tcp_client_socket_.load(std::memory_order_acquire) >= 0 || connecting_fd >= 0 ||
-             this->tcp_connect_requested_.load(std::memory_order_acquire));
-        if (tcp_session_active) {
-          // Both listeners remain open, but a stray UDP packet must never flip
-          // an established TCP dialog to UDP or redirect its ACK/BYE traffic.
+            (this->tcp_flow_.socket.load(std::memory_order_acquire) >= 0 || this->tcp_flow_.connecting_socket >= 0 ||
+             this->tcp_flow_.connect_requested.load(std::memory_order_acquire));
+        bool refer_udp = false;
+        {
+          LockGuard lock(this->dialog_mutex_);
+          refer_udp = this->refer_dialog_ && !this->refer_dialog_->remote_sip_tcp_ &&
+              header_value(std::string(buf, static_cast<size_t>(n)), "Call-ID") == this->refer_wire_id_;
+        }
+        if (tcp_session_active && !refer_udp) {
           ESP_LOGD(TAG, "SIP UDP datagram ignored while TCP signaling is active");
           continue;
         }
-        if (this->sip_tcp_client_socket_.load(std::memory_order_acquire) >= 0) {
+        if (!refer_udp && this->tcp_flow_.socket.load(std::memory_order_acquire) >= 0) {
           // An idle keep-alive connection must not coexist with a new UDP
           // dialog, otherwise later TCP traffic could retarget the call.
           this->close_tcp_client_from_sip_task_();
         }
-        this->remote_sip_tcp_.store(false, std::memory_order_release);
+        if (!refer_udp) this->remote_sip_tcp_.store(false, std::memory_order_release);
         buf[n] = 0;
         char ip[16];
         inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
@@ -4213,16 +4255,20 @@ void SipTransport::sip_task_() {
       }
     }
 
-    const int active_tcp_client = this->sip_tcp_client_socket_.load(std::memory_order_acquire);
-    if (active_tcp_client >= 0 && FD_ISSET(active_tcp_client, &readfds)) {
+    // A commit can exchange the two owners while dispatching a record. Resolve
+    // each saved descriptor again instead of retaining a pointer across dispatch.
+    const int sockets[] = {this->tcp_flow_.socket.load(std::memory_order_acquire),
+        this->refer_dialog_ ? this->refer_dialog_->tcp_flow_.socket.load(std::memory_order_acquire) : -1};
+    for (int socket : sockets) {
+      if (socket < 0 || !FD_ISSET(socket, &readfds) || this->tcp_flow_for_socket_(socket) == nullptr) continue;
       struct sockaddr_in src{};
-      socklen_t slen = sizeof(src);
-      getpeername(active_tcp_client, reinterpret_cast<struct sockaddr *>(&src), &slen);
-      this->handle_sip_stream_(active_tcp_client, src);
+      socklen_t length = sizeof(src);
+      if (getpeername(socket, reinterpret_cast<struct sockaddr *>(&src), &length) == 0)
+        this->handle_sip_stream_(socket, src);
     }
   }
-  close_connecting();
   this->close_tcp_client_from_sip_task_();
+  if (this->refer_dialog_) this->close_tcp_flow_(this->refer_dialog_->tcp_flow_);
   if (this->sip_task_done_ != nullptr) {
     xSemaphoreGive(this->sip_task_done_);
   }
