@@ -16,6 +16,14 @@ jobs:
   contract:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - audio_version: 3.2.1
+            audio_sha: 3079cd0576d563c955e412937a91782ab4eaf516
+          - audio_version: 4.1.0
+            audio_sha: e06373fa41529064cb852e2312a32a8148ddaaac
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -28,7 +36,7 @@ jobs:
         run: >-
           python -m pip install
           esphome==2026.9.0
-          pytest==9.1.1
+          pytest==9.0.3
           ruff==0.15.21
 
       - name: Run static checks
@@ -41,8 +49,14 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: esphome-libs/esp-audio-libs
-          ref: 3079cd0576d563c955e412937a91782ab4eaf516 # 3.2.1
+          ref: ${{ matrix.audio_sha }}
           path: .test-deps/esp-audio-libs
+
+      - name: Record actual DSP dependency
+        run: |
+          mkdir -p test-results
+          git -C .test-deps/esp-audio-libs rev-parse HEAD > test-results/audio-libs-sha.txt
+          test "$(cat test-results/audio-libs-sha.txt)" = "${{ matrix.audio_sha }}"
 
       - name: Run contract tests
         env:
@@ -53,6 +67,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: esp-native-results
-          path: test-results/native.xml
+          name: esp-native-results-${{ matrix.audio_version }}
+          path: |
+            test-results/native.xml
+            test-results/audio-libs-sha.txt
           if-no-files-found: error

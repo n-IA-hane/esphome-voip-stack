@@ -710,6 +710,26 @@ values, updates outside a call and updates for an earlier Call-ID, then clears
 the route at termination. This notification never negotiates codecs or starts
 a separate media path.
 
+## Run the native regressions
+
+The native suite compiles production C++ with host adapters and exercises SIP
+socket paths, transaction cleanup and PCM conversion. It does not run an ESP
+scheduler or prove physical audio quality. Use Python with ESPHome and pytest,
+plus a C++17 compiler. The PCM test also requires the real audio library:
+
+```sh
+git clone --branch v4.1.0 --depth 1 https://github.com/esphome-libs/esp-audio-libs.git .test-deps/esp-audio-libs
+git -C .test-deps/esp-audio-libs rev-parse HEAD
+ESP_AUDIO_LIBS_SOURCE="$PWD/.test-deps/esp-audio-libs" python -m pytest -q
+```
+
+The expected 4.1.0 revision is
+`e06373fa41529064cb852e2312a32a8148ddaaac`. CI tests that revision and the older
+3.2.1 revision `3079cd0576d563c955e412937a91782ab4eaf516` separately, preserving
+the actual SHA beside each JUnit artifact. Missing DSP sources fail the PCM test
+instead of silently skipping it. Firmware dependency selection still belongs
+to its ESPHome/IDF configuration; these host-test pins do not change a device.
+
 ## Before opening an issue
 
 Reproduce the problem with the current maintained release/profile. Open the

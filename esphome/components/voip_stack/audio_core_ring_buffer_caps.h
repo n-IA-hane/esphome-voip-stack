@@ -59,6 +59,25 @@ class CapsRingBuffer : public ring_buffer::RingBuffer {
                                    bool write_partial = true);
   BaseType_t reset();
 
+ protected:
+  // ESPHome 2026.9.1 stores a handle; newer versions derive it from the static
+  // structure. Select the existing base-class representation at compile time.
+  template<typename Buffer = CapsRingBuffer> RingbufHandle_t ring_handle_() const {
+    const auto *self = static_cast<const Buffer *>(this);
+    if constexpr (requires { self->handle_(); }) {
+      return self->handle_();
+    } else {
+      return self->handle_;
+    }
+  }
+
+  template<typename Buffer = CapsRingBuffer> void set_legacy_handle_(RingbufHandle_t handle) {
+    auto *self = static_cast<Buffer *>(this);
+    if constexpr (requires { self->handle_ = handle; }) {
+      self->handle_ = handle;
+    }
+  }
+
  private:
   RingbufferType_t type_{RINGBUF_TYPE_BYTEBUF};
 };
@@ -97,10 +116,10 @@ inline const char *policy_str(RingBufferPolicy p) {
 }  // namespace detail
 
 inline CapsRingBuffer::~CapsRingBuffer() {
-  if (this->handle_ != nullptr) {
-    vRingbufferDelete(this->handle_);
+  if (this->storage_ != nullptr) {
+    vRingbufferDelete(this->ring_handle_());
     heap_caps_free(this->storage_);
-    this->handle_ = nullptr;
+    this->set_legacy_handle_(nullptr);
     this->storage_ = nullptr;
     this->size_ = 0;
   }
@@ -113,8 +132,9 @@ inline bool CapsRingBuffer::install(size_t len, uint32_t caps, RingbufferType_t 
   this->storage_ = mem;
   this->size_ = len;
   this->type_ = type;
-  this->handle_ = xRingbufferCreateStatic(len, type, mem, &this->structure_);
-  if (this->handle_ == nullptr) {
+  const auto handle = xRingbufferCreateStatic(len, type, mem, &this->structure_);
+  this->set_legacy_handle_(handle);
+  if (handle == nullptr) {
     heap_caps_free(mem);
     this->storage_ = nullptr;
     this->size_ = 0;

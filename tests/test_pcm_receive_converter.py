@@ -15,7 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_real_pcm_converter_preserves_tone_and_resets(tmp_path):
     location = os.environ.get("ESP_AUDIO_LIBS_SOURCE")
     if not location:
-        pytest.skip("ESP_AUDIO_LIBS_SOURCE is required for the native DSP test")
+        pytest.fail(
+            "ESP_AUDIO_LIBS_SOURCE is required for the native DSP test; "
+            "follow the native-test setup in README.md"
+        )
     library = Path(location)
     cpp = tmp_path / "converter.cpp"
     cpp.write_text(r'''
