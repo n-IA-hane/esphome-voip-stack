@@ -48,7 +48,7 @@ struct Mutex{};struct LockGuard{explicit LockGuard(Mutex&){++locked;}~LockGuard(
         + snapshot
         + r"""
 struct Transport{SipTransportSnapshot value;SipTransportSnapshot snapshot(){return value;}};
-struct RtpJitterBuffer{struct Counters{uint32_t depth=1,drops=2,late=3,missing=4,duplicates=5;};Counters counters(){return {};}};
+struct RtpJitterBuffer{struct Counters{uint32_t depth=1,drops=2,late=3,missing=4,duplicates=5,discarded_frames=7;};Counters counters(){return {};}};
 struct VoipStack{
  std::atomic<CallState>call_state_{CallState::IN_CALL};
  std::atomic<uint32_t>media_tx_queue_depth_{1},media_tx_queue_drops_{0},media_rx_queue_depth_{2},media_rx_queue_drops_{0};
@@ -78,9 +78,9 @@ int main(){
  // A hangup during output must not rewrite the already captured report.
  s.current_call_id_.clear();s.call_state_=CallState::IDLE;s.transport_->value.rtp_tx_packets=999;s.last_reason_="different";
  s.finish();assert(!s.diagnostic_dump_&&!s.pending);
- bool captured=false,reason=false;
- for(auto &l:lines){assert(l.find("private-caller-token")==std::string::npos);assert(l.find("memory:")==std::string::npos);captured|=l.find("tx_packets=123")!=std::string::npos;reason|=l.find("last_termination=local_hangup")!=std::string::npos;}
- assert(captured&&reason);const auto n=lines.size();s.dump_diagnostics();assert(lines.size()==n);
+ bool captured=false,reason=false,discarded=false;
+ for(auto &l:lines){assert(l.find("private-caller-token")==std::string::npos);assert(l.find("memory:")==std::string::npos);discarded|=l.find("discarded_frames=7")!=std::string::npos;captured|=l.find("tx_packets=123")!=std::string::npos;reason|=l.find("last_termination=local_hangup")!=std::string::npos;}
+ assert(captured&&reason&&discarded);const auto n=lines.size();s.dump_diagnostics();assert(lines.size()==n);
  tick+=1000;s.failed=true;s.dump_diagnostics();assert(!s.diagnostic_dump_&&lines.size()==n+2);
 }
 """

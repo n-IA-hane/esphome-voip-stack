@@ -36,6 +36,9 @@ def test_standalone_has_no_ha_adapter(tmp_path):
     generated = next(tmp_path.rglob('main.cpp')).read_text()
     assert 'new voip_stack::VoipHAIntegration' not in generated
     assert 'voip_endpoint' not in generated
+    # This standalone microphone-only profile has no Sendspin to request it.
+    defines = next(tmp_path.rglob('defines.h')).read_text()
+    assert '#define USE_WIFI_RUNTIME_ROAMING_SUPPRESSION' in defines
 
 
 def test_missing_api_service_support_is_actionable(tmp_path):

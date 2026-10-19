@@ -10,6 +10,9 @@
 
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
+#if defined(USE_WIFI) && defined(USE_WIFI_RUNTIME_ROAMING_SUPPRESSION)
+#include "esphome/components/wifi/wifi_component.h"
+#endif
 
 namespace esphome {
 namespace voip_stack {
@@ -476,6 +479,18 @@ void VoipStack::publish_last_reason_(const std::string &reason) {
 void VoipStack::set_audio_devices_active_(bool on) {
   bool was = this->audio_devices_active_.exchange(on, std::memory_order_acq_rel);
   if (was == on) return;
+#if defined(USE_WIFI) && defined(USE_WIFI_RUNTIME_ROAMING_SUPPRESSION)
+  // The media owner holds one native request, shared safely with other
+  // streaming components. Resume background AP searches after media ends.
+  if (on && wifi::global_wifi_component != nullptr) {
+    wifi::global_wifi_component->request_roaming_suppression();
+    this->wifi_roaming_suppressed_ = true;
+  } else if (!on && this->wifi_roaming_suppressed_) {
+    if (wifi::global_wifi_component != nullptr)
+      wifi::global_wifi_component->release_roaming_suppression();
+    this->wifi_roaming_suppressed_ = false;
+  }
+#endif
   this->notify_audio_tasks_();
 
   if (on) {

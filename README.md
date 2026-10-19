@@ -756,6 +756,18 @@ counters are collected when requested, retained in one bounded temporary
 snapshot, and released when printing finishes. Untracked metrics are unavailable, not zero. The short call hash is
 for correlating a dump without printing the complete Call-ID.
 
+In `rx_jitter`, `drops` counts discard/window-realignment events. One event can
+remove several queued frames. Development builds add `discarded_frames`, which counts the buffered frames
+actually removed; explicit session resets are excluded. These local playout
+counters are distinct from network packet loss, which requires checking RTP
+sequence numbers. The `rx_drops` queue summary retains its event-count meaning.
+
+While media is active, VoIP Stack holds a native ESPHome Wi-Fi roaming
+suppression request. Periodic access-point scans resume after the call once
+all requesting components have released their requests. This prevents new
+post-connect scans; it does not cancel a scan already in progress or replace
+normal Wi-Fi disconnection recovery.
+
 This action is available from 2026.10.0; older firmware must be rebuilt and
 uploaded before it can expose it. Include the exact version you tested.
 

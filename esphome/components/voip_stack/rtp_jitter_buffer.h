@@ -31,7 +31,8 @@ class RtpJitterBuffer {
 
   struct Counters {
     uint32_t depth{0};
-    uint32_t drops{0};
+    uint32_t drops{0};  // Overflow/invalid-frame events, not the number of discarded frames.
+    uint32_t discarded_frames{0};
     uint32_t late{0};
     uint32_t missing{0};
     uint32_t duplicates{0};
@@ -110,6 +111,7 @@ inline void RtpJitterBuffer::keep_window_from_(uint16_t next_sequence) {
       continue;
     const int16_t delta = sequence_delta_(slot.sequence, next_sequence);
     if (delta < 0 || delta >= static_cast<int16_t>(this->slot_count_)) {
+      this->counters_.discarded_frames++;
       slot.valid = false;
       slot.bytes = 0;
       continue;
@@ -177,6 +179,7 @@ inline bool RtpJitterBuffer::push(const Frame &frame) {
     slot.bytes = 0;
     if (this->valid_count_ > 0) this->valid_count_--;
     this->counters_.drops++;
+    this->counters_.discarded_frames++;
   }
 
   memcpy(slot.pcm, frame.pcm, frame.bytes);
@@ -233,6 +236,7 @@ inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t ca
       if (this->valid_count_ > 0) this->valid_count_--;
       this->next_sequence_ = static_cast<uint16_t>(this->next_sequence_ + 1);
       this->counters_.drops++;
+      this->counters_.discarded_frames++;
       return ReadResult::MISSING;
     }
     if (sequence != nullptr) *sequence = slot.sequence;

@@ -105,9 +105,10 @@ void VoipStack::emit_diagnostic_section_() {
     case 8:
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
       if (dump.has_jitter) {
-        ESP_LOGI(TAG, "rx_jitter: depth=%u capacity=%u missing=%u late=%u duplicates=%u drops=%u",
+        ESP_LOGI(TAG, "rx_jitter: depth=%u capacity=%u missing=%u late=%u duplicates=%u drops=%u discarded_frames=%u",
                  (unsigned) dump.jitter.depth, (unsigned) kRxQueuedFrames, (unsigned) dump.jitter.missing,
-                 (unsigned) dump.jitter.late, (unsigned) dump.jitter.duplicates, (unsigned) dump.jitter.drops);
+                 (unsigned) dump.jitter.late, (unsigned) dump.jitter.duplicates, (unsigned) dump.jitter.drops,
+                 (unsigned) dump.jitter.discarded_frames);
       }
 #endif
       break;

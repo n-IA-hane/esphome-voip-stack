@@ -12,7 +12,7 @@ from esphome.const import (
     CONF_SPEAKER,
     CONF_NAME,
 )
-from esphome.components import audio, esp32, microphone, psram, speaker, text_sensor as esphome_text_sensor
+from esphome.components import audio, esp32, microphone, psram, speaker, wifi, text_sensor as esphome_text_sensor
 
 from . import ha_integration
 from esphome.components import esp32_camera as esp32_camera_component
@@ -953,6 +953,8 @@ def _final_validate(config):
                         "Use correct_dc_offset on esp_audio_stack only."
                     )
 
+    if "wifi" in fv.full_config.get():
+        wifi.enable_runtime_roaming_suppression()
     _consume_voip_sockets(config)
     return config
 
