@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Read SIP status and RTP receive counters directly for call health checks,
+  avoiding the diagnostic snapshot's dialog lock on each main-loop iteration.
+  Receive timeout intervals and media admission remain unchanged.
+
 - Support blind audio REFER across UDP and TCP with one SIP task and bounded
   per-dialog TCP flows. Preserve the original call on a failed attempt and
   distinguish remote INVITE termination from local transfer cancellation.

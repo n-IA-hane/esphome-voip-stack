@@ -196,6 +196,10 @@ class SipPhoneTransport {
   virtual void stop_audio_path() {}
 
   virtual SipTransportSnapshot snapshot() const { return {}; }
+  /// Frequently observed health counters. Transports may override these to
+  /// avoid taking the diagnostic snapshot's signaling locks.
+  virtual uint32_t received_audio_packets() const { return this->snapshot().rtp_rx_packets; }
+  virtual uint16_t last_sip_status_code() const { return this->snapshot().last_sip_status_code; }
 
   // === Callbacks (set by VoipStack before start()) ===
 

@@ -33,7 +33,13 @@ def test_media_timeout_requires_a_receive_device(tmp_path, speaker_support):
 #define ESP_LOGW(...) ((void)0)
 using namespace esphome::voip_stack;
 struct Snapshot { uint32_t rtp_rx_packets{0}; unsigned last_sip_status_code{0}; };
-struct Transport { Snapshot value; Snapshot snapshot() const { return value; } };
+struct Transport {
+  Snapshot value;
+  mutable unsigned snapshot_reads{0};
+  Snapshot snapshot() const { ++snapshot_reads; return value; }
+  uint32_t received_audio_packets() const { return value.rtp_rx_packets; }
+  unsigned last_sip_status_code() const { return value.last_sip_status_code; }
+};
 class VoipStack {
  public:
   std::atomic<CallState> call_state_{CallState::IN_CALL};
@@ -88,6 +94,9 @@ int main() {
   assert(flowing.terminations == 0);
   flowing.handle_call_timeouts_(75100, 0);
   assert(flowing.terminations == 1);
+  // The receive watchdog must not acquire the diagnostic snapshot's dialog
+  // mutex on every loop iteration. Its authoritative counters suffice.
+  assert(flowing.backing.snapshot_reads == 0);
 
   VoipStack wrapped;
   wrapped.speaker_=&wrapped;
@@ -102,6 +111,16 @@ int main() {
   unanswered.call_state_=CallState::CALLING;
   unanswered.handle_call_timeouts_(5000, 0);
   assert(unanswered.dial_timeouts == 1);
+  assert(unanswered.backing.snapshot_reads == 0);
+
+  VoipStack provisional;
+  provisional.call_state_=CallState::CALLING;
+  provisional.backing.value.last_sip_status_code=180;
+  provisional.handle_call_timeouts_(5000, 0);
+  assert(provisional.dial_timeouts == 0);
+  provisional.handle_call_timeouts_(10000, 10000);
+  assert(provisional.dial_timeouts == 1);
+  assert(provisional.backing.snapshot_reads == 0);
 }
 """
     cpp = tmp_path / "media_timeout.cpp"
@@ -112,3 +131,53 @@ int main() {
         args.append("-DUSE_ESPHOME_VOIP_STACK_SPEAKER")
     subprocess.run([*args, str(cpp), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
+
+
+def test_sip_health_reads_use_live_atomics_and_preserve_snapshot_only_backends(tmp_path):
+    """Compile actual accessors, including compatibility with older transports."""
+    component = ROOT / "esphome/components/voip_stack"
+    transport = (component / "transport.h").read_text()
+    sip = (component / "sip_transport.h").read_text()
+    base_methods = []
+    methods = []
+    for kind, name in (("uint32_t", "received_audio_packets"), ("uint16_t", "last_sip_status_code")):
+        start = transport.index(f"  virtual {kind} {name}() const")
+        base_methods.append(transport[start:transport.index("\n", start)])
+        start = sip.index(f"  {kind} {name}() const override")
+        methods.append(sip[start:sip.index("\n  }", start) + len("\n  }")])
+    cpp = tmp_path / "health_accessors.cpp"
+    cpp.write_text(r'''
+#include <atomic>
+#include <cassert>
+#include <cstdint>
+struct SipTransportSnapshot { uint32_t rtp_rx_packets=0; uint16_t last_sip_status_code=0; };
+struct Transport {
+  SipTransportSnapshot value;
+  mutable unsigned snapshots=0;
+  virtual ~Transport()=default;
+  virtual SipTransportSnapshot snapshot() const { ++snapshots; return value; }
+''' + "\n".join(base_methods) + r'''
+};
+struct SipTransport : Transport {
+  std::atomic<uint32_t> rtp_rx_packets_{0};
+  std::atomic<uint16_t> last_sip_status_code_{0};
+''' + "\n".join(methods) + r'''
+};
+int main() {
+  Transport legacy;
+  legacy.value.rtp_rx_packets=17; legacy.value.last_sip_status_code=183;
+  assert(legacy.received_audio_packets()==17 && legacy.last_sip_status_code()==183);
+  assert(legacy.snapshots==2);
+  SipTransport sip;
+  Transport &phone=sip;
+  sip.rtp_rx_packets_=UINT32_MAX; sip.last_sip_status_code_=200;
+  assert(phone.received_audio_packets()==UINT32_MAX && phone.last_sip_status_code()==200);
+  sip.rtp_rx_packets_=0; sip.last_sip_status_code_=0;
+  assert(phone.received_audio_packets()==0 && phone.last_sip_status_code()==0);
+  assert(sip.snapshots==0);
+}
+''')
+    exe = tmp_path / "health_accessors"
+    subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)],
+                   check=True, capture_output=True, text=True)
+    subprocess.run([str(exe)], check=True, capture_output=True, text=True)

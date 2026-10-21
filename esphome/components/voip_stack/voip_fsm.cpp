@@ -529,7 +529,7 @@ void VoipStack::start_speaker_for_current_rx_() {
 void VoipStack::reset_peer_audio_watchdog_(bool seed_from_transport) {
   uint32_t baseline_rx_packets = 0;
   if (seed_from_transport && this->transport_ != nullptr) {
-    baseline_rx_packets = this->transport_->snapshot().rtp_rx_packets;
+    baseline_rx_packets = this->transport_->received_audio_packets();
   }
   this->first_audio_received_.store(false, std::memory_order_release);
   // Seed on media start so a peer that never sends its first RTP packet is

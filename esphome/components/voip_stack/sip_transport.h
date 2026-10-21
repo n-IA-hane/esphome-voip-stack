@@ -108,6 +108,12 @@ class SipTransport : public SipPhoneTransport {
   bool request_video_send(bool enabled) override;
 #endif
   SipTransportSnapshot snapshot() const override;
+  uint32_t received_audio_packets() const override {
+    return this->rtp_rx_packets_.load(std::memory_order_acquire);
+  }
+  uint16_t last_sip_status_code() const override {
+    return this->last_sip_status_code_.load(std::memory_order_acquire);
+  }
 
  protected:
   enum class SipEvent : uint8_t {

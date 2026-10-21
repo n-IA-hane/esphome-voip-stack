@@ -492,7 +492,7 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
       now_ms - this->calling_start_time_ >= INVITE_NO_RESPONSE_TIMEOUT_MS) {
     bool saw_sip_response = false;
     if (this->transport_ != nullptr) {
-      saw_sip_response = this->transport_->snapshot().last_sip_status_code != 0;
+      saw_sip_response = this->transport_->last_sip_status_code() != 0;
     }
     if (!saw_sip_response) {
       const std::string cid = this->get_current_call_id_();
@@ -517,7 +517,7 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
   // A microphone-only endpoint transmits audio without requiring return RTP.
   // Keep receive-loss detection for speaker-only and full-duplex endpoints.
   if (state == CallState::IN_CALL && this->has_speaker_() && this->transport_ != nullptr) {
-    const uint32_t rx_packets = this->transport_->snapshot().rtp_rx_packets;
+    const uint32_t rx_packets = this->transport_->received_audio_packets();
     const uint32_t last_seen = this->media_timeout_rtp_rx_packets_.load(std::memory_order_acquire);
     if (rx_packets != last_seen) {
       this->media_timeout_rtp_rx_packets_.store(rx_packets, std::memory_order_release);
