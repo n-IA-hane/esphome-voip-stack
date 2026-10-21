@@ -2,6 +2,10 @@
 
 ## 2026.10.0-dev
 
+- Qualify both video RTP socket waits as POSIX `::select`, completing the
+  ESPHome 2026.10 namespace correction for video-enabled builds. Keep video
+  pacing, signaling, codecs and session ownership unchanged.
+
 - Use the ESPHome 2026.10 ring-buffer representation directly and require the
   supported builder during configuration validation. Qualify POSIX socket waits
   so the ESPHome precompiled-header select namespace cannot shadow them. SIP,

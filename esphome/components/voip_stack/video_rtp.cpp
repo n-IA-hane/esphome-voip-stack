@@ -1410,7 +1410,7 @@ bool VideoRtpSession::send_rtp_payload_(const uint8_t *payload, size_t size,
       struct timeval timeout{
           0, static_cast<suseconds_t>(kTxBackpressureWaitMs * 1000U)};
       const int ready =
-          select(this->rtp_socket_ + 1, nullptr, &writefds, nullptr, &timeout);
+          ::select(this->rtp_socket_ + 1, nullptr, &writefds, nullptr, &timeout);
       if (ready < 0 && errno != EINTR) break;
     }
   }
@@ -1468,7 +1468,7 @@ void VideoRtpSession::task_() {
       break;
     }
     const int ready =
-        select(maxfd + 1, &readfds, nullptr, nullptr, &timeout);
+        ::select(maxfd + 1, &readfds, nullptr, nullptr, &timeout);
     if (ready < 0) {
       if (errno == EINTR) continue;
       ESP_LOGW(TAG, "Video RTP select failed: %d", errno);
