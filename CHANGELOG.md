@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026.10.0-dev
+## 2026.11.0-dev
 
 - Qualify both video RTP socket waits as POSIX `::select`, completing the
   ESPHome 2026.10 namespace correction for video-enabled builds. Keep video
