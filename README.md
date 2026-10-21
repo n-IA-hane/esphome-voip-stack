@@ -1,5 +1,7 @@
 # ESPHome VoIP Stack
 
+**Development firmware requires ESPHome 2026.10.0 or newer.**
+
 *Developed and maintained by n-IA-hane, with community contributions and support. [❤️ Sponsor the project](https://github.com/sponsors/n-IA-hane)*
 
 Stable release: [2026.10.1](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.10.1).
@@ -151,7 +153,7 @@ external_components:
     components: [voip_stack]
 ```
 
-This release requires ESPHome 2026.9.0 or newer.
+This release requires ESPHome 2026.10.0 or newer.
 
 Requirements: ESP-IDF framework. PSRAM is recommended for full-duplex profiles and required by co-resident AEC/AFE processing. RTP media requires UDP reachability between peers in both signaling modes.
 
@@ -167,7 +169,7 @@ external_components:
 
 ### Add a custom ESP phone to Home Assistant
 
-With ESPHome 2026.9.0 or newer, `voip_stack` provides discovery entities,
+With ESPHome 2026.10.0 or newer, `voip_stack` provides discovery entities,
 call-control actions and HA phonebook reception directly. No VoIP HA package
 is needed. Enable native service registration alongside any API encryption:
 

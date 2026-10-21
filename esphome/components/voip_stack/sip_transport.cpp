@@ -4189,7 +4189,7 @@ void SipTransport::sip_task_() {
       timeout.tv_sec = timeout_ms / 1000;
       timeout.tv_usec = (timeout_ms % 1000) * 1000;
     }
-    const int ready = select(max_fd + 1, &readfds, &writefds, nullptr, timeout_ptr);
+    const int ready = ::select(max_fd + 1, &readfds, &writefds, nullptr, timeout_ptr);
     bool connect_expired = false;
     for (auto *flow : {&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}) {
       if (flow != nullptr && flow->connecting_socket >= 0 && time_reached(millis(), flow->connect_deadline)) {
@@ -4328,7 +4328,7 @@ void SipTransport::rtp_task_() {
       fd_set readfds;
       FD_ZERO(&readfds);
       FD_SET(socket, &readfds);
-      const int ready = select(socket + 1, &readfds, nullptr, nullptr, nullptr);
+      const int ready = ::select(socket + 1, &readfds, nullptr, nullptr, nullptr);
       if (ready < 0) {
         if (errno != EINTR) {
           const int err = errno;

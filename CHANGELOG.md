@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## 2026.10.0-dev
+
+- Use the ESPHome 2026.10 ring-buffer representation directly and require the
+  supported builder during configuration validation. Qualify POSIX socket waits
+  so the ESPHome precompiled-header select namespace cannot shadow them. SIP,
+  media negotiation, transaction caches and session ownership are unchanged.
+
+> **Attention: ESPHome 2026.10.0 or newer is required.**
+>
+> ESPHome 2026.10 brings substantial audio changes, including several of our
+> accepted contributions. Thank you to the ESPHome team for your work, reviews
+> and accepted PRs! <3
+>
+> We have aligned Audio Stack, ESP VoIP Stack, Runtime Controller and the
+> maintained device packages with this release. Older ESPHome versions are no
+> longer supported and their operation is not guaranteed. Upgrade the builder
+> before compiling the new firmware.
+
 
 - Read SIP status and RTP receive counters directly for call health checks,
   avoiding the diagnostic snapshot's dialog lock on each main-loop iteration.

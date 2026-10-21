@@ -614,7 +614,7 @@ def _static_contact_entry(contact, default_transport: str) -> str:
 
 VoipHAIntegration = voip_stack_ns.class_("VoipHAIntegration", cg.Component, cg.Parented.template(VoipStack))
 
-CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 9, 0), ha_integration.prepare, cv.Schema(
+CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), ha_integration.prepare, cv.Schema(
     {
         cv.Optional("ha_integration"): ha_integration.schema,
         cv.GenerateID("ha_adapter_id"): cv.declare_id(VoipHAIntegration),
