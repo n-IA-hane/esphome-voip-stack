@@ -53,6 +53,7 @@ bool SipTransport::end_refer_invite_usage_(bool reporter_available) {
   // REFER's subscription and action outlive the INVITE usage (RFC 3515/5057).
   this->refer_dialog_->owner_invite_ended = true;
   this->refer_dialog_->reporter_available &= reporter_available;
+  this->refer_media_waiting_.store(true, std::memory_order_release);
   this->pending_update_.clear();
   this->close_media_session_();
   return true;
@@ -272,6 +273,7 @@ void SipTransport::pump_refer_() {
       }
       this->open_media_session_();
       this->reset_rtp_latch_();
+      this->refer_media_waiting_.store(false, std::memory_order_release);
       if (this->logical_call_id_.empty()) this->logical_call_id_ = original;
       this->logical_wire_id_ = this->call_id_;
       this->refer_wire_id_ = original;

@@ -72,3 +72,32 @@ jobs:
             test-results/native.xml
             test-results/audio-libs-sha.txt
           if-no-files-found: error
+
+  audio-directions-firmware:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [minimal_no_text, minimal_speaker_only]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14.2"
+      - name: Install official ESPHome
+        run: python -m pip install esphome==2026.10.0
+      - name: Compile and link the single-direction firmware
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
+        run: |
+          mkdir -p test-results
+          set -o pipefail
+          python -m esphome compile "tests/${CONFIGURATION}.yaml" 2>&1 | tee "test-results/${CONFIGURATION}.log"
+      - name: Preserve firmware build evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: firmware-${{ matrix.configuration }}
+          path: test-results/*.log
+          if-no-files-found: error

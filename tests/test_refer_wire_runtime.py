@@ -11,6 +11,7 @@ from test_refer_dialog_runtime import ROOT, SOURCE, block, refer_fixture_source
 
 
 def wire_source():
+    header = (SOURCE / 'sip_transport.h').read_text()
     source = (SOURCE / 'sip_transport.cpp').read_text()
     requests = (SOURCE / 'sip_request_response.cpp').read_text()
     parser = (SOURCE / 'sip_message.cpp').read_text()
@@ -20,6 +21,7 @@ def wire_source():
     code = code.replace('return std::string(prefix)+"new";', 'static unsigned n=0;return std::string(prefix)+std::to_string(++n);')
     extra = r'''
 constexpr uint32_t SIP_T1_MS=500;
+constexpr uint16_t SIP_T2_MS=4000;
 constexpr size_t MAX_SIP_BODY_BYTES=4096,MAX_SIP_TCP_RX_BUFFER=8192;
 uint32_t esp_random(){return 42;}
 void delay(unsigned){}
@@ -40,6 +42,7 @@ template<class T>void reset_string(T&s){s.clear();}
         ('remember_completed_invite_ack_', source), ('remember_udp_transaction_', source),
         ('send_invite_unlocked_', source), ('send_bye_unlocked_', source),
         ('send_cancel_unlocked_', source), ('release_refer_dialog_', source),
+        ('pump_udp_retransmits_unlocked_', source),
         ('send_stateless_response_', requests),
     ]
     declarations = {
@@ -98,7 +101,7 @@ template<class T>void reset_string(T&s){s.clear();}
  std::atomic<bool> running_{true},transport_stopping_{false};
  enum class MediaLifecyclePhase {IDLE};std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::IDLE};
  std::atomic<uint16_t>last_sip_status_code_{0};
- UdpTransaction pending_provisional_response_;
+ DeferredUdpResponse pending_provisional_response_;
  void request_audio_path_stop_locked_(){media_active_=false;}
  void close_tcp_client_from_sip_task_(){close_tcp_flow_(tcp_flow_);}
  void handle_tcp_peer_loss_(SipTcpFlow*f){close_tcp_flow_(*f);}
@@ -111,6 +114,12 @@ template<class T>void reset_string(T&s){s.clear();}
  std::string build_sdp_offer_(){return "v=0\r\nm=audio 40000 RTP/AVP 96\r\na=rtpmap:96 L16/16000/1\r\n";}
  bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool){return true;}
 ''')
+    marker = 'bool remote_audio_expected() const override'
+    expected = (block(header, marker).replace(' override', '') if marker in header
+                else 'bool remote_audio_expected() const { return true; }')
+    code = code.replace('struct SipTransport: SipPhoneTransport {',
+                        block(header, 'struct DeferredUdpResponse {') + ';\n' +
+                        'struct SipTransport: SipPhoneTransport {\n' + expected + '\n')
     return code
 
 
@@ -118,7 +127,12 @@ template<class T>void reset_string(T&s){s.clear();}
 def wire_binary(tmp_path_factory):
     path = tmp_path_factory.mktemp('refer-wire')
     cpp = path / 'wire.cpp'
-    cpp.write_text(wire_source() + '\n' + (Path(__file__).parent/'fixtures/refer_wire_main.cpp').read_text())
+    watchdog = (Path(__file__).parent/'fixtures/refer_watchdog.cpp').read_text()
+    handler = (SOURCE/'voip_stack.cpp').read_text()
+    watchdog += '\n' + block(handler, 'void VoipStack::handle_call_timeouts_(')
+    cpp.write_text(wire_source() + '\n' +
+                   (Path(__file__).parent/'fixtures/refer_wire_main.cpp').read_text() +
+                   '\n' + watchdog)
     exe = path / 'wire'
     proc = subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-I',str(ROOT),str(cpp),'-o',str(exe)],capture_output=True,text=True)
     assert proc.returncode == 0, proc.stderr
@@ -136,3 +150,11 @@ def test_refer_response_dispatch_terminal(wire_binary,status,tcp,ended,original_
 @pytest.mark.parametrize('original_tcp,new_tcp', [(0,0),(0,1),(1,0),(1,1)])
 def test_retired_transaction_socket_replay(wire_binary,original_tcp,new_tcp):
     subprocess.run([str(wire_binary),'replay',str(original_tcp),str(new_tcp)],check=True,capture_output=True,text=True,timeout=5)
+
+
+@pytest.mark.parametrize('original_tcp,target_tcp', [(0,0),(0,1),(1,0),(1,1)])
+@pytest.mark.parametrize('outcome', [200,486,408])
+def test_refer_ringing_uses_sip_deadline_and_restores_rtp_watchdog(wire_binary,original_tcp,target_tcp,outcome):
+    result = subprocess.run([str(wire_binary),'watchdog',str(original_tcp),str(target_tcp),str(outcome)],
+                            capture_output=True,text=True,timeout=5)
+    assert result.returncode == 0, result.stderr

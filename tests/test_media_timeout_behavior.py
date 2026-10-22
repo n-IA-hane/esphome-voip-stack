@@ -35,10 +35,12 @@ using namespace esphome::voip_stack;
 struct Snapshot { uint32_t rtp_rx_packets{0}; unsigned last_sip_status_code{0}; };
 struct Transport {
   Snapshot value;
+  bool remote_expected{true};
   mutable unsigned snapshot_reads{0};
   Snapshot snapshot() const { ++snapshot_reads; return value; }
   uint32_t received_audio_packets() const { return value.rtp_rx_packets; }
   unsigned last_sip_status_code() const { return value.last_sip_status_code; }
+  bool remote_audio_expected() const { return remote_expected; }
 };
 class VoipStack {
  public:
@@ -97,6 +99,21 @@ int main() {
   // The receive watchdog must not acquire the diagnostic snapshot's dialog
   // mutex on every loop iteration. Its authoritative counters suffice.
   assert(flowing.backing.snapshot_reads == 0);
+
+  // The REFER action may outlive the original INVITE. Ringing on the new
+  // dialog has a SIP deadline, not a requirement to receive RTP already.
+  VoipStack transfer;
+  transfer.speaker_=&transfer;
+  transfer.backing.remote_expected=false;
+  transfer.handle_call_timeouts_(20100, 0);
+  assert(transfer.terminations == 0 && "pending REFER must not expire for missing RTP");
+  transfer.backing.remote_expected=true;
+  ++transfer.backing.value.rtp_rx_packets;
+  transfer.handle_call_timeouts_(25100, 0);
+  transfer.handle_call_timeouts_(40099, 0);
+  assert(transfer.terminations == 0);
+  transfer.handle_call_timeouts_(40100, 0);
+  assert(transfer.terminations == 1);
 
   VoipStack wrapped;
   wrapped.speaker_=&wrapped;

@@ -200,6 +200,9 @@ class SipPhoneTransport {
   /// avoid taking the diagnostic snapshot's signaling locks.
   virtual uint32_t received_audio_packets() const { return this->snapshot().rtp_rx_packets; }
   virtual uint16_t last_sip_status_code() const { return this->snapshot().last_sip_status_code; }
+  /// An accepted REFER may retain its operation after the original INVITE
+  /// ends. SIP setup, rather than the RTP watchdog, owns that waiting period.
+  virtual bool remote_audio_expected() const { return true; }
 
   // === Callbacks (set by VoipStack before start()) ===
 

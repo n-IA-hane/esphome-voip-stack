@@ -654,6 +654,7 @@ void SipTransport::release_refer_dialog_() {
   if (!this->refer_dialog_) return;
   this->close_tcp_flow_(this->refer_dialog_->tcp_flow_);
   this->refer_dialog_.reset();
+  this->refer_media_waiting_.store(false, std::memory_order_release);
 }
 
 void SipTransport::fail_tcp_flow_(SipTcpFlow &flow, int error) {
@@ -1170,6 +1171,8 @@ void SipTransport::reset_dialog_() {
   // negotiated field is cleared prevents a deferred main-loop start from
   // observing the old video configuration after teardown has completed.
   LockGuard media_lock(this->media_lifecycle_mutex_);
+  if (!this->refer_context_active_)
+    this->refer_media_waiting_.store(false, std::memory_order_release);
   this->reset_dialog_media_locked_();
 }
 

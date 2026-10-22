@@ -77,6 +77,7 @@ class SipTransport {
  SipTcpFlow tcp_flow_;std::unique_ptr<ReferState> refer_dialog_;
  std::string call_id_;bool refer_context_active_=false;
  std::atomic<bool> remote_sip_tcp_{true},outgoing_invite_pending_{false},media_active_{false};
+ std::atomic<bool> refer_media_waiting_{false};
  Transaction completed_invite_,completed_control_,completed_invite_client_,completed_video_direction_invite_;
  bool terminate_after_invite_ack_=true;unsigned disconnected=0,candidate_failures=0;
  class ReferScope{

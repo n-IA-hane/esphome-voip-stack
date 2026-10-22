@@ -51,6 +51,7 @@ void VoipStack::set_call_identity_(const std::string &call_id,
 
 void VoipStack::clear_call_identity_() {
   LockGuard l(this->call_state_mutex_);
+  this->incoming_setup_pending_ = false;
   this->current_call_id_.clear();
   this->current_caller_route_id_.clear();
   this->current_caller_name_.clear();
@@ -130,6 +131,7 @@ bool VoipStack::send_sip_final_response_(const std::string &call_id, const std::
   if (reason == kReasonMediaIncompatible) status = 488;
   else if (reason == kReasonCancelled) status = 487;
   else if (reason == kReasonDeclined) status = 603;
+  else if (reason == kReasonMediaSetupFailed || reason == kReasonProtocolError) status = 500;
   return this->transport_->send_final_response(call_id, status, reason);
 }
 
@@ -710,6 +712,7 @@ void VoipStack::request_call_termination_(const TerminationIntent &intent) {
       state,
       this->transport_ != nullptr && this->transport_->is_connected(),
       !call_id.empty(),
+      this->incoming_setup_pending_ && !call_id.empty(),
   };
   dispatch_call_termination(
       snapshot, intent,
@@ -742,7 +745,8 @@ void VoipStack::request_call_termination_(const TerminationIntent &intent) {
 }
 
 void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
-  if (this->call_state_.load(std::memory_order_acquire) == CallState::IDLE) return;
+  if (this->call_state_.load(std::memory_order_acquire) == CallState::IDLE &&
+      !this->incoming_setup_pending_) return;
   this->pending_dialplan_target_.clear();
   if (reason == CallEndReason::MEDIA_INCOMPATIBLE && this->ha_media_fallback_pending_) {
     // End only this SIP attempt. The user is still placing the same call.
@@ -968,6 +972,7 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
       const std::string dest_name = in_dest_name.empty() ? this->device_name_ : in_dest_name;
       this->set_call_identity_(incoming_cid, in_caller_route, in_caller_name,
                                 dest_route, dest_name);
+      this->incoming_setup_pending_ = true;
       this->clear_terminal_response_();
       if (this->transport_ != nullptr) {
         this->transport_->set_connected_identity(
@@ -994,11 +999,12 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
           ESP_LOGE(TAG, "%s: RTP prepare failed while auto-answering call",
                    this->device_name_.c_str());
           this->request_call_termination_(
-              {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
-               SipTerminationAction::NONE, false});
+              {CallEndReason::TRANSPORT_UNREACHABLE, kReasonMediaSetupFailed,
+               SipTerminationAction::FINAL_RESPONSE, true});
           break;
         }
         this->set_audio_devices_active_(true);
+        this->incoming_setup_pending_ = false;
         this->set_call_state_(CallState::CONNECTING);
         if (!this->send_sip_answer_(incoming_cid)) {
           ESP_LOGE(TAG, "%s: failed to send automatic SIP answer", this->device_name_.c_str());
@@ -1022,11 +1028,12 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
         if (!this->send_sip_ringing_(incoming_cid)) {
           ESP_LOGE(TAG, "%s: failed to send SIP ringing response", this->device_name_.c_str());
           this->request_call_termination_(
-              {CallEndReason::PROTOCOL_ERROR, nullptr,
-               SipTerminationAction::NONE, false});
+              {CallEndReason::PROTOCOL_ERROR, kReasonProtocolError,
+               SipTerminationAction::FINAL_RESPONSE, true});
           break;
         }
         this->ringing_start_time_ = millis();
+        this->incoming_setup_pending_ = false;
         this->set_call_state_(CallState::RINGING);
         ESP_LOGI(TAG, "%s: ringing (waiting for local answer)", this->device_name_.c_str());
       }
@@ -1053,7 +1060,9 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
         break;
       }
       if (msg.media_source_changed) {
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
         this->reset_rx_audio_();
+#endif
         this->reset_peer_audio_watchdog_(true);
       }
       const CallSnapshot call = this->snapshot_call_identity_();

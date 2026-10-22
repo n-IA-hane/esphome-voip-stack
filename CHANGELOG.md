@@ -2,6 +2,15 @@
 
 ## 2026.11.0-dev
 
+- Keep microphone-only builds independent of speaker RX reset helpers.
+- Suspend the RTP inactivity watchdog only while a REFER replacement is still
+  ringing after the original INVITE has ended. SIP transaction deadlines remain
+  active and the watchdog resumes when the replacement connects.
+- Close an already owned incoming INVITE with a cached final error when media
+  preparation or the initial ringing response fails before the public call FSM
+  enters its connected/ringing states. Release its identity for the next call.
+
+
 - Qualify both video RTP socket waits as POSIX `::select`, completing the
   ESPHome 2026.10 namespace correction for video-enabled builds. Keep video
   pacing, signaling, codecs and session ownership unchanged.

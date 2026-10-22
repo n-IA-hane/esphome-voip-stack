@@ -114,6 +114,9 @@ class SipTransport : public SipPhoneTransport {
   uint16_t last_sip_status_code() const override {
     return this->last_sip_status_code_.load(std::memory_order_acquire);
   }
+  bool remote_audio_expected() const override {
+    return !this->refer_media_waiting_.load(std::memory_order_acquire);
+  }
 
  protected:
   enum class SipEvent : uint8_t {
@@ -460,6 +463,8 @@ class SipTransport : public SipPhoneTransport {
   std::unique_ptr<ReferDialog, ReferDeleter> refer_dialog_;
   bool refer_context_active_{false};
   bool refer_retiring_{false};
+  // Main-loop view of the SIP owner's original-ended/candidate-pending phase.
+  std::atomic<bool> refer_media_waiting_{false};
   uint32_t refer_cseq_{0};
   uint32_t refer_expires_{0};
   SipSignalType refer_signal_type_{SipSignalType::PROTOCOL_ERROR};

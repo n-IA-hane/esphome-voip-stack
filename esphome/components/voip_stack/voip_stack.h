@@ -584,6 +584,9 @@ class VoipStack : public Component {
   bool wifi_roaming_suppressed_{false};
 #endif
   std::atomic<CallState> call_state_{CallState::IDLE};  // FSM source of truth
+  // An accepted incoming identity owns a transaction before UI/media startup.
+  // Only the application signal consumer reads or writes this setup phase.
+  bool incoming_setup_pending_{false};
 
   // Transport configuration (set from YAML before setup()). Defaults:
   TransportType protocol_{TransportType::UDP};

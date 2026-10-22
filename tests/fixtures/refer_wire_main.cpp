@@ -124,4 +124,5 @@ void replay_case(bool old_tcp,bool new_tcp){
  auto final_bye=dest.drain();assert(final_bye.size()==1&&final_bye[0].rfind("SIP/2.0 200",0)==0);assert(s.call_id_.empty()&&!s.media_active_);
  cleanup(s);
 }
-int main(int argc,char**argv){assert(argc>=4);if(std::string(argv[1])=="auth")auth_case(std::atoi(argv[2]),std::atoi(argv[3]),std::atoi(argv[4]),std::atoi(argv[5]));else replay_case(std::atoi(argv[2]),std::atoi(argv[3]));}
+void watchdog_case(bool,bool,unsigned);
+int main(int argc,char**argv){assert(argc>=4);if(std::string(argv[1])=="auth")auth_case(std::atoi(argv[2]),std::atoi(argv[3]),std::atoi(argv[4]),std::atoi(argv[5]));else if(std::string(argv[1])=="watchdog")watchdog_case(std::atoi(argv[2]),std::atoi(argv[3]),std::atoi(argv[4]));else replay_case(std::atoi(argv[2]),std::atoi(argv[3]));}

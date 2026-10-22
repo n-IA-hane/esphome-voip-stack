@@ -90,6 +90,7 @@ struct SipTransport: SipPhoneTransport {
  uint32_t refer_cseq_=0,refer_expires_=0;
  std::string logical_call_id_,logical_wire_id_,refer_wire_id_;
  std::atomic<bool> media_active_{true};
+ std::atomic<bool> refer_media_waiting_{false};
  struct Mutex{};struct LockGuard{explicit LockGuard(Mutex&) {}};
  Mutex tcp_send_mutex_,tcp_tx_pending_mutex_;
  std::atomic<uint32_t> media_proposal_epoch_{0};
@@ -124,7 +125,9 @@ struct SipTransport: SipPhoneTransport {
   assert(refer_context_active_);call_id_=id;caller_={r,n};destination_={d,dn};outgoing_invite_pending_=true;return !fail_invite;}
  bool send_bye_unlocked_(const std::string&id){assert(refer_context_active_);wire.push_back({"BYE",id,"",""});++bye_count;return true;}
  bool send_cancel_unlocked_(const std::string&){assert(refer_context_active_);++cancel_count;return true;}
- void wake_sip_task_(){} void reset_rtp_latch_(){} void pump_udp_retransmits_unlocked_(){}
+ void wake_sip_task_(){}
+ void reset_rtp_latch_(){}
+ void pump_udp_retransmits_unlocked_(){}
  void get_media_config_(AudioFormat*t,AudioFormat*r,uint8_t*tp,uint8_t*rp,RtpAudioPayloads*p=nullptr){
   if(t)*t=selected_tx_format_;if(r)*r=selected_rx_format_;if(tp)*tp=rtp_tx_payload_type_;if(rp)*rp=rtp_rx_payload_type_;if(p)*p=negotiated_rx_payloads_;}
  void set_media_config_(const AudioFormat&t,const AudioFormat&r,uint8_t tp,uint8_t rp,const RtpAudioPayloads*p){

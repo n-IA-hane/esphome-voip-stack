@@ -90,6 +90,7 @@ struct TerminationSnapshot {
   CallState state{CallState::IDLE};
   bool transport_connected{false};
   bool has_call_id{false};
+  bool incoming_setup_pending{false};
 };
 
 template<typename CacheFn, typename SendFn, typename EndFn,
@@ -104,7 +105,7 @@ inline void dispatch_call_termination(const TerminationSnapshot &snapshot,
   // The first terminal intent owns signaling, the terminal snapshot and
   // teardown. Late SIP or UI events may only let TERMINAL_COMPLETE advance the
   // existing transaction to IDLE, never replace the winning intent.
-  if (snapshot.state == CallState::IDLE ||
+  if ((snapshot.state == CallState::IDLE && !snapshot.incoming_setup_pending) ||
       call_state_is_terminating(snapshot.state)) {
     return;
   }
@@ -138,6 +139,7 @@ static constexpr const char *kReasonMediaTimeout = "media_timeout";
 static constexpr const char *kReasonAuthRequiredUnsupported = "auth_required_unsupported";
 static constexpr const char *kReasonProxyAuthRequiredUnsupported = "proxy_auth_required_unsupported";
 static constexpr const char *kReasonProtocolError = "protocol_error";
+static constexpr const char *kReasonMediaSetupFailed = "media_setup_failed";
 
 inline const char *call_state_to_str(CallState state) {
   switch (state) {
