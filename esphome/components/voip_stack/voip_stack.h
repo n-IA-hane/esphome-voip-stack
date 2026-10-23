@@ -580,6 +580,9 @@ class VoipStack : public Component {
   // ringing/calling too; audio_devices_active_ only gates mic/speaker hardware
   // and is intentionally false while a call is merely ringing.
   std::atomic<bool> audio_devices_active_{false};
+#ifdef USE_ESPHOME_VOIP_STACK_MIC
+  std::atomic<bool> microphone_requested_{false};
+#endif
 #if defined(USE_WIFI) && defined(USE_WIFI_RUNTIME_ROAMING_SUPPRESSION)
   bool wifi_roaming_suppressed_{false};
 #endif

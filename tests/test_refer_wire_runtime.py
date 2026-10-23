@@ -98,7 +98,7 @@ template<class T>void reset_string(T&s){s.clear();}
  void stop_audio_path(){media_active_=false;}
  bool send_request_(const std::string&m){SipRequestOptions o;return send_request_(m,"",o);}
  std::array<char,8192> sip_rx_scratch_{};
- std::atomic<bool> running_{true},transport_stopping_{false};
+ std::atomic<bool> running_{true},transport_stopping_{false},audio_receive_enabled_{true};
  enum class MediaLifecyclePhase {IDLE};std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::IDLE};
  std::atomic<uint16_t>last_sip_status_code_{0};
  DeferredUdpResponse pending_provisional_response_;

@@ -221,31 +221,47 @@ VideoRtpSession::VideoRtpSession(bool task_stack_in_psram)
   this->audio_pacing_ =
       xSemaphoreCreateBinaryStatic(&this->audio_pacing_storage_);
 #endif
+}
+
+bool VideoRtpSession::prepare_buffers() {
+  if (this->persistent_buffers_ready_) return true;
+  if (this->task_handle_ != nullptr || this->sender_task_handle_ != nullptr)
+    return false;
   this->persistent_buffers_ready_ = this->allocate_persistent_buffers_();
+  return this->persistent_buffers_ready_;
 }
 
 bool VideoRtpSession::allocate_persistent_buffers_() {
-  for (auto &slot : this->receive_access_units_) {
-    slot.owner = this;
-    slot.data = static_cast<uint8_t *>(heap_caps_malloc(
-        kMaxAccessUnitBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (slot.data == nullptr) {
-      ESP_LOGE(TAG, "Video reassembly PSRAM allocation failed at setup");
-      return false;
+  if (this->sink_ != nullptr) {
+    for (auto &slot : this->receive_access_units_) {
+      slot.owner = this;
+      if (slot.data == nullptr) {
+        slot.data = static_cast<uint8_t *>(heap_caps_malloc(
+            kMaxAccessUnitBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      }
+      if (slot.data == nullptr) {
+        ESP_LOGE(TAG, "Video reassembly PSRAM allocation failed at setup");
+        return false;
+      }
     }
-  }
-  if (!this->acquire_reassembly_slot_()) return false;
-  for (auto &slot : this->tx_access_units_) {
-    slot.data = static_cast<uint8_t *>(heap_caps_malloc(
-        kMaxAccessUnitBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (slot.data == nullptr) {
-      ESP_LOGE(TAG, "Video TX access-unit PSRAM allocation failed at setup");
-      return false;
-    }
-  }
+    if (!this->acquire_reassembly_slot_()) return false;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-  if (!this->ensure_jpeg_quantization_cache_()) return false;
+    this->jpeg_quantization_cache_allocation_failed_ = false;
+    if (!this->ensure_jpeg_quantization_cache_()) return false;
 #endif
+  }
+  if (this->source_ != nullptr) {
+    for (auto &slot : this->tx_access_units_) {
+      if (slot.data == nullptr) {
+        slot.data = static_cast<uint8_t *>(heap_caps_malloc(
+            kMaxAccessUnitBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      }
+      if (slot.data == nullptr) {
+        ESP_LOGE(TAG, "Video TX access-unit PSRAM allocation failed at setup");
+        return false;
+      }
+    }
+  }
   return true;
 }
 
@@ -2031,6 +2047,7 @@ void VideoRtpSession::reset_reassembly_() {
 bool VideoRtpSession::acquire_reassembly_slot_() {
   if (this->reassembly_slot_ != nullptr) return true;
   for (auto &slot : this->receive_access_units_) {
+    if (slot.data == nullptr) continue;
     uint8_t free = 0;
     if (slot.state.compare_exchange_strong(
             free, 1, std::memory_order_acq_rel)) {

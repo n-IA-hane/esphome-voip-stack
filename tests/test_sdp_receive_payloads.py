@@ -10,7 +10,7 @@ def method(source, signature):
     return source[start:source.index("\n}", start) + 2]
 
 
-def test_standard_receive_payload_contract(tmp_path):
+def sdp_fixture_source():
     base = ROOT / "esphome/components/voip_stack"
     parser = (base / "sip_message.cpp").read_text()
     sdp = (base / "sip_sdp.cpp").read_text()
@@ -24,11 +24,16 @@ def test_standard_receive_payload_contract(tmp_path):
 #define ESP_LOGI(...) ((void)0)
 #define ESP_LOGD(...) ((void)0)
 #define ESP_LOGW(...) ((void)0)
+#define ESP_LOGE(...) ((void)0)
 using namespace esphome::voip_stack;
 '''
     for signature in ["std::string trim_copy(", "bool parse_decimal_u32(",
                       "bool parse_rtpmap_format(", "bool parse_audio_media_line("]:
         source += method(parser, signature) + "\n"
+    from test_refer_dialog_runtime import block
+    header = (base / "sip_transport.h").read_text()
+    source += "using SipSignalingString = std::string;\nconstexpr size_t kMaxSdpMediaLines = 8;\n"
+    source += block(header, "struct RemoteMediaShape {") + ";\n"
     source += r'''
 struct RetainedCall { AudioFormat selected_tx_format_; };
 struct SipTransport {
@@ -37,24 +42,39 @@ struct SipTransport {
  AudioFormatList offer_tx_formats_,offer_rx_formats_,local_offered_tx_formats_;
  RtpAudioPayloads local_offered_rx_payloads_,accepted;
  bool remote_directional_audio_v1_=false,peer_directional_audio_v1_=false,local_offered_directional_audio_v1_=false;
- struct Shape{bool overflow=false;} remote_media_shape_;
+ RemoteMediaShape remote_media_shape_;
  std::atomic<uint32_t> remote_ip_v4_{0},remote_rtp_ip_v4_{0};
  std::atomic<uint16_t> remote_rtp_port_{0};
  uint32_t sdp_session_id_=1,sdp_session_version_=0;
  uint16_t rtp_port_=40000;size_t udp_max_payload_=1200;
  AudioFormat tx,rx;uint8_t tx_pt=0,rx_pt=0;
  void local_ip_for_peer_(uint32_t,std::string *out) const {*out="192.0.2.1";}
- void capture_remote_media_shape_(const std::string&) {}
+ void capture_remote_media_shape_(const std::string&);
+ std::string rejected_media_answer_(const std::string&) const;
+ void get_media_config_(AudioFormat*a,AudioFormat*b,uint8_t*c,uint8_t*d,RtpAudioPayloads*e)const{*a=tx;*b=rx;*c=tx_pt;*d=rx_pt;*e=accepted;}
  void set_media_config_(const AudioFormat&a,const AudioFormat&b,uint8_t c,uint8_t d,const RtpAudioPayloads*e){tx=a;rx=b;tx_pt=c;rx_pt=d;accepted=*e;}
- std::string wrap_sdp_envelope_(const std::string&,const std::string&,const std::string&,const std::string&,uint8_t) const;
+ std::string wrap_sdp_envelope_(const std::string&,const std::string&,const std::string&,const std::string&,uint8_t,const char * = "sendrecv") const;
  std::string build_sdp_offer_();
+ std::string build_sdp_answer_() const;
  bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false);
 };
 '''
     for signature in ["std::string SipTransport::wrap_sdp_envelope_(",
+                      "void SipTransport::capture_remote_media_shape_(",
+                      "std::string SipTransport::rejected_media_answer_(",
+                      "std::string SipTransport::build_sdp_answer_(",
                       "std::string SipTransport::build_sdp_offer_(",
                       "bool SipTransport::learn_remote_rtp_from_sdp_("]:
         source += method(sdp, signature) + "\n"
+    # Support immutable pre-fix sources in the red/green witness. Only the
+    # declared helper arity changes, never the extracted decision logic.
+    if "uint8_t ptime, const char *direction" not in sdp:
+        source = source.replace('uint8_t,const char * = "sendrecv") const;', 'uint8_t) const;')
+    return source
+
+
+def test_standard_receive_payload_contract(tmp_path):
+    source = sdp_fixture_source()
     source += r'''
 AudioFormat fmt(unsigned rate){AudioFormat f;f.sample_rate=rate;f.frame_ms=10;return f;}
 int main(){

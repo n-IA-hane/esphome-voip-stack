@@ -35,6 +35,7 @@ class EspH264VideoSource
       public esp_video_camera::RawVideoFrameConsumer {
  public:
   void setup() override;
+  void loop() override;
   void on_shutdown() override;
   void dump_config() override;
   float get_setup_priority() const override {
@@ -85,7 +86,12 @@ class EspH264VideoSource
   bool encode_frame_(const uint8_t *yuv, uint32_t timestamp_90khz,
                      bool publish, uint32_t generation = 0);
   bool start_tx_task_();
+  bool video_ready_(const voip_stack::VideoCapability &capability) const;
   bool stop_tx_task_();
+  bool reap_tx_task_(TickType_t ticks_to_wait);
+  bool request_video_stop_();
+  void finish_shutdown_();
+  void finish_raw_callback_();
   bool wait_for_tx_idle_();
   bool tx_slots_idle_() const;
   static void tx_task_trampoline_(void *ctx);
@@ -128,6 +134,10 @@ class EspH264VideoSource
   std::atomic<bool> tx_active_{false};
   std::atomic<uint32_t> tx_generation_{0};
   std::atomic<bool> tx_task_running_{false};
+  // Camera callbacks can still be between admission and slot acquisition when
+  // stop gates capture. Their count protects that otherwise invisible owner.
+  std::atomic<uint32_t> raw_callbacks_in_flight_{0};
+  std::atomic<bool> shutdown_pending_{false};
   TaskHandle_t tx_task_handle_{nullptr};
   StaticTask_t tx_task_tcb_{};
   StackType_t *tx_task_stack_{nullptr};

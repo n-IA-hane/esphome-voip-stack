@@ -115,7 +115,8 @@ class SipTransport : public SipPhoneTransport {
     return this->last_sip_status_code_.load(std::memory_order_acquire);
   }
   bool remote_audio_expected() const override {
-    return !this->refer_media_waiting_.load(std::memory_order_acquire);
+    return this->audio_receive_enabled_.load(std::memory_order_acquire) &&
+        !this->refer_media_waiting_.load(std::memory_order_acquire);
   }
 
  protected:
@@ -227,7 +228,7 @@ class SipTransport : public SipPhoneTransport {
   std::string build_sdp_answer_() const;
   std::string wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
                                  const std::string &maps, const std::string &flows,
-                                 uint8_t ptime) const;
+                                 uint8_t ptime, const char *direction = "sendrecv") const;
   bool learn_remote_rtp_from_sdp_(const std::string &sdp,
                                   uint32_t default_ip,
                                   bool remote_is_answer = false);
@@ -533,6 +534,7 @@ class SipTransport : public SipPhoneTransport {
 #if defined(USE_ESPHOME_VOIP_STACK_SPEAKER) && !defined(USE_ESPHOME_VOIP_STACK_OPUS)
   PcmReceiveConverter pcm_receive_converter_;
 #endif
+  std::atomic<bool> audio_receive_enabled_{true};
   AudioFormat selected_tx_format_{DEFAULT_AUDIO_FORMAT};
   AudioFormat selected_rx_format_{DEFAULT_AUDIO_FORMAT};
   uint8_t rtp_tx_payload_type_{96};

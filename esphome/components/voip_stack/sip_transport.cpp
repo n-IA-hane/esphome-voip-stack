@@ -168,10 +168,11 @@ void SipTransport::set_media_config_(const AudioFormat &tx, const AudioFormat &r
   portENTER_CRITICAL(&this->media_config_lock_);
   this->selected_tx_format_ = tx;
   this->selected_rx_format_ = rx;
+  this->audio_receive_enabled_.store(rx.is_valid(), std::memory_order_release);
   this->rtp_tx_payload_type_ = tx_payload_type;
   this->rtp_rx_payload_type_ = rx_payload_type;
   this->negotiated_rx_payloads_ = rx_payloads != nullptr ? *rx_payloads : RtpAudioPayloads{};
-  if (rx_payloads == nullptr) this->negotiated_rx_payloads_.add(rx_payload_type, rx);
+  if (rx_payloads == nullptr && rx.is_valid()) this->negotiated_rx_payloads_.add(rx_payload_type, rx);
   portEXIT_CRITICAL(&this->media_config_lock_);
 }
 
@@ -197,8 +198,6 @@ bool SipTransport::received_audio_format_(uint8_t pt, AudioFormat *format) const
 void SipTransport::set_audio_formats(const AudioFormatList &tx, const AudioFormatList &rx) {
   this->offer_tx_formats_ = tx;
   this->offer_rx_formats_ = rx;
-  if (this->offer_tx_formats_.count == 0) audio_format_list_default(&this->offer_tx_formats_);
-  if (this->offer_rx_formats_.count == 0) audio_format_list_default(&this->offer_rx_formats_);
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   const AudioFormat *opus_tx = nullptr;
   const AudioFormat *opus_rx = nullptr;
@@ -224,6 +223,8 @@ void SipTransport::set_video_endpoints(EncodedVideoSource *source,
   if (this->video_session_ != nullptr) {
     this->video_session_->set_source(source);
     this->video_session_->set_sink(sink);
+    if (!this->video_session_->prepare_buffers())
+      ESP_LOGE(TAG, "Video endpoint buffers unavailable at setup");
   }
 }
 
@@ -251,6 +252,8 @@ void SipTransport::set_video_config(VideoCodec codec, uint16_t rtp_port,
   this->video_session_->set_sink(this->video_sink_);
   this->video_session_->set_local_port(this->video_rtp_port_);
   this->video_session_->set_max_payload(this->video_max_rtp_payload_);
+  if (!this->video_session_->prepare_buffers())
+    ESP_LOGE(TAG, "Video endpoint buffers unavailable at setup");
 }
 
 VideoCapability SipTransport::local_video_send_capability_() const {
@@ -907,7 +910,7 @@ bool SipTransport::prepare_media_path_locked_() {
   AudioFormat sink_format;
   RtpAudioPayloads rx_payloads;
   this->get_media_config_(nullptr, &sink_format, nullptr, nullptr, &rx_payloads);
-  if (!this->pcm_receive_converter_.prepare(rx_payloads, sink_format)) {
+  if (sink_format.is_valid() && !this->pcm_receive_converter_.prepare(rx_payloads, sink_format)) {
     ESP_LOGE(TAG, "Unable to prepare negotiated PCM receive formats");
     return false;
   }
@@ -2043,6 +2046,7 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
   AudioFormat tx_format;
   uint8_t tx_payload_type = 96;
   this->get_media_config_(&tx_format, nullptr, &tx_payload_type, nullptr);
+  if (!tx_format.is_valid()) return;
   uint8_t packet[1500];
   const uint8_t bps = tx_format.container_bytes_per_sample();
   const size_t input_bytes = bytes;
@@ -2568,6 +2572,17 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   if (this->replay_completed_response_(message, src, "INVITE", !this->remote_sip_tcp_.load(std::memory_order_acquire))) {
     return true;
   }
+  const std::string incoming_from_tag = tag_from_header(incoming_from);
+  const std::string incoming_to_tag = tag_from_header(incoming_to);
+  const bool matching_dialog = incoming_call_id == this->call_id_ &&
+      !this->local_tag_.empty() && !this->remote_tag_.empty() &&
+      incoming_to_tag == this->local_tag_ && incoming_from_tag == this->remote_tag_;
+  // RFC 3261 sections 8.2.2 and 12.2.2: a To-tag addresses a dialog,
+  // never a new initial INVITE. Validate before changing any owned metadata.
+  if (!incoming_to_tag.empty() && !matching_dialog) {
+    return this->send_stateless_response_(message, src, 481,
+                                          "Call/Transaction Does Not Exist");
+  }
   if (this->terminal_transaction_pending_locked_()) {
     const bool same_dialog = incoming_call_id == this->call_id_;
     ESP_LOGW(TAG,
@@ -2624,12 +2639,7 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
     return this->send_stateless_response_(message, src, 481,
                                           "Call/Transaction Does Not Exist");
   }
-  const bool in_dialog_invite =
-      !incoming_call_id.empty() && incoming_call_id == this->call_id_ &&
-      this->media_active_.load(std::memory_order_acquire) &&
-      !this->remote_tag_.empty() && !this->local_tag_.empty() &&
-      tag_from_header(incoming_from) == this->remote_tag_ &&
-      tag_from_header(incoming_to) == this->local_tag_;
+  const bool in_dialog_invite = matching_dialog;
   if (in_dialog_invite &&
       incoming_cseq_number == this->last_invite_cseq_number_ &&
       via_branch(incoming_via) != via_branch(this->last_invite_via_)) {
@@ -2654,6 +2664,9 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
       this->send_sip_(this->last_invite_response_, src_ip, ntohs(src.sin_port));
       return true;
     }
+  }
+  if (!this->call_id_.empty()) {
+    return this->send_stateless_response_(message, src, 486, "Busy Here", "busy");
   }
   {
     LockGuard media_lock(this->media_lifecycle_mutex_);
@@ -2715,10 +2728,13 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
     LockGuard media_lock(this->media_lifecycle_mutex_);
     if (body.empty()) {
       AudioFormat shared;
+      const auto &tx = this->offer_tx_formats_;
+      const auto &rx = this->offer_rx_formats_;
       media_compatible = choose_common_audio_format(
-          this->offer_rx_formats_, this->offer_tx_formats_, &shared);
+          tx.count == 0 ? rx : tx, rx.count == 0 ? tx : rx, &shared);
       if (media_compatible) {
-        this->set_media_config_(shared, shared, 96, 96);
+        this->set_media_config_(tx.count == 0 ? disabled_audio_format() : shared,
+                                rx.count == 0 ? disabled_audio_format() : shared, 96, 96);
         this->delayed_offer_pending_ = true;
       }
     } else {
@@ -2773,9 +2789,9 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   signal.dest_route = this->destination_.route;
   signal.dest_name = this->destination_.name;
   signal.caller_tx_formats.formats[0] = selected_rx;
-  signal.caller_tx_formats.count = 1;
+  signal.caller_tx_formats.count = selected_rx.is_valid() ? 1 : 0;
   signal.caller_rx_formats.formats[0] = selected_tx;
-  signal.caller_rx_formats.count = 1;
+  signal.caller_rx_formats.count = selected_tx.is_valid() ? 1 : 0;
   signal.selected_rx_format = selected_rx;
   signal.selected_tx_format = selected_tx;
   this->emit_sip_signal_(std::move(signal));

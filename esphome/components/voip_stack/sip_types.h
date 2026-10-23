@@ -93,6 +93,20 @@ struct AudioFormat {
   }
 };
 
+// An absent or unnegotiated direction has no PCM stream. Do not synthesize
+// the default format, which would impose a codec/ptime on missing hardware.
+inline AudioFormat disabled_audio_format() {
+  AudioFormat format;
+  format.sample_rate = 0;
+  format.channels = 0;
+  format.frame_ms = 0;
+  return format;
+}
+
+inline const char *audio_direction_attribute(bool send, bool receive) {
+  return send && receive ? "sendrecv" : send ? "sendonly" : receive ? "recvonly" : "inactive";
+}
+
 static constexpr AudioFormat DEFAULT_AUDIO_FORMAT{};
 static constexpr size_t VOIP_STACK_MAX_AUDIO_FORMATS = 8;
 
@@ -262,8 +276,9 @@ inline uint8_t choose_common_audio_ptime(const AudioFormatList &tx, const AudioF
                                          size_t max_payload = UDP_SAFE_AUDIO_PAYLOAD_BYTES) {
   static constexpr uint8_t kPreference[] = {10, 16, 20, 32};
   for (uint8_t ptime : kPreference) {
-    if (audio_format_list_supports_rtp_ptime(tx, ptime, max_payload) &&
-        audio_format_list_supports_rtp_ptime(rx, ptime, max_payload)) {
+    if ((tx.count != 0 || rx.count != 0) &&
+        (tx.count == 0 || audio_format_list_supports_rtp_ptime(tx, ptime, max_payload)) &&
+        (rx.count == 0 || audio_format_list_supports_rtp_ptime(rx, ptime, max_payload))) {
       return ptime;
     }
   }

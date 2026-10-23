@@ -76,8 +76,17 @@ class VideoRtpSession {
   explicit VideoRtpSession(bool task_stack_in_psram);
   ~VideoRtpSession();
 
-  void set_source(EncodedVideoSource *source) { this->source_ = source; }
-  void set_sink(EncodedVideoSink *sink) { this->sink_ = sink; }
+  void set_source(EncodedVideoSource *source) {
+    if (this->source_ != source) this->persistent_buffers_ready_ = false;
+    this->source_ = source;
+  }
+  void set_sink(EncodedVideoSink *sink) {
+    if (this->sink_ != sink) this->persistent_buffers_ready_ = false;
+    this->sink_ = sink;
+  }
+  /// Called at setup after endpoints have been bound, never from call startup.
+  /// A failed setup allocation may be retried without discarding its prefix.
+  bool prepare_buffers();
   void set_local_port(uint16_t port) { this->local_rtp_port_ = port; }
   void set_max_payload(size_t bytes) { this->max_payload_ = bytes; }
   bool set_negotiated(const VideoCapability &capability,
@@ -280,7 +289,13 @@ class VideoRtpSession {
   std::atomic<bool> tx_resync_needed_{false};
 #endif
 
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+  // H.264 transfers leased AUs to an asynchronous sink. JPEG borrows the one
+  // completed reassembly synchronously and cannot use additional RX slots.
   static constexpr uint8_t kReceiveAccessUnitSlots = 3;
+#else
+  static constexpr uint8_t kReceiveAccessUnitSlots = 1;
+#endif
   struct ReceiveAccessUnitSlot {
     VideoRtpSession *owner{nullptr};
     uint8_t *data{nullptr};

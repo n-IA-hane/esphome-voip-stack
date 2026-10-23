@@ -59,6 +59,7 @@ template<typename T> void update_max(std::atomic<T> &target, T value) {
 }  // namespace
 
 void EspH264VideoSource::setup() {
+  this->disable_loop();
   this->control_mutex_ =
       xSemaphoreCreateMutexStatic(&this->control_mutex_storage_);
   this->tx_done_ = xSemaphoreCreateBinaryStatic(&this->tx_done_storage_);
@@ -89,15 +90,36 @@ void EspH264VideoSource::setup() {
 }
 
 void EspH264VideoSource::on_shutdown() {
-  this->stop_video();
-  this->stop_tx_task_();
+  this->shutdown_pending_.store(true, std::memory_order_release);
   this->encoder_ready_.store(false, std::memory_order_release);
+  this->request_video_stop_();
+  if (!this->stop_tx_task_()) return;
+  this->finish_shutdown_();
+}
+
+void EspH264VideoSource::loop() {
+  // Completion wakes this component exactly once, including after a stop
+  // exceeded its budget. An outstanding owner will wake it again on release.
+  this->disable_loop();
+  this->finish_shutdown_();
+}
+
+void EspH264VideoSource::finish_shutdown_() {
+  if (!this->shutdown_pending_.load(std::memory_order_acquire) ||
+      !this->reap_tx_task_(0) || !this->tx_slots_idle_()) {
+    return;
+  }
+  xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
+  this->callback_ = nullptr;
+  this->callback_ctx_ = nullptr;
   this->close_encoder_();
   this->free_resources_();
   if (this->ppa_ != nullptr) {
     ppa_unregister_client(this->ppa_);
     this->ppa_ = nullptr;
   }
+  this->shutdown_pending_.store(false, std::memory_order_release);
+  xSemaphoreGive(this->control_mutex_);
 }
 
 void EspH264VideoSource::dump_config() {
@@ -133,7 +155,16 @@ EspH264VideoSource::get_video_capability() const {
 
 bool EspH264VideoSource::prepare_video(
     const voip_stack::VideoCapability &capability) {
+  xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
+  const bool ready = this->video_ready_(capability);
+  xSemaphoreGive(this->control_mutex_);
+  return ready;
+}
+
+bool EspH264VideoSource::video_ready_(
+    const voip_stack::VideoCapability &capability) const {
   return !this->is_failed() &&
+         !this->shutdown_pending_.load(std::memory_order_acquire) &&
          this->encoder_ready_.load(std::memory_order_acquire) &&
          this->tx_task_handle_ != nullptr &&
          this->tx_task_running_.load(std::memory_order_acquire) &&
@@ -148,15 +179,17 @@ bool EspH264VideoSource::prepare_video(
 bool EspH264VideoSource::start_video(
     voip_stack::EncodedVideoAccessUnitCallback callback, void *ctx,
     const voip_stack::VideoCapability &capability) {
-  if (callback == nullptr || !this->prepare_video(capability)) {
-    return false;
-  }
+  if (callback == nullptr) return false;
   const uint32_t negotiated_bitrate =
       capability.max_bitrate_bps == 0
           ? this->bitrate_
           : std::min(this->bitrate_, capability.max_bitrate_bps);
 
   xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
+  if (!this->video_ready_(capability)) {
+    xSemaphoreGive(this->control_mutex_);
+    return false;
+  }
   const uint32_t generation =
       this->tx_generation_.fetch_add(1, std::memory_order_acq_rel) + 1;
   this->callback_ = callback;
@@ -190,17 +223,20 @@ bool EspH264VideoSource::start_video(
   this->encoded_max_bytes_.store(0, std::memory_order_release);
 #endif
   this->tx_active_.store(true, std::memory_order_release);
-  xSemaphoreGive(this->control_mutex_);
-
-  if (!this->camera_->start_raw_frame_consumer(this)) {
-    xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
+  // Camera start/stop only changes intent. Serialize it with shutdown so a
+  // delayed SIP start cannot re-enable capture after encoder resources close.
+  const bool camera_started = this->camera_->start_raw_frame_consumer(this);
+  if (!camera_started) {
     if (this->tx_generation_.load(std::memory_order_acquire) == generation) {
       this->tx_active_.store(false, std::memory_order_release);
       this->tx_generation_.fetch_add(1, std::memory_order_acq_rel);
     }
-    xSemaphoreGive(this->control_mutex_);
     xSemaphoreTake(this->tx_idle_, 0);
     xTaskNotifyGive(this->tx_task_handle_);
+  }
+  xSemaphoreGive(this->control_mutex_);
+
+  if (!camera_started) {
     if (!this->wait_for_tx_idle_()) {
       ESP_LOGE(TAG, "H.264 TX worker did not drain after camera start failure");
       this->mark_failed();
@@ -216,23 +252,29 @@ bool EspH264VideoSource::start_video(
   return true;
 }
 
-void EspH264VideoSource::stop_video() {
+bool EspH264VideoSource::request_video_stop_() {
+  xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
   if (this->camera_ != nullptr)
     this->camera_->stop_raw_frame_consumer(this);
-  xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
   const bool was_active =
-      this->tx_active_.exchange(false, std::memory_order_acq_rel);
+      this->tx_active_.exchange(false, std::memory_order_seq_cst);
   if (was_active)
     this->tx_generation_.fetch_add(1, std::memory_order_acq_rel);
   this->force_idr_generation_.store(0, std::memory_order_release);
-  xSemaphoreGive(this->control_mutex_);
   if (this->tx_task_handle_ != nullptr) {
     xSemaphoreTake(this->tx_idle_, 0);
     xTaskNotifyGive(this->tx_task_handle_);
   }
+  xSemaphoreGive(this->control_mutex_);
+  return was_active;
+}
+
+void EspH264VideoSource::stop_video() {
+  const bool was_active = this->request_video_stop_();
   if (!this->wait_for_tx_idle_()) {
     ESP_LOGE(TAG, "H.264 TX worker did not reach the idle barrier");
     this->mark_failed();
+    return;
   }
   xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
   this->callback_ = nullptr;
@@ -623,7 +665,15 @@ bool EspH264VideoSource::encode_frame_(
 
 void EspH264VideoSource::consume_raw_video_frame(
     const esp_video_camera::RawVideoFrame &frame) {
-  if (!this->tx_active_.load(std::memory_order_acquire)) {
+  this->raw_callbacks_in_flight_.fetch_add(1, std::memory_order_seq_cst);
+  struct CallbackGuard {
+    EspH264VideoSource *owner;
+    ~CallbackGuard() { this->owner->finish_raw_callback_(); }
+  } callback_guard{this};
+  // These sequentially consistent operations pair with the stop gate. A
+  // callback admitted before stop is visible to cleanup; a later one cannot
+  // enter PPA or touch a freed buffer.
+  if (!this->tx_active_.load(std::memory_order_seq_cst)) {
     return;
   }
   // setup() has already registered the client used by this single runtime
@@ -719,6 +769,8 @@ bool EspH264VideoSource::start_tx_task_() {
 }
 
 bool EspH264VideoSource::tx_slots_idle_() const {
+  if (this->raw_callbacks_in_flight_.load(std::memory_order_seq_cst) != 0)
+    return false;
   for (const auto &slot : this->tx_slots_) {
     if (slot.state.load(std::memory_order_acquire) != 0)
       return false;
@@ -738,6 +790,8 @@ void EspH264VideoSource::release_encoded_slot_(void *ctx) {
       slot->owner->tx_slots_idle_()) {
     xSemaphoreGive(slot->owner->tx_idle_);
   }
+  if (slot->owner->shutdown_pending_.load(std::memory_order_acquire))
+    slot->owner->enable_loop_soon_any_context();
 }
 
 void EspH264VideoSource::release_tx_slot_(TxSlot *slot) {
@@ -749,30 +803,53 @@ void EspH264VideoSource::release_tx_slot_(TxSlot *slot) {
       this->tx_slots_idle_()) {
     xSemaphoreGive(this->tx_idle_);
   }
+  if (this->shutdown_pending_.load(std::memory_order_acquire))
+    this->enable_loop_soon_any_context();
+}
+
+void EspH264VideoSource::finish_raw_callback_() {
+  if (this->raw_callbacks_in_flight_.fetch_sub(
+          1, std::memory_order_seq_cst) != 1) return;
+  if (!this->tx_active_.load(std::memory_order_acquire) &&
+      this->tx_slots_idle_()) {
+    xSemaphoreGive(this->tx_idle_);
+  }
+  if (this->shutdown_pending_.load(std::memory_order_acquire))
+    this->enable_loop_soon_any_context();
 }
 
 bool EspH264VideoSource::wait_for_tx_idle_() {
-  if (this->tx_task_handle_ == nullptr || this->tx_slots_idle_())
+  if (this->tx_slots_idle_())
     return true;
   return xSemaphoreTake(this->tx_idle_, pdMS_TO_TICKS(3000)) == pdTRUE &&
          this->tx_slots_idle_();
 }
 
 bool EspH264VideoSource::stop_tx_task_() {
-  if (this->tx_task_handle_ == nullptr)
+  xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
+  if (this->tx_task_handle_ == nullptr) {
+    xSemaphoreGive(this->control_mutex_);
     return true;
+  }
   this->tx_task_running_.store(false, std::memory_order_release);
   xTaskNotifyGive(this->tx_task_handle_);
-  if (xSemaphoreTake(this->tx_done_, pdMS_TO_TICKS(3000)) != pdTRUE) {
+  xSemaphoreGive(this->control_mutex_);
+  if (!this->reap_tx_task_(pdMS_TO_TICKS(3000))) {
     ESP_LOGE(TAG, "H.264 TX worker did not stop; retaining owned resources");
     return false;
   }
+  return true;
+}
+
+bool EspH264VideoSource::reap_tx_task_(TickType_t ticks_to_wait) {
+  if (this->tx_task_handle_ == nullptr) return true;
+  if (xSemaphoreTake(this->tx_done_, ticks_to_wait) != pdTRUE) return false;
+  xSemaphoreTake(this->control_mutex_, portMAX_DELAY);
   voip_audio_core::cleanup_managed_pinned_task(
       &this->tx_task_handle_, &this->tx_task_stack_, 8192,
       this->tx_task_with_caps_);
   this->tx_task_with_caps_ = false;
-  for (auto &slot : this->tx_slots_)
-    slot.state.store(0, std::memory_order_release);
+  xSemaphoreGive(this->control_mutex_);
   return true;
 }
 
@@ -837,9 +914,18 @@ void EspH264VideoSource::tx_task_() {
     }
     this->release_tx_slot_(slot);
   }
-  for (auto &slot : this->tx_slots_)
-    slot.state.store(0, std::memory_order_release);
-  voip_audio_core::finish_managed_pinned_task(this->tx_done_);
+  for (auto &slot : this->tx_slots_) {
+    // A queued frame is ours to discard. State 1 still belongs to a camera
+    // callback, which must publish its own release before cleanup can run.
+    uint8_t ready = 2;
+    slot.state.compare_exchange_strong(ready, 0, std::memory_order_acq_rel);
+  }
+  // Publish completion before the wake. Reaping deletes/joins this task before
+  // freeing buffers, so the owner can safely stop us even during this wake.
+  xSemaphoreGive(this->tx_done_);
+  this->enable_loop_soon_any_context();
+  vTaskSuspend(nullptr);
+  abort();
 }
 
 }  // namespace esphome::esp_h264_video_source

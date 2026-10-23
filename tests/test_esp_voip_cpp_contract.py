@@ -1261,10 +1261,16 @@ def test_in_dialog_reinvite_dispatch_works_for_outbound_dialogs() -> None:
         invite.index("LockGuard media_lock", invite.index("const bool in_dialog_invite"))
     ]
 
-    assert "incoming_call_id == this->call_id_" in dispatch
-    assert "this->media_active_.load(std::memory_order_acquire)" in dispatch
-    assert "tag_from_header(incoming_from) == this->remote_tag_" in dispatch
-    assert "tag_from_header(incoming_to) == this->local_tag_" in dispatch
+    identity = invite[invite.index("const bool matching_dialog"):invite.index("const bool in_dialog_invite")]
+    assert "incoming_call_id == this->call_id_" in identity
+    assert "incoming_from_tag == this->remote_tag_" in identity
+    assert "incoming_to_tag == this->local_tag_" in identity
+    # Dialog identity is independent of media activation. The re-INVITE owner
+    # applies media admission only after its identity has been established.
+    assert "media_active_" not in identity[:identity.index("// RFC")]
+    reinvite = cpp_method(source, r"SipTransport::handle_reinvite_")
+    assert "this->media_active_.load(std::memory_order_acquire)" in reinvite
+    assert "const bool in_dialog_invite = matching_dialog;" in dispatch
     assert "return this->handle_reinvite_(message, src);" in dispatch
     assert "last_invite_cseq_number_ != 0" not in dispatch
 

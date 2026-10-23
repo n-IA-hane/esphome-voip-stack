@@ -495,22 +495,17 @@ def _derive_rx_format(config: dict) -> dict | None:
     )
 
 
-def _resolve_audio_format(config: dict, direction: str, value) -> dict:
+def _resolve_audio_format(config: dict, direction: str, value) -> dict | None:
+    present = (CONF_MICROPHONE in config or CONF_MICROPHONE_SOURCE in config) if direction == CONF_TX else CONF_SPEAKER in config
+    if not present:
+        # Historical settings for absent hardware remain parseable, but do not
+        # declare local media capabilities or impose a codec or packet time.
+        return None
     derive = _derive_tx_format if direction == CONF_TX else _derive_rx_format
     derived = derive(config)
     if _is_auto(value):
         if derived is not None:
             return derived
-        if (direction == CONF_TX and CONF_MICROPHONE not in config and CONF_MICROPHONE_SOURCE not in config) or (
-            direction == CONF_RX and CONF_SPEAKER not in config
-        ):
-            return {
-                CONF_SAMPLE_RATE: 16000,
-                CONF_PCM_FORMAT: "s16le",
-                CONF_CHANNELS: 1,
-                CONF_FRAME_MS: 16,
-                CONF_AUDIO_CODEC: AUDIO_CODEC_PCM,
-            }
         source = "microphone/source" if direction == CONF_TX else "speaker"
         raise cv.Invalid(
             f"voip_stack.audio.{direction}: auto could not derive the PCM format from the referenced "
@@ -519,19 +514,6 @@ def _resolve_audio_format(config: dict, direction: str, value) -> dict:
 
     resolved = dict(value)
     if any(_is_auto(resolved[key]) for key in (CONF_SAMPLE_RATE, CONF_PCM_FORMAT, CONF_CHANNELS, CONF_FRAME_MS)):
-        if derived is None and all(
-            _is_auto(resolved[key]) for key in (CONF_SAMPLE_RATE, CONF_PCM_FORMAT, CONF_CHANNELS, CONF_FRAME_MS)
-        ) and (
-            (direction == CONF_TX and CONF_MICROPHONE not in config and CONF_MICROPHONE_SOURCE not in config) or
-            (direction == CONF_RX and CONF_SPEAKER not in config)
-        ):
-            return {
-                CONF_SAMPLE_RATE: 16000,
-                CONF_PCM_FORMAT: "s16le",
-                CONF_CHANNELS: 1,
-                CONF_FRAME_MS: 16,
-                CONF_AUDIO_CODEC: AUDIO_CODEC_PCM,
-            }
         if derived is None:
             source = "microphone/source" if direction == CONF_TX else "speaker"
             raise cv.Invalid(
@@ -855,17 +837,17 @@ def _final_validate(config):
     config[CONF_TX_USES_ESP_AUDIO_STACK] = _tx_uses_esp_audio_stack(config)
     tx_fmt = audio_cfg[CONF_TX]
     rx_fmt = audio_cfg[CONF_RX]
-    _validate_tx_reframe_formats(tx_fmt, audio_cfg[CONF_TX_FORMATS])
+    if tx_fmt is not None:
+        _validate_tx_reframe_formats(tx_fmt, audio_cfg[CONF_TX_FORMATS])
 
     if protocol in (TRANSPORT_UDP, TRANSPORT_TCP):
         audio_cfg = config[CONF_AUDIO]
         max_payload = config[CONF_UDP_MAX_PAYLOAD]
-        checks = [
-            (CONF_TX, audio_cfg[CONF_TX]),
-            (CONF_RX, audio_cfg[CONF_RX]),
-        ]
-        checks.extend((CONF_TX_FORMATS, fmt) for fmt in audio_cfg[CONF_TX_FORMATS])
-        checks.extend((CONF_RX_FORMATS, fmt) for fmt in audio_cfg[CONF_RX_FORMATS])
+        checks = []
+        for key, extra in ((CONF_TX, CONF_TX_FORMATS), (CONF_RX, CONF_RX_FORMATS)):
+            if audio_cfg[key] is not None:
+                checks.append((key, audio_cfg[key]))
+                checks.extend((extra, fmt) for fmt in audio_cfg[extra])
         for direction, fmt in checks:
             if fmt[CONF_PCM_FORMAT] == "s32le":
                 raise cv.Invalid(
@@ -884,12 +866,9 @@ def _final_validate(config):
 
     opus_enabled = any(
         fmt[CONF_AUDIO_CODEC] == AUDIO_CODEC_OPUS
-        for fmt in (
-            audio_cfg[CONF_TX],
-            audio_cfg[CONF_RX],
-            *audio_cfg[CONF_TX_FORMATS],
-            *audio_cfg[CONF_RX_FORMATS],
-        )
+        for key, extra in ((CONF_TX, CONF_TX_FORMATS), (CONF_RX, CONF_RX_FORMATS))
+        if audio_cfg[key] is not None
+        for fmt in (audio_cfg[key], *audio_cfg[extra])
     )
     if opus_enabled:
         if esp32.get_esp32_variant() == "ESP32P4":
@@ -1064,6 +1043,8 @@ async def _add_core_settings(var, config):
         (CONF_RX, var.set_rx_audio_format),
     ):
         fmt = audio_cfg[key]
+        if fmt is None:
+            continue
         cg.add(
             setter(
                 fmt[CONF_SAMPLE_RATE],
@@ -1073,11 +1054,11 @@ async def _add_core_settings(var, config):
                 AUDIO_CODEC_IDS[fmt[CONF_AUDIO_CODEC]],
             )
         )
-    for key, setter in (
-        (CONF_TX_FORMATS, var.add_supported_tx_audio_format),
-        (CONF_RX_FORMATS, var.add_supported_rx_audio_format),
+    for direction, key, setter in (
+        (CONF_TX, CONF_TX_FORMATS, var.add_supported_tx_audio_format),
+        (CONF_RX, CONF_RX_FORMATS, var.add_supported_rx_audio_format),
     ):
-        for fmt in audio_cfg[key]:
+        for fmt in audio_cfg[key] if audio_cfg[direction] is not None else ():
             cg.add(
                 setter(
                     fmt[CONF_SAMPLE_RATE],
@@ -1089,12 +1070,9 @@ async def _add_core_settings(var, config):
             )
     if any(
         fmt[CONF_AUDIO_CODEC] == AUDIO_CODEC_OPUS
-        for fmt in (
-            audio_cfg[CONF_TX],
-            audio_cfg[CONF_RX],
-            *audio_cfg[CONF_TX_FORMATS],
-            *audio_cfg[CONF_RX_FORMATS],
-        )
+        for key, extra in ((CONF_TX, CONF_TX_FORMATS), (CONF_RX, CONF_RX_FORMATS))
+        if audio_cfg[key] is not None
+        for fmt in (audio_cfg[key], *audio_cfg[extra])
     ):
         cg.add_define("USE_ESPHOME_VOIP_STACK_OPUS")
         esp32.add_idf_component(

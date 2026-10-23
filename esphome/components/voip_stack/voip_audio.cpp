@@ -97,6 +97,7 @@ void VoipStack::tx_task(void *param) {
 bool VoipStack::is_tx_stream_ready_() const {
   return this->audio_devices_active_.load(std::memory_order_acquire) &&
          this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL &&
+         this->get_current_tx_audio_format_().is_valid() &&
          this->transport_ != nullptr && this->transport_->is_connected();
 }
 
@@ -409,6 +410,10 @@ void VoipStack::rx_task_() {
 
     const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
     const AudioFormat rx_format = this->get_current_rx_audio_format_();
+    if (!rx_format.is_valid()) {
+      ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+      continue;
+    }
     const uint64_t frame_tick_numerator =
         static_cast<uint64_t>(rx_format.frame_ms) * configTICK_RATE_HZ;
     const TickType_t frame_ticks = static_cast<TickType_t>(

@@ -479,51 +479,44 @@ void VoipStack::publish_last_reason_(const std::string &reason) {
 }
 
 void VoipStack::set_audio_devices_active_(bool on) {
-  bool was = this->audio_devices_active_.exchange(on, std::memory_order_acq_rel);
-  if (was == on) return;
+  const bool changed = this->audio_devices_active_.exchange(on, std::memory_order_acq_rel) != on;
+  if (changed) {
 #if defined(USE_WIFI) && defined(USE_WIFI_RUNTIME_ROAMING_SUPPRESSION)
-  // The media owner holds one native request, shared safely with other
-  // streaming components. Resume background AP searches after media ends.
-  if (on && wifi::global_wifi_component != nullptr) {
-    wifi::global_wifi_component->request_roaming_suppression();
-    this->wifi_roaming_suppressed_ = true;
-  } else if (!on && this->wifi_roaming_suppressed_) {
-    if (wifi::global_wifi_component != nullptr)
-      wifi::global_wifi_component->release_roaming_suppression();
-    this->wifi_roaming_suppressed_ = false;
-  }
+    // One native Wi-Fi request belongs to this media owner.
+    if (on && wifi::global_wifi_component != nullptr) {
+      wifi::global_wifi_component->request_roaming_suppression();
+      this->wifi_roaming_suppressed_ = true;
+    } else if (!on && this->wifi_roaming_suppressed_) {
+      if (wifi::global_wifi_component != nullptr)
+        wifi::global_wifi_component->release_roaming_suppression();
+      this->wifi_roaming_suppressed_ = false;
+    }
 #endif
-  this->notify_audio_tasks_();
-
-  if (on) {
-    this->reset_peer_audio_watchdog_(true);
-
+    this->reset_peer_audio_watchdog_(on);
+    this->notify_audio_tasks_();
+  }
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
+  // Outgoing preparation may start capture before a recvonly answer arrives.
+  // Reconcile only our own listener request, without stopping another consumer.
+  const bool requested = on && this->get_current_tx_audio_format_().is_valid();
+  if (this->microphone_requested_.exchange(requested, std::memory_order_acq_rel) != requested) {
     if (this->microphone_) {
-      this->microphone_->start();
+      if (requested) this->microphone_->start();
+      else this->microphone_->stop();
     }
     if (this->microphone_source_) {
-      this->microphone_source_->start();
+      if (requested) this->microphone_source_->start();
+      else this->microphone_source_->stop();
     }
-#endif
-  } else {
-    this->reset_peer_audio_watchdog_(false);
-
-#ifdef USE_ESPHOME_VOIP_STACK_MIC
-    if (this->microphone_) {
-      this->microphone_->stop();
-    }
-    if (this->microphone_source_) {
-      this->microphone_source_->stop();
-    }
-#endif
   }
+#endif
 }
 
 void VoipStack::start_speaker_for_current_rx_() {
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
-  if (this->speaker_ == nullptr) return;
-  this->speaker_->set_audio_stream_info(audio_stream_info_from_format(this->get_current_rx_audio_format_()));
+  const AudioFormat format = this->get_current_rx_audio_format_();
+  if (this->speaker_ == nullptr || !format.is_valid()) return;
+  this->speaker_->set_audio_stream_info(audio_stream_info_from_format(format));
   this->speaker_->start();
 #endif
 }
@@ -556,6 +549,7 @@ void VoipStack::set_in_call_(bool on) {
     }
   }
   if (on) {
+    this->set_audio_devices_active_(true);
     // A new media leg starts here even if audio_devices_active_ was already
     // true because a previous call did not fully drain yet. Do not inherit
     // peer-audio liveness from the previous dialog, or the media watchdog can
@@ -948,10 +942,13 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
         break;
       }
 
-      AudioFormat caller_to_dest;
-      AudioFormat dest_to_caller;
-      if (!choose_common_audio_format(msg.caller_tx_formats, this->rx_audio_formats_, &caller_to_dest) ||
-          !choose_common_audio_format(msg.caller_rx_formats, this->tx_audio_formats_, &dest_to_caller)) {
+      AudioFormat caller_to_dest = disabled_audio_format();
+      AudioFormat dest_to_caller = disabled_audio_format();
+      const bool receive = msg.caller_tx_formats.count != 0 && this->rx_audio_formats_.count != 0;
+      const bool send = msg.caller_rx_formats.count != 0 && this->tx_audio_formats_.count != 0;
+      if ((!receive && !send) ||
+          (receive && !choose_common_audio_format(msg.caller_tx_formats, this->rx_audio_formats_, &caller_to_dest)) ||
+          (send && !choose_common_audio_format(msg.caller_rx_formats, this->tx_audio_formats_, &dest_to_caller))) {
         ESP_LOGW(TAG,
                  "%s: inbound INVITE from %s has no compatible audio format - "
                  "488 media_incompatible",
@@ -1112,25 +1109,28 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
       }
       const CallState state = this->call_state_.load(std::memory_order_acquire);
       if (state == CallState::CALLING || state == CallState::REMOTE_RINGING) {
-        if (!audio_format_list_contains(this->tx_audio_formats_, msg.selected_tx_format) ||
-            !audio_format_list_contains(this->rx_audio_formats_, msg.selected_rx_format)) {
+        if ((msg.selected_tx_format.is_valid() &&
+             !audio_format_list_contains(this->tx_audio_formats_, msg.selected_tx_format)) ||
+            (msg.selected_rx_format.is_valid() &&
+             !audio_format_list_contains(this->rx_audio_formats_, msg.selected_rx_format)) ||
+            (!msg.selected_tx_format.is_valid() && !msg.selected_rx_format.is_valid())) {
           ESP_LOGE(TAG,
                    "%s: 200 OK confirmed an incompatible audio format; ending call",
                    this->device_name_.c_str());
           this->request_call_termination_(
               {CallEndReason::MEDIA_INCOMPATIBLE, nullptr,
-               SipTerminationAction::NONE, false});
-          break;
-        }
-        if (this->transport_ && !this->transport_->start_audio_path()) {
-          ESP_LOGE(TAG, "%s: RTP start failed after SIP answer", this->device_name_.c_str());
-          this->request_call_termination_(
-              {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
-               SipTerminationAction::NONE, false});
+               SipTerminationAction::BYE, false});
           break;
         }
         this->set_current_media_formats_(msg.selected_tx_format, msg.selected_rx_format, msg.selected_tx_format,
                                          msg.selected_rx_format);
+        if (this->transport_ && !this->transport_->start_audio_path()) {
+          ESP_LOGE(TAG, "%s: RTP start failed after SIP answer", this->device_name_.c_str());
+          this->request_call_termination_(
+              {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
+               SipTerminationAction::BYE, false});
+          break;
+        }
         ESP_LOGI(TAG, "%s: destination answered, in_call (call_id=%s)",
                  this->device_name_.c_str(),
                  in_call_id.c_str());

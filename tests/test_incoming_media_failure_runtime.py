@@ -11,8 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "esphome/components/voip_stack"
 
 
-@pytest.mark.parametrize("failure", ["converter", "bind"])
-def test_auto_answer_media_failure_closes_owner_and_can_retry(tmp_path, failure):
+def media_failure_source():
     transport = (COMPONENT / "sip_transport.cpp").read_text()
     methods = "\n".join(
         block(transport, marker).replace("SipTransport::", "MediaOwner::")
@@ -50,6 +49,11 @@ struct MediaOwner {
 };
 MediaOwner media_owner;
 """
+    return prelude + methods
+
+
+@pytest.mark.parametrize("failure", ["converter", "bind"])
+def test_auto_answer_media_failure_closes_owner_and_can_retry(tmp_path, failure):
     app = incoming_source().replace(
         "bool prepare_media_path(){++prepares;return prepare_ok;}",
         "bool prepare_media_path(){++prepares;return media_owner.prepare_media_path_locked_();}",
@@ -81,7 +85,7 @@ int main(int argc,char**argv){
 }
 """
     cpp = tmp_path / "incoming_media.cpp"
-    cpp.write_text(prelude + methods + "\n" + app + "\n" + checks)
+    cpp.write_text(media_failure_source() + "\n" + app + "\n" + checks)
     exe = tmp_path / "incoming_media"
     result = subprocess.run(
         [

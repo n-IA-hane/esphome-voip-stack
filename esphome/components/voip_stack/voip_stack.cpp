@@ -443,6 +443,17 @@ void VoipStack::setup() {
   this->video_camera_source_.register_listener();
 #endif
 
+  if (!this->has_microphone_()) {
+    this->tx_audio_formats_.count = 0;
+    this->tx_audio_format_ = disabled_audio_format();
+    this->set_current_tx_audio_format_(this->tx_audio_format_);
+  }
+  if (!this->has_speaker_()) {
+    this->rx_audio_formats_.count = 0;
+    this->rx_audio_format_ = disabled_audio_format();
+    this->set_current_rx_audio_format_(this->rx_audio_format_);
+  }
+
   ESP_LOGI(TAG, "Audio capability: %s (SIP/%s, tasks: %s)",
            this->audio_capability_(),
            this->protocol_ == TransportType::TCP ? "TCP" : "UDP",

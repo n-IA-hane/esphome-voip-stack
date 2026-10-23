@@ -230,6 +230,7 @@ bool SipTransport::prepare_refer_media_(ReferDialog &other) {
   this->get_media_config_(&tx, &rx, nullptr, nullptr);
   if (!(tx == other.selected_tx_format_)) return false;
 #if defined(USE_ESPHOME_VOIP_STACK_SPEAKER) && !defined(USE_ESPHOME_VOIP_STACK_OPUS)
+  if (!rx.is_valid()) return !other.selected_rx_format_.is_valid();
   if (!this->pcm_receive_converter_.prepare_additional(other.negotiated_rx_payloads_, rx)) return false;
   other.selected_rx_format_ = rx;
   return true;
