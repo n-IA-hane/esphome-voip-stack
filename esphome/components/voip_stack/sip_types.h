@@ -108,6 +108,16 @@ inline const char *audio_direction_attribute(bool send, bool receive) {
 }
 
 static constexpr AudioFormat DEFAULT_AUDIO_FORMAT{};
+
+inline AudioFormat decoded_pcm_format(AudioFormat format) {
+  format.codec = AudioCodec::PCM;
+  return format;
+}
+
+inline bool same_decoded_audio_geometry(const AudioFormat &left, const AudioFormat &right) {
+  return left.is_valid() && right.is_valid() && decoded_pcm_format(left) == decoded_pcm_format(right);
+}
+
 static constexpr size_t VOIP_STACK_MAX_AUDIO_FORMATS = 8;
 
 inline constexpr uint8_t pack_audio_frame_ms(uint16_t frame_ms) {
@@ -159,6 +169,7 @@ enum class SipSignalType : uint8_t {
   PROXY_AUTH_REQUIRED,
   MEDIA_INCOMPATIBLE,
   PROTOCOL_ERROR,
+  MEDIA_READY,
 };
 
 inline const char *sip_signal_type_name(SipSignalType type) {
@@ -176,6 +187,7 @@ inline const char *sip_signal_type_name(SipSignalType type) {
     case SipSignalType::PROXY_AUTH_REQUIRED: return "407";
     case SipSignalType::MEDIA_INCOMPATIBLE: return "488";
     case SipSignalType::PROTOCOL_ERROR: return "PROTOCOL_ERROR";
+    case SipSignalType::MEDIA_READY: return "MEDIA_READY";
     default: return "UNKNOWN";
   }
 }
@@ -187,6 +199,8 @@ struct SipSignal {
   // may end UI/media state but must not reset the dialog prematurely.
   bool terminal_transaction_pending{false};
   bool media_source_changed{false};
+  // An offer in our UAS 200 is provisional until its matching ACK answers it.
+  bool media_answer_pending{false};
   std::string call_id;
   std::string caller_route;
   std::string caller_name;

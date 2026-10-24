@@ -32,6 +32,8 @@ struct VoipStack {
  std::atomic<CallState>call_state_{CallState::IDLE};
  Transport t;Transport*transport_=&t;
  bool do_not_disturb_=false,auto_answer_=true,incoming_setup_pending_=false;
+ bool incoming_media_answer_pending_=false;
+ bool incoming_answer_accepted_=false;
  int call_state_mutex_=0;struct LockGuard {explicit LockGuard(int&) {}};
  std::vector<std::function<void()>> deferred;
  Trigger call_failed_trigger_,hangup_trigger_;
@@ -57,6 +59,7 @@ struct VoipStack {
  uint16_t final_status=0;
  VoipStack(){audio_format_list_default(&tx_audio_formats_);audio_format_list_default(&rx_audio_formats_);}
  void on_sip_signal_received_(const SipSignal&);
+ void complete_incoming_answer_(bool);
  void request_call_termination_(const TerminationIntent&);
  const char *get_call_state_str()const{return call_state_to_str(call_state_.load());}
  void snapshot_terminal_response_(std::string*a,std::string*b,uint32_t*age){*a="";*b="";*age=UINT32_MAX;}

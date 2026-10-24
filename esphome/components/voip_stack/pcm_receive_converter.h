@@ -2,7 +2,7 @@
 
 #include "rtp_audio_payloads.h"
 
-#if defined(USE_ESPHOME_VOIP_STACK_SPEAKER) && !defined(USE_ESPHOME_VOIP_STACK_OPUS)
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
 #include <atomic>
 #include <memory>
 #include <new>

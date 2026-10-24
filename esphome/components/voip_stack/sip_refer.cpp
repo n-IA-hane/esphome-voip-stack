@@ -229,9 +229,16 @@ bool SipTransport::prepare_refer_media_(ReferDialog &other) {
   AudioFormat tx, rx;
   this->get_media_config_(&tx, &rx, nullptr, nullptr);
   if (!(tx == other.selected_tx_format_)) return false;
-#if defined(USE_ESPHOME_VOIP_STACK_SPEAKER) && !defined(USE_ESPHOME_VOIP_STACK_OPUS)
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  // Retain the existing REFER codec boundary. Per-packet fallback within one
+  // negotiated call does not qualify changing a retained dialog's codec.
+  if (rx.codec == AudioCodec::OPUS || other.selected_rx_format_.codec == AudioCodec::OPUS)
+    return rx == other.selected_rx_format_;
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   if (!rx.is_valid()) return !other.selected_rx_format_.is_valid();
-  if (!this->pcm_receive_converter_.prepare_additional(other.negotiated_rx_payloads_, rx)) return false;
+  if (!this->pcm_receive_converter_.prepare_additional(other.negotiated_rx_payloads_.pcm_only(),
+                                                       decoded_pcm_format(rx))) return false;
   other.selected_rx_format_ = rx;
   return true;
 #else

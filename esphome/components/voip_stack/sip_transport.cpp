@@ -906,11 +906,12 @@ bool SipTransport::prepare_media_path_locked_() {
   this->rtp_sequence_.store(static_cast<uint16_t>(esp_random()), std::memory_order_release);
   this->rtp_timestamp_.store(esp_random(), std::memory_order_release);
   this->rtp_ssrc_ = esp_random();
-#if defined(USE_ESPHOME_VOIP_STACK_SPEAKER) && !defined(USE_ESPHOME_VOIP_STACK_OPUS)
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   AudioFormat sink_format;
   RtpAudioPayloads rx_payloads;
   this->get_media_config_(nullptr, &sink_format, nullptr, nullptr, &rx_payloads);
-  if (sink_format.is_valid() && !this->pcm_receive_converter_.prepare(rx_payloads, sink_format)) {
+  if (sink_format.is_valid() &&
+      !this->pcm_receive_converter_.prepare(rx_payloads.pcm_only(), decoded_pcm_format(sink_format))) {
     ESP_LOGE(TAG, "Unable to prepare negotiated PCM receive formats");
     return false;
   }
@@ -918,7 +919,17 @@ bool SipTransport::prepare_media_path_locked_() {
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   AudioFormat prepared_tx;
   AudioFormat prepared_rx;
-  this->get_media_config_(&prepared_tx, &prepared_rx, nullptr, nullptr);
+  RtpAudioPayloads prepared_payloads;
+  this->get_media_config_(&prepared_tx, &prepared_rx, nullptr, nullptr, &prepared_payloads);
+  // The preferred playout codec can be PCM while an advertised Opus fallback
+  // uses the same PCM sink. Validate every decoder that can receive packets.
+  for (uint8_t i = 0; i < prepared_payloads.count; ++i) {
+    if (prepared_payloads.entries[i].format.codec == AudioCodec::OPUS) {
+      if (!same_decoded_audio_geometry(prepared_payloads.entries[i].format, prepared_rx)) return false;
+      prepared_rx = prepared_payloads.entries[i].format;
+      break;
+    }
+  }
   if (!this->opus_codec_.ready_for(prepared_tx, prepared_rx)) {
     ESP_LOGE(TAG, "Negotiated Opus format was not preallocated at setup");
     return false;
@@ -2155,14 +2166,15 @@ size_t SipTransport::decode_audio_payload(const uint8_t *payload,
 void SipTransport::reset_audio_decoder() {
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   this->opus_codec_.reset_decoder();
-#elif defined(USE_ESPHOME_VOIP_STACK_SPEAKER)
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   this->pcm_receive_converter_.reset();
 #endif
 }
 
 size_t SipTransport::convert_received_pcm(const AudioFormat &source, const uint8_t *pcm,
                                            size_t bytes, uint8_t *output, size_t capacity) {
-#if defined(USE_ESPHOME_VOIP_STACK_SPEAKER) && !defined(USE_ESPHOME_VOIP_STACK_OPUS)
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   return this->pcm_receive_converter_.convert(source, pcm, bytes, output, capacity);
 #else
   return 0;
@@ -2794,6 +2806,7 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   signal.caller_rx_formats.count = selected_tx.is_valid() ? 1 : 0;
   signal.selected_rx_format = selected_rx;
   signal.selected_tx_format = selected_tx;
+  signal.media_answer_pending = this->delayed_offer_pending_;
   this->emit_sip_signal_(std::move(signal));
   return true;
 }
@@ -3843,6 +3856,10 @@ void SipTransport::handle_sip_datagram_unlocked_(const char *data, size_t len, c
                this->call_id_.empty() ? "(none)" : this->call_id_.c_str());
       return;
     }
+    // A failed answer or local stop already owns the BYE. Replayed ACKs must
+    // not reopen media or publish another completion during that transaction.
+    if (!this->pending_bye_.empty()) return;
+    bool media_answer_completed = false;
     if (this->delayed_offer_pending_) {
       const std::string answer = message_body(msg);
       bool accepted = false;
@@ -3854,13 +3871,30 @@ void SipTransport::handle_sip_datagram_unlocked_(const char *data, size_t len, c
       this->delayed_offer_pending_ = false;
       if (!accepted) {
         ESP_LOGW(TAG, "SIP delayed offer ACK missing a compatible SDP answer");
+        const std::string failed_call_id = this->call_id_;
         if (!this->send_bye_unlocked_(this->call_id_)) this->reset_dialog_();
+        SipSignal signal;
+        signal.type = SipSignalType::MEDIA_INCOMPATIBLE;
+        signal.status_code = 488;
+        signal.call_id = failed_call_id;
+        signal.reason = "media_incompatible";
+        signal.terminal_transaction_pending = this->terminal_transaction_pending_locked_();
+        this->emit_sip_signal_(std::move(signal));
         return;
       }
+      media_answer_completed = true;
     }
     this->outgoing_invite_pending_.store(false, std::memory_order_release);
     this->open_media_session_();
     this->send_connected_identity_update_();
+    if (media_answer_completed) {
+      SipSignal signal;
+      signal.type = SipSignalType::MEDIA_READY;
+      signal.call_id = this->call_id_;
+      this->get_media_config_(&signal.selected_tx_format, &signal.selected_rx_format,
+                              nullptr, nullptr);
+      this->emit_sip_signal_(std::move(signal));
+    }
   } else if (method == "BYE") {
     if (this->reject_if_stale_dialog_(msg, src, "BYE")) return;
     const bool local_bye_pending = !this->pending_bye_.empty();

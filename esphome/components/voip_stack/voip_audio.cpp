@@ -278,8 +278,11 @@ void VoipStack::on_microphone_data_(const uint8_t *data, size_t len) {
     while (off < total_samples) {
       const size_t chunk = std::min(total_samples - off, this->mic_processing_samples_());
       if (this->dc_offset_removal_) {
+        const uint8_t channels = this->get_current_tx_audio_format_().channels;
         for (size_t i = 0; i < chunk; i++) {
-          mic_converted[i] = scale_sample(this->dc_blocker_.process(src[off + i]), effective_gain);
+          mic_converted[i] = scale_sample(this->dc_blockers_[this->dc_channel_phase_].process(src[off + i]),
+                                          effective_gain);
+          if (++this->dc_channel_phase_ >= channels) this->dc_channel_phase_ = 0;
         }
       } else {
         scale_block_i16(src + off, mic_converted, chunk, effective_gain);
@@ -400,6 +403,7 @@ void VoipStack::play_silence_frame_(SilenceReason reason, TickType_t ticks_to_wa
 void VoipStack::rx_task_() {
   ESP_LOGD(TAG, "RX playout task started");
   uint32_t previous_format_packed = 0;
+  uint32_t previous_revision = UINT32_MAX;
 
   while (true) {
     if (!this->audio_devices_active_.load(std::memory_order_acquire) ||
@@ -409,6 +413,10 @@ void VoipStack::rx_task_() {
     }
 
     const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
+    if (revision != previous_revision) {
+      previous_format_packed = 0;
+      previous_revision = revision;
+    }
     const AudioFormat rx_format = this->get_current_rx_audio_format_();
     if (!rx_format.is_valid()) {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -453,15 +461,15 @@ void VoipStack::rx_task_() {
       }
       previous_format_packed = current_format_packed;
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
-      if (rx_format.codec == AudioCodec::OPUS) {
+      if (frame_format.codec == AudioCodec::OPUS) {
         frame_bytes = this->transport_->decode_audio_payload(
-            network_buffer, network_bytes, rx_format,
+            network_buffer, network_bytes, frame_format,
             this->rx_audio_chunk_, this->rx_audio_chunk_alloc_bytes_);
         if (frame_bytes != rx_format.nominal_frame_bytes()) continue;
         playout = this->rx_audio_chunk_;
       }
 #endif
-      if (rx_format.codec == AudioCodec::PCM && !(frame_format == rx_format)) {
+      if (frame_format.codec == AudioCodec::PCM && !(frame_format == decoded_pcm_format(rx_format))) {
         frame_bytes = this->transport_->convert_received_pcm(
             frame_format, network_buffer, network_bytes,
             this->rx_audio_chunk_, this->rx_audio_chunk_alloc_bytes_);
@@ -518,9 +526,11 @@ void VoipStack::rx_task_() {
         // The notification wait above already owns this frame's cadence.
         // Do not add a second blocking budget in the speaker sink.
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
-        if (read_result == RtpJitterBuffer::ReadResult::MISSING && rx_format.codec == AudioCodec::OPUS) {
+        const AudioFormat previous_format = previous_format_packed != 0
+            ? unpack_audio_format(previous_format_packed) : rx_format;
+        if (read_result == RtpJitterBuffer::ReadResult::MISSING && previous_format.codec == AudioCodec::OPUS) {
           const size_t concealed = this->transport_->decode_audio_payload(
-              nullptr, 0, rx_format, this->rx_audio_chunk_, this->rx_audio_chunk_alloc_bytes_);
+              nullptr, 0, previous_format, this->rx_audio_chunk_, this->rx_audio_chunk_alloc_bytes_);
           if (concealed == rx_format.nominal_frame_bytes()) {
             this->play_rx_frame_(this->rx_audio_chunk_, concealed, SilenceReason::NONE, 0, revision);
             continue;

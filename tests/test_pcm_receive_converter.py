@@ -12,7 +12,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_real_pcm_converter_preserves_tone_and_resets(tmp_path):
+@pytest.mark.parametrize("opus_enabled", [False, True])
+def test_real_pcm_converter_preserves_tone_and_resets(tmp_path, opus_enabled):
     location = os.environ.get("ESP_AUDIO_LIBS_SOURCE")
     if not location:
         pytest.fail(
@@ -93,6 +94,7 @@ int main() {
     binary = tmp_path / "converter"
     subprocess.run([
         "g++", "-std=c++17", "-DUSE_ESPHOME_VOIP_STACK_SPEAKER",
+        *(["-DUSE_ESPHOME_VOIP_STACK_OPUS"] if opus_enabled else []),
         "-fsanitize=address,undefined", "-g", "-I", str(ROOT),
         "-I", str(library / "include"), str(cpp),
         *(str(library / source) for source in sources), "-o", str(binary),

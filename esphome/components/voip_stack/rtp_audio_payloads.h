@@ -45,6 +45,15 @@ struct RtpAudioPayloads {
     return false;
   }
 
+  RtpAudioPayloads pcm_only() const {
+    RtpAudioPayloads pcm;
+    for (uint8_t i = 0; i < this->count; ++i) {
+      const auto &entry = this->entries[i];
+      if (entry.format.codec == AudioCodec::PCM) pcm.add(entry.payload_type, entry.format);
+    }
+    return pcm;
+  }
+
   bool operator==(const RtpAudioPayloads &other) const {
     if (this->count != other.count) return false;
     for (uint8_t i = 0; i < this->count; ++i) {

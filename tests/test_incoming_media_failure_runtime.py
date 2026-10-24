@@ -22,6 +22,7 @@ def media_failure_source():
     )
     prelude = r"""
 #include "esphome/components/voip_stack/sip_types.h"
+#include "esphome/components/voip_stack/rtp_audio_payloads.h"
 #include <atomic>
 #include <cassert>
 #include <cstring>
@@ -34,7 +35,6 @@ using namespace esphome::voip_stack;
 constexpr unsigned kRtpSocketRxBufferBytes=65536;
 uint32_t esp_random(){return 42;}
 int xSemaphoreTake(int,int){return 1;}
-struct RtpAudioPayloads {};
 struct MediaOwner {
  enum class MediaLifecyclePhase {IDLE,PREPARED,ACTIVE};
  std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::IDLE};

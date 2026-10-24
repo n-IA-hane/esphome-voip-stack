@@ -500,6 +500,7 @@ class VoipStack : public Component {
 #endif
   void on_audio_received_(const TransportAudioFrame &frame);
   void on_sip_signal_received_(const SipSignal &signal);
+  void complete_incoming_answer_(bool send_answer);
   bool ignore_if_idle_or_stale_(const char *message_name, const std::string &call_id) const;
   void on_connection_change_(bool connected);
   bool can_accept_session_() const;
@@ -590,6 +591,8 @@ class VoipStack : public Component {
   // An accepted incoming identity owns a transaction before UI/media startup.
   // Only the application signal consumer reads or writes this setup phase.
   bool incoming_setup_pending_{false};
+  bool incoming_media_answer_pending_{false};
+  bool incoming_answer_accepted_{false};
 
   // Transport configuration (set from YAML before setup()). Defaults:
   TransportType protocol_{TransportType::UDP};
@@ -935,7 +938,8 @@ class VoipStack : public Component {
   bool dc_offset_removal_{false};       // for mics with DC bias (SPH0645)
   bool buffers_in_psram_{false};
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
-  DcBlockerState dc_blocker_;
+  DcBlockerState dc_blockers_[2];
+  uint8_t dc_channel_phase_{0};
 
   // Pre-allocated to avoid task-stack VLAs.
   std::atomic<int16_t *> mic_converted_{nullptr};  // 512 samples, lazy for optional mic processing

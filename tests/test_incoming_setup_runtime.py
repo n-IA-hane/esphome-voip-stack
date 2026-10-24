@@ -22,6 +22,8 @@ def incoming_source() -> str:
         "void VoipStack::clear_call_identity_(",
         "bool VoipStack::send_sip_final_response_(",
     ))
+    if "void VoipStack::complete_incoming_answer_(" in source:
+        methods += "\n" + block(source, "void VoipStack::complete_incoming_answer_(")
     return adapter + methods
 
 

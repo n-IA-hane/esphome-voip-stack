@@ -39,6 +39,9 @@ jobs:
           pytest==9.0.3
           ruff==0.15.21
 
+      - name: Install native codec regression dependencies
+        run: sudo apt-get update && sudo apt-get install -y libopus-dev pkg-config
+
       - name: Run static checks
         run: >-
           python -m ruff check

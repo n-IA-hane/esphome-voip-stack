@@ -1616,22 +1616,20 @@ def test_incoming_answer_prepares_before_200_and_commits_after_send() -> None:
     assert "this->stop_audio_path();" in abort
 
     manual = cpp_method(fsm, r"VoipStack::answer_call")
-    assert manual.index("prepare_media_path()") < manual.index(
-        "set_audio_devices_active_(true)"
-    ) < manual.index("send_sip_answer_") < manual.index(
-        "commit_media_path()"
-    )
-    assert manual.count("abort_media_path()") == 2
+    assert "this->complete_incoming_answer_(true)" in manual
+    incoming = cpp_method(fsm, r"VoipStack::complete_incoming_answer_")
+    assert incoming.index("!waiting") < incoming.index("prepare_media_path()")
+    assert incoming.index("prepare_media_path()") < incoming.index("send_sip_answer_")
+    assert incoming.index("send_sip_answer_") < incoming.index("if (waiting) return;")
+    assert incoming.index("if (waiting) return;") < incoming.index("set_audio_devices_active_(true)") < incoming.index("commit_media_path()")
+    assert incoming.count("abort_media_path()") == 2
 
     auto_start = fsm.index("      if (this->auto_answer_)")
     auto_end = fsm.index("      } else {", auto_start)
     auto_answer = fsm[auto_start:auto_end]
-    assert auto_answer.index("prepare_media_path()") < auto_answer.index(
-        "set_audio_devices_active_(true)"
-    ) < auto_answer.index("send_sip_answer_") < auto_answer.index(
-        "commit_media_path()"
-    )
-    assert auto_answer.count("abort_media_path()") == 2
+    assert "this->complete_incoming_answer_(true)" in auto_answer
+    ready = fsm[fsm.index("case SipSignalType::MEDIA_READY"):fsm.index("case SipSignalType::BYE")]
+    assert "this->complete_incoming_answer_(false)" in ready
 
     outbound = fsm[
         fsm.index("case SipSignalType::STATUS_200_OK") :

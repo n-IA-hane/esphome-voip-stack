@@ -659,6 +659,20 @@ to expose a supported codec rate; `audio.tx` or `audio.rx` set directly to
 imply that the microphone captured fullband audio. Neither codec silently
 changes to the other when a peer is incompatible.
 
+A VoIP-only profile may advertise PCM and Opus together as negotiated fallback
+formats. Mixed receive formats must expose the same decoded PCM sample rate,
+sample format and channel count. Packet duration is selected by SDP from the
+configured choices. Each received payload selects its own decoder; a change
+between PCM and Opus does not require a new SIP call. Unsupported mixed PCM
+geometries fail configuration validation instead of advertising an unusable
+fallback. PCM-only profiles retain their supported receive-rate conversion.
+
+An incoming INVITE without SDP is answered with an offer in the 200 response.
+Capture and playout remain inactive until the matching ACK supplies a compatible
+answer. The final answer determines packet duration, receive conversion and
+microphone ownership. A missing or invalid answer ends the confirmed dialog
+through its normal BYE transaction.
+
 SIP registration is not required for direct calls. A compatible SIP peer can
 call or be called without Home Assistant. HA conversion is a fallback when
 the two legs cannot negotiate compatible media; an attempted fallback alone
@@ -698,7 +712,9 @@ a separate media path.
 The native suite compiles production C++ with host adapters and exercises SIP
 socket paths, transaction cleanup and PCM conversion. It does not run an ESP
 scheduler or prove physical audio quality. Use Python with ESPHome and pytest,
-plus a C++17 compiler. The PCM test also requires the real audio library:
+plus a C++17 compiler, `pkg-config` and the native Opus development library
+(`libopus-dev` on Debian/Ubuntu). PCM and mixed-codec tests also require the
+real audio library:
 
 ```sh
 git clone --branch v4.1.0 --depth 1 https://github.com/esphome-libs/esp-audio-libs.git .test-deps/esp-audio-libs

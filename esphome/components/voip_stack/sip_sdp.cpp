@@ -210,7 +210,7 @@ std::string SipTransport::build_sdp_offer_() {
         break;
       }
     bool standard_receive = false;
-#if defined(USE_ESPHOME_VOIP_STACK_SPEAKER) && !defined(USE_ESPHOME_VOIP_STACK_OPUS)
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
     const auto &rx = this->offer_rx_formats_.formats[i];
     for (uint8_t j = 0; j < this->offer_tx_formats_.count; ++j) {
       const auto &tx = this->offer_tx_formats_.formats[j];
@@ -470,7 +470,7 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
         }
         shared_format |= tx_ok && rx_ok;
         bool alternate_pcm = false;
-#if defined(USE_ESPHOME_VOIP_STACK_SPEAKER) && !defined(USE_ESPHOME_VOIP_STACK_OPUS)
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
         alternate_pcm = local_rx.codec == AudioCodec::PCM && local_rx.pcm_format == PcmFormat::S16LE;
 #endif
         const bool unidirectional = this->offer_tx_formats_.count == 0 || this->offer_rx_formats_.count == 0;
@@ -562,9 +562,13 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
   for (uint8_t i = 0; i < received_payloads.count; ++i) {
     const auto &entry = received_payloads.entries[i];
     bool usable = entry.format == selected_rx_format;
-#if defined(USE_ESPHOME_VOIP_STACK_SPEAKER) && !defined(USE_ESPHOME_VOIP_STACK_OPUS)
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
     usable |= !this->remote_directional_audio_v1_ &&
               pcm_receive_conversion_supported(entry.format, selected_rx_format);
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+    usable |= !this->remote_directional_audio_v1_ &&
+              same_decoded_audio_geometry(entry.format, selected_rx_format);
 #endif
     if (usable && !accepted_rx.add(entry.payload_type, entry.format)) return false;
   }

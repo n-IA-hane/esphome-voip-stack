@@ -531,7 +531,7 @@ class SipTransport : public SipPhoneTransport {
   RtpAudioPayloads local_offered_rx_payloads_{};
   AudioFormatList local_offered_tx_formats_{};
   bool local_offered_directional_audio_v1_{false};
-#if defined(USE_ESPHOME_VOIP_STACK_SPEAKER) && !defined(USE_ESPHOME_VOIP_STACK_OPUS)
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   PcmReceiveConverter pcm_receive_converter_;
 #endif
   std::atomic<bool> audio_receive_enabled_{true};

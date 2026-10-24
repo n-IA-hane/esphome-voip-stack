@@ -363,6 +363,20 @@ def _format_container_bits(fmt: dict) -> int:
     return 32
 
 
+def _validate_opus_geometry(formats: list[dict], *, receive: bool) -> None:
+    opus = [fmt for fmt in formats if fmt[CONF_AUDIO_CODEC] == AUDIO_CODEC_OPUS]
+    if not opus:
+        return
+    # A single preallocated decoder/encoder serves every packet duration at
+    # this PCM geometry. Opus's fixed 48 kHz RTP clock is not the PCM rate.
+    keys = (CONF_SAMPLE_RATE, CONF_PCM_FORMAT, CONF_CHANNELS)
+    geometry = tuple(opus[0][key] for key in keys)
+    if any(tuple(fmt[key] for key in keys) != geometry for fmt in opus):
+        raise cv.Invalid("voip_stack Opus formats in one direction require the same PCM sample_rate, pcm_format and channels")
+    if receive and any(tuple(fmt[key] for key in keys) != geometry for fmt in formats):
+        raise cv.Invalid("voip_stack mixed PCM/Opus receive formats require the same decoded PCM sample_rate, pcm_format and channels")
+
+
 def _format_rtp_payload_bytes(fmt: dict) -> int:
     if fmt[CONF_AUDIO_CODEC] == AUDIO_CODEC_OPUS:
         return 0
@@ -871,6 +885,9 @@ def _final_validate(config):
         for fmt in (audio_cfg[key], *audio_cfg[extra])
     )
     if opus_enabled:
+        for key, extra in ((CONF_TX, CONF_TX_FORMATS), (CONF_RX, CONF_RX_FORMATS)):
+            if audio_cfg[key] is not None:
+                _validate_opus_geometry([audio_cfg[key], *audio_cfg[extra]], receive=key == CONF_RX)
         if esp32.get_esp32_variant() == "ESP32P4":
             raise cv.Invalid("ESP32-P4 profiles use PCM; Opus is excluded on P4")
         if any(name in fv.full_config.get() for name in ("voice_assistant", "micro_wake_word", "sendspin")):
