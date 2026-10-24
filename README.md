@@ -2,6 +2,11 @@
 
 **Development firmware requires ESPHome 2026.10.0 or newer.**
 
+Use the official ESPHome audio, mixer, resampler, media player, Voice Assistant,
+Micro Wake Word and OTA components. VoIP Stack does not require replacement
+providers for those components. Audio Stack and Runtime Controller remain
+optional external components for configurations that use them.
+
 *Developed and maintained by n-IA-hane, with community contributions and support. [❤️ Sponsor the project](https://github.com/sponsors/n-IA-hane)*
 
 Stable release: [2026.10.1](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.10.1).
@@ -717,15 +722,16 @@ plus a C++17 compiler, `pkg-config` and the native Opus development library
 real audio library:
 
 ```sh
-git clone --branch v4.1.0 --depth 1 https://github.com/esphome-libs/esp-audio-libs.git .test-deps/esp-audio-libs
+git clone --branch v4.0.1 --depth 1 https://github.com/esphome-libs/esp-audio-libs.git .test-deps/esp-audio-libs
 git -C .test-deps/esp-audio-libs rev-parse HEAD
 ESP_AUDIO_LIBS_SOURCE="$PWD/.test-deps/esp-audio-libs" python -m pytest -q
 ```
 
-The expected 4.1.0 revision is
-`e06373fa41529064cb852e2312a32a8148ddaaac`. CI tests that revision and the older
-3.2.1 revision `3079cd0576d563c955e412937a91782ab4eaf516` separately, preserving
-the actual SHA beside each JUnit artifact. Missing DSP sources fail the PCM test
+The expected 4.0.1 revision is
+`891fdfc531ad38d9e90b5e9088be60a66c82ed4c`, matching the official ESPHome
+2026.10.0 firmware dependency. CI also tests 4.1.0 at
+`e06373fa41529064cb852e2312a32a8148ddaaac` for compatibility, preserving the
+actual SHA beside each JUnit artifact. Missing DSP sources fail the PCM test
 instead of silently skipping it. Firmware dependency selection still belongs
 to its ESPHome/IDF configuration; these host-test pins do not change a device.
 

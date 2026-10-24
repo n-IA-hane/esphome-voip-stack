@@ -20,8 +20,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - audio_version: 3.2.1
-            audio_sha: 3079cd0576d563c955e412937a91782ab4eaf516
+          - audio_version: 4.0.1
+            audio_sha: 891fdfc531ad38d9e90b5e9088be60a66c82ed4c
           - audio_version: 4.1.0
             audio_sha: e06373fa41529064cb852e2312a32a8148ddaaac
 
