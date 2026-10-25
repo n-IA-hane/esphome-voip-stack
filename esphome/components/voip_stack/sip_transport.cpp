@@ -2303,7 +2303,10 @@ bool SipTransport::send_bye(const std::string &call_id) {
 }
 
 bool SipTransport::send_bye_unlocked_(const std::string &call_id) {
-  if (!call_id.empty() && call_id != this->logical_call_id_) this->call_id_ = call_id;
+  // A local stop can trail the deferred remote-BYE notification. It must not
+  // recreate a retired dialog or retarget a newer one from its application ID.
+  if (this->call_id_.empty() ||
+      (!call_id.empty() && call_id != this->call_id_ && call_id != this->logical_call_id_)) return false;
   const bool ended_invite = !this->refer_context_active_ && this->refer_dialog_ &&
       this->refer_dialog_->owner_invite_ended && this->call_id_ == this->refer_dialog_->owner_call_id;
   this->cancel_refer_();

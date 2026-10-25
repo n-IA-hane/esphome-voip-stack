@@ -311,10 +311,11 @@ void VoipStack::stop() {
 
   const std::string call_id = this->get_current_call_id_();
   const CallState state = this->call_state_.load(std::memory_order_acquire);
-  ESP_LOGI(TAG, "%s: hanging up (state=%s call_id=%s)",
+  ESP_LOGI(TAG, "%s: hanging up (state=%s call_id=%s origin_pc=%p)",
            this->device_name_.c_str(),
            call_state_to_str(state),
-           call_id.c_str());
+           call_id.c_str(),
+           __builtin_extract_return_addr(__builtin_return_address(0)));
 
   this->request_call_termination_({CallEndReason::LOCAL_HANGUP, nullptr,
                                    SipTerminationAction::AUTO, true});

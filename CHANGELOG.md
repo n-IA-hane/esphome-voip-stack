@@ -2,6 +2,17 @@
 
 ## 2026.11.0-dev
 
+> **Recommended: update your ESP firmware too.** Rebuild and upload with the
+> coordinated development components and the current board YAML. Updating the
+> HA integration through HACS does not install ESP-side features or fixes.
+
+- Ignore a local BYE request for a retired or different dialog instead of
+  replacing the active Call-ID. A remote hangup followed by a deferred local
+  stop no longer recreates an empty dialog or blocks reuse after crossed
+  hangups. Current dialog IDs and logical REFER aliases remain supported.
+- Include the caller's source address in local hangup logs for diagnosis with
+  the matching firmware ELF.
+
 - Keep microphone-only builds independent of speaker RX reset helpers.
 - Suspend the RTP inactivity watchdog only while a REFER replacement is still
   ringing after the original INVITE has ended. SIP transaction deadlines remain
@@ -64,8 +75,12 @@
 - Accept native ESPHome camera IDs for the JPEG source and request subsequent
   images from the existing main loop after camera callbacks finish. Hanging up
   does not stop another web/API camera stream. Based on
-  [#6](https://github.com/n-IA-hane/esphome-voip-stack/pull/6). Host and native S3
-  code-generation tests pass; physical camera retesting is still requested.
+  [#6](https://github.com/n-IA-hane/esphome-voip-stack/pull/6).
+- ESP32-S3 devices can now transmit JPEG camera video during SIP calls,
+  including devices without a display. Rendering the remote video on S3
+  screens is not yet supported. ESP32-P4 retains bidirectional video, sending
+  its camera stream and displaying the remote caller. Devices with both a
+  microphone and speaker retain bidirectional audio on both platforms.
 
 ## 2026.10.1
 
