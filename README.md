@@ -1,6 +1,6 @@
 # ESPHome VoIP Stack
 
-**Development firmware requires ESPHome 2026.10.0 or newer.**
+**ESPHome 2026.10.0 or newer is required.**
 
 Use the official ESPHome audio, mixer, resampler, media player, Voice Assistant,
 Micro Wake Word and OTA components. VoIP Stack does not require replacement
@@ -9,9 +9,9 @@ optional external components for configurations that use them.
 
 *Developed and maintained by n-IA-hane, with community contributions and support. [❤️ Sponsor the project](https://github.com/sponsors/n-IA-hane)*
 
-Stable release: [2026.10.1](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.10.1).
+Stable release: [2026.11.0](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.11.0).
 See the [changes since 2026.10.1](CHANGELOG.md) and the
-[development migration steps](#upgrading-from-2026101).
+[upgrade steps](#upgrading-from-2026101).
 
 A native SIP phone component for ESPHome. `voip_stack` turns an ESP32 device into a real SIP endpoint: SIP signaling over UDP or TCP, SDP offer/answer, RTP media, a local phonebook and dial plan, explicit per-direction PCM negotiation, and a full set of ESPHome entities, triggers, actions and conditions on top.
 
@@ -85,7 +85,7 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 **Full ESPHome automation surface.** Triggers, actions and conditions are normal ESPHome automations.
 
-## Call transfer in development builds
+## Blind audio call transfer
 
 An established audio call over UDP or TCP can receive a blind SIP REFER from a PBX
 or another SIP phone. The ESP calls the supplied IPv4 SIP destination and
@@ -117,7 +117,7 @@ Hanging up on the ESP itself cancels the pending transfer. Authentication challe
 transfer explicitly: this receiver does not retry with SIP Digest credentials. A destination failure
 preserves the original conversation only if its caller has not already hung up.
 
-Rebuild the ESP with the development component to use this capability.
+Rebuild the ESP with the 2026.11.0 component to use this capability.
 Updating the Home Assistant integration alone does not update ESP firmware.
 The Spotpear Ball V2 FULL profile has been checked with Waveshare S3 Audio,
 including an occupied destination, immediate retry and hangup from both ends.
@@ -155,7 +155,7 @@ Other hardware and PBX combinations still need their own runtime tests.
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-voip-stack@dev
+  - source: github://n-IA-hane/esphome-voip-stack@main
     components: [voip_stack]
 ```
 
@@ -167,9 +167,9 @@ When pairing with the audio stack, pull both:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@dev
+  - source: github://n-IA-hane/esphome-audio-stack@main
     components: [esp_audio_stack, esp_aec]
-  - source: github://n-IA-hane/esphome-voip-stack@dev
+  - source: github://n-IA-hane/esphome-voip-stack@main
     components: [voip_stack]
 ```
 
@@ -220,7 +220,7 @@ Call-IDs supplied through this API must be globally unique and case-sensitive,
 with at most 128 ASCII letters, digits, dots, underscores, hyphens and one optional
 `@` separator between non-empty parts. Incoming SIP parsing is unchanged.
 
-See the [entity and migration guide](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_ENTITY_SURFACE.md)
+See the [entity and migration guide](https://github.com/n-IA-hane/esphome-intercom/blob/main/docs/ESP_ENTITY_SURFACE.md)
 for the retired packages and entity customization. Old package/action
 declarations are rejected rather than silently creating duplicate controls.
 
@@ -260,9 +260,9 @@ This is the maintained path when software AEC/AFE, media player, Voice Assistant
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@dev
+  - source: github://n-IA-hane/esphome-audio-stack@main
     components: [esp_audio_stack, esp_aec]
-  - source: github://n-IA-hane/esphome-voip-stack@dev
+  - source: github://n-IA-hane/esphome-voip-stack@main
     components: [voip_stack]
 
 esp_aec:
@@ -303,9 +303,9 @@ point `processor_id` at that processor:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@dev
+  - source: github://n-IA-hane/esphome-audio-stack@main
     components: [esp_audio_stack, esp_afe]
-  - source: github://n-IA-hane/esphome-voip-stack@dev
+  - source: github://n-IA-hane/esphome-voip-stack@main
     components: [voip_stack]
 
 esp_afe:
@@ -362,7 +362,7 @@ the local PCM rates.
 
 With Asterisk, use `allow=slin48:10,slin16:10`, `asymmetric_rtp_codec=yes`,
 `direct_media=no` and `use_ptime=yes` on the static ESP endpoint. See the
-[classic PBX guide](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/CLASSIC_PBX.md)
+[classic PBX guide](https://github.com/n-IA-hane/esphome-intercom/blob/main/docs/CLASSIC_PBX.md)
 for static routing without REGISTER and the separate codec choices for other
 phones.
 
@@ -455,7 +455,7 @@ registered phone or Assist. The ESP remains a normal SIP peer and contains no
 parallel automation dial plan.
 
 See the main project's
-[Automation Dial Plan](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/AUTOMATION_DIALPLAN.md)
+[Automation Dial Plan](https://github.com/n-IA-hane/esphome-intercom/blob/main/docs/AUTOMATION_DIALPLAN.md)
 guide for the exact config-flow semantics and native HA automation examples.
 
 ## Call lifecycle, triggers and conditions
@@ -781,7 +781,7 @@ snapshot, and released when printing finishes. Untracked metrics are unavailable
 for correlating a dump without printing the complete Call-ID.
 
 In `rx_jitter`, `drops` counts discard/window-realignment events. One event can
-remove several queued frames. Development builds add `discarded_frames`, which counts the buffered frames
+remove several queued frames. From 2026.11.0, `discarded_frames` counts the buffered frames
 actually removed; explicit session resets are excluded. These local playout
 counters are distinct from network packet loss, which requires checking RTP
 sequence numbers. The `rx_drops` queue summary retains its event-count meaning.

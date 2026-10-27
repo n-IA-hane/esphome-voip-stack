@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026.11.0-dev
+## 2026.11.0
 
 Changes since stable **2026.10.1**.
 

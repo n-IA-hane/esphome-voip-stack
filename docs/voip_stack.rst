@@ -14,7 +14,7 @@ components. It does not own audio hardware or echo cancellation. For codec
 ownership, TDM layouts or software AEC/AFE, use the ``esp_audio_stack``
 component and pass its clean microphone and speaker surfaces to ``voip_stack``.
 
-The development component requires ESPHome **2026.10.0 or newer**. This
+This component requires ESPHome **2026.10.0 or newer**. This
 configuration fragment assumes that ``clean_mic`` and ``local_speaker`` already
 exist. With native Home Assistant discovery enabled, retain
 ``api: {custom_services: true}`` alongside the device's API configuration.
@@ -22,7 +22,7 @@ exist. With native Home Assistant discovery enabled, retain
 .. code-block:: yaml
 
     external_components:
-      - source: github://n-IA-hane/esphome-voip-stack@dev
+      - source: github://n-IA-hane/esphome-voip-stack@main
         components: [voip_stack]
 
     voip_stack:

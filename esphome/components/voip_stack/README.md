@@ -139,9 +139,9 @@ processor you want, attach that processor to `esp_audio_stack`, then give
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@dev
+  - source: github://n-IA-hane/esphome-audio-stack@main
     components: [esp_audio_stack, esp_aec]
-  - source: github://n-IA-hane/esphome-voip-stack@dev
+  - source: github://n-IA-hane/esphome-voip-stack@main
     components: [voip_stack]
 
 esp_aec:
@@ -180,9 +180,9 @@ For the full Espressif AFE pipeline, import `esp_afe` instead of `esp_aec`:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@dev
+  - source: github://n-IA-hane/esphome-audio-stack@main
     components: [esp_audio_stack, esp_afe]
-  - source: github://n-IA-hane/esphome-voip-stack@dev
+  - source: github://n-IA-hane/esphome-voip-stack@main
     components: [voip_stack]
 
 esp_afe:
@@ -433,9 +433,9 @@ firmware does not link the H.264 path.
 ## Native ESPHome audio examples
 
 Intercom supplies separate maintained native-audio examples for
-[full-duplex](https://github.com/n-IA-hane/esphome-intercom/blob/dev/yamls/voip-only/esphome-native/generic-s3-voip-esphome-native-full-duplex.yaml),
-[microphone-only](https://github.com/n-IA-hane/esphome-intercom/blob/dev/yamls/voip-only/esphome-native/generic-s3-voip-esphome-native-mic-only.yaml)
-and [speaker-only](https://github.com/n-IA-hane/esphome-intercom/blob/dev/yamls/voip-only/esphome-native/generic-s3-voip-esphome-native-speaker-only.yaml)
+[full-duplex](https://github.com/n-IA-hane/esphome-intercom/blob/main/yamls/voip-only/esphome-native/generic-s3-voip-esphome-native-full-duplex.yaml),
+[microphone-only](https://github.com/n-IA-hane/esphome-intercom/blob/main/yamls/voip-only/esphome-native/generic-s3-voip-esphome-native-mic-only.yaml)
+and [speaker-only](https://github.com/n-IA-hane/esphome-intercom/blob/main/yamls/voip-only/esphome-native/generic-s3-voip-esphome-native-speaker-only.yaml)
 phones. They bind directly to ESPHome `i2s_audio` components. The generic
 dual-bus AEC example is a separate Audio Stack configuration.
 
