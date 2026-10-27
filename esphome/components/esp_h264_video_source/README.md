@@ -6,6 +6,9 @@ units. PPA performs crop, rotation and scaling in hardware. Espressif
 
 ## Example
 
+Merge this fragment into a P4 board configuration that already declares
+`internal_i2c` and the matching VoIP audio/video bindings.
+
 ```yaml
 esp_video_camera:
   id: p4_camera

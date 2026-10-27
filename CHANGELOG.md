@@ -2,85 +2,77 @@
 
 ## 2026.11.0-dev
 
-> **Recommended: update your ESP firmware too.** Rebuild and upload with the
-> coordinated development components and the current board YAML. Updating the
-> HA integration through HACS does not install ESP-side features or fixes.
+Changes since stable **2026.10.1**.
 
-- Ignore a local BYE request for a retired or different dialog instead of
-  replacing the active Call-ID. A remote hangup followed by a deferred local
-  stop no longer recreates an empty dialog or blocks reuse after crossed
-  hangups. Current dialog IDs and logical REFER aliases remain supported.
-- Include the caller's source address in local hangup logs for diagnosis with
-  the matching firmware ELF.
+### New call and video capabilities
 
-- Keep microphone-only builds independent of speaker RX reset helpers.
-- Suspend the RTP inactivity watchdog only while a REFER replacement is still
-  ringing after the original INVITE has ended. SIP transaction deadlines remain
-  active and the watchdog resumes when the replacement connects.
-- Close an already owned incoming INVITE with a cached final error when media
-  preparation or the initial ringing response fails before the public call FSM
-  enters its connected/ringing states. Release its identity for the next call.
+- Receive blind in-dialog audio REFER over UDP or TCP, including mixed-transport
+  handoffs to an IPv4 SIP destination. Reuse the existing SIP task and media
+  owner, report the real result through NOTIFY, and retain the original caller
+  on failure when that caller is still connected. Hostname targets, video
+  transfers, attended-transfer URI headers and Digest-authenticated retry are
+  outside this receiver's supported scope.
+- Negotiate different PCM transmit and receive rates with ordinary SIP peers.
+  Keep accepted receive payload mappings through jitter reordering and convert
+  supported alternate S16 rates to the selected speaker format.
+- Accept negotiated PCM/Opus fallback within the supported shared decoded PCM
+  geometry. Each received payload selects its negotiated decoder. PCM-only
+  receive-rate conversion remains available.
+- Finalize delayed-offer media only after the matching ACK supplies its answer,
+  including packet time, converter configuration and microphone ownership.
+- Add native HA API actions `start_call_via_ha(dest, call_id)` and
+  `hangup_call_if_id(call_id)` for one-call trunk selection and scoped
+  cancellation. Existing call-control actions retain their names.
+- Transmit JPEG from native ESPHome cameras on ESP32-S3, including headless
+  devices. Remote-video rendering on S3 is future work. ESP32-P4 retains camera
+  transmission and remote-video decode/display; JPEG and H.264 are separate
+  compile-time profiles. Devices with both audio endpoints retain two-way audio.
+  Based on [#6](https://github.com/n-IA-hane/esphome-voip-stack/pull/6).
 
+### Reliability and resource use
 
-- Qualify both video RTP socket waits as POSIX `::select`, completing the
-  ESPHome 2026.10 namespace correction for video-enabled builds. Keep video
-  pacing, signaling, codecs and session ownership unchanged.
+- Ignore late local termination for a retired dialog, and reject foreign dialog
+  tags before they can replace the active call identity. Crossed hangups no
+  longer recreate an already-retired conversation.
+- Close failed incoming media/ringing setup with the owned transaction's final
+  response and release resources for the next call. Close confirmed outgoing
+  dialogs with BYE when local audio preparation fails.
+- Keep an accepted REFER attempt alive after the original caller hangs up.
+  Suspend the RTP inactivity watchdog only while the replacement is still
+  ringing, retaining SIP deadlines and restoring the watchdog after connection.
+- Preserve each dialog's TCP flow and transport across handoff, EOF and cleanup.
+  Replay retired UDP transactions over their original transport.
+- Advertise only the audio directions physically configured. Microphone-only
+  builds exclude speaker reset helpers; speaker-only builds omit TX processing.
+- Keep independent DC-filter state for each native stereo microphone channel.
+- Size persistent JPEG receive buffers for their codec and actual direction.
+  Retain experimental H.264 resources when a timed-out worker still owns them.
+- Read lightweight call-health counters without the diagnostic dialog lock,
+  distinguish discard events from discarded frames, and suppress optional
+  Wi-Fi roaming scans while the native media guard owns them.
+- Follow the released ESPHome ring-buffer interfaces and qualify POSIX socket
+  waits for the updated namespace layout. Local hangup logs identify their
+  calling location for diagnosis.
 
-- Use the ESPHome 2026.10 ring-buffer representation directly and require the
-  supported builder during configuration validation. Qualify POSIX socket waits
-  so the ESPHome precompiled-header select namespace cannot shadow them. SIP,
-  media negotiation, transaction caches and session ownership are unchanged.
+### Breaking changes and custom YAML migration
 
-> **Attention: ESPHome 2026.10.0 or newer is required.**
->
-> ESPHome 2026.10 brings substantial audio changes, including several of our
-> accepted contributions. Thank you to the ESPHome team for your work, reviews
-> and accepted PRs! <3
->
-> We have aligned Audio Stack, ESP VoIP Stack, Runtime Controller and the
-> maintained device packages with this release. Older ESPHome versions are no
-> longer supported and their operation is not guaranteed. Upgrade the builder
-> before compiling the new firmware.
+- **ESPHome 2026.10.0 or newer is required.** Update the builder before compiling.
+- Within each direction, Opus entries must share decoded PCM sample rate, sample
+  format and channel count. When RX mixes PCM and Opus, its PCM alternatives
+  must share that geometry too. Incompatible lists now fail validation. Packet
+  times may differ; PCM-only multi-rate reception remains supported.
+- With native HA integration enabled, remove custom API declarations named
+  `start_call_via_ha` and `hangup_call_if_id`, now supplied by the component.
 
+Existing microphone/speaker bindings and ordinary call-control names remain
+valid. One-way SDP follows the actual hardware; settings for absent directions
+remain accepted and are ignored. The migration from copied HA packages already
+shipped in 2026.10.0 and is not a new requirement for an updated 2026.10.1 YAML.
 
-- Read SIP status and RTP receive counters directly for call health checks,
-  avoiding the diagnostic snapshot's dialog lock on each main-loop iteration.
-  Receive timeout intervals and media admission remain unchanged.
-
-- Support blind audio REFER across UDP and TCP with one SIP task and bounded
-  per-dialog TCP flows. Preserve the original call on a failed attempt and
-  distinguish remote INVITE termination from local transfer cancellation.
-  Process complete buffered SIP messages before TCP EOF cleanup and release
-  completed reliable transactions without occupying UDP replay slots.
-  The replacement offer retains the running TX format; the tested Spotpear
-  replacement is L16/16000 in both directions. See the README for scope and
-  physical test coverage.
-
-- Receive blind in-dialog SIP REFER for IPv4 UDP audio calls. Keep the original
-  conversation during destination setup, send the actual result through NOTIFY,
-  and reuse the existing media path after a successful answer. Dialog staging
-  and completed transaction caches add no audio task or second transport.
-  Prepare any additional PCM receive conversion before switching peers.
-  Spotpear Ball V2 FULL to Waveshare S3 Audio passed successful transfer,
-  busy/retry and hangup checks. See the README for supported transfer scope.
-
-- Negotiate separate PCM transmit and receive rates with ordinary SIP peers,
-  including static Asterisk endpoints. Retain negotiated receive payload
-  mappings and their formats through the jitter queue; convert alternate S16
-  rates with ESPHome's audio resampler before speaker playback. Reject
-  conflicting mappings and unoffered formats in answers, preserve receive
-  payload numbers from the local offer, and follow m-line codec preference.
-  Existing single-format calls and the HA directional extension remain supported.
-
-- Accept native ESPHome camera IDs for the JPEG source and request subsequent
-  images from the existing main loop after camera callbacks finish. Hanging up
-  does not stop another web/API camera stream. Based on
-  [#6](https://github.com/n-IA-hane/esphome-voip-stack/pull/6).
-- ESP32-S3 devices can now transmit JPEG camera video during SIP calls,
-  including devices without a display. Rendering the remote video on S3
-  screens is not yet supported. ESP32-P4 retains bidirectional video, sending
-  its camera stream and displaying the remote caller. Devices with both a
-  microphone and speaker retain bidirectional audio on both platforms.
+Use the matching maintained Intercom device YAML when adopting its packages,
+then rebuild and upload. Component test results and individual device checks
+retain their documented scope; they do not qualify every PBX or long-uptime
+workload. See the [upgrade steps](README.md#upgrading-from-2026101).
 
 ## 2026.10.1
 

@@ -15,12 +15,16 @@ It can run in two supported shapes:
   routing, TDM reference, dual-bus sync, media player, Voice Assistant or Micro
   Wake Word share the same audio backend.
 
-The component negotiates explicit PCM per direction. SIP/SDP selects one
+The component negotiates explicit PCM per direction. Duplex SIP/SDP selects one
 dialog `ptime` shared by both directions, while TX and RX sample rate/PCM
-format can still differ. Maintained YAMLs publish their real capabilities; the
-internal no-audio placeholder is `16000:s16le:1:16` and is not used to repair
-missing endpoint formats. AFE/AEC-backed branches remain
+format can still differ. One-way endpoints advertise only their actual audio
+direction. Maintained YAMLs publish their real capabilities; absent hardware
+does not contribute an invented format. AFE/AEC-backed branches remain
 16 kHz/s16/mono because Espressif esp-sr exposes that surface.
+
+Use ESPHome **2026.10.0 or newer**. See the
+[2026.10.1 upgrade steps](../../../README.md#upgrading-from-2026101) for custom
+Opus format sets and duplicate native HA actions.
 
 ## One VoIP stack per ESP
 
@@ -48,7 +52,7 @@ implicit. The public concepts are:
 - address: optional host/IP for direct SIP endpoints;
 - SIP port and RTP port;
 - transport: SIP/TCP or SIP/UDP signaling;
-- audio mode: full duplex, microphone only, speaker only or control only;
+- audio mode: full duplex, microphone only or speaker only;
 - advertised TX/RX PCM capabilities.
 
 Home Assistant consumes those fields for routing/card display, format
@@ -72,6 +76,9 @@ The only always-present pieces are the finite-state machine, phonebook,
 transport listener/client and control signaling.
 
 ## Minimal full-duplex example
+
+Merge this fragment into an ESP32 configuration that already declares the
+`rx_i2s` and `tx_i2s` clock buses. The GPIOs are examples to adapt to the board.
 
 ```yaml
 microphone:
@@ -286,8 +293,8 @@ routed through HA.
 
 Runtime YAML automations can mutate the local dial plan with
 `voip_stack.add_contact`, `voip_stack.remove_contact`,
-`voip_stack.set_contacts` and `voip_stack.flush_contacts`. The standard
-packages expose those through ESPHome native API actions named
+`voip_stack.set_contacts` and `voip_stack.flush_contacts`. With native HA
+integration enabled, the component exposes ESPHome API actions named
 `esphome.<slug>_add_contact`, `esphome.<slug>_remove_contact`,
 `esphome.<slug>_set_contacts`, `esphome.<slug>_flush_contacts` and
 `esphome.<slug>_update_contacts`. Use them for custom local behavior only; HA
@@ -358,9 +365,12 @@ Declare only the native ESPHome platforms an endpoint needs:
 - `master_volume`, only when a speaker is configured
 - `mic_gain`, only when a mic is configured
 
-The core component does not auto-load primary entity platforms. The maintained
-YAML packages provide explicit `switch:`, `number:`, `button:`, `text:` and
-`text_sensor:` entries with stable names and UI layout.
+With native HA integration enabled, the component creates its discovery,
+call-state, contact and routing entities automatically. Its `auto_answer`, DND,
+audio numbers and extra diagnostic controls remain explicit optional platform
+entries. The maintained device packages supply those entries and their layout.
+Move discovery-entity customizations under `voip_stack.ha_integration` instead
+of declaring duplicate primary text/text-sensor entities.
 
 ## Optional SIP video
 
@@ -420,17 +430,14 @@ firmware does not link the H.264 path.
 - `audio_task_stacks_in_psram` independently controls the realtime
   `voip_tx`/`voip_rx` stacks and defaults to `false`.
 
-## Experimental native dual-bus test
+## Native ESPHome audio examples
 
-See:
-
-```text
-yamls/voip-only/dual-bus/generic-s3-voip.yaml
-```
-
-That profile intentionally avoids `esp_audio_stack` and binds `voip_stack` to
-native ESPHome `i2s_audio` microphone/speaker components. It is for regression
-testing standalone full-duplex, mic-only and speaker-only modes.
+Intercom supplies separate maintained native-audio examples for
+[full-duplex](https://github.com/n-IA-hane/esphome-intercom/blob/dev/yamls/voip-only/esphome-native/generic-s3-voip-esphome-native-full-duplex.yaml),
+[microphone-only](https://github.com/n-IA-hane/esphome-intercom/blob/dev/yamls/voip-only/esphome-native/generic-s3-voip-esphome-native-mic-only.yaml)
+and [speaker-only](https://github.com/n-IA-hane/esphome-intercom/blob/dev/yamls/voip-only/esphome-native/generic-s3-voip-esphome-native-speaker-only.yaml)
+phones. They bind directly to ESPHome `i2s_audio` components. The generic
+dual-bus AEC example is a separate Audio Stack configuration.
 
 ## Protocol and security boundaries
 

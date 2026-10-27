@@ -3,7 +3,7 @@ substitutions:
   friendly_name: VoIP Native Example
 
 esphome:
-  min_version: 2026.9.0
+  min_version: 2026.10.0
   name: ${name}
   friendly_name: ${friendly_name}
 
@@ -24,7 +24,7 @@ wifi:
   power_save_mode: NONE
 
 external_components:
-  - source: github://n-IA-hane/esphome-voip-stack@main
+  - source: github://n-IA-hane/esphome-voip-stack@dev
     components: [voip_stack]
 
 i2s_audio:

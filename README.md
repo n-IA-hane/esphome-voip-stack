@@ -10,7 +10,8 @@ optional external components for configurations that use them.
 *Developed and maintained by n-IA-hane, with community contributions and support. [❤️ Sponsor the project](https://github.com/sponsors/n-IA-hane)*
 
 Stable release: [2026.10.1](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.10.1).
-See the [changes since 2026.9.2](CHANGELOG.md) and firmware migration instructions.
+See the [changes since 2026.10.1](CHANGELOG.md) and the
+[development migration steps](#upgrading-from-2026101).
 
 A native SIP phone component for ESPHome. `voip_stack` turns an ESP32 device into a real SIP endpoint: SIP signaling over UDP or TCP, SDP offer/answer, RTP media, a local phonebook and dial plan, explicit per-direction PCM negotiation, and a full set of ESPHome entities, triggers, actions and conditions on top.
 
@@ -80,7 +81,7 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 **Compile-time pruning.** A speaker-only build contains no VoIP TX path and a mic-only build contains no RX-to-speaker path.
 
-**Optional ESP32-P4 video adapters.** JPEG and H.264 remain separate compile-time profiles. The camera component owns capture and borrowed frames, the codec-specific source owns encoding or compressed-frame forwarding, and `p4_video_renderer` owns receive decode and panel presentation. Audio-only builds do not include these components or their codec dependencies.
+**Optional video.** Native ESP32-S3 cameras can transmit JPEG during calls; rendering received video on S3 screens remains future work. ESP32-P4 adapters support camera transmission and remote-video decode/display. JPEG and H.264 remain separate compile-time profiles. The camera component owns capture and borrowed frames, the codec-specific source owns encoding or compressed-frame forwarding, and `p4_video_renderer` owns receive decode and panel presentation. Audio-only builds do not include these components or their codec dependencies.
 
 **Full ESPHome automation surface.** Triggers, actions and conditions are normal ESPHome automations.
 
@@ -171,6 +172,23 @@ external_components:
   - source: github://n-IA-hane/esphome-voip-stack@dev
     components: [voip_stack]
 ```
+
+### Upgrading from 2026.10.1
+
+- Update the builder to **ESPHome 2026.10.0 or newer**, then rebuild and upload.
+- If custom YAML supplies multiple Opus formats, keep their decoded PCM sample
+  rate, sample format and channel count identical within each direction. When
+  RX advertises both PCM and Opus, its PCM alternatives must share that same
+  geometry. Packet times may differ. PCM-only receive-rate conversion remains
+  supported.
+- With native HA integration enabled, remove manually declared API actions
+  named `start_call_via_ha` or `hangup_call_if_id`; the component provides them.
+  Existing `start_call`, answer and hangup action names remain valid.
+
+Microphone-only and speaker-only configurations now advertise their actual SDP
+direction. Settings for absent audio hardware remain accepted and are ignored.
+The older migration from copied HA packages to native discovery already shipped
+in 2026.10.0; it is not another required migration for an up-to-date 2026.10.1 YAML.
 
 ### Add a custom ESP phone to Home Assistant
 
@@ -328,13 +346,14 @@ Per-direction format blocks accept `auto` per field or as the whole block:
 | `frame_ms` | 10, 16, 20, 32 | `auto` |
 
 `tx_formats` / `rx_formats` declare up to seven additional advertised formats
-per direction. Extra entries are explicit. TX extras may only vary `frame_ms`
-relative to `audio.tx`, because the microphone path only reframes its native
-stream; RX extras may describe other supported speaker-side formats. Validation
+per direction. Extra entries are explicit. TX extras retain the microphone's
+PCM sample rate, sample format and channels; supported codec and packet-time
+alternatives use that same input geometry. RX extras may describe other supported
+speaker-side formats, subject to the mixed PCM/Opus restriction below. Validation
 rejects the eighth extra entry.
 
 For standard SIP peers, S16 PCM reception can negotiate a higher sample rate
-than microphone transmission, such as RX 48 kHz and TX 16 kHz. The SDP must
+than microphone transmission, such as RX 48 kHz and TX 16 kHz. A duplex SDP must
 retain a shared bidirectional format. The receiver keeps the accepted payload
 mappings, and converts alternate negotiated rates to the selected speaker
 rate after jitter reordering. Payload numbers outside that negotiation remain
@@ -585,7 +604,7 @@ button:
 | `microphone` / `microphone_source` | none | TX audio source. |
 | `speaker` | none | RX audio sink. |
 | `audio.tx` / `audio.rx` | `auto` | Per-direction PCM contract. |
-| `audio.tx_formats` / `audio.rx_formats` | `[]` | Extra explicit capabilities; TX extras are packet-time reframes, RX extras may use other supported formats. |
+| `audio.tx_formats` / `audio.rx_formats` | `[]` | Extra explicit capabilities; TX retains its PCM geometry, RX supports other formats within the mixed-codec constraints. |
 | `static_contacts` | `[]` | YAML dial plan. |
 | `extension` | `""` | Local SIP extension/user part. |
 | `conference_groups` | `""` | Optional HA-managed conference group membership, single name or comma-separated list. |
@@ -717,7 +736,7 @@ a separate media path.
 The native suite compiles production C++ with host adapters and exercises SIP
 socket paths, transaction cleanup and PCM conversion. It does not run an ESP
 scheduler or prove physical audio quality. Use Python with ESPHome and pytest,
-plus a C++17 compiler, `pkg-config` and the native Opus development library
+plus a C++20-capable compiler, `pkg-config` and the native Opus development library
 (`libopus-dev` on Debian/Ubuntu). PCM and mixed-codec tests also require the
 real audio library:
 

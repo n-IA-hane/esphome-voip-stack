@@ -6,6 +6,9 @@ profiles. JPEG uses the P4 hardware decoder. H.264 uses Espressif tinyH264,
 
 ## Example
 
+Merge this fragment into a P4 board configuration with `main_display` and the
+`show_video_page` / `show_phone_page` scripts already declared.
+
 ```yaml
 p4_video_renderer:
   id: p4_video

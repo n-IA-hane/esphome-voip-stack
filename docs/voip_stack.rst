@@ -14,10 +14,15 @@ components. It does not own audio hardware or echo cancellation. For codec
 ownership, TDM layouts or software AEC/AFE, use the ``esp_audio_stack``
 component and pass its clean microphone and speaker surfaces to ``voip_stack``.
 
+The development component requires ESPHome **2026.10.0 or newer**. This
+configuration fragment assumes that ``clean_mic`` and ``local_speaker`` already
+exist. With native Home Assistant discovery enabled, retain
+``api: {custom_services: true}`` alongside the device's API configuration.
+
 .. code-block:: yaml
 
     external_components:
-      - source: github://n-IA-hane/esphome-voip-stack@v2026.7.0
+      - source: github://n-IA-hane/esphome-voip-stack@dev
         components: [voip_stack]
 
     voip_stack:
@@ -47,6 +52,8 @@ The published endpoint mode is inferred from YAML wiring:
 The mode is published in the endpoint text sensor so peers and Home Assistant do
 not attempt an audio direction that the device cannot provide. At least one
 audio direction is required; a signaling-only endpoint is not supported.
+Microphone-only offers advertise ``sendonly`` and speaker-only offers
+``recvonly``. Settings for absent hardware do not add a fictitious direction.
 
 Configuration variables
 -----------------------
@@ -66,9 +73,12 @@ Configuration variables
   Each direction supports ``auto`` or explicit ``sample_rate``, ``pcm_format``,
   ``channels`` and ``frame_ms``.
 - **audio.tx_formats** / **audio.rx_formats** (*Optional*, list): Up to seven
-  additional explicit capabilities advertised in SDP. TX entries may only
-  change packet time from ``audio.tx``; RX entries may describe other supported
-  speaker-side formats.
+  additional explicit capabilities advertised in SDP. TX entries retain its
+  decoded PCM geometry and can select supported codec/packet-time alternatives.
+  RX entries may describe other supported speaker-side formats. Opus entries
+  within one direction share decoded PCM rate, sample format and channels;
+  mixed PCM/Opus RX entries share that same geometry. PCM-only receive-rate
+  conversion remains supported.
 - **static_contacts** (*Optional*, list): Local outbound dial plan entries.
   Each structured contact requires ``name`` and may include ``ip``, ``port``,
   ``rtp_port`` and ``transport``. A pre-serialized ``entry`` is also accepted.
@@ -90,6 +100,8 @@ Configuration variables
   PSRAM. Defaults to ``false``.
 - **task_stacks_in_psram** (*Optional*, boolean): Store VoIP task stacks in
   PSRAM where supported. Defaults to ``false``.
+- **audio_task_stacks_in_psram** (*Optional*, boolean): Independently store
+  realtime TX/RX task stacks in PSRAM. Defaults to ``false``.
 - **network_socket_headroom** (*Optional*, int): Extra lwIP sockets reserved at
   validation time. Defaults to ``0``.
 
@@ -125,12 +137,13 @@ Phonebook: ``voip_stack.next_contact``, ``voip_stack.prev_contact``,
 ``voip_stack.set_roster_json`` and ``voip_stack.set_ha_peer_name``.
 
 Audio and diagnostics: ``voip_stack.set_volume``,
-``voip_stack.set_mic_gain_db`` and ``voip_stack.publish_entity_states``.
+``voip_stack.set_mic_gain_db``, ``voip_stack.publish_entity_states`` and
+``voip_stack.dump_diagnostics``.
 
 Conditions
 ----------
 
-``voip_stack.is_idle``, ``voip_stack.is_ringing``,
+``voip_stack.is_idle``, ``voip_stack.is_active``, ``voip_stack.is_ringing``,
 ``voip_stack.is_in_call``, ``voip_stack.is_calling``,
 ``voip_stack.is_incoming``, ``voip_stack.destination_is`` and
 ``voip_stack.is_ha_destination``.
@@ -149,17 +162,6 @@ only on a trusted LAN/VPN or behind network admission policy. Session-changing
 in-dialog INVITE (including hold) is rejected with ``488`` while the original
 dialog remains established and can later receive BYE normally.
 
-See Also
---------
-
-- :doc:`/components/microphone/index`
-- :doc:`/components/speaker/index`
-- :doc:`/components/voice_assistant`
-- :doc:`/components/micro_wake_word`
-- :apiref:`voip_stack/voip_stack.h`
-- :ghedit:`Edit`
-
-
 Correlated Home Assistant calls
 -------------------------------
 
@@ -173,3 +175,35 @@ cased identifiers cannot hang up another call.
 The existing ``start_call`` action remains available for ordinary phonebook
 calls. Neither action changes the audio pipeline. The correlated identity is
 passed as a call-setup argument, without a persistent next-call override.
+With native HA integration enabled, remove custom API actions that duplicate
+these two component-provided names when upgrading from 2026.10.1.
+
+Video scope
+-----------
+
+An existing native ESPHome ``esp32_camera`` can transmit JPEG on ESP32-S3.
+Displaying the remote video on an S3 screen remains future work. ESP32-P4
+adapters support both camera transmission and remote-video decode/display.
+JPEG and H.264 are separate compile-time profiles. Two-way audio is retained
+on devices with both microphone and speaker.
+
+
+Call-transfer scope
+-------------------
+
+Established IPv4 audio calls can accept blind in-dialog REFER over UDP or TCP,
+including mixed-transport handoffs. The current caller remains available while
+the destination rings, unless that caller hangs up. Local hangup cancels the
+attempt; the real result is reported with NOTIFY. Video transfers, hostname
+targets, attended-transfer URI headers and Digest-authenticated retry are
+outside this receiver's supported scope.
+
+See Also
+--------
+
+- :doc:`/components/microphone/index`
+- :doc:`/components/speaker/index`
+- :doc:`/components/voice_assistant`
+- :doc:`/components/micro_wake_word`
+- :apiref:`voip_stack/voip_stack.h`
+- :ghedit:`Edit`

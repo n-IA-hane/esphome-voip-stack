@@ -6,6 +6,9 @@ does not decode, resize or re-encode a frame.
 
 ## Example
 
+Merge this fragment into a P4 board configuration that already declares the
+JPEG camera `p4_camera`, the matching `p4_video` sink and the audio endpoints.
+
 ```yaml
 esp_jpeg_video_source:
   id: p4_jpeg_video
