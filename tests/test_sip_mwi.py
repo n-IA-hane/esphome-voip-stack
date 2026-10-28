@@ -140,11 +140,15 @@ def test_mwi_emits_no_code_when_disabled(tmp_path, registration_only):
     header.parent.mkdir(parents=True)
     header.write_text("")
     obj = tmp_path / "disabled.o"
+    dependencies = tmp_path / "disabled.d"
     flags = ["-DUSE_ESPHOME_VOIP_REGISTRATION"] if registration_only else []
     result = subprocess.run(
         [
             "g++",
             "-std=c++17",
+            "-MD",
+            "-MF",
+            str(dependencies),
             *flags,
             "-I",
             str(tmp_path),
@@ -161,6 +165,9 @@ def test_mwi_emits_no_code_when_disabled(tmp_path, registration_only):
         ["nm", "--defined-only", str(obj)], capture_output=True, text=True, check=True
     )
     assert symbols.stdout == ""
+    # Feature-off code must exclude the registration/std::string dependency,
+    # even on compilers that discard its unreferenced constexpr definitions.
+    assert str(SOURCE / "sip_registration.h") not in dependencies.read_text()
 
 
 @pytest.mark.parametrize("transport", ["udp", "tcp"])

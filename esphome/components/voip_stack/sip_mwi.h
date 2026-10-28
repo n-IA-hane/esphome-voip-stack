@@ -1,7 +1,9 @@
 #pragma once
 
-#include "sip_registration.h"
+#include "esphome/core/defines.h"
 #if defined(USE_ESPHOME_VOIP_REGISTRATION) && defined(USE_ESPHOME_VOIP_MWI)
+
+#include "sip_registration.h"
 
 #include <array>
 #include <cstdint>
