@@ -553,6 +553,24 @@ async def ha_matrix(witness, args, result):
             await established(peer_since)
             await witness.service("select_line", {"line": "direct"})
             await complete("HA selected-line outgoing, active account retained after selecting direct, ESP hangup", peer_hangup=False)
+        if "cancel" in phases:
+            first = len(peer.output)
+            peer.command("/answermode manual")
+            await wire.wait_text("Answer mode changed to: manual", first)
+            first = len(peer.output)
+            await witness.service("start_call_on_line", {"dest": args.peer_extension, "line": account_id})
+            request = await wire.wait_record(lambda row: row["line"].startswith("INVITE "), first)
+            await wire.wait_text("Incoming call from:", first)
+            await witness.service("hangup_call")
+            await witness.wait(lambda: witness.call_state == "idle", timeout=15)
+            identity = request["headers"]["Call-ID"]
+            sequence = request["headers"]["CSeq"].split()[0]
+            await wire.wait_record(lambda row: row["line"].startswith("SIP/2.0 487") and
+                row["headers"].get("Call-ID") == identity, first)
+            await wire.wait_record(lambda row: row["line"].startswith("ACK ") and
+                row["headers"].get("Call-ID") == identity and row["headers"].get("CSeq") == sequence + " ACK", first)
+            scenarios.append({"name": "Outgoing ringing call cancelled, final487 acknowledged", "passed": True})
+            peer.command("/answermode auto")
         if "hold" in phases:
             peer_since = len(peer.output)
             await asyncio.to_thread(peer.command, f"/dial sip:esphome-{account_id}@{args.address}:5060")
@@ -803,7 +821,7 @@ def main():
     parser.add_argument("--operation", choices=["observe", "provision", "call", "remove", "asterisk", "video", "browser-video", "ha", "persist"], required=True)
     parser.add_argument("--account", type=Path)
     parser.add_argument("--ha-peer", type=Path)
-    parser.add_argument("--ha-only", action="append", choices=["calls", "hold", "refer", "voicemail"])
+    parser.add_argument("--ha-only", action="append", choices=["calls", "cancel", "hold", "refer", "voicemail"])
     parser.add_argument("--reuse-account", action="store_true")
     parser.add_argument("--intercom", type=Path, default=Path(__file__).resolve().parents[2] / "esphome-intercom")
     parser.add_argument("--ha-extension", default="7192")
