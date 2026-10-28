@@ -9,6 +9,11 @@ struct JpegGeometry {
   uint16_t width{0}, height{0};
 };
 
+struct JpegDecodePlan {
+  JpegGeometry input{}, output{};
+  uint8_t scale{0}; // Official decoder shift: native, 1/2 or 1/4.
+};
+
 // Bound every header segment before the vendor's skip/read callbacks see it.
 // Only a complete, single-scan, 8-bit baseline image is admitted for decoding.
 inline bool inspect_baseline_jpeg(const uint8_t *data, size_t size,
@@ -108,6 +113,37 @@ inline bool inspect_baseline_jpeg(const uint8_t *data, size_t size,
       return false;
     }
     offset += 2 + length;
+  }
+  return false;
+}
+
+// Bound compressed input work independently of the fixed output surfaces.
+// The finest supported reduction that fits is used, without an extra resize
+// buffer. Keep the native frame bounded even when the output is very small.
+inline bool plan_baseline_jpeg(const uint8_t *data, size_t size,
+                              uint16_t width, uint16_t height,
+                              JpegDecodePlan &plan) {
+  plan = {};
+  if (width == 0 || height == 0)
+    return false;
+  const uint32_t width_limit = uint32_t(width) * 4;
+  const uint32_t height_limit = uint32_t(height) * 4;
+  const uint16_t native_width = width_limit < 1280 ? width_limit : 1280;
+  const uint16_t native_height = height_limit < 1280 ? height_limit : 1280;
+  if (!inspect_baseline_jpeg(data, size, native_width, native_height,
+                             plan.input) ||
+      uint32_t(plan.input.width) * plan.input.height > 1280U * 960U)
+    return false;
+  for (uint8_t scale = 0; scale <= 2; ++scale) {
+    // esp_jpeg reports integer-divided dimensions, including odd-sized inputs.
+    const uint16_t output_width = plan.input.width >> scale;
+    const uint16_t output_height = plan.input.height >> scale;
+    if (output_width != 0 && output_height != 0 && output_width <= width &&
+        output_height <= height) {
+      plan.output = {output_width, output_height};
+      plan.scale = scale;
+      return true;
+    }
   }
   return false;
 }

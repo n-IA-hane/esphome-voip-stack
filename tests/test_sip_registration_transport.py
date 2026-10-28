@@ -111,7 +111,20 @@ def test_account_tcp_failed_mailbox_is_retired(registration_transport_binary, sc
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("scenario", ["contact-next-hop", "proxy-next-hop", "route-next-hop"])
+@pytest.mark.parametrize("scenario", ["contact-next-hop", "proxy-next-hop", "route-next-hop", "challenge-transaction-hop"])
 def test_confirmed_account_dialog_contact_proxy_and_route_are_distinct(registration_transport_binary, scenario):
     result = subprocess.run([registration_transport_binary, scenario, "udp"], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("status", [401, 407, 403, 486, 302])
+@pytest.mark.parametrize("transport", ["udp", "tcp"])
+def test_non_2xx_ack_copies_immutable_transaction_and_replays_on_original_hop(registration_transport_binary, status, transport):
+    result = subprocess.run([registration_transport_binary, f"transaction-ack-{status}", transport], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("transport", ["udp", "tcp"])
+def test_cancelled_invite_final_487_is_acked_and_replayed(registration_transport_binary, transport):
+    result = subprocess.run([registration_transport_binary, "cancelled-invite-ack", transport], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr

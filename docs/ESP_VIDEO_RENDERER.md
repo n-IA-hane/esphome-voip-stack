@@ -21,7 +21,7 @@ external_components:
 
 esp_video_renderer:
   id: incoming_video
-  width: 320                 # Maximum decoded width, also the preferred SIP width.
+  width: 320                 # Maximum decoded surface width.
   height: 240                # Maximum decoded height.
   framerate: 2               # Limits decode admission, even if a producer is faster.
   max_jpeg_bytes: 131072     # Capacity of each of the two compressed input slots.
@@ -138,10 +138,26 @@ the vendor decoder receives input. By default, the S3 uses ROM decoding through
 the official component. Source-decoder configurations using its large Huffman lookup
 mode reserve a 65,472-byte workspace instead.
 
-Widths and heights must be multiples of 8, with at most 640x480 pixels. A JPEG
-exceeding either configured dimension or the input capacity is rejected. Images
-are centered at their decoded size; this version does not upscale or crop them.
-Set 224x168 for a 4:3 image that fits a 240x240 display.
+Configured widths and heights must be multiples of 8, with at most 640x480
+pixels. They size the output surfaces, rather than requiring the sender to use
+that exact resolution. The decoder selects native size, half size or quarter
+size, choosing the finest result that fits both dimensions. This uses
+Espressif's decoder reduction directly, without an additional resize buffer.
+For a 320x240 surface, a 640x360 browser image becomes 320x180 and a 1280x720
+image also becomes 320x180. Smaller inputs remain at native size.
+
+Native input is limited to four times each configured dimension, 1280 pixels
+per axis, and 1,228,800 pixels in total. The compressed image must also fit
+`max_jpeg_bytes`. Images beyond these limits are rejected before decoding.
+Single-scan baseline validation remains required at every reduction. For odd
+dimensions, the decoder rounds each reduced dimension down and drops the final
+partial row or column. LVGL receives the resulting width, height and stride.
+Images are centered without upscaling or aspect-ratio distortion. Set 224x168
+for a 4:3 output that fits a 240x240 display.
+
+The current JPEG call contract negotiates encoding and frame rate, without
+transmitting the renderer's width and height as remote camera constraints.
+The receiver therefore checks each image and applies the bounded reduction.
 
 `get_stats()` returns admissions, replacements, rejections, successful decodes,
 decode errors, LVGL submissions and maximum elapsed decode/frame-age times.
@@ -174,8 +190,10 @@ python tools/qualify_esp_video_renderer_jpeg.py \
 ```
 
 The check runs the official wrapper and source decoder under ASan/UBSan, checks
-RGB565 byte order and color error for 4:4:4, 4:2:2, 4:2:0 and grayscale, guards
-the output bounds, and rejects malformed headers and every truncated prefix
-before decoding. It produces a JPEG, decoded PNG and JSON
-receipt. ROM execution, real display presentation and concurrent audio still
+RGB565 byte order and color error for 4:4:4, 4:2:2, 4:2:0 and grayscale at native,
+half and quarter size, and verifies odd-dimension output strides. It guards the
+output bounds and rejects malformed headers and every truncated prefix before
+decoding. Add `--input-jpeg /path/to/captured.jpg` to replay an actual image into
+a 320x240 surface. The tool produces JPEGs, decoded PNGs and a JSON receipt.
+ROM execution, real display presentation and concurrent audio still
 require the identified hardware firmware.

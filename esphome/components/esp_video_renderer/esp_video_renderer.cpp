@@ -265,10 +265,10 @@ void EspVideoRenderer::worker_() {
 bool EspVideoRenderer::decode_(int input_index, int surface_index) {
   const auto &input = this->inputs_[input_index];
   auto &surface = this->surfaces_[surface_index];
-  JpegGeometry geometry;
+  JpegDecodePlan plan;
   const uint32_t started = micros();
-  if (!inspect_baseline_jpeg(input.data, input.size, this->width_,
-                             this->height_, geometry)) {
+  if (!plan_baseline_jpeg(input.data, input.size, this->width_,
+                          this->height_, plan)) {
     this->decode_errors_.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
@@ -278,14 +278,14 @@ bool EspVideoRenderer::decode_(int input_index, int surface_index) {
   config.outbuf = surface.data;
   config.outbuf_size = this->surface_capacity_;
   config.out_format = JPEG_IMAGE_FORMAT_RGB565;
-  config.out_scale = JPEG_IMAGE_SCALE_0;
+  config.out_scale = static_cast<esp_jpeg_image_scale_t>(plan.scale);
   config.flags.swap_color_bytes = false;
   config.advanced.working_buffer = this->decoder_workspace_;
   config.advanced.working_buffer_size = JPEG_WORKSPACE_BYTES;
   esp_jpeg_image_output_t info{};
   if (esp_jpeg_decode(&config, &info) != ESP_OK ||
-      info.width != geometry.width || info.height != geometry.height ||
-      info.output_len != size_t(geometry.width) * geometry.height * 2) {
+      info.width != plan.output.width || info.height != plan.output.height ||
+      info.output_len != size_t(plan.output.width) * plan.output.height * 2) {
     this->decode_errors_.fetch_add(1, std::memory_order_relaxed);
     return false;
   }

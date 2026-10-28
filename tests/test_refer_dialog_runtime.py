@@ -87,6 +87,7 @@ struct SipTransport: SipPhoneTransport {
   uint32_t cseq_number=0;std::string cseq_method,branch_override,extra_headers;
   bool remember_transaction=true,remember_invite_ack=true;
   std::string *formatted_request=nullptr;const char *content_type="application/sdp";
+  uint32_t *destination_ip=nullptr;uint16_t *destination_port=nullptr;
  };
  std::unique_ptr<ReferDialog,ReferDeleter> refer_dialog_;
  bool refer_context_active_=false,refer_retiring_=false,refer_signal_pending_=false;

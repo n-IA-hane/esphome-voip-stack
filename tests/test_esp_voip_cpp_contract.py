@@ -2420,27 +2420,9 @@ def test_rtp_socket_close_is_serialized_with_the_final_tx_send() -> None:
     assert "this->rtp_ssrc_ = esp_random();" in media_start
 
 
-def test_non_2xx_invite_final_response_sends_ack() -> None:
-    sip_h = read("sip_transport.h")
-    sip_cpp = read("sip_transport.cpp")
-
-    assert "struct SipRequestOptions" in sip_h
-    assert "std::string branch_override" in sip_h
-    assert "std::string cseq_method" in sip_h
-    assert 'bool send_request_(const std::string &method, const std::string &body = "");' in sip_h
-    assert "bool send_request_(const std::string &method, const std::string &body,\n                     const SipRequestOptions &options);" in sip_h
-    assert "SipRequestOptions &options =" not in sip_h
-    assert "bool SipTransport::send_request_(const std::string &method, const std::string &body) {" in sip_cpp
-    assert "send_invite_error_ack_" in sip_h
-    assert "bool SipTransport::send_invite_error_ack_()" in sip_cpp
-    assert "options.cseq_number = this->invite_cseq_" in sip_cpp
-    assert 'options.cseq_method = "ACK"' in sip_cpp
-    assert "options.branch_override = this->branch_" in sip_cpp
-    assert "3261 section 17.1.1.3" in sip_cpp
-    assert 'return this->send_request_("ACK", "", options);' in sip_cpp
-    assert "this->send_invite_error_ack_();" in sip_cpp
-
-
+# ACK transaction identity and next-hop behavior are exercised through actual
+# UDP/TCP exchanges in test_sip_registration_transport and test_refer_wire_runtime.
+# Source-spelling checks cannot detect an ACK sent to the wrong socket.
 def test_tcp_connect_queue_never_overwrites_the_pending_invite() -> None:
     sip_cpp = read("sip_transport.cpp")
 
@@ -2835,12 +2817,12 @@ def test_cancel_transactions_are_serialized_and_handle_crossed_200() -> None:
     cancel = sip_cpp[sip_cpp.index("bool SipTransport::send_cancel(") : sip_cpp.index("\nbool SipTransport::send_bye(")]
     early_cancel = cancel[
         cancel.index("if (cancelled_before_flush)") :
-        cancel.index("\n  SipRequestOptions options;")
+        cancel.index("\n  this->cancel_requested_.store")
     ]
-    wire_cancel = cancel[cancel.index("\n  SipRequestOptions options;") :]
+    wire_cancel = cancel[cancel.index("\n  this->cancel_requested_.store") :]
     assert "this->reset_dialog_();" in early_cancel
     assert "this->reset_dialog_();" not in wire_cancel
-    assert "this->clear_invite_transaction_();" in cancel
+    assert "this->clear_invite_transaction_();" not in wire_cancel
     response = sip_cpp[sip_cpp.index("bool SipTransport::handle_response_(") : sip_cpp.index("\nvoid SipTransport::handle_sip_datagram_")]
     assert "CANCEL crossed the final 2xx" in response
     assert "this->send_bye_unlocked_(this->call_id_)" in response

@@ -2409,14 +2409,13 @@ bool SipTransport::send_cancel_unlocked_(const std::string &call_id) {
       return true;
     }
   }
-  SipRequestOptions options;
-  options.cseq_number = this->invite_cseq_;
   this->cancel_requested_.store(true, std::memory_order_release);
-  const bool sent = this->send_request_("CANCEL", "", options);
+  const bool sent = this->send_invite_transaction_request_("CANCEL", "", this->pending_invite_, false, nullptr);
   if (sent) {
-    // INVITE retransmission stops once cancellation begins. Keep the dialog
-    // identifiers until the final 487 so it can be ACKed correctly.
-    this->clear_invite_transaction_();
+    // Stop retransmission but retain the original wire request until its final
+    // response: the non-2xx ACK must reuse that exact transaction, even after180.
+    this->pending_invite_.completed = true;
+    this->pending_invite_.next_ms = this->pending_invite_.deadline_ms;
   } else {
     this->cancel_requested_.store(false, std::memory_order_release);
   }
@@ -3472,7 +3471,13 @@ bool SipTransport::handle_video_direction_response_(
   ack_options.remember_transaction = false;
   ack_options.remember_invite_ack = false;
   ack_options.formatted_request = &ack;
-  const bool ack_sent = this->send_request_("ACK", "", ack_options);
+  uint32_t ack_ip = pending.transaction.ip_v4;
+  uint16_t ack_port = pending.transaction.port;
+  ack_options.destination_ip = &ack_ip;
+  ack_options.destination_port = &ack_port;
+  const bool ack_sent = status < 300
+      ? this->send_request_("ACK", "", ack_options)
+      : this->send_invite_error_ack_(message, pending.transaction, false, &ack);
   if (!ack_sent) {
     ESP_LOGW(TAG,
              "SIP video re-INVITE ACK initial send failed; retaining it for "
@@ -3486,22 +3491,11 @@ bool SipTransport::handle_video_direction_response_(
     completed.branch = pending.branch;
     completed.ack = ack;
     completed.response_ip_v4 = src_ip;
-    uint32_t ack_ip =
-        this->remote_ip_v4_.load(std::memory_order_acquire);
-    uint16_t ack_port =
-        this->remote_sip_port_.load(std::memory_order_acquire);
-    uint32_t contact_ip = 0;
-    uint16_t contact_port = 0;
-    if (sip_uri_ipv4_target(this->remote_target_uri_, &contact_ip,
-                            &contact_port)) {
-      ack_ip = contact_ip;
-      ack_port = contact_port;
-    }
     completed.ack_ip_v4 = ack_ip;
     completed.ack_port = ack_port;
     completed.completed_ms = millis();
-    completed.udp =
-        !this->remote_sip_tcp_.load(std::memory_order_acquire);
+    completed.udp = status >= 300 ? pending.transaction.udp
+        : !this->remote_sip_tcp_.load(std::memory_order_acquire);
   }
 
   const bool previous_send = pending.previous_send;
@@ -3787,6 +3781,8 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
       this->pending_invite_.completed = true;
       this->pending_invite_.next_ms = this->pending_invite_.deadline_ms;
     } else {
+      if (status >= 300)
+        this->send_invite_error_ack_(message, this->pending_invite_, true, nullptr);
       this->clear_invite_transaction_();
     }
   }
@@ -3921,7 +3917,6 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
       return true;
     }
     this->outgoing_invite_pending_.store(false, std::memory_order_release);
-    this->send_invite_error_ack_();
     std::string reason = sip_header_token(header_value(message, "X-Voip-Stack-Decline-Reason"));
     if (reason.empty()) reason = reason_text_from_header(header_value(message, "Reason"));
     if (reason.empty()) reason = sip_failure_reason_(status);

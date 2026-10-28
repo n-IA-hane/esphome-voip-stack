@@ -50,7 +50,9 @@ The new `esp_video_renderer` decodes baseline JPEG into an LVGL display surface.
 Use its optional adapter with `voip_stack.video.sink`, or feed complete JPEG
 images from another producer without loading VoIP.
 
-The renderer defaults to a 320x240 receive envelope at 2 fps. Bounded buffering
+The renderer defaults to a 320x240 display surface and up to two admitted frames
+per second. Bounded native, half-size and quarter-size decoding fits larger
+JPEG frames into that surface within the documented input limits. Buffering
 keeps the latest queued image, and session changes discard stale decoded frames.
 The existing P4 renderer remains the hardware-oriented choice for P4 displays.
 

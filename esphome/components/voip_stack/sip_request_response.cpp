@@ -1,6 +1,9 @@
 #include "sip_transport.h"
 #include "sip_message.h"
 
+#include <cctype>
+#include <cstring>
+
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_SIP_TRANSPORT)
 
 #include "esphome/core/log.h"
@@ -150,6 +153,10 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
   msg += body;
   if (options.formatted_request != nullptr)
     *options.formatted_request = msg;
+  if (options.destination_ip != nullptr)
+    *options.destination_ip = ip;
+  if (options.destination_port != nullptr)
+    *options.destination_port = port;
   if (method == "ACK" && options.remember_invite_ack) {
     this->remember_completed_invite_ack_(msg, ip, port);
   }
@@ -177,15 +184,66 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
   return sent || udp_transaction;
 }
 
-bool SipTransport::send_invite_error_ack_() {
-  if (this->branch_.empty()) return false;
-  SipRequestOptions options;
-  options.cseq_number = this->invite_cseq_;
-  options.cseq_method = "ACK";
-  // A non-2xx INVITE ACK reuses the INVITE client transaction branch per RFC
-  // 3261 section 17.1.1.3.
-  options.branch_override = this->branch_;
-  return this->send_request_("ACK", "", options);
+bool SipTransport::send_invite_error_ack_(const std::string &response, const UdpTransaction &transaction,
+                                         bool remember_ack, std::string *formatted_request) {
+  return this->send_invite_transaction_request_("ACK", response, transaction, remember_ack, formatted_request);
+}
+
+bool SipTransport::send_invite_transaction_request_(const char *method, const std::string &response,
+                                                   const UdpTransaction &transaction, bool remember_ack,
+                                                   std::string *formatted_request) {
+  // RFC 3261 sections 9.1, 17.1.1.3 and 22.1: ACK/CANCEL belong to the
+  // original transaction. Reuse its wire URI, Via, Route and authorization,
+  // including an already transformed strict route, and its original next hop.
+  const bool ack_request = std::strcmp(method, "ACK") == 0;
+  if (!ack_request && std::strcmp(method, "CANCEL") != 0) return false;
+  const size_t headers_end = transaction.request.find("\r\n\r\n");
+  if (transaction.empty() || headers_end == std::string::npos ||
+      transaction.ip_v4 == 0 || transaction.port == 0) return false;
+  const std::string original = transaction.request.substr(0, headers_end + 2);
+  const size_t uri_end = original.find(' ', 7);
+  if (original.rfind("INVITE ", 0) != 0 || uri_end == std::string::npos) return false;
+  const std::string via = header_value(original, "Via");
+  const std::string from = header_value(original, "From");
+  const std::string to = header_value(ack_request ? response : original, "To");
+  const std::string call_id = header_value(original, "Call-ID");
+  const uint32_t sequence = cseq_number(header_value(original, "CSeq"));
+  if (via.empty() || from.empty() || to.empty() || call_id.empty() || sequence == 0) return false;
+  std::string control = std::string(method) + " " + original.substr(7, uri_end - 7) + " SIP/2.0\r\n";
+  control += "Via: " + via + "\r\nFrom: " + from + "\r\nTo: " + to +
+         "\r\nCall-ID: " + call_id + "\r\nCSeq: " + std::to_string(sequence) + " " + method + "\r\n";
+  const std::string forwards = header_value(original, "Max-Forwards");
+  control += "Max-Forwards: " + (forwards.empty() ? std::string("70") : forwards) + "\r\n";
+  size_t pos = original.find("\r\n") + 2;
+  while (pos < original.size()) {
+    const size_t end = original.find("\r\n", pos);
+    if (end == std::string::npos) break;
+    const std::string line = original.substr(pos, end - pos);
+    const size_t colon = line.find(':');
+    if (colon != std::string::npos) {
+      std::string name = trim_copy(line.substr(0, colon));
+      for (char &ch : name) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+      if (name == "route" || name == "authorization" || name == "proxy-authorization")
+        control += line + "\r\n";
+    }
+    pos = end + 2;
+  }
+  control += "Content-Length: 0\r\n\r\n";
+  if (formatted_request != nullptr) *formatted_request = control;
+  if (ack_request && remember_ack) {
+    this->remember_completed_invite_ack_(control, transaction.ip_v4, transaction.port);
+    this->completed_invite_client_.udp = transaction.udp;
+  }
+  const bool sent = transaction.udp
+      ? this->send_sip_udp_bytes_(control.data(), control.size(), transaction.ip_v4, transaction.port)
+      : this->send_sip_tcp_bytes_(control.data(), control.size());
+  if (!ack_request && (sent || transaction.udp)) {
+    this->remember_udp_transaction_(method, control, transaction.ip_v4, transaction.port);
+    this->pending_cancel_.udp = transaction.udp;
+    const SipEvent event = sip_event_from_method_(method);
+    if (event != SipEvent::NONE) this->mark_sip_event_(event);
+  }
+  return sent || (!ack_request && transaction.udp);
 }
 
 bool SipTransport::send_connected_identity_update_() {

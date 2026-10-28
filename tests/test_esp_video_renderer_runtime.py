@@ -83,7 +83,8 @@ inline void heap_caps_free(void*p){free(p);}
 #include <cstring>
 #include <mutex>
 #include <condition_variable>
-constexpr int ESP_OK=0,JPEG_IMAGE_FORMAT_RGB565=1,JPEG_IMAGE_SCALE_0=0;
+constexpr int ESP_OK=0,JPEG_IMAGE_FORMAT_RGB565=1;
+enum esp_jpeg_image_scale_t {JPEG_IMAGE_SCALE_0=0,JPEG_IMAGE_SCALE_1_2,JPEG_IMAGE_SCALE_1_4};
 struct esp_jpeg_image_cfg_t {uint8_t*indata=nullptr;uint32_t indata_size=0;uint8_t*outbuf=nullptr;uint32_t outbuf_size=0;
 int out_format=0,out_scale=0;struct {bool swap_color_bytes=false;}flags;
 struct {void*working_buffer=nullptr;size_t working_buffer_size=0;}advanced;};
@@ -95,7 +96,9 @@ assert(cfg->advanced.working_buffer&&cfg->advanced.working_buffer_size==3100);
 assert(cfg->out_format==JPEG_IMAGE_FORMAT_RGB565&&!cfg->flags.swap_color_bytes);
 std::unique_lock lock(decode_mutex);entered_decode=true;decode_cv.notify_all();
 decode_cv.wait(lock,[]{return !hold_decode;});
-info->height=cfg->indata[8];info->width=cfg->indata[10];info->output_len=info->width*info->height*2;
+info->height=((unsigned(cfg->indata[7])<<8)|cfg->indata[8])>>cfg->out_scale;
+info->width=((unsigned(cfg->indata[9])<<8)|cfg->indata[10])>>cfg->out_scale;
+info->output_len=info->width*info->height*2;
 assert(info->output_len<=cfg->outbuf_size);memset(cfg->outbuf,cfg->indata[25],info->output_len);
 completed_decodes++;decode_cv.notify_all();return ESP_OK;}
 """,
@@ -148,6 +151,7 @@ int main(){
  uint8_t a[]={0xff,0xd8,0xff,0xc0,0,11,8,0,8,0,8,1,1,0x11,0,
               0xff,0xda,0,8,1,1,0,0,63,0,11,0xff,0xd9};
  assert(!r.submit_jpeg(a,sizeof a)); assert(r.start());
+ uint8_t oversized[65]={0xff,0xd8};assert(!r.submit_jpeg(oversized,sizeof oversized));
  // Borrowed data may be modified immediately after admission; decode owns a copy.
  {std::lock_guard lock(decode_mutex);hold_decode=true;entered_decode=false;}
  assert(r.submit_jpeg(a,sizeof a));
@@ -172,11 +176,20 @@ int main(){
  std::this_thread::sleep_for(std::chrono::milliseconds(5));r.loop();assert(!r.has_remote_frame());assert(r.displayed()==2);
  fake_ms=1500;a[25]=44;assert(r.submit_jpeg(a,sizeof a));wait_decode(4);wait_pending(r);r.loop();assert(r.has_remote_frame());assert(image.src->data[0]==44);
  refresh_ready(display);
- // Geometry must be rejected before writing to a too-small output surface.
- fake_ms=2000;a[10]=16;assert(r.submit_jpeg(a,sizeof a));
+ // Power-of-two decode reduction keeps the same surfaces and LVGL uses the real output size.
+ const auto reserved=allocation_count;
+ fake_ms=2000;a[8]=16;a[10]=16;assert(r.submit_jpeg(a,sizeof a));
+ wait_decode(5);wait_pending(r);r.loop();assert(image.src->header.w==8&&image.src->header.h==8);
+ assert(image.src->header.stride==16&&image.src->data_size==128);refresh_ready(display);
+ fake_ms=2500;a[8]=24;a[10]=32;assert(r.submit_jpeg(a,sizeof a));
+ wait_decode(6);wait_pending(r);r.loop();assert(image.src->header.w==8&&image.src->header.h==6);
+ assert(image.src->header.stride==16&&image.src->data_size==96);refresh_ready(display);
+ assert(allocation_count==reserved);
+ // Beyond the bounded native envelope, reject before vendor decoding or writing a surface.
+ fake_ms=3000;a[10]=40;assert(r.submit_jpeg(a,sizeof a));
  for(unsigned n=0;n<1000&&!r.errors();n++)std::this_thread::sleep_for(std::chrono::milliseconds(1));
  assert(r.errors()==1);assert(image.src->data[0]==44);
- const auto stats=r.get_stats();assert(stats.decoded==4&&stats.presented==3&&stats.decode_errors==1);r.dump_state();
+ const auto stats=r.get_stats();assert(stats.decoded==6&&stats.presented==5&&stats.decode_errors==1);r.dump_state();
  r.stop();r.loop();assert(!r.has_remote_frame());r.on_shutdown();join_tasks();
  // Hardware shutdown retains display references; the harness releases only after joining everything.
  r.release_setup_resources_();

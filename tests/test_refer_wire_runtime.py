@@ -80,7 +80,9 @@ template<class T>void reset_string(T&s){s.clear();}
         decl = body[:body.index('{')].replace('SipTransport::','').strip()+';'
         declarations_extra += decl+'\n'
         code += '\n'+body
-    for marker in ['bool SipTransport::send_invite_error_ack_(', 'std::string SipTransport::format_response_(']:
+    for marker in ['bool SipTransport::send_invite_error_ack_(',
+                   'bool SipTransport::send_invite_transaction_request_(',
+                   'std::string SipTransport::format_response_(']:
         body = block(requests, marker)
         declarations_extra += body[:body.index('{')].replace('SipTransport::','').strip()+';\n'
         code += '\n'+body

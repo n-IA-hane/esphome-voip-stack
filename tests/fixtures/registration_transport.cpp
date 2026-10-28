@@ -191,6 +191,57 @@ int main(int argc, char **argv) {
     s.close_tcp_flow_(s.tcp_flow_); close(s.sip_socket_); return 0;
   }
 #endif
+  if (scenario.rfind("transaction-ack-",0)==0) {
+    const unsigned status=std::stoul(scenario.substr(16));Peer hostile(false);
+    start_account_call(s,pbx);auto original=pick(pbx.drain(),"INVITE");
+    auto transaction=s.pending_invite_;
+    // The transaction's immutable request is authoritative even after a
+    // provisional/final response has changed current dialog metadata.
+    const std::string routes="Route: <sip:first.example;lr>\r\nRoute: <sip:second.example:5097;lr>\r\n";
+    const std::string credentials="Authorization: Digest username=\"transaction-user\", realm=\"original\", nonce=\"retained\", response=\"0123456789abcdef0123456789abcdef\"\r\n"
+        "Proxy-Authorization: Digest username=\"proxy-user\", realm=\"proxy\", nonce=\"retained-proxy\", response=\"fedcba9876543210fedcba9876543210\"\r\n";
+    original.insert(original.find("Content-Length:"),routes+credentials);
+    transaction.request=original;
+    s.remote_target_uri_=hostile.uri();s.remote_sip_port_=ntohs(hostile.address.sin_port);
+    s.remote_tag_="unrelated-current-tag";s.local_uri_="<sip:unrelated@example.invalid>";
+    s.dialog_route_count_=1;s.dialog_routes_[0]="<"+hostile.uri()+";lr>";
+    auto answer=response(original,status);
+    answer.insert(answer.find("Content-Length:"),"Contact: <"+hostile.uri()+">\r\nRecord-Route: <"+hostile.uri()+";lr>\r\n");
+    assert(s.send_invite_error_ack_(answer,transaction,true,nullptr));
+    auto records=pbx.drain();assert(records.size()==1);const auto ack=records[0];
+    auto uri_end=original.find(' ',7);assert(ack.rfind("ACK "+original.substr(7,uri_end-7)+" SIP/2.0\r\n",0)==0);
+    for(const char*name:{"Via","From","Call-ID","Max-Forwards"})assert(header_value(ack,name)==header_value(original,name));
+    assert(header_value(ack,"To")==header_value(answer,"To"));
+    assert(header_value(ack,"CSeq")=="1 ACK");assert(header_values(ack,"Route")==header_values(original,"Route"));
+    for(const char*name:{"Authorization","Proxy-Authorization"})assert(header_values(ack,name)==header_values(original,name));
+    assert(header_value(ack,"Contact").empty()&&message_body(ack).empty());
+    assert(hostile.drain().empty());
+    assert(s.replay_completed_invite_ack_(answer,pbx.address,!tcp));
+    records=pbx.drain();assert(records.size()==1&&records[0]==ack&&hostile.drain().empty());
+    for(auto&flow:s.registration_flows_)s.close_tcp_flow_(flow);close(s.sip_socket_);return 0;
+  }
+  if (scenario == "cancelled-invite-ack") {
+    Peer hostile(false);start_account_call(s,pbx);const auto invite=pick(pbx.drain(),"INVITE");
+    assert(s.send_cancel_unlocked_(s.call_id_));const auto cancel=pick(pbx.drain(),"CANCEL");
+    assert(via_branch(header_value(cancel,"Via"))==via_branch(header_value(invite,"Via")));
+    pbx.send_to(s,response(cancel,200));auto rejected=response(invite,487);
+    rejected.insert(rejected.find("Content-Length:"),"Contact: <"+hostile.uri()+">\r\n");
+    pbx.send_to(s,rejected);auto records=pbx.drain();assert(records.size()==1);const auto ack=pick(records,"ACK");
+    assert(ack.find("ACK"+invite.substr(6,invite.find("\r\n")-6)+"\r\n")==0);
+    assert(header_value(ack,"CSeq")=="1 ACK");assert(header_value(ack,"Via")==header_value(invite,"Via"));
+    assert(hostile.drain().empty());pbx.send_to(s,rejected);records=pbx.drain();
+    assert(records.size()==1&&records[0]==ack&&hostile.drain().empty());
+    for(auto&flow:s.registration_flows_)s.close_tcp_flow_(flow);close(s.sip_socket_);return 0;
+  }
+  if (scenario == "challenge-transaction-hop") {
+    assert(!tcp);s.registration_.account(0).config.domain="127.0.0.1";
+    start_account_call(s,pbx);auto invite=pick(pbx.drain(),"INVITE");
+    pbx.send_to(s,response(invite,401));auto records=pbx.drain();
+    auto ack=pick(records,"ACK");auto retry=pick(records,"INVITE");
+    assert(via_branch(header_value(ack,"Via"))==via_branch(header_value(invite,"Via")));
+    assert(header_value(ack,"CSeq")=="1 ACK"&&header_value(retry,"CSeq")=="2 INVITE");
+    assert(s.remote_sip_port_==ntohs(pbx.address.sin_port));close(s.sip_socket_);return 0;
+  }
   if (scenario == "contact-next-hop" || scenario == "proxy-next-hop" || scenario == "route-next-hop") {
     assert(!tcp);Peer target(false);Peer router(false);
     if(scenario=="proxy-next-hop")s.registration_.account(0).config.proxy="127.0.0.1";

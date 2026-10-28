@@ -183,6 +183,8 @@ class SipTransport : public SipPhoneTransport {
     bool remember_transaction{true};
     bool remember_invite_ack{true};
     std::string *formatted_request{nullptr};
+    uint32_t *destination_ip{nullptr};
+    uint16_t *destination_port{nullptr};
     std::string extra_headers;
     const char *content_type{"application/sdp"};
   };
@@ -211,7 +213,6 @@ class SipTransport : public SipPhoneTransport {
   bool send_cancel_unlocked_(const std::string &call_id);
   bool send_bye_unlocked_(const std::string &call_id);
   bool defer_bye_until_uas_ack_locked_();
-  bool send_invite_error_ack_();
   bool send_response_(uint16_t status, const char *reason, const std::string &body = "",
                       const std::string &app_reason = "");
   bool send_stateless_response_(const std::string &request, const sockaddr_in &src,
@@ -381,6 +382,12 @@ class SipTransport : public SipPhoneTransport {
     }
     bool empty() const { return this->request.empty(); }
   };
+
+  bool send_invite_error_ack_(const std::string &response, const UdpTransaction &transaction,
+                              bool remember_ack, std::string *formatted_request);
+  bool send_invite_transaction_request_(const char *method, const std::string &response,
+                                        const UdpTransaction &transaction, bool remember_ack,
+                                        std::string *formatted_request);
 
   struct DeferredUdpResponse {
     SipSignalingString response;

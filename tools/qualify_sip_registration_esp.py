@@ -8,6 +8,7 @@ configuration. Account credentials are read from a private JSON file.
 from __future__ import annotations
 
 import argparse
+from email.parser import Parser
 import asyncio
 import inspect
 import json
@@ -26,6 +27,81 @@ async def maybe_await(value):
     return await value if inspect.isawaitable(value) else value
 
 
+class BareSipWire:
+    """Observe an existing peer's SIP trace through its PTY readiness events."""
+    def __init__(self, peer):
+        self.peer = peer
+        self.loop = asyncio.get_running_loop()
+        self.changed = asyncio.Event()
+        self.loop.add_reader(peer.master, self.drain)
+
+    def drain(self):
+        try:
+            self.peer.read()
+        except (OSError, ValueError):
+            self.loop.remove_reader(self.peer.master)
+        self.changed.set()
+
+    def records(self, since=0):
+        text = re.sub(r"\x1b\[[0-9;]*m", "", self.peer.output[since:]).replace("\r\r\n", "\r\n")
+        pattern = r"(?m)^(SIP/2\.0 [^\r\n]+|(?:INVITE|ACK|REFER|NOTIFY|BYE|REGISTER|OPTIONS|UPDATE|CANCEL) [^\r\n]+ SIP/2\.0)\r?\n"
+        result = []
+        for match in re.finditer(pattern, text):
+            separator = re.search(r"\r?\n\r?\n", text[match.end():])
+            if separator is None:
+                continue
+            end = match.end() + separator.start()
+            body_start = match.end() + separator.end()
+            headers = Parser().parsestr(text[match.end():end])
+            size = int(headers.get("Content-Length", "0"))
+            payload = text[body_start:].encode("utf-8")
+            if len(payload) < size:
+                continue
+            body = payload[:size].decode("utf-8", errors="replace")
+            result.append({"line": match.group(1), "headers": headers, "body": body})
+        return result
+
+    async def wait_record(self, predicate, since=0, timeout=15):
+        deadline = time.monotonic() + timeout
+        while True:
+            for record in self.records(since):
+                if predicate(record):
+                    return record
+            self.changed.clear()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("bareSIP wire record deadline expired")
+            await asyncio.wait_for(self.changed.wait(), remaining)
+
+    async def wait_text(self, value, since=0, timeout=15):
+        deadline = time.monotonic() + timeout
+        while value not in self.peer.output[since:]:
+            self.changed.clear()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("bareSIP trace text deadline expired")
+            await asyncio.wait_for(self.changed.wait(), remaining)
+
+    async def direction(self, command):
+        first = len(self.peer.output)
+        self.peer.command(command)
+        request = await self.wait_record(lambda row: row["line"].startswith("INVITE "), first)
+        identity, sequence = request["headers"]["Call-ID"], request["headers"]["CSeq"].split()[0]
+        response = await self.wait_record(lambda row: row["line"].startswith("SIP/2.0 ") and
+            row["headers"].get("Call-ID") == identity and row["headers"].get("CSeq") == sequence + " INVITE" and
+            int(row["line"].split()[1]) >= 200, first)
+        status = int(response["line"].split()[1])
+        if not 200 <= status < 300:
+            raise AssertionError(f"Remote direction update was rejected with SIP {status}")
+        await self.wait_record(lambda row: row["line"].startswith("ACK ") and
+            row["headers"].get("Call-ID") == identity and row["headers"].get("CSeq") == sequence + " ACK", first)
+        return request
+
+    def close(self):
+        self.loop.remove_reader(self.peer.master)
+        self.drain()
+
+
 class EspWitness:
     def __init__(self, client):
         self.client = client
@@ -34,6 +110,7 @@ class EspWitness:
         self.values = {}
         self.log = []
         self.account_states = {}
+        self.renderer_stats = {"decoded": 0, "errors": 0, "presented": 0}
         self.changed = asyncio.Event()
         self.state_key = None
         self.unsubscribe = None
@@ -62,6 +139,9 @@ class EspWitness:
         if any(tag in value for tag in ("registration.hil", "voip_stack", "esp_screenshot", "esp_video_renderer", "runtime_controller")):
             self.log.append({"time": time.monotonic(), "message": value})
             self.changed.set()
+        renderer = re.search(r"decoded/errors/LVGL: (\d+)/(\d+)/(\d+)", value)
+        if renderer:
+            self.renderer_stats = dict(zip(("decoded", "errors", "presented"), map(int, renderer.groups())))
         match = re.search(r"account=(\S+) state=(\S+) status=(\d+)", value)
         if match:
             self.account_states[match[1]] = match[2]
@@ -123,11 +203,21 @@ class EspWitness:
             await asyncio.sleep(0.5)
         raise TimeoutError(f"Native Micro Wake Word did not reach {token}")
 
+    async def switch_value(self, entity):
+        await self.wait(lambda: ("SwitchState", entity.key) in self.values, timeout=5)
+        return bool(self.values[("SwitchState", entity.key)])
+
     async def close(self):
         if self.unsubscribe:
             self.unsubscribe()
             self.unsubscribe = None
-        await self.client.disconnect()
+        from aioesphomeapi.core import APIConnectionError
+        try:
+            await self.client.disconnect()
+        except APIConnectionError:
+            # A commanded hardware restart can close the stream before the
+            # native DisconnectResponse reaches the cleanup code.
+            pass
 
 
 class AsteriskLab:
@@ -236,7 +326,7 @@ async def asterisk_matrix(witness, args, result):
     scenarios = []
     result["scenarios"] = scenarios
     wake = next((e for e in witness.entities if type(e).__name__ == "SwitchInfo" and e.object_id == "wake_word"), None)
-    old_wake = witness.values.get(("SwitchState", wake.key), False) if wake else False
+    old_wake = await witness.switch_value(wake) if wake else False
     try:
         if wake:
             await maybe_await(witness.client.switch_command(wake.key, True))
@@ -323,7 +413,7 @@ async def video_matrix(witness, args, result):
     wake = next((e for e in witness.entities if type(e).__name__ == "SwitchInfo" and e.object_id == "wake_word"), None)
     if wake is None:
         raise RuntimeError("Wake Word switch is absent")
-    old_wake = witness.values.get(("SwitchState", wake.key), False)
+    old_wake = await witness.switch_value(wake)
     frames = []
     peer = None
     try:
@@ -373,6 +463,41 @@ async def video_matrix(witness, args, result):
         await maybe_await(witness.client.switch_command(wake.key, old_wake))
 
 
+async def browser_video_matrix(witness, args, result):
+    """Observe an externally controlled ordinary HA browser call on the ESP."""
+    wake = next((e for e in witness.entities if type(e).__name__ == "SwitchInfo" and e.object_id == "wake_word"), None)
+    if wake is None:
+        raise RuntimeError("Wake Word switch is absent")
+    old_wake = await witness.switch_value(wake)
+    frames = []
+    try:
+        await maybe_await(witness.client.switch_command(wake.key, True))
+        await witness.wait_mww(True)
+        baseline = dict(witness.renderer_stats)
+        frames.append(await witness.screenshot(args.address, args.output.with_name("browser-video-before.jpg")))
+        print("ESP_VIDEO_OBSERVER_READY", flush=True)
+        await witness.wait(lambda: witness.call_state in {"ringing", "in_call"}, timeout=180)
+        if witness.call_state == "ringing":
+            await witness.service("answer_call")
+        await witness.wait(lambda: witness.call_state == "in_call", timeout=20)
+        await witness.wait_mww(False)
+        await asyncio.sleep(3)
+        frames.append(await witness.screenshot(args.address, args.output.with_name("browser-video-active.jpg")))
+        await witness.service("registration_runtime_diagnostics")
+        await witness.wait(lambda: witness.call_state == "idle", timeout=40)
+        await witness.wait_mww(True)
+        frames.append(await witness.screenshot(args.address, args.output.with_name("browser-video-after.jpg")))
+        delta = {key: witness.renderer_stats[key] - baseline[key] for key in baseline}
+        result.update(screenshots=frames, renderer_frames=delta, mww_before_and_after=True, mww_suspended_during_video=True)
+        if delta["presented"] <= 0 or delta["errors"] != 0:
+            raise AssertionError(f"Video transport completed without valid presentation: {delta}")
+    finally:
+        if witness.call_state not in {"", "idle"}:
+            await witness.service("hangup_call")
+            await witness.wait(lambda: witness.call_state == "idle", timeout=15)
+        await maybe_await(witness.client.switch_command(wake.key, old_wake))
+
+
 async def ha_matrix(witness, args, result):
     """Real HA registrar plus an ordinary bareSIP peer, using existing owners."""
     if args.ha_peer is None or args.account is None:
@@ -387,13 +512,16 @@ async def ha_matrix(witness, args, result):
     scenarios = result.setdefault("scenarios", [])
     phases = set(args.ha_only or ("calls", "hold", "refer", "voicemail"))
     peer = None
+    wire = None
     wake = next((e for e in witness.entities if type(e).__name__ == "SwitchInfo" and e.object_id == "wake_word"), None)
-    old_wake = witness.values.get(("SwitchState", wake.key), False) if wake else False
-    async def established():
+    old_wake = await witness.switch_value(wake) if wake else False
+    async def established(peer_since=None):
         await witness.wait(lambda: witness.call_state in {"ringing", "in_call"}, timeout=20)
         if witness.call_state == "ringing":
             await witness.service("answer_call")
         await witness.wait(lambda: witness.call_state == "in_call", timeout=20)
+        if peer_since is not None:
+            await wire.wait_text("Call established:", peer_since)
     async def complete(name, *, peer_hangup=True):
         await asyncio.sleep(args.hold)
         await witness.service("registration_runtime_diagnostics")
@@ -411,50 +539,50 @@ async def ha_matrix(witness, args, result):
             await witness.service("set_account", payload)
             await witness.wait(lambda: witness.account_states.get(account_id) == "registered", timeout=35)
         peer = await asyncio.to_thread(BareSip, args.ha_peer)
+        wire = BareSipWire(peer)
+        peer.command("/siptrace yes")
+        await wire.wait_text("SIP trace is now enabled")
         if "calls" in phases:
-            peer.read()
-            peer.output = ""
+            peer_since = len(peer.output)
             await asyncio.to_thread(peer.command, f"/dial sip:{args.ha_extension}@{account['registrar']}:{account.get('port', 5060)}")
-            await established()
+            await established(peer_since)
             await complete("HA registered incoming, peer hangup")
-            peer.read()
-            peer.output = ""
+            peer_since = len(peer.output)
             await witness.service("select_line", {"line": account_id})
             await witness.service("start_call", {"dest": args.peer_extension})
-            await established()
+            await established(peer_since)
             await witness.service("select_line", {"line": "direct"})
             await complete("HA selected-line outgoing, active account retained after selecting direct, ESP hangup", peer_hangup=False)
         if "hold" in phases:
-            peer.read()
-            peer.output = ""
+            peer_since = len(peer.output)
             await asyncio.to_thread(peer.command, f"/dial sip:esphome-{account_id}@{args.address}:5060")
-            await established()
-            before = len(witness.log)
-            await asyncio.to_thread(peer.command, "/hold")
-            await witness.wait(lambda: any("SIP re-INVITE accepted" in row["message"] for row in witness.log[before:]), timeout=10)
+            await established(peer_since)
+            await wire.direction("/hold")
             # Exceed the ordinary 15-second RTP watchdog while held.
             await asyncio.sleep(17)
             await witness.service("registration_runtime_diagnostics")
             if witness.call_state != "in_call":
                 raise AssertionError("Hold unexpectedly terminated the ESP call")
-            before = len(witness.log)
-            await asyncio.to_thread(peer.command, "/resume")
-            await witness.wait(lambda: any("SIP re-INVITE accepted" in row["message"] for row in witness.log[before:]), timeout=10)
+            await wire.direction("/resume")
             await complete("Direct registered Contact hold/resume, peer hangup")
         if "refer" in phases:
-            peer.read()
-            peer.output = ""
+            peer_since = len(peer.output)
             await asyncio.to_thread(peer.command, f"/dial sip:esphome-{account_id}@{args.address}:5060")
-            await established()
-            before = len(witness.log)
-            await asyncio.to_thread(peer.command, "/hold")
-            # Serialize the menu's implicit hold transaction with its REFER. The
-            # ACK is the protocol barrier, independent of a host sleep duration.
-            await witness.wait(lambda: any("SIP RX method=INVITE" in row["message"] for row in witness.log[before:]), timeout=10)
-            incoming = next(i for i in range(before, len(witness.log)) if "SIP RX method=INVITE" in witness.log[i]["message"])
-            await witness.wait(lambda: any("SIP RX method=ACK" in row["message"] for row in witness.log[incoming:]), timeout=10)
-            await asyncio.to_thread(peer.command, f"/transfer sip:{args.peer_extension}@{account['registrar']}:{account.get('port', 5060)}")
-            await asyncio.to_thread(peer.wait_for, "Call transfered", 25)
+            await established(peer_since)
+            held = await wire.direction("/hold")
+            original_id = held["headers"]["Call-ID"]
+            first = len(peer.output)
+            peer.command(f"/transfer sip:{args.peer_extension}@{account['registrar']}:{account.get('port', 5060)}")
+            await wire.wait_text("Incoming call from:", first)
+            peer.command("/accept")
+            notify = await wire.wait_record(lambda row: row["line"].startswith("NOTIFY ") and
+                row["headers"].get("Call-ID") == original_id and
+                row["headers"].get("Event", "").startswith("refer") and
+                re.match(r"SIP/2\.0 [2-6]\d\d", row["body"]) is not None, first, 25)
+            status = int(notify["body"].split()[1])
+            if not 200 <= status < 300:
+                raise AssertionError(f"REFER replacement failed with SIP {status}")
+            result["refer_final_notify_status"] = status
             await complete("ESP receives blind REFER, authenticated replacement call through HA", peer_hangup=False)
         if "voicemail" in phases:
             before = len(witness.log)
@@ -482,7 +610,8 @@ async def ha_matrix(witness, args, result):
             await witness.service("hangup_call")
             await witness.wait(lambda: witness.call_state == "idle", timeout=15)
         if peer is not None:
-            peer.read()
+            if wire is not None:
+                wire.close()
             await asyncio.to_thread(peer.close)
             credentials = json.loads((args.ha_peer / "credentials.json").read_text())
             log = peer.output
@@ -537,17 +666,21 @@ async def persistence_matrix(witness, args, result):
                 if time.monotonic() >= deadline:
                     raise
                 await asyncio.sleep(1)
+    result["stage"] = "retire_previous_binding"
     await witness.service("unregister_account", {"account_id": account_id})
     await witness.wait(lambda: witness.account_states.get(account_id) == "disabled", timeout=35)
+    result["stage"] = "write_persistent_account"
     await witness.service("set_account", payload)
     await witness.wait(lambda: witness.account_states.get(account_id) == "registered", timeout=35)
     before = len(witness.log)
+    result["stage"] = "restart_and_wait_for_autoregistration"
     await reboot()
     await witness.service("registration_runtime_diagnostics")
     await witness.wait(lambda: witness.account_states.get(account_id) == "registered" or
-                       any("ha=YES" in row["message"] for row in witness.log[before:]), timeout=15)
+                       any("ha=YES" in row["message"] for row in witness.log[before:]), timeout=75)
     await witness.service("registration_runtime_diagnostics")
     result["persisted_account_autoregistered_after_hardware_restart"] = True
+    result["stage"] = "clear_override_and_restart"
     await witness.service("unregister_account", {"account_id": account_id})
     await witness.wait(lambda: witness.account_states.get(account_id) == "disabled", timeout=35)
     await witness.service("reset_account", {"account_id": account_id})
@@ -556,6 +689,7 @@ async def persistence_matrix(witness, args, result):
     await witness.service("registration_runtime_diagnostics")
     await witness.wait(lambda: any("ha=NO" in row["message"] for row in witness.log[before:]), timeout=15)
     result["reset_removed_persistent_override_and_restored_empty_yaml_after_restart"] = True
+    result["stage"] = "complete"
     if extension is not None and witness.values.get(("TextState", extension.key)) != original_extension:
         raise AssertionError("Rejected extension edit changed the saved value across restart")
 
@@ -632,6 +766,8 @@ async def qualify(args):
             await asterisk_matrix(witness, args, result)
         elif args.operation == "video":
             await video_matrix(witness, args, result)
+        elif args.operation == "browser-video":
+            await browser_video_matrix(witness, args, result)
         elif args.operation == "ha":
             await ha_matrix(witness, args, result)
         elif args.operation == "persist":
@@ -664,7 +800,7 @@ def main():
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--address", required=True)
     parser.add_argument("--expected-mac", required=True)
-    parser.add_argument("--operation", choices=["observe", "provision", "call", "remove", "asterisk", "video", "ha", "persist"], required=True)
+    parser.add_argument("--operation", choices=["observe", "provision", "call", "remove", "asterisk", "video", "browser-video", "ha", "persist"], required=True)
     parser.add_argument("--account", type=Path)
     parser.add_argument("--ha-peer", type=Path)
     parser.add_argument("--ha-only", action="append", choices=["calls", "hold", "refer", "voicemail"])

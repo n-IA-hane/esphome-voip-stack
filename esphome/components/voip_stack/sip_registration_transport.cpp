@@ -398,7 +398,6 @@ bool SipTransport::retry_authenticated_request_(const std::string& message, cons
   uint8_t& attempts = status == 401 ? this->dialog_auth_attempts_ : this->dialog_proxy_auth_attempts_;
   if (!challenge.parse_response(message, status == 407) || ++attempts > (challenge.stale ? 3 : 2))
     return false;
-  if (method == "INVITE") this->send_invite_error_ack_();
   (status == 401 ? this->dialog_digest_ : this->dialog_proxy_digest_) = std::move(challenge);
   std::string body;
   SipRequestOptions options;
