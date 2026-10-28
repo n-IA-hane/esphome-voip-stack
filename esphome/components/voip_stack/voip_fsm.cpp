@@ -1,4 +1,7 @@
 #include "voip_stack.h"
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+#include "sip_transport.h"
+#endif
 
 #ifdef USE_ESP32
 
@@ -207,6 +210,21 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
   bool dial_directional_audio_v1 =
       this->get_current_contact_directional_audio_v1();
 
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  const std::string outgoing_line = via_ha || !requested_call_id.empty() || this->force_direct_call_ ? "direct" :
+      (this->pending_line_.empty() ? this->default_line_ : this->pending_line_);
+  if (this->transport_ != nullptr) {
+    auto *sip = static_cast<SipTransport *>(this->transport_.get());
+    sip->clear_account_line();
+    if (outgoing_line != "direct") {
+      if (!sip->prepare_account_line(outgoing_line, &dial_ip, &dial_port, &dial_sip_tcp)) {
+        this->pending_dialplan_target_.clear();
+        this->defer([this]() { this->call_failed_trigger_.trigger("", "PBX account unavailable"); }); return;
+      }
+      dial_rtp_port = 0; dial_directional_audio_v1 = false;
+    }
+  }
+#endif
   if (via_ha) {
     const auto *ha = this->phonebook_.find(this->ha_peer_name_);
     dial_ip = ha != nullptr ? ha->ip : "";

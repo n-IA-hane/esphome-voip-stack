@@ -68,7 +68,7 @@ def mixed_playout_binary(tmp_path_factory):
  uint8_t &rtp_tx_payload_type_=tx_pt,&rtp_rx_payload_type_=rx_pt;
  std::atomic<bool>rtp_running_{false},rtp_task_terminate_{false},media_active_{true},rtp_task_quiesced_{true};
  std::atomic<uint16_t>rtp_sequence_{0};std::atomic<uint32_t>rtp_timestamp_{0};uint32_t rtp_ssrc_=0;
- std::atomic<bool>rtp_ssrc_latched_{false};
+ std::atomic<bool>rtp_ssrc_latched_{false},audio_rx_discontinuity_{false};
  std::atomic<uint32_t>media_proposal_epoch_{0},latched_rtp_ip_v4_{0},latched_rtp_ssrc_{0},rtp_rx_packets_{0},rtp_rx_bytes_{0};
  std::atomic<uint16_t>latched_rtp_port_{0};
  enum class MediaLifecyclePhase{ACTIVE,CLEANING,IDLE,PREPARED};std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::IDLE};

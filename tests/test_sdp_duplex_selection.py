@@ -6,7 +6,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_plain_pcm_negotiates_independent_rates_and_opus_keeps_local_rates(tmp_path):
+def test_plain_pcm_uses_shared_rates_and_explicit_directional_opus_keeps_local_rates(tmp_path):
     source = (ROOT / "esphome/components/voip_stack/sip_sdp.cpp").read_text()
     start = source.index("        AudioFormat local_rx;")
     end = source.index("        } else if (!selected_tx && !selected_rx)", start)
@@ -25,7 +25,9 @@ struct Selector {
  AudioFormat selected_rx_format,selected_tx_format;
  uint8_t selected_rx_payload_type=0,selected_tx_payload_type=0;
  bool run(std::vector<AudioFormat> offer) {
-  bool selected_rx=false,selected_tx=false,shared_format=false,remote_is_answer=false;
+  bool selected_rx=false,selected_tx=false,shared_format=false,remote_is_answer=false,direction_only=false;
+  [[maybe_unused]] bool selected_tx_allowed=false,selected_rx_allowed=false;
+  AudioFormat prepared_tx,prepared_rx;
   RtpAudioPayloads received_payloads;
   uint8_t payload_flow[128]{},payload_rank[128]{},media_flow=3,pt=95,selected_tx_rank=255;
   for(const auto &fmt:offer) { ++pt;
@@ -41,8 +43,8 @@ int main(){
   Selector s;s.offer_tx_formats_.count=1;s.offer_tx_formats_.formats[0]=pcm(rate);
   s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[0]=pcm(48000);s.offer_rx_formats_.formats[1]=pcm(rate);
   assert(s.run({pcm(48000),pcm(rate)}));
-  assert(s.selected_tx_format.sample_rate==rate && s.selected_rx_format.sample_rate==48000);
-  assert(s.selected_rx_payload_type!=s.selected_tx_payload_type);
+  assert(s.selected_tx_format.sample_rate==rate && s.selected_rx_format.sample_rate==rate);
+  assert(s.selected_rx_payload_type==s.selected_tx_payload_type);
   s.remote_directional_audio_v1_=true;assert(s.run({pcm(48000),pcm(rate)}));
   assert(s.selected_tx_format.sample_rate==rate && s.selected_rx_format.sample_rate==48000);
  }

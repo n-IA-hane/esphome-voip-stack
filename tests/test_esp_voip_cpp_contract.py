@@ -1045,7 +1045,7 @@ def test_final_reinvite_response_is_owned_before_initial_send() -> None:
     failure = reinvite[
         reinvite.index('if (!this->send_response_(200, "OK", answer))') :
         reinvite.index(
-            "\n  this->set_media_config_",
+            "\n  this->set_audio_direction_",
             reinvite.index('if (!this->send_response_(200, "OK", answer))'),
         )
     ]
@@ -2020,7 +2020,12 @@ def test_completed_sip_server_transactions_are_bounded_and_replayed() -> None:
     stale_bye = datagram.index('this->reject_if_stale_dialog_(msg, src, "BYE")')
     assert replay < stale_bye
     assert 'this->send_stateless_response_(msg, src, 200, "OK", "", true);' in datagram
-    assert 'this->replay_completed_response_(message, src, "INVITE", !this->remote_sip_tcp_.load' in sip_cpp
+    invite = cpp_method(sip_cpp, r"SipTransport::handle_invite_")
+    assert 'this->replay_completed_response_(message, src, "INVITE",' in invite
+    # Account flows can coexist with a different active call transport. Cache
+    # replay uses the actual ingress; direct-only builds retain their old gate.
+    assert "this->dispatch_socket_ < 0" in invite
+    assert "!this->remote_sip_tcp_.load(std::memory_order_acquire)" in invite
 
 
 def test_retransmitted_invite_final_replays_the_cached_ack() -> None:
@@ -2230,15 +2235,15 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
 
     endpoint = stack_cpp[stack_cpp.index("std::string VoipStack::build_endpoint_string_"):]
     assert "char buf[640]" in endpoint
-    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s%s%s"' in endpoint
-    assert 'audio_extra += " | at=" + rtp_tx' in endpoint
-    assert 'audio_extra += " | ar=" + rtp_rx' in endpoint
-    assert 'audio_extra += " | sf=d1"' in endpoint
+    assert '"%s|%s|%u|%u|%s|%s|%s|%s|%s%s%s"' in endpoint
+    assert 'audio_extra += "|at=" + rtp_tx' in endpoint
+    assert 'audio_extra += "|ar=" + rtp_rx' in endpoint
+    assert 'audio_extra += "|sf=d1"' in endpoint
     assert "if (has_non_pcm)" in endpoint
     assert "tx.clear()" in endpoint
     assert "rx.clear()" in endpoint
-    assert 'video_extra = " | video=jpeg"' in endpoint
-    assert 'video_extra = " | video=h264"' in endpoint
+    assert 'video_extra = "|video=jpeg"' in endpoint
+    assert 'video_extra = "|video=h264"' in endpoint
     assert 'video_extra = ""' in endpoint
     assert "this->conference_groups_.c_str()" not in endpoint
     assert "this->ring_groups_.c_str()" not in endpoint
@@ -3407,9 +3412,10 @@ def test_sip_snapshot_refresh_is_throttled_unless_audio_debug_is_enabled() -> No
 def test_long_diagnostic_text_sensors_have_wrapping_separators() -> None:
     stack = read("voip_stack.cpp")
 
-    assert 'out += "; ";' in stack
-    assert 'out += ";";' not in stack
-    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s%s%s"' in stack
+    # Machine-readable endpoint capabilities stay compact under HA's255-char
+    # state limit. Human diagnostic snapshots retain their wrapping spaces.
+    assert 'out += ";";' in stack
+    assert '"%s|%s|%u|%u|%s|%s|%s|%s|%s%s%s"' in stack
     assert '"st=%s; id=%s; dir=%s; from=%s; to=%s; ct=%s; tr=%s; sc=%u; "' in stack
     assert '"tx=%s; rx=%s; pt=%u; pr=%u; "' in stack
     assert '"tqd=%u; tqdrop=%u; rqd=%u; rqdrop=%u; rs=%s; ev=%s"' in stack

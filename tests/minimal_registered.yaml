@@ -1,0 +1,21 @@
+# Link the native account actions and MWI on a microphone-only endpoint.
+# No PBX credentials are embedded; accounts can be provisioned at runtime.
+packages:
+  microphone_phone: !include minimal_no_text.yaml
+
+esphome:
+  name: voip-minimal-registered
+
+api:
+  custom_services: true
+
+voip_stack:
+  registration:
+    max_accounts: 2
+    message_waiting: true
+  on_registration_state:
+    - lambda: |-
+        ESP_LOGI("pbx", "%s: %s (%d)", account_id.c_str(), state.c_str(), status_code);
+  on_message_waiting:
+    - lambda: |-
+        ESP_LOGI("mwi", "%s: available=%d waiting=%d", account_id.c_str(), available, waiting);

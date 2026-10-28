@@ -120,7 +120,49 @@ bool SipTransport::handle_refer_(const std::string &message, const sockaddr_in &
     }
     parameter = end;
   }
-  if (!supported || !sip_uri_ipv4_target(target, &ip, &port)) {
+  bool valid_target = sip_uri_ipv4_target(target, &ip, &port);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  int candidate_account = -1;
+  if (supported && this->active_account_ >= 0) {
+    const auto &account = this->registration_.account(this->active_account_);
+    const size_t authority_begin = target.find('@', 4);
+    const size_t host_begin = authority_begin == std::string::npos ? 4 : authority_begin + 1;
+    const size_t authority_end = target.find(';', host_begin);
+    const std::string authority = target.substr(host_begin,
+        authority_end == std::string::npos ? std::string::npos : authority_end - host_begin);
+    const size_t colon = authority.find(':');
+    std::string host = authority.substr(0, colon);
+    auto lower_host = [](std::string value) {
+      std::transform(value.begin(), value.end(), value.begin(),
+                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      return value;
+    };
+    host = lower_host(host);
+    const bool same_host = host == lower_host(account.config.domain) ||
+        host == lower_host(account.config.registrar) ||
+        (!account.config.proxy.empty() && host == lower_host(account.config.proxy)) ||
+        (valid_target && ip == account.target_ip);
+    if (same_host && account.target_ip != 0) {
+      // Reuse only the referring account's configured authority. An unrelated
+      // transfer target must never inherit this account's credentials.
+      in_addr address{};
+      address.s_addr = htonl(account.target_ip);
+      char numeric[16];
+      inet_ntoa_r(address, numeric, sizeof(numeric));
+      std::string checked = target;
+      checked.replace(host_begin, host.size(), numeric);
+      valid_target = sip_uri_ipv4_target(checked, &ip, &port);
+      const bool same_port = colon == std::string::npos || port == account.config.port || port == account.target_port;
+      if (valid_target && same_port) {
+        candidate_account = this->active_account_;
+        ip = account.target_ip;
+        port = account.target_port;
+        target_tcp = account.config.tcp;
+      }
+    }
+  }
+#endif
+  if (!supported || !valid_target) {
     this->send_stateless_response_(message, src, 416, "Unsupported URI Scheme");
     return false;
   }
@@ -141,6 +183,9 @@ bool SipTransport::handle_refer_(const std::string &message, const sockaddr_in &
     return false;
   }
   std::unique_ptr<ReferDialog, ReferDeleter> candidate(::new (memory) ReferDialog());
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  candidate->active_account_ = candidate_account;
+#endif
   candidate->owner_call_id = this->call_id_;
   candidate->target_uri = target;
   candidate->remote_sip_tcp_ = target_tcp;
@@ -161,7 +206,11 @@ bool SipTransport::handle_refer_(const std::string &message, const sockaddr_in &
   bool sent;
   {
     ReferScope scope(*this);
-    if (target_tcp) {
+    if (target_tcp
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+        && this->active_account_ < 0
+#endif
+    ) {
       this->tcp_flow_.target_ip.store(ip, std::memory_order_release);
       this->tcp_flow_.target_port.store(port, std::memory_order_release);
       this->tcp_flow_.connect_requested.store(true, std::memory_order_release);
@@ -179,6 +228,13 @@ bool SipTransport::handle_refer_(const std::string &message, const sockaddr_in &
 void SipTransport::swap_dialog_(ReferDialog &other) {
   using std::swap;
 #define SWAP_FIELD(field) swap(this->field, other.field)
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  SWAP_FIELD(active_account_); SWAP_FIELD(dialog_account_socket_);
+  SWAP_FIELD(dialog_digest_); SWAP_FIELD(dialog_proxy_digest_);
+  SWAP_FIELD(dialog_auth_attempts_); SWAP_FIELD(dialog_proxy_auth_attempts_);
+  SWAP_FIELD(authenticated_invite_body_); SWAP_FIELD(invite_authorization_);
+  SWAP_FIELD(dialog_routes_); SWAP_FIELD(dialog_route_count_);
+#endif
   SWAP_FIELD(call_id_); SWAP_FIELD(local_tag_); SWAP_FIELD(remote_tag_); SWAP_FIELD(branch_);
   SWAP_FIELD(local_uri_); SWAP_FIELD(local_contact_uri_); SWAP_FIELD(remote_uri_); SWAP_FIELD(remote_target_uri_);
   SWAP_FIELD(last_invite_via_); SWAP_FIELD(last_invite_from_); SWAP_FIELD(last_invite_to_);
@@ -208,8 +264,11 @@ void SipTransport::swap_negotiation_(ReferDialog &other) {
   uint8_t tx_pt, rx_pt;
   RtpAudioPayloads payloads;
   this->get_media_config_(&tx, &rx, &tx_pt, &rx_pt, &payloads);
+  const uint8_t direction = this->get_audio_direction_();
   this->set_media_config_(other.selected_tx_format_, other.selected_rx_format_,
       other.rtp_tx_payload_type_, other.rtp_rx_payload_type_, &other.negotiated_rx_payloads_);
+  this->set_audio_direction_(other.audio_direction_);
+  other.audio_direction_ = direction;
   other.selected_tx_format_ = tx;
   other.selected_rx_format_ = rx;
   other.rtp_tx_payload_type_ = tx_pt;

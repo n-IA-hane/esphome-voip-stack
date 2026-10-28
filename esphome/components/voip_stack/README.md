@@ -324,9 +324,10 @@ multihomed/LXC/NAT installs where Home Assistant would otherwise publish an
 address ESP devices cannot reach. It is not required just because ESPs and HA
 are on different routed subnets.
 
-ESP devices never register to the optional HA/provider trunk. If HA has a trunk,
-HA maps external numbers or inbound DTMF route digits to local phonebook
-targets and then calls ESP devices as normal SIP phones.
+The default HA connection uses direct SIP. HA maps its trunk numbers or inbound
+DTMF route digits to local phonebook targets and calls ESP devices as SIP peers.
+Optional [PBX accounts](../../../docs/SIP_REGISTRATION.md) add direct registration
+with external PBXs while preserving this default route.
 
 ## SIP automation hooks
 

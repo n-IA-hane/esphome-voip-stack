@@ -33,7 +33,7 @@ def delayed_source():
     ):
         body = block(source, marker)
         declaration = body[:body.index("{")].replace("SipTransport::", "").strip()
-        declaration = declaration.replace("bool remote_is_answer)", "bool remote_is_answer = false)")
+        declaration = declaration.replace("bool remote_is_answer, bool direction_only)", "bool remote_is_answer = false, bool direction_only = false)")
         declaration = declaration.replace("const RtpAudioPayloads *rx_payloads)", "const RtpAudioPayloads *rx_payloads = nullptr)")
         if "send_response_" in marker:
             declaration = 'bool send_response_(uint16_t,const char*,const std::string & = "",const std::string & = "")'
@@ -112,7 +112,14 @@ int main(int argc,char**argv){
  s.offer_tx_formats_.count=s.offer_rx_formats_.count=2;
  s.offer_tx_formats_.formats[0]=s.offer_rx_formats_.formats[0]=fmt(16);
  s.offer_tx_formats_.formats[1]=s.offer_rx_formats_.formats[1]=fmt(10);
- if(scenario=="resample"){auto f=fmt(10);f.sample_rate=48000;s.offer_rx_formats_.formats[2]=f;s.offer_rx_formats_.count=3;}
+ if(scenario=="resample"){
+  // A standard sendrecv offer can advertise 48 kHz only when both directions
+  // support it. The answer retains 16 kHz for TX and selects 48 kHz for RX;
+  // this still requires the final ACK to prepare the real receive resampler.
+  auto f=fmt(10);f.sample_rate=48000;
+  s.offer_rx_formats_.formats[2]=s.offer_tx_formats_.formats[2]=f;
+  s.offer_rx_formats_.count=s.offer_tx_formats_.count=3;
+ }
  VoipStack phone;phone.tx_audio_formats_=s.offer_tx_formats_;phone.rx_audio_formats_=s.offer_rx_formats_;
  phone.auto_answer_=scenario!="manual";
  if(scenario=="sendfail")phone.t.final_ok=false;

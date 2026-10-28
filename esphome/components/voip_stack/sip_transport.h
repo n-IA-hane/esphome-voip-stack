@@ -8,6 +8,12 @@
 #include "rtp_audio_payloads.h"
 #include "pcm_receive_converter.h"
 #include "sip_signaling_string.h"
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+#include "sip_registration.h"
+#ifdef USE_ESPHOME_VOIP_MWI
+#include "sip_mwi.h"
+#endif
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
 #include "opus_rtp_codec.h"
 #endif
@@ -58,6 +64,33 @@ class SipTransport : public SipPhoneTransport {
   ~SipTransport() override;
 
   bool start() override;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  void initialize_registration();
+  using AccountCommit = bool (*)(void *, const std::string &, const SipAccountConfig *);
+  bool set_account(const SipAccountConfig &config, AccountCommit commit = nullptr, void *context = nullptr);
+  bool remove_account(const std::string &id, AccountCommit commit = nullptr, void *context = nullptr,
+                      bool allow_missing = false);
+  bool register_account(const std::string &id, bool enabled);
+  bool is_registered(const std::string &id);
+  bool prepare_account_line(const std::string &id, std::string *host, uint16_t *port, bool *tcp);
+  void clear_account_line();
+  void set_accept_direct_calls(bool enabled) { this->accept_direct_calls_ = enabled; }
+  using RegistrationCallback = void (*)(void *, const std::string &, RegistrationState, uint16_t);
+  using RegistrationWakeCallback = void (*)(void *, SipTransport *);
+  void set_registration_callback(RegistrationCallback cb, void *ctx, RegistrationWakeCallback wake) {
+    this->registration_callback_ = cb; this->registration_context_ = ctx; this->registration_wake_callback_ = wake;
+  }
+  void wake_registration_from_main_loop() {
+    if (this->running_.load(std::memory_order_acquire) && !this->transport_stopping_.load(std::memory_order_acquire))
+      this->wake_sip_task_();
+  }
+#endif
+#ifdef USE_ESPHOME_VOIP_MWI
+  bool get_message_waiting(const std::string &id, MessageWaitingState *state);
+  bool has_waiting_messages(const std::string &id);
+  using MessageWaitingCallback = void (*)(void *, const MessageWaitingState &);
+  void set_message_waiting_callback(MessageWaitingCallback callback) { this->message_waiting_callback_ = callback; }
+#endif
   void stop() override;
   void disconnect() override;
   bool is_connected() const override;
@@ -115,7 +148,9 @@ class SipTransport : public SipPhoneTransport {
     return this->last_sip_status_code_.load(std::memory_order_acquire);
   }
   bool remote_audio_expected() const override {
+    const uint8_t direction = this->audio_direction_state_.load(std::memory_order_acquire);
     return this->audio_receive_enabled_.load(std::memory_order_acquire) &&
+        (direction & 3U) == (direction >> 2U) &&
         !this->refer_media_waiting_.load(std::memory_order_acquire);
   }
 
@@ -231,7 +266,7 @@ class SipTransport : public SipPhoneTransport {
                                  uint8_t ptime, const char *direction = "sendrecv") const;
   bool learn_remote_rtp_from_sdp_(const std::string &sdp,
                                   uint32_t default_ip,
-                                  bool remote_is_answer = false);
+                                  bool remote_is_answer = false, bool direction_only = false);
   void capture_remote_media_shape_(const std::string &sdp);
   std::string rejected_media_answer_(const std::string &media_line) const;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
@@ -284,6 +319,9 @@ class SipTransport : public SipPhoneTransport {
   void fail_tcp_flow_(SipTcpFlow &flow, int error);
   SipTcpFlow *tcp_flow_for_socket_(int socket);
   void release_refer_dialog_();
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  std::array<SipTcpFlow *, 2 + SipRegistration::CAPACITY> signaling_flows_();
+#endif
   void wake_sip_task_();
   void wake_rtp_task_();
   bool prepare_media_path_locked_();
@@ -535,6 +573,18 @@ class SipTransport : public SipPhoneTransport {
   PcmReceiveConverter pcm_receive_converter_;
 #endif
   std::atomic<bool> audio_receive_enabled_{true};
+  // Low bits: active TX/RX. Upper bits: directions prepared for this session.
+  std::atomic<uint8_t> audio_direction_state_{15};
+  std::atomic<bool> audio_rx_discontinuity_{false};
+  uint8_t get_audio_direction_() const {
+    return this->audio_direction_state_.load(std::memory_order_acquire) & 3U;
+  }
+  void set_audio_direction_(uint8_t direction) {
+    const uint8_t prepared = this->audio_direction_state_.load(std::memory_order_relaxed) >> 2U;
+    const uint8_t active = direction & prepared;
+    this->audio_direction_state_.store((prepared << 2U) | active, std::memory_order_release);
+    this->audio_receive_enabled_.store((active & 2U) != 0, std::memory_order_release);
+  }
   AudioFormat selected_tx_format_{DEFAULT_AUDIO_FORMAT};
   AudioFormat selected_rx_format_{DEFAULT_AUDIO_FORMAT};
   uint8_t rtp_tx_payload_type_{96};
@@ -621,7 +671,55 @@ class SipTransport : public SipPhoneTransport {
     }
   };
   SipTcpFlow tcp_flow_;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  SipRegistration registration_;
+  std::array<SipTcpFlow, SipRegistration::CAPACITY> registration_flows_{};
+  int active_account_{-1}, next_account_{-1}, dispatch_socket_{-1};
+  bool accept_direct_calls_{true};
+  SipDigest dialog_digest_, dialog_proxy_digest_;
+  uint8_t dialog_auth_attempts_{0}, dialog_proxy_auth_attempts_{0};
+  std::string authenticated_invite_body_, invite_authorization_;
+  int dialog_account_socket_{-1};
+  std::array<std::string, 8> dialog_routes_{};
+  size_t dialog_route_count_{0};
+  RegistrationCallback registration_callback_{nullptr};
+  RegistrationWakeCallback registration_wake_callback_{nullptr};
+  void *registration_context_{nullptr};
+  int registration_flow_index_(const SipTcpFlow *flow) const;
+  int registration_socket_index_(int socket) const;
+  bool account_in_use_(int index) const;
+  void retire_registration_flow_(size_t index);
+  bool registration_ingress_(const std::string &message, const sockaddr_in &src, int socket);
+  bool retry_authenticated_request_(const std::string &message, const std::string &method, uint16_t status);
+  void remember_registration_routes_(const std::string &message, bool reverse);
+  static uint32_t registration_resolve_(void *, size_t, const std::string &host);
+  void pump_registration_dns_();
+  void cancel_registration_dns_();
+  void invalidate_registration_dns_(size_t index);
+  static std::string registration_hash_(const std::string &algorithm, const std::string &input);
+  static bool registration_send_(void *, size_t, const std::string &, uint32_t, uint16_t, bool);
+  static std::string registration_local_ip_(void *, uint32_t);
+  static void registration_notify_(void *, const std::string &, RegistrationState, uint16_t);
+#endif
+#ifdef USE_ESPHOME_VOIP_MWI
+  SipMwi mwi_;
+  SipTcpFlow inbound_control_flow_;
+  uint32_t inbound_control_deadline_{0};
+  bool park_inbound_control_(int socket, const sockaddr_in &source);
+  MessageWaitingCallback message_waiting_callback_{nullptr};
+  static void registration_mwi_notify_(void *, const MessageWaitingState &);
+  static bool registration_mwi_reply_(void *, const std::string &, uint32_t, uint16_t, bool, int);
+  void pump_registration_mwi_(uint32_t now);
+#endif
   struct ReferDialog {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    int active_account_{-1}, dialog_account_socket_{-1};
+    SipDigest dialog_digest_, dialog_proxy_digest_;
+    uint8_t dialog_auth_attempts_{0}, dialog_proxy_auth_attempts_{0};
+    std::string authenticated_invite_body_, invite_authorization_;
+    std::array<std::string, 8> dialog_routes_{};
+    size_t dialog_route_count_{0};
+#endif
     SipTcpFlow tcp_flow_;
     bool remote_sip_tcp_{false};
     std::string owner_call_id, target_uri;
@@ -644,6 +742,7 @@ class SipTransport : public SipPhoneTransport {
     CompletedInviteClientTransaction completed_invite_client_;
     UdpTransaction pending_invite_, pending_cancel_, pending_bye_, pending_update_;
     UdpTransaction pending_notify_, pending_notify_final_;
+    uint8_t audio_direction_{3};
     AudioFormat selected_tx_format_{DEFAULT_AUDIO_FORMAT}, selected_rx_format_{DEFAULT_AUDIO_FORMAT};
     uint8_t rtp_tx_payload_type_{96}, rtp_rx_payload_type_{96};
     RtpAudioPayloads negotiated_rx_payloads_, local_offered_rx_payloads_;

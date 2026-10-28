@@ -299,6 +299,9 @@ bool VoipStack::setup_transport_() {
   }
   this->transport_->set_sip_signaling_transport(this->protocol_ == TransportType::TCP);
 
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->initialize_registration_();
+#endif
   this->transport_->set_audio_formats(this->tx_audio_formats_, this->rx_audio_formats_);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->transport_->set_video_endpoints(this->video_source_, this->video_sink_);
@@ -558,6 +561,9 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
 }
 
 void VoipStack::loop() {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->pump_registration_wake_();
+#endif
 #if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
     defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
   this->video_camera_source_.loop();
@@ -785,7 +791,7 @@ std::string VoipStack::build_endpoint_string_() const {
     std::string out;
     for (uint8_t i = 0; i < list.count; i++) {
       if (list.formats[i].codec != AudioCodec::PCM) continue;
-      if (!out.empty()) out += "; ";
+      if (!out.empty()) out += ";";
       out += VoipStack::audio_format_token_(list.formats[i]);
     }
     return out;
@@ -818,22 +824,22 @@ std::string VoipStack::build_endpoint_string_() const {
     // PCM subset in the two legacy fields.
     tx.clear();
     rx.clear();
-    if (!rtp_tx.empty()) audio_extra += " | at=" + rtp_tx;
-    if (!rtp_rx.empty()) audio_extra += " | ar=" + rtp_rx;
+    if (!rtp_tx.empty()) audio_extra += "|at=" + rtp_tx;
+    if (!rtp_rx.empty()) audio_extra += "|ar=" + rtp_rx;
   }
   // Capability negotiation is independent of codec selection. PCM-only P4
   // also supports the explicitly negotiated asymmetric SDP extension.
-  audio_extra += " | sf=d1";
+  audio_extra += "|sf=d1";
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-  constexpr const char *video_extra = " | video=jpeg";
+  constexpr const char *video_extra = "|video=jpeg";
 #elif defined(USE_ESPHOME_VOIP_STACK_VIDEO_H264)
-  constexpr const char *video_extra = " | video=h264";
+  constexpr const char *video_extra = "|video=h264";
 #else
   constexpr const char *video_extra = "";
 #endif
   char buf[640];
   const int written = snprintf(
-      buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s%s%s",
+      buf, sizeof(buf), "%s|%s|%u|%u|%s|%s|%s|%s|%s%s%s",
       name.c_str(), ip.c_str(), (unsigned) this->sip_port_, (unsigned) this->rtp_port_,
       this->audio_capability_(), tx.c_str(), rx.c_str(),
       this->protocol_ == TransportType::TCP ? "sip_tcp" : "sip_udp",
@@ -847,6 +853,15 @@ std::string VoipStack::build_endpoint_string_() const {
 
 void VoipStack::set_extension(const std::string &extension) {
   const std::string normalized = normalize_endpoint_label(extension);
+  size_t characters = 0;
+  for (const unsigned char byte : normalized) if ((byte & 0xC0U) != 0x80U) ++characters;
+  if (characters > this->extension_max_characters_ || normalized.size() > this->extension_max_bytes_) {
+    ESP_LOGW(TAG, "Extension exceeds the configured HA endpoint description budget");
+#ifdef USE_TEXT
+    if (this->extension_text_ != nullptr) this->extension_text_->publish_state(this->extension_);
+#endif
+    return;
+  }
   if (normalized == this->extension_) return;
   this->extension_ = normalized;
 #ifdef USE_TEXT

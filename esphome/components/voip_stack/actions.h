@@ -10,6 +10,62 @@
 namespace esphome {
 namespace voip_stack {
 
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+template<typename... Ts>
+class RegistrationAccountAction : public Action<Ts...>, public Parented<VoipStack> {
+ public:
+  TEMPLATABLE_VALUE(std::string, account_id)
+  TEMPLATABLE_VALUE(bool, persist)
+  void set_operation(uint8_t operation) { this->operation_ = operation; }
+  void play(const Ts &...x) override {
+    const auto id = this->account_id_.value(x...);
+    switch (this->operation_) {
+      case 0: this->parent_->register_account(id); break;
+      case 1: this->parent_->unregister_account(id); break;
+      case 2: this->parent_->remove_account(id, this->persist_.optional_value(x...).value_or(false)); break;
+      case 3: this->parent_->reset_account(id); break;
+      case 4: this->parent_->select_line(id); break;
+    }
+  }
+ protected:
+  uint8_t operation_{0};
+};
+template<typename... Ts>
+class StartCallOnLineAction : public Action<Ts...>, public Parented<VoipStack> {
+ public:
+  TEMPLATABLE_VALUE(std::string, target)
+  TEMPLATABLE_VALUE(std::string, line)
+  void play(const Ts &...x) override { this->parent_->start_call_on_line(this->target_.value(x...), this->line_.value(x...)); }
+};
+template<typename... Ts>
+class IsRegisteredCondition : public Condition<Ts...>, public Parented<VoipStack> {
+ public:
+  TEMPLATABLE_VALUE(std::string, account_id)
+  bool check(const Ts &...x) override { return this->parent_->is_registered(this->account_id_.value(x...)); }
+};
+#ifdef USE_ESPHOME_VOIP_MWI
+template<typename... Ts>
+class HasWaitingMessagesCondition : public Condition<Ts...>, public Parented<VoipStack> {
+ public:
+  TEMPLATABLE_VALUE(std::string, account_id)
+  bool check(const Ts &...x) override { return this->parent_->has_waiting_messages(this->account_id_.value(x...)); }
+};
+#endif
+template<typename... Ts>
+class SetAccountAction : public Action<Ts...>, public Parented<VoipStack> {
+ public:
+  TEMPLATABLE_VALUE(bool, persist)
+  void set_config(const std::string &id, const std::string &registrar, uint16_t port, const std::string &domain,
+      const std::string &username, const std::string &password, const std::string &auth_username,
+      const std::string &proxy, uint16_t proxy_port, bool tcp, uint32_t expires, bool enabled) {
+    this->config_ = {id, registrar, domain, username, password, auth_username, proxy, port, proxy_port, expires, tcp, enabled};
+  }
+  void play(const Ts &...x) override { this->parent_->set_account(this->config_, this->persist_.optional_value(x...).value_or(false)); }
+ protected:
+  SipAccountConfig config_;
+};
+#endif
+
 template<typename... Ts>
 class NextContactAction : public Action<Ts...>, public Parented<VoipStack> {
  public:

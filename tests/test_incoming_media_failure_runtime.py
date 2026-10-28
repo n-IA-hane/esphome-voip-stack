@@ -38,7 +38,7 @@ int xSemaphoreTake(int,int){return 1;}
 struct MediaOwner {
  enum class MediaLifecyclePhase {IDLE,PREPARED,ACTIVE};
  std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::IDLE};
- std::atomic<bool>rtp_running_{false},rtp_task_terminate_{false},rtp_task_quiesced_{true};
+ std::atomic<bool>rtp_running_{false},rtp_task_terminate_{false},rtp_task_quiesced_{true},audio_rx_discontinuity_{false};
  void *rtp_task_handle_=this;std::atomic<uint16_t>rtp_sequence_{0};std::atomic<uint32_t>rtp_timestamp_{0};uint32_t rtp_ssrc_=0;
  int rtp_socket_=-1,rtp_cleanup_done_=0;uint16_t rtp_port_=0;
  struct Converter {bool ok=true;bool prepare(const RtpAudioPayloads&,const AudioFormat&){return ok;}}pcm_receive_converter_;

@@ -168,6 +168,8 @@ void SipTransport::set_media_config_(const AudioFormat &tx, const AudioFormat &r
   portENTER_CRITICAL(&this->media_config_lock_);
   this->selected_tx_format_ = tx;
   this->selected_rx_format_ = rx;
+  const uint8_t prepared = (tx.is_valid() ? 1U : 0U) | (rx.is_valid() ? 2U : 0U);
+  this->audio_direction_state_.store(prepared | (prepared << 2U), std::memory_order_release);
   this->audio_receive_enabled_.store(rx.is_valid(), std::memory_order_release);
   this->rtp_tx_payload_type_ = tx_payload_type;
   this->rtp_rx_payload_type_ = rx_payload_type;
@@ -190,7 +192,8 @@ void SipTransport::get_media_config_(AudioFormat *tx, AudioFormat *rx,
 
 bool SipTransport::received_audio_format_(uint8_t pt, AudioFormat *format) const {
   portENTER_CRITICAL(&this->media_config_lock_);
-  const bool found = this->negotiated_rx_payloads_.find(pt, format);
+  const bool found = (this->get_audio_direction_() & 2U) != 0 &&
+                     this->negotiated_rx_payloads_.find(pt, format);
   portEXIT_CRITICAL(&this->media_config_lock_);
   return found;
 }
@@ -624,6 +627,58 @@ bool SipTransport::close_tcp_dialog_() {
 }
 
 void SipTransport::handle_tcp_peer_loss_(SipTcpFlow *flow) {
+#ifdef USE_ESPHOME_VOIP_MWI
+  if (flow == &this->inbound_control_flow_) {
+    this->close_tcp_flow_(*flow); this->inbound_control_deadline_ = 0; return;
+  }
+#endif
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  const int account = this->registration_flow_index_(flow);
+  if (account >= 0) {
+    bool dialog_lost = false;
+    {
+      LockGuard lock(this->dialog_mutex_);
+      // A main-loop account replacement has already retired this old flow.
+      // Its delayed EOF must neither cancel a newly queued record nor apply
+      // failure/backoff to the replacement account now occupying the slot.
+      if (flow->close_requested.load(std::memory_order_acquire)) {
+        this->close_tcp_flow_(*flow);
+        return;
+      }
+      const int lost_socket = flow->socket.load(std::memory_order_acquire);
+      this->retire_registration_flow_(account);
+      this->close_tcp_flow_(*flow);
+      this->registration_.connection_lost(account, millis());
+#ifdef USE_ESPHOME_VOIP_MWI
+      this->mwi_.connection_lost(account, millis());
+#endif
+      if (this->refer_dialog_ && this->refer_dialog_->active_account_ == account &&
+          !this->refer_dialog_->call_id_.empty() &&
+          (this->refer_dialog_->dialog_account_socket_ < 0 ||
+           this->refer_dialog_->dialog_account_socket_ == lost_socket)) {
+        ReferScope scope(*this);
+        if (this->close_tcp_dialog_()) {
+          SipSignal signal;
+          signal.type = SipSignalType::PROTOCOL_ERROR;
+          signal.status_code = 503;
+          this->emit_sip_signal_(std::move(signal));
+        }
+      }
+      this->pump_refer_();
+      if (this->active_account_ == account && !this->call_id_.empty() &&
+          (this->dialog_account_socket_ < 0 || this->dialog_account_socket_ == lost_socket))
+        dialog_lost = this->close_tcp_dialog_();
+    }
+    if (dialog_lost) this->emit_connection_change_(false);
+    return;
+  }
+  if (flow == &this->tcp_flow_ && this->active_account_ >= 0 &&
+      this->dialog_account_socket_ != flow->socket.load(std::memory_order_acquire)) {
+    // An unrelated inbound TCP peer must never end an account-owned dialog.
+    this->close_tcp_flow_(*flow);
+    return;
+  }
+#endif
   bool dialog_lost = false;
   {
     LockGuard lock(this->dialog_mutex_);
@@ -647,6 +702,13 @@ void SipTransport::handle_tcp_peer_loss_(SipTcpFlow *flow) {
 
 SipTransport::SipTcpFlow *SipTransport::tcp_flow_for_socket_(int socket) {
   if (socket < 0) return nullptr;
+#ifdef USE_ESPHOME_VOIP_MWI
+  if (this->inbound_control_flow_.socket.load(std::memory_order_acquire) == socket) return &this->inbound_control_flow_;
+#endif
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  for (auto &flow : this->registration_flows_)
+    if (flow.socket.load(std::memory_order_acquire) == socket) return &flow;
+#endif
   if (this->tcp_flow_.socket.load(std::memory_order_acquire) == socket) return &this->tcp_flow_;
   if (this->refer_dialog_ && this->refer_dialog_->tcp_flow_.socket.load(std::memory_order_acquire) == socket)
     return &this->refer_dialog_->tcp_flow_;
@@ -772,6 +834,9 @@ void SipTransport::stop() {
   this->transport_stopping_.store(true, std::memory_order_release);
   const bool was_running =
       this->running_.exchange(false, std::memory_order_acq_rel);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->cancel_registration_dns_();
+#endif
 
   // Stop new SIP work first. A strong wait is required here because this
   // method is also the destructor boundary: returning with a worker that can
@@ -903,6 +968,7 @@ bool SipTransport::prepare_media_path_locked_() {
     return false;
   }
   this->reset_rtp_latch_();
+  this->audio_rx_discontinuity_.store(false, std::memory_order_release);
   this->rtp_sequence_.store(static_cast<uint16_t>(esp_random()), std::memory_order_release);
   this->rtp_timestamp_.store(esp_random(), std::memory_order_release);
   this->rtp_ssrc_ = esp_random();
@@ -1115,6 +1181,13 @@ void SipTransport::finish_audio_path_stop_() {
 }
 
 bool SipTransport::originate(const std::string &host, uint16_t port) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->next_account_ >= 0) {
+    if (!this->parse_remote_(host)) return false;
+    this->remote_sip_port_.store(port ? port : 5060, std::memory_order_release);
+    return true;  // The persistent account flow already owns this next hop.
+  }
+#endif
   if (!this->parse_remote_(host)) return false;
   const uint16_t sip_port = port ? port : 5060;
   this->remote_sip_port_.store(sip_port, std::memory_order_release);
@@ -1208,6 +1281,14 @@ void SipTransport::reset_dialog_media_locked_() {
     }
   }
   if (abort_queued_tcp_record) this->wake_sip_task_();
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  {
+    this->active_account_ = -1; this->dialog_digest_ = {}; this->dialog_proxy_digest_ = {};
+    this->dialog_auth_attempts_ = 0; this->dialog_proxy_auth_attempts_ = 0;
+    this->authenticated_invite_body_.clear(); this->invite_authorization_.clear();
+    this->dialog_account_socket_ = -1; this->dialog_route_count_ = 0;
+  }
+#endif
   reset_string(this->call_id_);
   reset_string(this->local_tag_);
   reset_string(this->remote_tag_);
@@ -1582,6 +1663,17 @@ bool SipTransport::send_sip_tcp_bytes_(const char *data, size_t size) {
   // from two callers can never interleave into an invalid SIP message.
   LockGuard send_lock(this->tcp_send_mutex_);
   if (size == 0) return false;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->dispatch_socket_ >= 0 &&
+      ((size >= 8 && std::memcmp(data, "SIP/2.0 ", 8) == 0) ||
+       (size >= 4 && std::memcmp(data, "ACK ", 4) == 0)))
+    return this->send_sip_tcp_record_(data, size, this->dispatch_socket_);
+  if (this->active_account_ >= 0) {
+    const int socket = this->dialog_account_socket_ >= 0 ? this->dialog_account_socket_ :
+        this->registration_flows_[this->active_account_].socket.load(std::memory_order_acquire);
+    return this->send_sip_tcp_record_(data, size, socket);
+  }
+#endif
   const bool replacing_session =
       this->tcp_flow_.close_requested.load(std::memory_order_acquire) ||
       this->tcp_flow_.connect_requested.load(std::memory_order_acquire);
@@ -1822,6 +1914,7 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
   uint8_t old_tx_pt = 0;
   uint8_t old_rx_pt = 0;
   const bool old_directional_audio = this->remote_directional_audio_v1_;
+  const uint8_t old_audio_direction = this->get_audio_direction_();
   RtpAudioPayloads old_rx_payloads;
   this->get_media_config_(&old_tx, &old_rx, &old_tx_pt, &old_rx_pt, &old_rx_payloads);
   const uint32_t old_audio_ip =
@@ -1842,13 +1935,14 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
 
   ScopedMediaProposal proposal_scope(this->media_proposal_epoch_);
   const bool parsed =
-      this->learn_remote_rtp_from_sdp_(sdp, default_ip, true);
+      this->learn_remote_rtp_from_sdp_(sdp, default_ip, true, true);
   AudioFormat new_tx;
   AudioFormat new_rx;
   uint8_t new_tx_pt = 0;
   uint8_t new_rx_pt = 0;
   RtpAudioPayloads new_rx_payloads;
   this->get_media_config_(&new_tx, &new_rx, &new_tx_pt, &new_rx_pt, &new_rx_payloads);
+  const uint8_t new_audio_direction = this->get_audio_direction_();
   const uint32_t new_audio_ip =
       this->remote_rtp_ip_v4_.load(std::memory_order_acquire);
   const uint16_t new_audio_port =
@@ -1864,6 +1958,7 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
       this->negotiated_video_capability_;
 
   this->set_media_config_(old_tx, old_rx, old_tx_pt, old_rx_pt, &old_rx_payloads);
+  this->set_audio_direction_(old_audio_direction);
   this->remote_directional_audio_v1_ = old_directional_audio;
   this->remote_rtp_ip_v4_.store(old_audio_ip, std::memory_order_release);
   this->remote_rtp_port_.store(old_audio_port, std::memory_order_release);
@@ -1880,7 +1975,8 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
   proposal_scope.finish();
 
   const bool same_audio =
-      parsed && new_tx == old_tx && new_rx == old_rx &&
+      parsed && new_audio_direction == old_audio_direction &&
+      new_tx == old_tx && new_rx == old_rx &&
       new_tx_pt == old_tx_pt && new_rx_pt == old_rx_pt &&
       new_rx_payloads == old_rx_payloads &&
       new_audio_ip == old_audio_ip && new_audio_port == old_audio_port;
@@ -1983,7 +2079,14 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
   }
   // A fresh INVITE must never inherit tags or transaction state from a
   // cancelled dialog whose final response was lost.
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  const int prepared_account = this->refer_context_active_ ? this->active_account_ : this->next_account_;
+#endif
   this->reset_dialog_();
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->active_account_ = prepared_account;
+  if (!this->refer_context_active_) this->next_account_ = -1;
+#endif
   this->call_id_ = call_id;
   this->sdp_session_id_ = esp_random();
   if (this->sdp_session_id_ == 0) this->sdp_session_id_ = 1;
@@ -2020,6 +2123,18 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
   this->local_contact_uri_ = sip_name_addr(local_identity_uri);
   this->remote_uri_ = sip_name_addr(remote_identity_uri, this->destination_.name);
   this->remote_target_uri_ = strip_angle_uri(this->remote_uri_);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->active_account_ >= 0) {
+    const auto &account = this->registration_.account(this->active_account_);
+    this->local_uri_ = sip_name_addr("sip:" + account.config.username + "@" + account.config.domain, this->caller_.name);
+    this->local_contact_uri_ = sip_name_addr(account.contact);
+    const std::string account_target = this->refer_context_active_ && this->refer_dialog_
+        ? this->refer_dialog_->target_uri
+        : "sip:" + sip_uri_user_encode(dest_route) + "@" + account.config.domain;
+    this->remote_uri_ = sip_name_addr(account_target, dest_name);
+    this->remote_target_uri_ = strip_angle_uri(this->remote_uri_);
+  }
+#endif
   ESP_LOGI(TAG, "SIP INVITE call_id=%s from=%s to=%s", this->call_id_.c_str(),
            this->caller_.name.c_str(), this->destination_.name.c_str());
   std::string sdp;
@@ -2036,6 +2151,9 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
 #endif
   SipRequestOptions options;
   options.cseq_number = this->invite_cseq_;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->active_account_ >= 0) this->authenticated_invite_body_ = sdp;
+#endif
   const bool sent = this->send_request_("INVITE", sdp, options);
   if (sent) {
     this->outgoing_invite_pending_.store(true, std::memory_order_release);
@@ -2067,6 +2185,10 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
   const uint32_t timestamp_samples = tx_format.codec == AudioCodec::OPUS
       ? static_cast<uint32_t>((48000ULL * tx_format.frame_ms) / 1000U)
       : pcm_samples;
+  if ((this->get_audio_direction_() & 1U) == 0) {
+    this->rtp_timestamp_.fetch_add(timestamp_samples, std::memory_order_acq_rel);
+    return;
+  }
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   if (tx_format.codec == AudioCodec::OPUS) {
     bytes = this->opus_codec_.encode(pcm, bytes, tx_format, packet + 12,
@@ -2095,6 +2217,10 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
   if (ip == 0 || port == 0) return;
   if (this->media_proposal_epoch_.load(std::memory_order_acquire) !=
       proposal_epoch) {
+    this->rtp_timestamp_.fetch_add(timestamp_samples, std::memory_order_acq_rel);
+    return;
+  }
+  if ((this->get_audio_direction_() & 1U) == 0) {
     this->rtp_timestamp_.fetch_add(timestamp_samples, std::memory_order_acq_rel);
     return;
   }
@@ -2584,7 +2710,13 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
     ESP_LOGW(TAG, "SIP INVITE rejected: missing or invalid transaction headers");
     return this->send_stateless_response_(message, src, 400, "Bad Request");
   }
-  if (this->replay_completed_response_(message, src, "INVITE", !this->remote_sip_tcp_.load(std::memory_order_acquire))) {
+    if (this->replay_completed_response_(message, src, "INVITE",
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+                                        this->dispatch_socket_ < 0
+#else
+                                        !this->remote_sip_tcp_.load(std::memory_order_acquire)
+#endif
+                                        )) {
     return true;
   }
   const std::string incoming_from_tag = tag_from_header(incoming_from);
@@ -2654,6 +2786,15 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
     return this->send_stateless_response_(message, src, 481,
                                           "Call/Transaction Does Not Exist");
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  int incoming_account = -1;
+  if (!matching_dialog && this->call_id_.empty()) {
+    incoming_account = this->registration_.match_incoming(sip_user_from_header(sip_request_uri(message)), src_ip,
+        this->dispatch_socket_ >= 0, this->registration_socket_index_(this->dispatch_socket_));
+    if (!this->accept_direct_calls_ && incoming_account < 0)
+      return this->send_stateless_response_(message, src, 403, "Forbidden");
+  }
+#endif
   const bool in_dialog_invite = matching_dialog;
   if (in_dialog_invite &&
       incoming_cseq_number == this->last_invite_cseq_number_ &&
@@ -2701,6 +2842,11 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   this->logical_call_id_.clear();
   this->logical_wire_id_.clear();
   this->call_id_ = incoming_call_id;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->active_account_ = incoming_account;
+  this->dialog_account_socket_ = incoming_account >= 0 ? this->dispatch_socket_ : -1;
+  if (incoming_account >= 0) this->remember_registration_routes_(message, false);
+#endif
   this->sdp_session_id_ = esp_random();
   if (this->sdp_session_id_ == 0) this->sdp_session_id_ = 1;
   this->sdp_session_version_ = 0;
@@ -2738,6 +2884,10 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   this->local_contact_uri_ =
       "<sip:" + local_contact_user + "@" + local_contact_ip + ":" +
       std::to_string(this->sip_port_) + ";transport=" + contact_transport + ">";
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->active_account_ >= 0)
+    this->local_contact_uri_ = sip_name_addr(this->registration_.account(this->active_account_).contact);
+#endif
   bool media_compatible = false;
   {
     LockGuard media_lock(this->media_lifecycle_mutex_);
@@ -2887,6 +3037,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   uint8_t old_tx_pt = 0;
   uint8_t old_rx_pt = 0;
   const bool old_directional_audio = this->remote_directional_audio_v1_;
+  const uint8_t old_audio_direction = this->get_audio_direction_();
   RtpAudioPayloads old_rx_payloads;
   this->get_media_config_(&old_tx, &old_rx, &old_tx_pt, &old_rx_pt, &old_rx_payloads);
   const uint32_t old_audio_ip =
@@ -2923,6 +3074,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
 
   const auto restore_old_media = [&]() {
     this->set_media_config_(old_tx, old_rx, old_tx_pt, old_rx_pt, &old_rx_payloads);
+    this->set_audio_direction_(old_audio_direction);
   this->remote_directional_audio_v1_ = old_directional_audio;
     this->remote_rtp_ip_v4_.store(old_audio_ip, std::memory_order_release);
     this->remote_rtp_port_.store(old_audio_port, std::memory_order_release);
@@ -2953,7 +3105,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   };
 
   ScopedMediaProposal proposal_scope(this->media_proposal_epoch_);
-  if (!this->learn_remote_rtp_from_sdp_(message_body(message), src_ip)) {
+  if (!this->learn_remote_rtp_from_sdp_(message_body(message), src_ip, false, true)) {
     restore_old_media();
     return this->send_stateless_response_(
         message, src, 488, "Not Acceptable Here", "media_incompatible",
@@ -2984,6 +3136,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   uint8_t new_rx_pt = 0;
   RtpAudioPayloads new_rx_payloads;
   this->get_media_config_(&new_tx, &new_rx, &new_tx_pt, &new_rx_pt, &new_rx_payloads);
+  const uint8_t new_audio_direction = this->get_audio_direction_();
   const uint32_t new_audio_ip =
       this->remote_rtp_ip_v4_.load(std::memory_order_acquire);
   const uint16_t new_audio_port =
@@ -3176,7 +3329,11 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   }
 #endif
 
-  this->set_media_config_(new_tx, new_rx, new_tx_pt, new_rx_pt, &new_rx_payloads);
+  // Admission proved the prepared codec/PT contract is unchanged. Commit only
+  // direction, leaving the existing buffers, converters and descriptors intact.
+  if ((new_audio_direction & 2U) != 0 && (old_audio_direction & 2U) == 0)
+    this->audio_rx_discontinuity_.store(true, std::memory_order_release);
+  this->set_audio_direction_(new_audio_direction);
   this->remote_rtp_ip_v4_.store(new_audio_ip, std::memory_order_release);
   this->remote_rtp_port_.store(new_audio_port, std::memory_order_release);
   this->reset_rtp_latch_();
@@ -3509,7 +3666,11 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   if (this->replay_completed_video_direction_ack_(message, src)) return true;
 #endif
+  #ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->replay_completed_invite_ack_(message, src, this->dispatch_socket_ < 0)) return true;
+#else
   if (this->replay_completed_invite_ack_(message, src, !this->remote_sip_tcp_.load(std::memory_order_acquire))) return true;
+#endif
   if (cseq_method(header_value(message, "CSeq")) == "NOTIFY" && this->refer_dialog_) {
     for (auto *transaction : {&this->refer_dialog_->pending_notify_, &this->refer_dialog_->pending_notify_final_}) {
       if (!transaction->empty() &&
@@ -3637,7 +3798,15 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
     this->emit_sip_signal_(std::move(signal));
     return true;
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if ((method == "INVITE" || method == "BYE" || method == "UPDATE") && (status == 401 || status == 407) &&
+      this->active_account_ >= 0 && this->retry_authenticated_request_(message, method, status)) return true;
+#endif
   if (status >= 200 && status < 300) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    this->dialog_auth_attempts_ = 0; this->dialog_proxy_auth_attempts_ = 0;
+    if (method == "INVITE" && this->active_account_ >= 0) this->remember_registration_routes_(message, true);
+#endif
     if (method == "BYE") {
       const std::string completed_call_id = this->call_id_;
       ESP_LOGI(TAG, "SIP BYE completed call_id=%s", completed_call_id.c_str());
@@ -3792,6 +3961,9 @@ void SipTransport::handle_sip_datagram_unlocked_(const char *data, size_t len, c
     }
     return;
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->registration_ingress_(msg, src, this->dispatch_socket_)) return;
+#endif
   if (!this->refer_context_active_ && this->refer_dialog_ && header_value(msg, "Call-ID") == this->refer_wire_id_) {
     {
       ReferScope scope(*this);
@@ -3809,7 +3981,13 @@ void SipTransport::handle_sip_datagram_unlocked_(const char *data, size_t len, c
   const std::string method = first_space == std::string::npos ? "" : msg.substr(0, first_space);
   ESP_LOGI(TAG, "SIP RX method=%s len=%u", method.c_str(), (unsigned) len);
   if ((method == "CANCEL" || method == "BYE" || method == "REFER") &&
-      this->replay_completed_response_(msg, src, method, !this->remote_sip_tcp_.load(std::memory_order_acquire))) {
+      this->replay_completed_response_(msg, src, method,
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+                                         this->dispatch_socket_ < 0
+#else
+                                         !this->remote_sip_tcp_.load(std::memory_order_acquire)
+#endif
+                                         )) {
     return;
   }
   const SipEvent event = sip_event_from_method_(method);
@@ -3819,6 +3997,9 @@ void SipTransport::handle_sip_datagram_unlocked_(const char *data, size_t len, c
   } else if (method == "REFER") {
     this->handle_refer_(msg, src);
   } else if (method == "INVITE") {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    if (this->call_id_.empty()) this->remote_sip_tcp_.store(this->dispatch_socket_ >= 0, std::memory_order_release);
+#endif
     this->handle_invite_(msg, src);
   } else if (method == "ACK") {
     const std::string request_call_id = header_value(msg, "Call-ID");
@@ -4042,11 +4223,41 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
     }
     const std::string msg = flow->rx_buffer.substr(0, total);
     flow->rx_buffer.erase(0, total);
+#ifdef USE_ESPHOME_VOIP_MWI
+    if (flow == &this->inbound_control_flow_ && msg.rfind("INVITE ", 0) == 0) {
+      LockGuard lock(this->dialog_mutex_);
+      if (this->call_id_.empty()) {
+        this->dispatch_socket_ = socket;
+        this->send_stateless_response_(msg, src, 503, "Service Unavailable", "retry_new_connection", false, 1);
+        this->dispatch_socket_ = -1;
+        this->close_tcp_flow_(this->inbound_control_flow_); return;
+      }
+    }
+#endif
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    this->dispatch_socket_ = socket;
+#endif
     this->handle_sip_datagram_(msg.data(), msg.size(), src);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    this->dispatch_socket_ = -1;
+#endif
+#ifdef USE_ESPHOME_VOIP_MWI
+    // This is the already-budgeted transient third client slot. Release it
+    // after complete control records so another PBX can notify during calls.
+    if (flow == &this->inbound_control_flow_ && flow->rx_buffer.empty()) {
+      this->close_tcp_flow_(*flow); this->inbound_control_deadline_ = 0; return;
+    }
+#endif
   }
 }
 
 void SipTransport::handle_sip_udp_datagram_(char *buf, int n, const sockaddr_in &src) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  {
+    LockGuard lock(this->dialog_mutex_);
+    if (this->registration_ingress_(std::string(buf, n), src, -1)) return;
+  }
+#endif
   // Retired transactions retain their own transport after a mixed handoff.
   // Replay before the active-dialog gate, without retargeting that dialog.
   {
@@ -4070,10 +4281,16 @@ void SipTransport::handle_sip_udp_datagram_(char *buf, int n, const sockaddr_in 
         this->pending_video_direction_invite_.pending();
 #endif
   }
-  const bool tcp_session_active =
+  bool tcp_session_active =
       tcp_call_active && this->remote_sip_tcp_.load(std::memory_order_acquire) &&
       (this->tcp_flow_.socket.load(std::memory_order_acquire) >= 0 || this->tcp_flow_.connecting_socket >= 0 ||
        this->tcp_flow_.connect_requested.load(std::memory_order_acquire));
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  tcp_session_active = tcp_session_active ||
+      (tcp_call_active && this->remote_sip_tcp_.load(std::memory_order_acquire) && this->active_account_ >= 0 &&
+       (this->dialog_account_socket_ >= 0 ||
+        this->registration_flows_[this->active_account_].socket.load(std::memory_order_acquire) >= 0));
+#endif
   bool refer_udp = false;
   {
     LockGuard lock(this->dialog_mutex_);
@@ -4081,6 +4298,11 @@ void SipTransport::handle_sip_udp_datagram_(char *buf, int n, const sockaddr_in 
         header_value(std::string(buf, static_cast<size_t>(n)), "Call-ID") == this->refer_wire_id_;
   }
   if (tcp_session_active && !refer_udp) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    LockGuard lock(this->dialog_mutex_);
+    const std::string message(buf, n);
+    if (message.rfind("INVITE ", 0) == 0) this->send_stateless_response_(message, src, 486, "Busy Here");
+#endif
     ESP_LOGD(TAG, "SIP UDP datagram ignored while TCP signaling is active");
     return;
   }
@@ -4109,6 +4331,15 @@ void SipTransport::sip_task_() {
   char *const buf = this->sip_rx_scratch_.data();
   while (this->running_.load(std::memory_order_acquire)) {
     this->pump_udp_retransmits_();
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    {
+      LockGuard lock(this->dialog_mutex_); this->pump_registration_dns_(); this->registration_.tick(millis());
+#ifdef USE_ESPHOME_VOIP_MWI
+      this->pump_registration_mwi_(millis());
+#endif
+    }
+    for (auto &flow : this->registration_flows_) this->prepare_tcp_flow_(flow);
+#endif
     this->prepare_tcp_flow_(this->tcp_flow_);
     if (this->refer_dialog_) this->prepare_tcp_flow_(this->refer_dialog_->tcp_flow_);
     fd_set readfds;
@@ -4128,7 +4359,13 @@ void SipTransport::sip_task_() {
       FD_SET(this->sip_tcp_listener_socket_, &readfds);
       max_fd = std::max(max_fd, this->sip_tcp_listener_socket_);
     }
-    for (auto *flow : {&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}) {
+        for (auto *flow :
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+         this->signaling_flows_()
+#else
+         std::array<SipTcpFlow *, 2>{&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}
+#endif
+         ) {
       if (flow == nullptr) continue;
       const int socket = flow->socket.load(std::memory_order_acquire);
       if (socket >= 0) { FD_SET(socket, &readfds); max_fd = std::max(max_fd, socket); }
@@ -4141,11 +4378,21 @@ void SipTransport::sip_task_() {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
       continue;
     }
+#ifdef USE_ESPHOME_VOIP_MWI
+    const int inbound_control = this->inbound_control_flow_.socket.load(std::memory_order_acquire);
+    if (inbound_control >= 0) { FD_SET(inbound_control, &readfds); max_fd = std::max(max_fd, inbound_control); }
+#endif
     struct timeval timeout{};
     struct timeval *timeout_ptr = nullptr;
     uint32_t timeout_ms = 0;
     bool have_timeout = false;
-    for (auto *flow : {&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}) {
+        for (auto *flow :
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+         this->signaling_flows_()
+#else
+         std::array<SipTcpFlow *, 2>{&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}
+#endif
+         ) {
       if (flow == nullptr || flow->connecting_socket < 0) continue;
       const uint32_t now = millis();
       const uint32_t remaining = time_reached(now, flow->connect_deadline) ? 0 : flow->connect_deadline - now;
@@ -4241,13 +4488,45 @@ void SipTransport::sip_task_() {
       }
     }
 #endif
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    {
+      LockGuard lock(this->dialog_mutex_); uint32_t registration_timeout = 0;
+      if (this->registration_.next_deadline(millis(), &registration_timeout) &&
+          (!have_timeout || registration_timeout < timeout_ms)) {
+        timeout_ms = registration_timeout; have_timeout = true; timeout_ptr = &timeout;
+      }
+#ifdef USE_ESPHOME_VOIP_MWI
+      if (this->mwi_.next_deadline(millis(), &registration_timeout) &&
+          (!have_timeout || registration_timeout < timeout_ms)) {
+        timeout_ms = registration_timeout; have_timeout = true; timeout_ptr = &timeout;
+      }
+      if (this->inbound_control_flow_.socket.load(std::memory_order_acquire) >= 0) {
+        const uint32_t now = millis();
+        const uint32_t remaining = time_reached(now, this->inbound_control_deadline_) ? 0 : this->inbound_control_deadline_ - now;
+        if (!have_timeout || remaining < timeout_ms) {
+          timeout_ms = remaining; have_timeout = true; timeout_ptr = &timeout;
+        }
+      }
+#endif
+    }
+#endif
     if (timeout_ptr != nullptr) {
       timeout.tv_sec = timeout_ms / 1000;
       timeout.tv_usec = (timeout_ms % 1000) * 1000;
     }
     const int ready = ::select(max_fd + 1, &readfds, &writefds, nullptr, timeout_ptr);
+#ifdef USE_ESPHOME_VOIP_MWI
+    if (this->inbound_control_flow_.socket.load(std::memory_order_acquire) >= 0 &&
+        time_reached(millis(), this->inbound_control_deadline_)) this->handle_tcp_peer_loss_(&this->inbound_control_flow_);
+#endif
     bool connect_expired = false;
-    for (auto *flow : {&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}) {
+        for (auto *flow :
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+         this->signaling_flows_()
+#else
+         std::array<SipTcpFlow *, 2>{&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}
+#endif
+         ) {
       if (flow != nullptr && flow->connecting_socket >= 0 && time_reached(millis(), flow->connect_deadline)) {
         this->fail_tcp_flow_(*flow, ETIMEDOUT);
         connect_expired = true;
@@ -4267,7 +4546,13 @@ void SipTransport::sip_task_() {
       if (!this->running_.load(std::memory_order_acquire)) continue;
     }
 
-    for (auto *flow : {&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}) {
+        for (auto *flow :
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+         this->signaling_flows_()
+#else
+         std::array<SipTcpFlow *, 2>{&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}
+#endif
+         ) {
       if (flow == nullptr || flow->connecting_socket < 0 || !FD_ISSET(flow->connecting_socket, &writefds)) continue;
       int error = 0;
       socklen_t len = sizeof(error);
@@ -4314,6 +4599,9 @@ void SipTransport::sip_task_() {
         if (replaces_owned_transport ||
             (this->dialog_active_() && active_client >= 0 &&
              active_ip_v4 != 0 && active_ip_v4 != accepted_ip_v4)) {
+#ifdef USE_ESPHOME_VOIP_MWI
+          if (this->park_inbound_control_(client, src)) continue;
+#endif
           char ip[16];
           inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
           ESP_LOGW(TAG,
@@ -4350,8 +4638,22 @@ void SipTransport::sip_task_() {
 
     // A commit can exchange the two owners while dispatching a record. Resolve
     // each saved descriptor again instead of retaining a pointer across dispatch.
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    std::array<int, 2 + SipRegistration::CAPACITY> sockets{};
+    auto flows = this->signaling_flows_();
+    for (size_t i = 0; i < sockets.size(); ++i) sockets[i] = flows[i] == nullptr ? -1 : flows[i]->socket.load(std::memory_order_acquire);
+#else
     const int sockets[] = {this->tcp_flow_.socket.load(std::memory_order_acquire),
         this->refer_dialog_ ? this->refer_dialog_->tcp_flow_.socket.load(std::memory_order_acquire) : -1};
+#endif
+#ifdef USE_ESPHOME_VOIP_MWI
+    const int control_socket = this->inbound_control_flow_.socket.load(std::memory_order_acquire);
+    if (control_socket >= 0 && FD_ISSET(control_socket, &readfds)) {
+      sockaddr_in source{}; socklen_t length = sizeof(source);
+      if (getpeername(control_socket, reinterpret_cast<sockaddr *>(&source), &length) == 0)
+        this->handle_sip_stream_(control_socket, source);
+    }
+#endif
     for (int socket : sockets) {
       if (socket < 0 || !FD_ISSET(socket, &readfds) || this->tcp_flow_for_socket_(socket) == nullptr) continue;
       struct sockaddr_in src{};
@@ -4360,6 +4662,12 @@ void SipTransport::sip_task_() {
         this->handle_sip_stream_(socket, src);
     }
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  for (auto &flow : this->registration_flows_) this->close_tcp_flow_(flow);
+#endif
+#ifdef USE_ESPHOME_VOIP_MWI
+  this->close_tcp_flow_(this->inbound_control_flow_);
+#endif
   this->close_tcp_client_from_sip_task_();
   if (this->refer_dialog_) this->close_tcp_flow_(this->refer_dialog_->tcp_flow_);
   if (this->sip_task_done_ != nullptr) {
@@ -4492,6 +4800,8 @@ void SipTransport::rtp_task_() {
         this->latched_rtp_port_.store(src_port, std::memory_order_release);
         this->remote_rtp_port_.store(src_port, std::memory_order_release);
       }
+      if ((this->get_audio_direction_() & 2U) == 0) continue;
+      source_changed |= this->audio_rx_discontinuity_.exchange(false, std::memory_order_acq_rel);
       this->rtp_rx_packets_.fetch_add(1, std::memory_order_acq_rel);
       this->rtp_rx_bytes_.fetch_add(static_cast<uint32_t>(n), std::memory_order_acq_rel);
       this->emit_audio_frame_(audio_data, audio_bytes, sequence, timestamp,

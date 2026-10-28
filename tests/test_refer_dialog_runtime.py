@@ -1,6 +1,7 @@
 """Exercise production REFER ownership and notifications without an ESP scheduler."""
 from pathlib import Path
 import subprocess
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'esphome/components/voip_stack'
@@ -26,6 +27,9 @@ def refer_fixture_source():
         'UdpTransaction', 'CompletedServerTransaction', 'CompletedInviteClientTransaction', 'SipIdentity', 'RemoteMediaShape', 'SipTcpFlow'))
     context = block(header, 'struct ReferDialog {')
     fields = context[context.index('{') + 1:-1]
+    # Registration fixtures inject these owner fields from SipTransport itself.
+    # Keep them in the nested ReferDialog, not twice in the host transport.
+    fields = re.sub(r"#ifdef USE_ESPHOME_VOIP_REGISTRATION.*?#endif\n", "", fields, flags=re.S)
     fields = fields.replace('bool remote_sip_tcp_{false};', 'std::atomic<bool> remote_sip_tcp_{false};')
     fields = fields.replace('bool outgoing_invite_pending_{false}, cancel_requested_{false};',
                             'std::atomic<bool> outgoing_invite_pending_{false}, cancel_requested_{false};')
@@ -76,7 +80,7 @@ struct SipPhoneTransport {
  void emit_sip_signal_(SipSignal s){delivered.push_back(std::move(s));}
 };
 struct SipTransport: SipPhoneTransport {
-''' + context + ';\n' + block(header, 'struct CompletedRefer {') + ';\n' + block(header, 'class ReferScope {') + ';\n' + fields + r'''
+''' + block(header, 'uint8_t get_audio_direction_(') + '\n' + block(header, 'void set_audio_direction_(') + '\n' + context + ';\n' + block(header, 'struct CompletedRefer {') + ';\n' + block(header, 'class ReferScope {') + ';\n' + fields + r'''
  struct ReferDeleter {template<class T>void operator()(T*p)const{if(p){p->~T();RAMAllocator<T>().deallocate(p,1);}}};
  std::array<std::unique_ptr<CompletedRefer,ReferDeleter>,4> completed_refers_;
  struct SipRequestOptions {
@@ -90,6 +94,8 @@ struct SipTransport: SipPhoneTransport {
  uint32_t refer_cseq_=0,refer_expires_=0;
  std::string logical_call_id_,logical_wire_id_,refer_wire_id_;
  std::atomic<bool> media_active_{true};
+ std::atomic<uint8_t> audio_direction_state_{15};
+ std::atomic<bool> audio_rx_discontinuity_{false},audio_receive_enabled_{true};
  std::atomic<bool> refer_media_waiting_{false};
  struct Mutex{};struct LockGuard{explicit LockGuard(Mutex&) {}};
  Mutex tcp_send_mutex_,tcp_tx_pending_mutex_;
@@ -131,7 +137,8 @@ struct SipTransport: SipPhoneTransport {
  void get_media_config_(AudioFormat*t,AudioFormat*r,uint8_t*tp,uint8_t*rp,RtpAudioPayloads*p=nullptr){
   if(t)*t=selected_tx_format_;if(r)*r=selected_rx_format_;if(tp)*tp=rtp_tx_payload_type_;if(rp)*rp=rtp_rx_payload_type_;if(p)*p=negotiated_rx_payloads_;}
  void set_media_config_(const AudioFormat&t,const AudioFormat&r,uint8_t tp,uint8_t rp,const RtpAudioPayloads*p){
-  selected_tx_format_=t;selected_rx_format_=r;rtp_tx_payload_type_=tp;rtp_rx_payload_type_=rp;negotiated_rx_payloads_=*p;}
+  selected_tx_format_=t;selected_rx_format_=r;rtp_tx_payload_type_=tp;rtp_rx_payload_type_=rp;negotiated_rx_payloads_=*p;
+  const uint8_t prepared=(t.is_valid()?1:0)|(r.is_valid()?2:0);audio_direction_state_=prepared|(prepared<<2);audio_receive_enabled_=r.is_valid();}
 };
 ''' + block((SOURCE/'sip_transport.cpp').read_text(), 'bool SipTransport::reject_if_stale_dialog_(') + '\n' + block((SOURCE/'sip_request_response.cpp').read_text(), 'bool SipTransport::send_request_(const std::string &method, const std::string &body,') + '\n' + production
     return code

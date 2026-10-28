@@ -51,12 +51,15 @@ struct SipTransport {
  void local_ip_for_peer_(uint32_t,std::string *out) const {*out="192.0.2.1";}
  void capture_remote_media_shape_(const std::string&);
  std::string rejected_media_answer_(const std::string&) const;
- void get_media_config_(AudioFormat*a,AudioFormat*b,uint8_t*c,uint8_t*d,RtpAudioPayloads*e)const{*a=tx;*b=rx;*c=tx_pt;*d=rx_pt;*e=accepted;}
- void set_media_config_(const AudioFormat&a,const AudioFormat&b,uint8_t c,uint8_t d,const RtpAudioPayloads*e){tx=a;rx=b;tx_pt=c;rx_pt=d;accepted=*e;}
+ std::atomic<uint8_t> audio_direction_state_{15};std::atomic<bool>audio_receive_enabled_{true};
+ void get_media_config_(AudioFormat*a,AudioFormat*b,uint8_t*c,uint8_t*d,RtpAudioPayloads*e)const{if(a)*a=tx;if(b)*b=rx;if(c)*c=tx_pt;if(d)*d=rx_pt;if(e)*e=accepted;}
+ uint8_t get_audio_direction_() const{return audio_direction_state_.load()&3;}
+ void set_audio_direction_(uint8_t d){auto p=audio_direction_state_.load()>>2;audio_direction_state_=(p<<2)|(d&p);}
+ void set_media_config_(const AudioFormat&a,const AudioFormat&b,uint8_t c,uint8_t d,const RtpAudioPayloads*e){tx=a;rx=b;tx_pt=c;rx_pt=d;accepted=*e;uint8_t p=(a.is_valid()?1:0)|(b.is_valid()?2:0);audio_direction_state_=p|(p<<2);}
  std::string wrap_sdp_envelope_(const std::string&,const std::string&,const std::string&,const std::string&,uint8_t,const char * = "sendrecv") const;
  std::string build_sdp_offer_();
  std::string build_sdp_answer_() const;
- bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false);
+ bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false,bool=false);
 };
 '''
     for signature in ["std::string SipTransport::wrap_sdp_envelope_(",
@@ -81,21 +84,21 @@ int main(){
  SipTransport s;s.offer_tx_formats_.count=1;s.offer_tx_formats_.formats[0]=fmt(16000);
  s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[0]=fmt(48000);s.offer_rx_formats_.formats[1]=fmt(16000);
  auto offer=s.build_sdp_offer_();assert(offer.find("x-voip-stack")==std::string::npos);
- assert(offer.find("L16/48000/1")!=std::string::npos);
+ assert(offer.find("L16/48000/1")==std::string::npos);
  const std::string base="v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 126 118\r\na=ptime:10\r\n";
  // Deliberately reverse rtpmap order relative to the m-line.
  const std::string maps="a=rtpmap:118 L16/16000/1\r\na=rtpmap:126 L16/48000/1\r\n";
  assert(s.learn_remote_rtp_from_sdp_(base+maps,0));
- assert(s.tx.sample_rate==16000&&s.rx.sample_rate==48000);
+ assert(s.tx.sample_rate==16000&&s.rx.sample_rate==16000);
  AudioFormat f;assert(s.accepted.find(118,&f)&&f.sample_rate==16000);
- assert(s.accepted.find(126,&f)&&f.sample_rate==48000);assert(!s.accepted.find(99,&f));
+ assert(!s.accepted.find(126,&f));assert(!s.accepted.find(99,&f));
  auto prior=s.accepted;
  assert(!s.learn_remote_rtp_from_sdp_(base+maps+"a=rtpmap:118 L16/48000/1\r\n",0));
  assert(s.accepted==prior);
  // Answerer remaps TX payloads. RX still uses our offered payload numbers.
  assert(s.learn_remote_rtp_from_sdp_(base+maps,0,true));
  assert(s.tx_pt==118&&s.rx_pt==96);
- assert(s.accepted.find(97,&f)&&f.sample_rate==16000);
+ assert(s.accepted.find(96,&f)&&f.sample_rate==16000);
  assert(!s.accepted.find(118,&f));
  assert(!s.learn_remote_rtp_from_sdp_("v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 119\r\na=ptime:10\r\na=rtpmap:119 L16/32000/1\r\n",0,true));
  // Transmit preference follows the m-line despite reversed rtpmap order.
@@ -114,6 +117,8 @@ int main(){
  assert(s.learn_remote_rtp_from_sdp_("v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 96\r\na=ptime:10\r\na=rtpmap:96 L16/16000/1\r\n",0,true));
  assert(!s.learn_remote_rtp_from_sdp_("v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 96\r\na=ptime:10\r\na=rtpmap:96 L16/48000/1\r\n",0,true));
  s.refer_context_active_=false;
+ assert(s.build_sdp_offer_().find("L16/48000/1")==std::string::npos);
+ s.peer_directional_audio_v1_=true;
  assert(s.build_sdp_offer_().find("L16/48000/1")!=std::string::npos);
 }
 '''
@@ -123,3 +128,31 @@ int main(){
     subprocess.run(["g++", "-std=c++17", "-fsanitize=address,undefined", "-I", str(ROOT),
                     str(cpp), "-o", str(binary)], check=True, capture_output=True, text=True)
     subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+
+
+def test_plain_pbx_may_select_any_offered_sendrecv_codec(tmp_path):
+    code = sdp_fixture_source() + r'''
+AudioFormat f(unsigned rate){AudioFormat v;v.sample_rate=rate;v.frame_ms=10;return v;}
+int main(){SipTransport s;s.offer_tx_formats_.count=1;s.offer_tx_formats_.formats[0]=f(16000);
+ s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[0]=f(48000);s.offer_rx_formats_.formats[1]=f(16000);
+ auto offer=s.build_sdp_offer_();assert(offer.find("L16/48000/1")==std::string::npos);
+ assert(offer.find("L16/16000/1")!=std::string::npos);
+ auto answer="v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 96\r\na=rtpmap:96 L16/16000/1\r\na=ptime:10\r\na=sendrecv\r\n";
+ assert(s.learn_remote_rtp_from_sdp_(answer,0,true));assert(s.tx.sample_rate==16000&&s.rx.sample_rate==16000);
+ auto remote="v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 96 97\r\na=rtpmap:96 L16/48000/1\r\na=rtpmap:97 L16/16000/1\r\na=ptime:10\r\na=sendrecv\r\n";
+ assert(s.learn_remote_rtp_from_sdp_(remote,0));auto local=s.build_sdp_answer_();
+ assert(local.find("L16/48000/1")==std::string::npos&&local.find("L16/16000/1")!=std::string::npos);
+ assert(s.offer_rx_formats_.count==2&&s.offer_rx_formats_.formats[0].sample_rate==48000);
+ s.peer_directional_audio_v1_=true;auto directional=s.build_sdp_offer_();
+ assert(directional.find("L16/48000/1")!=std::string::npos&&directional.find("x-voip-stack-flow")!=std::string::npos);
+ s.peer_directional_audio_v1_=false;s.offer_tx_formats_.count=0;
+ assert(s.build_sdp_offer_().find("L16/48000/1")!=std::string::npos);
+}
+'''
+    cpp = tmp_path / "pbx.cpp"
+    cpp.write_text(code)
+    binary = tmp_path / "pbx"
+    build = subprocess.run(["g++", "-std=c++17", "-fsanitize=address,undefined", "-I", str(ROOT), str(cpp), "-o", str(binary)], capture_output=True, text=True)
+    assert build.returncode == 0, build.stderr
+    result = subprocess.run([binary], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

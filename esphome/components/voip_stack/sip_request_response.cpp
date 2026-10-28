@@ -59,6 +59,29 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
       port = target_port;
     }
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  std::string routes;
+  if (this->active_account_ >= 0) {
+    const auto &account = this->registration_.account(this->active_account_);
+    // Initial requests use the configured PBX. Once confirmed, RFC 3261
+    // section 12.2.1.1 routes through the dialog's Contact/Route set unless
+    // an explicit outbound proxy remains the next hop. REGISTER is not a
+    // permanent override of a confirmed dialog's remote target.
+    if (this->remote_tag_.empty() || method == "CANCEL" || !account.config.proxy.empty()) {
+      ip = account.target_ip;
+      port = account.target_port;
+    }
+    if (this->dialog_route_count_ > 0) {
+      const std::string first = strip_angle_uri(this->dialog_routes_[0]);
+      uint32_t route_ip = 0; uint16_t route_port = 0;
+      if (sip_uri_ipv4_target(first, &route_ip, &route_port)) { ip = route_ip; port = route_port; }
+      const bool loose = first.find(";lr") != std::string::npos;
+      for (size_t i = loose ? 0 : 1; i < this->dialog_route_count_; ++i)
+        routes += "Route: " + this->dialog_routes_[i] + "\r\n";
+      if (!loose) { routes += "Route: <" + request_uri + ">\r\n"; request_uri = first; }
+    }
+  }
+#endif
   const char *transport =
       this->remote_sip_tcp_.load(std::memory_order_acquire) ? "TCP"
                                                             : "UDP";
@@ -101,6 +124,25 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
            sip_header_token(this->destination_.name, VOIP_STACK_MAX_NAME_LEN) +
            "\r\n";
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  msg += routes;
+  if (this->active_account_ >= 0 && (!this->dialog_digest_.empty() || !this->dialog_proxy_digest_.empty())) {
+    std::string authorization;
+    if (method == "ACK" || method == "CANCEL") authorization = this->invite_authorization_;
+    else {
+      for (auto *digest : {&this->dialog_digest_, &this->dialog_proxy_digest_}) {
+        if (digest->empty()) continue;
+        const std::string header = digest->authorization(this->registration_.account(this->active_account_).config,
+            method, request_uri, make_token("auth"), registration_hash_);
+        if (header.empty()) return false;
+        authorization += header;
+      }
+    }
+    if (authorization.empty()) return false;
+    if (method == "INVITE") this->invite_authorization_ = authorization;
+    msg += authorization;
+  }
+#endif
   msg += options.extra_headers;
   if (!body.empty())
     msg += "Content-Type: " + std::string(options.content_type) + "\r\n";
@@ -281,6 +323,9 @@ bool SipTransport::send_stateless_response_(
       retry_after_seconds);
 
   bool response_owned = false;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  cache_transaction = cache_transaction && (this->call_id_.empty() || this->call_id_ == call_id);
+#endif
   if (cache_transaction && status >= 200) {
     this->remember_completed_response_(request, ip, port, method, msg);
     const CompletedServerTransaction &completed =
@@ -288,7 +333,15 @@ bool SipTransport::send_stateless_response_(
                            : this->completed_control_;
     response_owned = completed.udp && completed.response == msg;
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  bool sent;
+  if (this->dispatch_socket_ >= 0) {
+    LockGuard send_lock(this->tcp_send_mutex_);
+    sent = this->send_sip_tcp_record_(msg, this->dispatch_socket_);
+  } else sent = this->send_sip_udp_bytes_(msg.data(), msg.size(), ip, port);
+#else
   const bool sent = this->send_sip_(msg, ip, port);
+#endif
   if (!sent && !response_owned) return false;
   this->mark_sip_event_(SipEvent::RESPONSE, status);
   return true;

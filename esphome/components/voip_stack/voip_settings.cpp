@@ -692,6 +692,11 @@ void VoipStack::call_(const std::string &value, const std::string &call_id) {
     return;
   }
 
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (call_id.empty() && !this->force_direct_call_ && this->default_line_ != "direct") {
+    this->start_call_on_line(target, this->default_line_); return;
+  }
+#endif
   if (call_id.empty() && this->phonebook_.select(target)) {
     this->pending_dialplan_target_.clear();
     this->publish_destination_();

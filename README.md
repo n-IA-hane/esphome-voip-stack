@@ -53,7 +53,7 @@ Two scope decisions shape the component:
 
 **`voip_stack` does not own audio hardware or echo cancellation.** It consumes microphone and speaker interfaces. When software AEC/AFE is needed, [`esp_audio_stack`](https://github.com/n-IA-hane/esphome-audio-stack) owns the audio graph and hands `voip_stack` a clean post-processor microphone. Legacy processing options on `voip_stack` are intentionally gone.
 
-**Devices are peers, not trunk subscribers.** ESP devices call each other and Home Assistant directly by SIP; they never register to a PBX or provider trunk. If an installation has a trunk, Home Assistant terminates it and routes calls to ESP devices as normal SIP phones.
+**Direct SIP remains the default.** ESP devices call each other and Home Assistant without registration. Optional [PBX accounts](docs/SIP_REGISTRATION.md) let the same endpoint register with an external PBX while retaining its direct HA route. Account selection affects future calls; one physical conversation owns the audio devices.
 
 ## What it gives you
 
@@ -136,7 +136,7 @@ Other hardware and PBX combinations still need their own runtime tests.
 | Voice assistant device that is also an intercom | `esp_audio_stack` + `voip_stack` |
 | Paging speaker in a workshop | speaker-only `voip_stack` |
 | Baby monitor / listen-in device | mic-only `voip_stack` |
-| PBX/provider trunk reaching ESP devices | HA terminates the trunk and routes; ESPs stay plain SIP peers |
+| PBX/provider trunk reaching ESP devices | HA can terminate and route the trunk; optional ESP PBX accounts also support direct registration |
 | Offline installation with a fixed dial plan | `static_contacts`, no HA required |
 
 ## Core concepts
@@ -399,7 +399,7 @@ voip_stack:
 
 `name` is required; everything else is optional. Static contacts serve offline installs, diagnostics and direct SIP peers. Normal installs receive the HA-managed roster through the native `set_roster_json` action.
 
-Inbound INVITEs carry caller and destination identity and are not rejected for being unknown. ESP devices never register to an HA or provider trunk; trunk numbers and inbound DTMF routes are mapped by HA to local phonebook targets.
+Inbound INVITEs carry caller and destination identity. Direct profiles accept callers independently of the phonebook; optional PBX-only admission can restrict new incoming calls to configured accounts. HA maps its trunk numbers and inbound DTMF routes to local phonebook targets.
 
 ESP devices can also publish optional HA-managed group membership:
 
@@ -638,7 +638,7 @@ Removed options rejected with migration guidance: `processor_id`, `aec_reference
 
 ## Scope and known boundaries
 
-- No SIP registration or digest authentication. Calls that hit an auth challenge terminate in `AUTH_REQUIRED_UNSUPPORTED`.
+- Optional [SIP registration](docs/SIP_REGISTRATION.md) supports IPv4 UDP/TCP accounts with MD5/SHA-256 Digest. Direct profiles require no registration configuration. Unsupported challenges retain the explicit authentication failure state.
 - SIP over UDP/TCP only; no TLS signaling and no SRTP.
 - RTP media is UDP in both signaling modes and requires UDP reachability.
 - Audio supports PCM and compile-time optional Opus within the supported
@@ -646,9 +646,10 @@ Removed options rejected with migration guidance: `processor_id`, `aec_reference
 - In-dialog re-INVITE, including ordinary hold or codec renegotiation, receives
   `488 Not Acceptable Here`. The established dialog/media remains active and a
   later BYE still terminates the original call.
-- The phonebook is not an inbound allowlist. Any peer with network reachability
-  may send an INVITE, so plaintext SIP/RTP belongs on a trusted LAN/VPN or
-  behind firewall/SBC policy.
+- The phonebook is independent of incoming admission. Direct profiles accept
+  reachable peers; registered-only admission uses the configured account and
+  trusted PBX peer. Plaintext SIP/RTP belongs on a trusted LAN/VPN or behind
+  firewall/SBC policy.
 
 ## Provenance and license
 
@@ -736,8 +737,9 @@ a separate media path.
 The native suite compiles production C++ with host adapters and exercises SIP
 socket paths, transaction cleanup and PCM conversion. It does not run an ESP
 scheduler or prove physical audio quality. Use Python with ESPHome and pytest,
-plus a C++20-capable compiler, `pkg-config` and the native Opus development library
-(`libopus-dev` on Debian/Ubuntu). PCM and mixed-codec tests also require the
+plus a C++20-capable compiler, `pkg-config`, OpenSSL development headers
+(`libssl-dev`) and the native Opus development library (`libopus-dev` on
+Debian/Ubuntu). PCM and mixed-codec tests also require the
 real audio library:
 
 ```sh
@@ -805,8 +807,8 @@ Include:
 - ESPHome version and ESP VoIP Stack tag or commit.
 - Complete relevant VoIP YAML and the microphone/speaker configuration.
 - Calling direction, SIP transport (`udp` or `tcp`), and peer/PBX software and
-  version. If a registrar belongs to the other system, identify it there;
-  the ESP component itself operates without SIP registration.
+  version. If optional registration is enabled, include registrar, proxy and
+  account configuration with credentials removed.
 - Negotiated codec and packet time (`ptime`), if known.
 - Category: signaling, RTP, audio, DTMF, re-INVITE, video, teardown or other.
 - Reproduction steps, expected behavior, actual behavior, boot log, diagnostic
