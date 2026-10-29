@@ -129,6 +129,13 @@ latest queued image. An image already being decoded retains its own slot. The
 main loop alone calls LVGL, and a surface currently referenced by LVGL stays
 immutable until refresh completion permits the next surface swap.
 
+A decoded back surface remains reserved until the main loop consumes it. If
+both RGB surfaces are occupied, the worker waits for the handoff notification;
+incoming JPEGs can still replace the queued compressed image. This guarantees
+presentation progress under sustained input without adding buffers or polling.
+Admission uses a wall-clock budget with one frame of bounded recovery credit,
+so small arrival jitter does not repeatedly halve the requested frame rate.
+
 Session generations reject a decode that finishes after stop, suspension or
 restart. Stopping preserves allocations for the next call. Shutdown retains
 surfaces that a display might still reference until the device resets.
@@ -174,10 +181,24 @@ Word preference. The shared safe-start helper respects video suspension, mute,
 OTA and initialization. A Wake Word change during the call remains authoritative.
 VoIP-only profiles require neither MWW nor Runtime Controller.
 
-320x240 at 2 fps is the initial qualification target. Raising it to 5 fps requires
-measurement with bidirectional audio on the actual board. Host lifecycle tests
-and a successful firmware build do not establish physical frame rate, panel
-correctness or acoustic continuity.
+Frame rate depends on the encoded input as well as the display size. A bounded
+Spotpear 240x240 FULL-profile sweep, with duplex SIP audio and wake-word
+recognition suspended during video, measured these LVGL submission rates:
+
+| JPEG input | Decoded pixels | Requested FPS | Measured submissions/s |
+| --- | --- | --- | --- |
+| 240x240 | 240x240 | 5 | 5.0 |
+| 240x240 | 240x240 | 10 | 9.0 |
+| 240x240 | 240x240 | 15 | 9.6 |
+| 640x480 | 160x120 | 5-15 | 4.0-4.1 |
+
+The Spotpear package therefore defaults to a 5 FPS ceiling. Producing a JPEG
+near the destination size avoids decoding detail that is later discarded.
+These measurements use moving test images and eight-second steady windows;
+scene complexity, sender encoding, Wi-Fi and other active features affect the
+result. They do not establish a universal hardware maximum, simultaneous
+camera/display performance or acoustic quality. Screenshots independently
+verify that the display receives the expected image.
 
 ## Repeatable software pixel check
 

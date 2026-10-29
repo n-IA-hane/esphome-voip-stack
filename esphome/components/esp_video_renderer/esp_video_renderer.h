@@ -98,6 +98,7 @@ protected:
   int queued_input_{-1}, pending_surface_{-1}, front_surface_{-1};
   uint32_t last_admission_ms_{0};
   bool admission_seen_{false};
+  uint16_t admission_credit_{0}; // milli-frames, fits the existing alignment gap
   SemaphoreHandle_t mutex_{nullptr}, stopped_{nullptr};
   StaticSemaphore_t mutex_storage_{}, stopped_storage_{};
   TaskHandle_t worker_handle_{nullptr};

@@ -100,6 +100,7 @@ void EspVideoRenderer::clear_pending_() {
     if (input.state == InputState::QUEUED)
       input.state = InputState::FREE;
   this->admission_seen_ = false;
+  this->admission_credit_ = 0;
 }
 
 bool EspVideoRenderer::prepare(uint8_t max_fps) {
@@ -164,12 +165,24 @@ bool EspVideoRenderer::submit_jpeg(const uint8_t *data, size_t size) {
     return false;
   }
   const uint32_t now = millis();
-  // Admission follows wall time, so duplicates or a discontinuous RTP timestamp
-  // cannot request excessive decode work.
-  const uint32_t interval =
-      (1000U + this->session_fps_ - 1U) / this->session_fps_;
+  // Wall-clock token budget: preserve fractional cadence instead of resetting
+  // the phase after each accepted frame. One slightly early arrival must not
+  // halve the rate. Credit is bounded by the two existing input slots, so an
+  // idle interval cannot accumulate unbounded decoder work. RTP PTS is unused.
+  constexpr uint32_t FRAME_CREDIT = 1000;
+  constexpr uint32_t MAX_CREDIT = 2 * FRAME_CREDIT;
+  const uint32_t elapsed = now - this->last_admission_ms_;
+  uint32_t credit = MAX_CREDIT;
+  if (this->admission_seen_) {
+    const uint32_t refill_ms =
+        (MAX_CREDIT + this->session_fps_ - 1U) / this->session_fps_;
+    credit = elapsed >= refill_ms
+                 ? MAX_CREDIT
+                 : std::min<uint32_t>(MAX_CREDIT, this->admission_credit_ +
+                                                     elapsed * this->session_fps_);
+  }
   if (!this->active_.load(std::memory_order_acquire) ||
-      (this->admission_seen_ && now - this->last_admission_ms_ < interval)) {
+      (this->admission_seen_ && (elapsed == 0 || credit < FRAME_CREDIT))) {
     xSemaphoreGive(this->mutex_);
     this->rejected_.fetch_add(1, std::memory_order_relaxed);
     return false;
@@ -207,10 +220,15 @@ bool EspVideoRenderer::submit_jpeg(const uint8_t *data, size_t size) {
   input.state = InputState::QUEUED;
   this->queued_input_ = slot;
   this->last_admission_ms_ = now;
+  this->admission_credit_ = static_cast<uint16_t>(credit - FRAME_CREDIT);
   this->admission_seen_ = true;
   this->received_.fetch_add(1, std::memory_order_relaxed);
+  // A ready surface waits for the main loop; replacing its queued successor
+  // needs no wakeup until that handoff releases the other RGB surface.
+  const bool wake_worker = this->pending_surface_ < 0;
   xSemaphoreGive(this->mutex_);
-  xTaskNotifyGive(this->worker_handle_);
+  if (wake_worker)
+    xTaskNotifyGive(this->worker_handle_);
   return true;
 }
 
@@ -226,17 +244,17 @@ void EspVideoRenderer::worker_() {
     for (;;) {
       xSemaphoreTake(this->mutex_, portMAX_DELAY);
       const int input = this->queued_input_;
-      if (input < 0 || !this->active_.load(std::memory_order_acquire)) {
+      if (input < 0 || !this->active_.load(std::memory_order_acquire) ||
+          this->pending_surface_ >= 0) {
         xSemaphoreGive(this->mutex_);
         break;
       }
       this->queued_input_ = -1;
       this->inputs_[input].state = InputState::DECODING;
       const int surface = this->front_surface_ == 0 ? 1 : 0;
-      // A decoded-but-unpresented image may be superseded. A displayed image
-      // remains immutable until LVGL finishes and swaps to the other surface.
-      if (this->pending_surface_ == surface)
-        this->pending_surface_ = -1;
+      // The front belongs to LVGL and a ready back belongs to the main loop.
+      // With both occupied, park above and retain only the newest queued JPEG.
+      // The main loop wakes us after consuming pending_surface_.
       xSemaphoreGive(this->mutex_);
       const bool decoded = this->decode_(input, surface);
       xSemaphoreTake(this->mutex_, portMAX_DELAY);
@@ -335,6 +353,7 @@ void EspVideoRenderer::loop() {
   }
   const int pending = this->pending_surface_;
   bool first = false;
+  bool consumed = false;
   if (pending >= 0 && this->active_.load(std::memory_order_acquire) &&
       this->surfaces_[pending].generation ==
           this->generation_.load(std::memory_order_acquire) &&
@@ -361,10 +380,14 @@ void EspVideoRenderer::loop() {
     this->presented_.fetch_add(1, std::memory_order_relaxed);
     update_max(this->frame_age_max_ms_, millis() - surface.received_ms);
     lv_obj_invalidate(this->image_);
+    consumed = true;
   }
   xSemaphoreGive(this->mutex_);
   if (first)
     this->first_frame_trigger_.trigger();
+  if (consumed && this->worker_handle_ != nullptr &&
+      !this->stopping_.load(std::memory_order_acquire))
+    xTaskNotifyGive(this->worker_handle_);
 }
 
 EspVideoRenderer::Stats EspVideoRenderer::get_stats() const {

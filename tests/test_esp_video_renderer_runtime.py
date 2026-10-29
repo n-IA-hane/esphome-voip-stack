@@ -10,7 +10,8 @@ SOURCE = ROOT / "esphome/components/esp_video_renderer"
 
 
 @pytest.mark.parametrize("psram", [True, False])
-def test_borrowed_jpeg_generations_and_display_surface_lifetime(tmp_path, psram):
+@pytest.mark.parametrize("scenario", [0, 1, 2], ids=["lifecycle", "pending-handoff", "continuous-producer"])
+def test_borrowed_jpeg_generations_and_display_surface_lifetime(tmp_path, psram, scenario):
     headers = {
         "esphome/core/defines.h": "#pragma once\n#define USE_ESP_IDF\n",
         "esphome/core/automation.h": """#pragma once
@@ -56,14 +57,16 @@ inline void xSemaphoreGive(SemaphoreHandle_t s){{std::lock_guard lock(s->mutex);
 #include <mutex>
 #include <thread>
 #include <vector>
-struct Task {std::mutex mutex;std::condition_variable cv;unsigned notices=0;std::thread thread;};
+struct Task {std::mutex mutex;std::condition_variable cv;unsigned notices=0;bool waiting=false;std::thread thread;};
 using TaskHandle_t=Task*;inline std::vector<Task*> tasks;inline thread_local Task* self_task;
 inline TaskHandle_t xTaskCreateStaticPinnedToCore(void(*fn)(void*),const char*,uint32_t bytes,void*ctx,unsigned,StackType_t*stack,StaticTask_t*control,int affinity){
 assert(bytes==8192&&stack&&control&&affinity==tskNO_AFFINITY);auto *task=new Task;tasks.push_back(task);
 task->thread=std::thread([=]{self_task=task;fn(ctx);});return task;}
 inline void xTaskNotifyGive(TaskHandle_t t){{std::lock_guard lock(t->mutex);t->notices++;}t->cv.notify_one();}
 inline unsigned ulTaskNotifyTake(int,TickType_t){std::unique_lock lock(self_task->mutex);
-self_task->cv.wait(lock,[]{return self_task->notices;});auto n=self_task->notices;self_task->notices=0;return n;}
+self_task->waiting=true;self_task->cv.notify_all();
+self_task->cv.wait(lock,[]{return self_task->notices;});self_task->waiting=false;
+auto n=self_task->notices;self_task->notices=0;return n;}
 inline void vTaskDelete(void*){}
 inline void join_tasks(){for(auto*t:tasks){t->thread.join();delete t;}tasks.clear();}
 """,
@@ -141,15 +144,59 @@ struct Renderer:EspVideoRenderer {
   unsigned displayed(){return presented_.load();}
   bool has_pending(){assert(xSemaphoreTake(mutex_,1000));bool pending=pending_surface_>=0;xSemaphoreGive(mutex_);return pending;}
 };
+void wait_parked() {
+ assert(tasks.size()==1);auto *task=tasks[0];std::unique_lock lock(task->mutex);
+ assert(task->cv.wait_for(lock,std::chrono::seconds(3),[&]{return task->waiting&&task->notices==0;}));
+}
 void wait_decode(unsigned count) {
  std::unique_lock lock(decode_mutex);assert(decode_cv.wait_for(lock,std::chrono::seconds(3),[&]{return completed_decodes>=count;}));
 }
 void wait_pending(Renderer&r){for(unsigned n=0;n<1000&&!r.has_pending();n++)std::this_thread::sleep_for(std::chrono::milliseconds(1));assert(r.has_pending());}
-int main(){
+int main(int argc,char**argv){
+ const unsigned scenario=argc>1?std::atoi(argv[1]):0;
  Renderer r;r.set_width(8);r.set_height(8);r.set_max_jpeg_bytes(64);r.set_framerate(2);r.set_task_stack_in_psram(expected_external);r.set_buffer_in_psram(expected_external);r.setup();assert(!r.is_failed());assert(allocation_count==6);
  lv_display_t display;lv_obj_t container{&display};r.attach_video_container(&container);
  uint8_t a[]={0xff,0xd8,0xff,0xc0,0,11,8,0,8,0,8,1,1,0x11,0,
               0xff,0xda,0,8,1,1,0,0,63,0,11,0xff,0xd9};
+ if(scenario==1){
+  r.set_framerate(15);assert(r.start());
+  {std::lock_guard lock(decode_mutex);hold_decode=true;entered_decode=false;}
+  assert(r.submit_jpeg(a,sizeof a));
+  {std::unique_lock lock(decode_mutex);assert(decode_cv.wait_for(lock,std::chrono::seconds(3),[]{return entered_decode;}));}
+  fake_ms=67;a[25]=22;assert(r.submit_jpeg(a,sizeof a));
+  fake_ms=134;a[25]=33;assert(r.submit_jpeg(a,sizeof a));
+  {std::lock_guard lock(decode_mutex);hold_decode=false;}decode_cv.notify_all();
+  wait_parked();assert(completed_decodes==1&&"ready A must survive until the main loop consumes it");
+  assert(r.has_pending());r.loop();assert(r.displayed()==1&&image.src->data[0]==11);
+  const auto *first=image.src->data;wait_parked();assert(completed_decodes==2);
+  r.loop();assert(r.displayed()==1&&image.src->data==first&&first[0]==11);
+  fake_ms=201;a[25]=44;assert(r.submit_jpeg(a,sizeof a));wait_parked();
+  assert(completed_decodes==2&&"ready C and displayed A occupy both surfaces");
+  refresh_ready(display);r.loop();assert(r.displayed()==2&&image.src->data[0]==33);
+  const auto *second=image.src->data;wait_parked();assert(completed_decodes==3&&second[0]==33);
+  r.loop();assert(r.displayed()==2&&image.src->data==second);
+  refresh_ready(display);r.loop();assert(r.displayed()==3&&image.src->data[0]==44);wait_parked();
+  assert(r.get_stats().replaced==1&&allocation_count==6);
+  // Shutdown must wake a worker parked behind a ready surface.
+  fake_ms=268;a[25]=55;assert(r.submit_jpeg(a,sizeof a));wait_parked();assert(completed_decodes==4&&r.has_pending());
+  r.on_shutdown();join_tasks();r.release_setup_resources_();return 0;
+ }
+ if(scenario==2){
+  r.set_framerate(15);assert(r.start());assert(r.submit_jpeg(a,sizeof a));wait_parked();
+  const unsigned reserved=allocation_count;unsigned expected=11;uint32_t clock=0;
+  for(unsigned round=0;round<200;++round){
+   assert(r.has_pending());
+   for(unsigned n=0;n<5;++n){clock+=67;fake_ms=clock;a[25]=static_cast<uint8_t>(1+(round*5+n)%250);assert(r.submit_jpeg(a,sizeof a));}
+   wait_parked();refresh_ready(display);r.loop();
+   assert(r.displayed()==round+1&&image.src->data[0]==expected);
+   const auto *front=image.src->data;wait_parked();assert(front[0]==expected&&r.has_pending());
+   expected=a[25];assert(allocation_count==reserved);
+  }
+  assert(r.get_stats().replaced>=4*200);r.stop();r.loop();refresh_ready(display);
+  assert(!r.has_remote_frame());assert(r.start());fake_ms=clock+67;a[25]=77;assert(r.submit_jpeg(a,sizeof a));
+  wait_parked();r.loop();assert(r.has_remote_frame()&&image.src->data[0]==77);
+  assert(allocation_count==reserved);r.on_shutdown();join_tasks();r.release_setup_resources_();return 0;
+ }
  assert(!r.submit_jpeg(a,sizeof a)); assert(r.start());
  uint8_t oversized[65]={0xff,0xd8};assert(!r.submit_jpeg(oversized,sizeof oversized));
  // Borrowed data may be modified immediately after admission; decode owns a copy.
@@ -206,4 +253,4 @@ int main(){
         "-I", str(tmp_path), "-I", str(SOURCE), str(SOURCE / "esp_video_renderer.cpp"),
         str(harness), "-o", str(binary),
     ], check=True, capture_output=True, text=True)
-    subprocess.run([str(binary)], check=True, capture_output=True, text=True, timeout=15)
+    subprocess.run([str(binary), str(scenario)], check=True, capture_output=True, text=True, timeout=15)
