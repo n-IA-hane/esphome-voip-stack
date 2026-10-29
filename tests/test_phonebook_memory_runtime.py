@@ -25,7 +25,7 @@ def test_phonebook_normalizes_owned_vector_and_streams_valid_csv_rows(tmp_path):
 #include <vector>
 #include "esphome/components/voip_stack/phonebook.h"
 using namespace esphome::voip_stack;
-struct Book:Phonebook {const ContactEntry* storage()const{return entries_.data();}};
+struct Book:Phonebook {const ContactEntry* storage()const{return entries_.data();}size_t capacity()const{return entries_.capacity();}};
 struct VoipStack {std::string normalize_phonebook_for_transport_(const std::string&);};
 ''' + helpers + "\n" + method + r'''
 ContactEntry entry(std::string route,std::string name){
@@ -47,7 +47,10 @@ int main(){
  std::vector<ContactEntry> full;
  for(unsigned n=0;n<80;n++)full.push_back(entry("r"+std::to_string(n),"N"+std::to_string(n)));
  assert(book.replace_all(std::move(full)));assert(book.size()==64);
- assert(book.find("r63")&&!book.find("r64"));
+ assert(book.find("r63")&&!book.find("r64"));assert(book.capacity()<=64);
+ std::vector<ContactEntry> overreserved;overreserved.reserve(64);
+ overreserved.push_back(entry("small","Small"));
+ assert(book.replace_all(std::move(overreserved)));assert(book.capacity()<=1);
  assert(book.replace_all({}));assert(book.empty());
  VoipStack v;
  const std::string malformed="bad|row|with|wrong|format";

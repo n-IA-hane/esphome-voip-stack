@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
+#include <iterator>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -130,6 +131,7 @@ class Phonebook {
   bool replace_all(std::vector<ContactEntry> entries) {
     const std::string selected = this->current_name();
     const std::string selected_route = this->current_route();
+    const size_t previous_capacity_bound = std::min(entries.size(), MAX_CONTACTS);
     size_t count = 0;
     for (size_t i = 0; i < entries.size() && count < MAX_CONTACTS; ++i) {
       auto &entry = entries[i];
@@ -142,6 +144,13 @@ class Phonebook {
       if (target == count) ++count;
     }
     entries.resize(count);
+    // Advanced C++ callers may over-reserve their input. Retain no more than
+    // the previous capped normalization would have allocated in that case.
+    if (entries.capacity() > previous_capacity_bound) {
+      std::vector<ContactEntry> compact(std::make_move_iterator(entries.begin()),
+                                        std::make_move_iterator(entries.end()));
+      entries.swap(compact);
+    }
     const bool changed = !same_entries_(this->entries_, entries);
     this->entries_ = std::move(entries);
     this->index_ = 0;
