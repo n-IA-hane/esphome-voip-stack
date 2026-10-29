@@ -295,23 +295,9 @@ bool VoipStack::is_registered(const std::string& id) {
 }
 
 #ifdef USE_ESPHOME_VOIP_MWI
-MessageWaitingState VoipStack::get_message_waiting(const std::string &id) {
-  MessageWaitingState state; state.account_id = id;
-  if (this->transport_ != nullptr)
-    static_cast<SipTransport *>(this->transport_.get())->get_message_waiting(id, &state);
-  return state;
-}
-
-bool VoipStack::has_waiting_messages(const std::string &id) {
-  return this->transport_ != nullptr && static_cast<SipTransport *>(this->transport_.get())->has_waiting_messages(id);
-}
-
 void VoipStack::message_waiting_callback_(void *ctx, const MessageWaitingState &state) {
   auto *self = static_cast<VoipStack *>(ctx);
-  self->defer([self, state]() {
-    self->message_waiting_trigger_.trigger(state.account_id, state.available, state.waiting,
-        state.new_messages, state.old_messages, state.urgent_new, state.urgent_old);
-  });
+  self->publish_message_waiting_(state);
 }
 #endif
 

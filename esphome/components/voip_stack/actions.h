@@ -43,14 +43,6 @@ class IsRegisteredCondition : public Condition<Ts...>, public Parented<VoipStack
   TEMPLATABLE_VALUE(std::string, account_id)
   bool check(const Ts &...x) override { return this->parent_->is_registered(this->account_id_.value(x...)); }
 };
-#ifdef USE_ESPHOME_VOIP_MWI
-template<typename... Ts>
-class HasWaitingMessagesCondition : public Condition<Ts...>, public Parented<VoipStack> {
- public:
-  TEMPLATABLE_VALUE(std::string, account_id)
-  bool check(const Ts &...x) override { return this->parent_->has_waiting_messages(this->account_id_.value(x...)); }
-};
-#endif
 template<typename... Ts>
 class SetAccountAction : public Action<Ts...>, public Parented<VoipStack> {
  public:
@@ -63,6 +55,15 @@ class SetAccountAction : public Action<Ts...>, public Parented<VoipStack> {
   void play(const Ts &...x) override { this->parent_->set_account(this->config_, this->persist_.optional_value(x...).value_or(false)); }
  protected:
   SipAccountConfig config_;
+};
+#endif
+
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_HA_MWI)
+template<typename... Ts>
+class HasWaitingMessagesCondition : public Condition<Ts...>, public Parented<VoipStack> {
+ public:
+  TEMPLATABLE_VALUE(std::string, account_id)
+  bool check(const Ts &...x) override { return this->parent_->has_waiting_messages(this->account_id_.value(x...)); }
 };
 #endif
 

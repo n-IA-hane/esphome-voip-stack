@@ -46,6 +46,9 @@
 #include "sip_types.h"
 #include "transport.h"
 #include "voip_fsm.h"
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_HA_MWI)
+#include "message_waiting.h"
+#endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
 #include "sip_registration.h"
 #ifdef USE_ESPHOME_VOIP_MWI
@@ -133,16 +136,22 @@ class VoipStack : public Component {
   bool register_account(const std::string &id);
   bool unregister_account(const std::string &id);
   bool is_registered(const std::string &id);
-#ifdef USE_ESPHOME_VOIP_MWI
+  bool select_line(const std::string &id);
+  void start_call_on_line(const std::string &target, const std::string &line);
+  Trigger<std::string, std::string, int> *get_registration_state_trigger() { return &this->registration_state_trigger_; }
+#endif
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_HA_MWI)
   MessageWaitingState get_message_waiting(const std::string &id);
   bool has_waiting_messages(const std::string &id = "");
+  template<typename F> void add_on_message_waiting_callback(F &&callback) {
+    this->message_waiting_callbacks_.add(std::forward<F>(callback));
+  }
   Trigger<std::string, bool, bool, uint32_t, uint32_t, uint32_t, uint32_t> *get_message_waiting_trigger() {
     return &this->message_waiting_trigger_;
   }
 #endif
-  bool select_line(const std::string &id);
-  void start_call_on_line(const std::string &target, const std::string &line);
-  Trigger<std::string, std::string, int> *get_registration_state_trigger() { return &this->registration_state_trigger_; }
+#ifdef USE_ESPHOME_VOIP_HA_MWI
+  void set_ha_message_waiting(bool available, bool waiting, uint32_t new_messages, uint32_t old_messages);
 #endif
   // AFTER_CONNECTION: bind sockets and publish initial state only after
   // the HA API is up (AFTER_WIFI would race the API connection).
@@ -375,6 +384,7 @@ class VoipStack : public Component {
   void register_auto_answer_switch(switch_::Switch *sw) { this->auto_answer_switch_ = sw; }
   void register_dnd_switch(switch_::Switch *sw) { this->dnd_switch_ = sw; }
   void register_conference_ring_switch(switch_::Switch *sw) { this->conference_ring_switch_ = sw; }
+  switch_::Switch *get_conference_ring_switch() const { return this->conference_ring_switch_; }
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   void register_video_send_switch(switch_::Switch *sw) {
     this->video_send_switch_ = sw;
@@ -1037,9 +1047,6 @@ class VoipStack : public Component {
   bool registration_accept_direct_{true}, force_direct_call_{false};
   std::string default_line_{"direct"}, pending_line_;
   Trigger<std::string, std::string, int> registration_state_trigger_;
-#ifdef USE_ESPHOME_VOIP_MWI
-  Trigger<std::string, bool, bool, uint32_t, uint32_t, uint32_t, uint32_t> message_waiting_trigger_;
-#endif
   std::atomic<SipTransport *> registration_dns_owner_{nullptr};
   void initialize_registration_();
   void dump_registration_memory_();
@@ -1052,6 +1059,15 @@ class VoipStack : public Component {
 #ifdef USE_ESPHOME_VOIP_MWI
   static void message_waiting_callback_(void *, const MessageWaitingState &);
 #endif
+#endif
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_HA_MWI)
+  Trigger<std::string, bool, bool, uint32_t, uint32_t, uint32_t, uint32_t> message_waiting_trigger_;
+  LazyCallbackManager<void()> message_waiting_callbacks_{};
+  void publish_message_waiting_(const MessageWaitingState &state);
+#endif
+#ifdef USE_ESPHOME_VOIP_HA_MWI
+  uint32_t ha_new_messages_{0}, ha_old_messages_{0};
+  bool ha_message_waiting_available_{false}, ha_message_waiting_{false};
 #endif
   CallbackManager<void(CallState)> state_callback_{};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO

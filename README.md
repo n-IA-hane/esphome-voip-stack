@@ -55,6 +55,232 @@ Two scope decisions shape the component:
 
 **Direct SIP remains the default.** ESP devices call each other and Home Assistant without registration. Optional [PBX accounts](docs/SIP_REGISTRATION.md) let the same endpoint register with an external PBX while retaining its direct HA route. Account selection affects future calls; one physical conversation owns the audio devices.
 
+## Choose how the ESP connects
+
+One component covers direct SIP and optional registered accounts. The
+**2026.11.1-dev preview** adds REGISTER accounts and MWI. Select `@dev` on the
+existing ESP VoIP Stack external-component source to try these additions.
+Direct SIP keeps its existing configuration.
+
+An **account** is an identity registered at a PBX. A **line** chooses the direct
+route or one account for a new outgoing call. The PBX's own trunk configuration
+stays on the PBX. Each example below extends a working board's microphone,
+speaker and audio-format configuration.
+
+| Installation | REGISTER | Outgoing line | Incoming calls |
+| --- | --- | --- | --- |
+| Home Assistant / ESP peers | Omitted | `direct` | Direct SIP |
+| PBX with a static route to the ESP | Omitted | `direct` | Direct SIP from the PBX |
+| Registered PBX phone | One account | Account ID | Matching registered PBX |
+| HA plus a registered PBX | One account | `direct` or account ID | Both routes |
+| Several PBX accounts | Up to four | Explicit account or default | Any matching active account |
+
+Signaling can use UDP or TCP; RTP media uses UDP. Diagram arrows describe SIP
+and media between the shown peers. The selected SDP determines the actual media
+addresses, independently of registration.
+
+<details>
+<summary>Five connection examples, with diagrams and YAML</summary>
+
+### A. Home Assistant and direct ESP calls
+
+```text
+┌────────────────────────┐                      ┌────────────────────────────┐
+│       ESP phone        │◄──── SIP + RTP ─────►│       HA VoIP Stack        │
+│      line: direct      │                      │  HA phone / call routing   │
+└────────────────────────┘                      └────────────────────────────┘
+```
+
+Keep the current direct SIP setup. The optional HA integration provides the
+shared phonebook, browser card and routing. ESPHome's native API exposes its
+controls when `api.custom_services: true` is configured. This case needs no
+`registration` block or outgoing-line setting.
+
+### B. A PBX reached directly by IP, without REGISTER
+
+```text
+┌────────────────────────┐                      ┌────────────────────────────┐
+│   ESP at 192.0.2.20    │◄──── SIP + RTP ─────►│     PBX at 192.0.2.10      │
+│      line: direct      │                      │      static IP route       │
+└────────────────────────┘                      └────────────────────────────┘
+```
+
+Configure the PBX with a static SIP route to the ESP's reachable address. On the
+ESP, add a direct contact for the PBX destination. Here `100` is the PBX's dialed
+extension, and `192.0.2.10` is a documentation address to replace with the PBX's
+actual IPv4 address:
+
+```yaml
+voip_stack:
+  id: phone
+  static_contacts:
+    - name: "100"
+      ip: 192.0.2.10
+      port: 5060
+      transport: udp
+
+button:
+  - platform: template
+    name: Call reception
+    on_press:
+      - voip_stack.call:
+          id: phone
+          target: "100"
+```
+
+The PBX handles routing and its own admission policy. The ESP continues using
+its direct line. See the [static Asterisk setup](https://github.com/n-IA-hane/esphome-intercom/blob/main/docs/CLASSIC_PBX.md).
+
+### C. Register at Asterisk, FreeSWITCH or another SIP PBX
+
+```text
+┌────────────────────────┐                      ┌────────────────────────────┐
+│       ESP phone        │───── REGISTER ──────►│       PBX registrar        │
+│    account: office     │◄────── 200 OK ───────│   Asterisk / FreeSWITCH    │
+│      line: office      │◄──── SIP + RTP ─────►│       extension 100        │
+└────────────────────────┘                      └────────────────────────────┘
+```
+
+Add an account when the PBX expects REGISTER and Digest authentication:
+
+```yaml
+voip_stack:
+  id: phone
+  registration:
+    max_accounts: 1
+    accept_direct_calls: false
+    default_line: office
+    accounts:
+      - account_id: office
+        registrar: pbx.example.org
+        username: "100"
+        password: !secret office_sip_password
+        transport: udp
+```
+
+`accept_direct_calls: false` limits new incoming calls to matching registered
+accounts. The SIP listener stays active so the PBX can ring the ESP. This is
+an admission policy, not a switch that shuts down the SIP server socket.
+A single configured account becomes the outgoing default automatically in this
+mode; `default_line` is written explicitly here to show the selected route.
+
+### D. Keep direct HA calling and add a PBX account
+
+```text
+                                              ┌────────────────────────────┐
+                                ┌── direct ──►│       Home Assistant       │
+                                │             │        direct line         │
+┌────────────────────────┐      │             └────────────────────────────┘
+│       ESP phone        ├──────┤
+│ one live conversation  │      │             ┌────────────────────────────┐
+└────────────────────────┘      └── office ──►│   Registered PBX account   │
+                                              │        office line         │
+                                              └────────────────────────────┘
+```
+
+The arrows show outgoing-line choices. Both routes can also receive calls:
+
+```yaml
+voip_stack:
+  id: phone
+  registration:
+    accept_direct_calls: true
+    default_line: direct
+    accounts:
+      - account_id: office
+        registrar: pbx.example.org
+        username: "100"
+        password: !secret office_sip_password
+```
+
+The existing HA route remains the default. To place a particular call through
+the PBX, use `voip_stack.start_call_on_line` with `line: office`. The native HA
+`start_call_via_ha` action stays on the direct HA route independently of the
+selected default line.
+
+### E. Register several accounts and choose the outgoing line
+
+```text
+                                              ┌────────────────────────────┐
+                                ┌── direct ──►│    HA / direct SIP peer    │
+                                │             │        direct line         │
+                                │             └────────────────────────────┘
+                                │
+┌────────────────────────┐      │             ┌────────────────────────────┐
+│       ESP phone        ├──────┼── office ──►│           PBX A            │
+│ one live conversation  │      │             │        office line         │
+└────────────────────────┘      │             └────────────────────────────┘
+                                │
+                                │             ┌────────────────────────────┐
+                                └─ workshop ─►│           PBX B            │
+                                              │       workshop line        │
+                                              └────────────────────────────┘
+```
+
+The pool defaults to two accounts and supports one through four slots:
+
+```yaml
+voip_stack:
+  id: phone
+  registration:
+    max_accounts: 2
+    accept_direct_calls: true
+    default_line: office
+    accounts:
+      - account_id: office
+        registrar: office-pbx.example.org
+        username: "100"
+        password: !secret office_sip_password
+        transport: udp
+      - account_id: workshop
+        registrar: workshop-pbx.example.org
+        username: "200"
+        password: !secret workshop_sip_password
+        transport: tcp
+
+button:
+  - platform: template
+    name: Call through workshop PBX
+    on_press:
+      - voip_stack.start_call_on_line:
+          id: phone
+          target: "201"
+          line: workshop
+```
+
+An explicit call's `line` takes priority for that call. Otherwise ordinary calls
+use the selected default, initially `registration.default_line`. The
+`voip_stack.select_line` action selects a registered account or `direct` for
+future calls. It leaves the current conversation on its original account.
+All accounts share the existing SIP worker; one physical conversation owns the
+audio devices at a time.
+
+</details>
+
+[Full account fields, actions, persistence and registration state](docs/SIP_REGISTRATION.md)
+
+### Mailbox state and remote contact state
+
+Choose the mailbox source independently of your call route:
+
+- `ha_integration.message_waiting: true` receives the HA-managed mailbox over
+  the authenticated ESPHome API, with no REGISTER. Its account ID is `direct`.
+- `registration.message_waiting: true` subscribes to registered PBX mailboxes
+  using standard SIP MWI.
+- Enable both to retain their individual states and combine them in one waiting
+  indicator.
+
+`on_message_waiting` supplies the account, availability, waiting flag and
+message counts. YAML can update an LED or screen from that callback, and
+`voip_stack.has_waiting_messages` checks all enabled sources or one chosen
+account. Home Assistant pushes mailbox changes and reconnect snapshots without
+polling. See the [MWI examples](docs/SIP_MWI.md).
+
+BLF subscriptions and remote-extension watchlists are outside the current ESP
+API. The local call-state sensors describe this ESP, while MWI describes its
+HA or PBX mailbox. Home Assistant's separate BLF and dashboard features belong to the
+HA backend.
+
 ## What it gives you
 
 **A real SIP endpoint.** INVITE/ACK/BYE over UDP or TCP signaling, SDP offer/answer, RTP media that stays UDP in both signaling modes, and a jitter buffer on the receive path.

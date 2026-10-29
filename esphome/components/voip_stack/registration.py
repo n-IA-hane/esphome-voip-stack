@@ -85,8 +85,17 @@ SCHEMA = cv.All(cv.Schema({
 
 
 async def to_code(parent, config):
+    ha = config.get("ha_integration") or {}
+    mwi_enabled = (config.get(CONF_REGISTRATION) or {}).get("message_waiting", False) or ha.get("message_waiting", False)
+    if "on_message_waiting" in config and not mwi_enabled:
+        raise cv.Invalid("on_message_waiting requires registration.message_waiting: true or ha_integration.message_waiting: true")
+    for trigger in config.get("on_message_waiting", []):
+        await automation.build_automation(parent.get_message_waiting_trigger(),
+            [(cg.std_string, "account_id"), (cg.bool_, "available"), (cg.bool_, "waiting"),
+             (cg.uint32, "new_messages"), (cg.uint32, "old_messages"),
+             (cg.uint32, "urgent_new"), (cg.uint32, "urgent_old")], trigger)
     if CONF_REGISTRATION not in config:
-        if "on_registration_state" in config or "on_message_waiting" in config:
+        if "on_registration_state" in config:
             raise cv.Invalid("on_registration_state requires voip_stack.registration")
         return
     if not CORE.using_toolchain_esp_idf:
@@ -95,8 +104,6 @@ async def to_code(parent, config):
     cg.add_define("USE_ESPHOME_VOIP_REGISTRATION")
     if conf["message_waiting"]:
         cg.add_define("USE_ESPHOME_VOIP_MWI")
-    elif "on_message_waiting" in config:
-        raise cv.Invalid("on_message_waiting requires registration.message_waiting: true")
     cg.add_define("VOIP_REGISTRATION_CAPACITY", conf["max_accounts"])
     esp32.include_builtin_idf_component("mbedtls")
     cg.add(parent.configure_registration(conf["accept_direct_calls"], conf["default_line"]))
@@ -117,11 +124,6 @@ async def to_code(parent, config):
     for conf in config.get("on_registration_state", []):
         await automation.build_automation(parent.get_registration_state_trigger(),
             [(cg.std_string, "account_id"), (cg.std_string, "state"), (cg.int_, "status_code")], conf)
-    for conf in config.get("on_message_waiting", []):
-        await automation.build_automation(parent.get_message_waiting_trigger(),
-            [(cg.std_string, "account_id"), (cg.bool_, "available"), (cg.bool_, "waiting"),
-             (cg.uint32, "new_messages"), (cg.uint32, "old_messages"),
-             (cg.uint32, "urgent_new"), (cg.uint32, "urgent_old")], conf)
 
 
 def register_automations(parent_type):
@@ -194,11 +196,13 @@ def register_mwi_condition(parent_type):
     condition = NS.class_("HasWaitingMessagesCondition", automation.Condition)
     @automation.register_condition("voip_stack.has_waiting_messages", condition, cv.Schema({
         cv.GenerateID(): cv.use_id(parent_type),
-        cv.Optional("account_id", default=""): cv.templatable(cv.Any("", account_id)),
+        cv.Optional("account_id", default=""): cv.templatable(cv.Any("", "direct", account_id)),
     }))
     async def condition_to_code(conf, condition_id, template_arg, args):
-        if not (((CORE.config or {}).get("voip_stack") or {}).get(CONF_REGISTRATION) or {}).get("message_waiting", False):
-            raise cv.Invalid("voip_stack.has_waiting_messages requires registration.message_waiting: true")
+        config = (CORE.config or {}).get("voip_stack") or {}
+        if not ((config.get(CONF_REGISTRATION) or {}).get("message_waiting", False) or
+                (config.get("ha_integration") or {}).get("message_waiting", False)):
+            raise cv.Invalid("voip_stack.has_waiting_messages requires registration.message_waiting: true or ha_integration.message_waiting: true")
         action = cg.new_Pvariable(condition_id, template_arg)
         cg.add(action.set_parent(await cg.get_variable(conf["id"])))
         cg.add(action.set_account_id(await cg.templatable(conf["account_id"], args, cg.std_string)))

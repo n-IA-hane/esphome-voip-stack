@@ -1,5 +1,9 @@
 # Optional PBX accounts
 
+Available in the **2026.11.1-dev preview**. Select the `dev` component source
+when using these account options. [Illustrated connection examples](../README.md#choose-how-the-esp-connects)
+cover direct HA calls, a static PBX route, registered PBX calls and mixed lines.
+
 The existing direct connection to Home Assistant needs no new configuration.
 Add `registration` only when the ESP should also register with a SIP PBX.
 Omitting the block excludes the account pool, authentication, DNS callbacks,
@@ -15,6 +19,11 @@ An **account** is a SIP identity registered with a PBX. A **line** selects the
 account, or the existing direct route, for the next outgoing call. Several
 accounts can remain registered while one physical call uses the microphone and
 speaker. Selecting another line leaves the current call unchanged.
+
+Direct SIP also works with a PBX configured to route to the ESP's IP address.
+That installation uses the direct line and a static PBX route; it needs no
+REGISTER account. The ESP remains an endpoint in each model. Its SIP listener
+receives INVITEs, while the PBX owns its extension dial plan and trunks.
 
 ## Configuration
 
@@ -80,6 +89,22 @@ this policy also selects that account as the default outgoing line unless
 at compilation, including accounts added later. An empty `accounts` list enables
 runtime provisioning within that pool.
 
+Incoming admission and outgoing selection are independent:
+
+| Setting | Effect |
+| --- | --- |
+| Omit `registration` | Keep direct SIP; exclude account-management code |
+| `accept_direct_calls: true` | Allow direct incoming calls alongside matching PBX calls |
+| `accept_direct_calls: false` | Admit new incoming calls through matching registered accounts; keep the listener running |
+| Omit `default_line` with one static account and direct admission disabled | Use that account for outgoing calls |
+| Omit `default_line` in other configurations | Start on `direct` |
+| Supply `default_line` | Use the declared direct route or static account as the initial outgoing choice |
+
+For a PBX-only installation with several accounts, set `default_line` to the
+account that should originate ordinary calls. Incoming policy leaves explicit
+outgoing-line choices available. Incoming calls on any admitted account use
+that account's identity regardless of the outgoing default.
+
 Registration and media negotiation are separate. The PBX must support the
 configured audio formats, sample rates, directions and packet times. A successful
 REGISTER does not demonstrate an audio conversation or configure NAT traversal.
@@ -101,6 +126,13 @@ the firmware exposes these ESPHome actions to Home Assistant:
 
 The existing `start_call_via_ha` remains pinned to the HA route. Its behavior is
 independent of `default_line`.
+
+YAML `voip_stack.start_call_on_line` uses `target` and `line`; the native HA
+action uses `dest` and `line`. A line supplied for one call takes priority over
+the selected default. `select_line` changes the runtime default for subsequent
+calls; declare `registration.default_line` in YAML for the initial choice after
+restart. An unavailable chosen account does not silently switch to another
+PBX or to the direct route.
 
 Native `set_account` takes `account_id`, `registrar`, `port`, `domain`,
 `username`, `password`, `auth_username`, `proxy`, `proxy_port`, `transport`,
@@ -203,8 +235,13 @@ policy; remote hold adds no worker or buffer pool.
 ## Optional message waiting
 
 Set `registration.message_waiting: true` to subscribe to the registered PBXs'
-RFC 3842 `message-summary` events. The default is false; its pool and callbacks
-are excluded from registration-only firmware.
+RFC 3842 `message-summary` events. The default is false; the SIP subscription
+pool and protocol handling are excluded from registration-only firmware.
+
+For a mailbox owned by Home Assistant VoIP Stack, use
+`ha_integration.message_waiting: true` instead. It works over the authenticated
+native API with no REGISTER. Both sources can coexist; the HA source uses the
+reserved account ID `direct`. See [mailbox sources and examples](SIP_MWI.md).
 
 The subscription shares the existing SIP worker and account connections. A
 notification changes mailbox data and does not change the call FSM. The
@@ -226,7 +263,7 @@ voip_stack:
 
 The callback also supplies `urgent_new` and `urgent_old`. Condition
 `voip_stack.has_waiting_messages` accepts an optional `account_id`; omitting it
-checks all configured accounts. The C++ getter
+checks every enabled mailbox source. The C++ getter
 `id(phone).get_message_waiting("office")` returns the same snapshot, including
 `available` and `waiting`. Unavailable subscriptions report unavailable data
 rather than a claim that the mailbox is empty.

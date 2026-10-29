@@ -31,6 +31,7 @@ def schema(value):
     if value is True:
         value = {}
     fields = {}
+    fields[cv.Optional("message_waiting", default=False)] = cv.boolean
     for role in ROLES:
         fields[cv.Optional(role, default={})] = lambda conf, role=role: sensors.CONFIG_SCHEMA({
             CONF_ID: f"voip_{role}", CONF_NAME: sensors.TYPES[role][0], "type": role, **conf,
@@ -63,7 +64,8 @@ def validate(config, full):
     for action in full["api"].get("actions", []):
         name = action.get("action", action.get("service", ""))
         registration_actions = {"set_account", "remove_account", "reset_account", "register_account", "unregister_account", "select_line", "start_call_on_line"} if "registration" in config else set()
-        if name in ACTIONS | registration_actions:
+        mwi_actions = {"set_message_waiting"} if config[CONF_HA_INTEGRATION].get("message_waiting") else set()
+        if name in ACTIONS | registration_actions | mwi_actions:
             raise cv.Invalid(f"API action '{name}' is now provided by voip_stack. Remove the old VoIP HA package or copied action.")
     for item in full.get("text_sensor", []):
         if item.get("platform") == "voip_stack" and item.get("type") in ROLES:
@@ -84,6 +86,22 @@ async def to_code(parent, config):
     adapter = cg.new_Pvariable(config["ha_adapter_id"])
     cg.add(adapter.set_parent(parent))
     await cg.register_component(adapter, {})
+    if config[CONF_HA_INTEGRATION]["message_waiting"]:
+        cg.add_define("USE_ESPHOME_VOIP_HA_MWI")
+        cg.add_define("USE_API_CLIENT_DISCONNECTED_TRIGGER")
+        full_api = CORE.config["api"]
+        api_parent = await cg.get_variable(full_api[CONF_ID])
+        previous = None
+        if "on_client_disconnected" in full_api:
+            previous = await cg.get_variable(full_api["on_client_disconnected"]["automation_id"])
+        callback = (f"{adapter}->on_api_client_disconnected(client_info, client_address);" +
+                    (f" {previous}->trigger(client_info, client_address);" if previous is not None else ""))
+        cg.add(cg.RawStatement(
+            f"auto *{adapter}_mwi_disconnect = new Automation<std::string, std::string>("
+            f"{api_parent}->get_client_disconnected_trigger());"))
+        cg.add(cg.RawStatement(
+            f"{adapter}_mwi_disconnect->add_action(new LambdaAction<std::string, std::string>("
+            f"[](std::string client_info, std::string client_address) {{ {callback} }}));"))
     for role in ROLES:
         await sensors.to_code(config[CONF_HA_INTEGRATION][role])
     for role in TEXT_ROLES:

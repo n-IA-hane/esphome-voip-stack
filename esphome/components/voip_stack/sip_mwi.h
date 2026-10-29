@@ -4,6 +4,7 @@
 #if defined(USE_ESPHOME_VOIP_REGISTRATION) && defined(USE_ESPHOME_VOIP_MWI)
 
 #include "sip_registration.h"
+#include "message_waiting.h"
 
 #include <array>
 #include <cstdint>
@@ -11,12 +12,6 @@
 #include <string>
 
 namespace esphome::voip_stack {
-
-struct MessageWaitingState {
-  std::string account_id;
-  bool available{false}, waiting{false};
-  uint32_t new_messages{0}, old_messages{0}, urgent_new{0}, urgent_old{0};
-};
 
 // RFC 3842 message-summary client. The SIP worker owns this bounded pool and
 // drives its deadlines. Registration, calls, REFER and PCM retain their owners.

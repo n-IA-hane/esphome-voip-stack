@@ -3,14 +3,16 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def validate(tmp_path, suffix, *, generate=False):
+def validate(tmp_path, suffix, *, generate=False, voip_settings=""):
     config = (ROOT / 'tests/minimal_no_text.yaml').read_text().replace(
         '../esphome/components', str(ROOT / 'esphome/components'))
+    config = config.replace('voip_stack:\n', 'voip_stack:\n' + voip_settings)
     config += suffix
     path = tmp_path / 'phone.yaml'
     path.write_text(config)
@@ -39,6 +41,50 @@ def test_standalone_has_no_ha_adapter(tmp_path):
     # This standalone microphone-only profile has no Sendspin to request it.
     defines = next(tmp_path.rglob('defines.h')).read_text()
     assert '#define USE_WIFI_RUNTIME_ROAMING_SUPPRESSION' in defines
+    assert 'USE_ESPHOME_VOIP_HA_MWI' not in defines
+
+
+def test_direct_message_waiting_requires_no_registration_pool(tmp_path):
+    result = validate(tmp_path, '\napi:\n  custom_services: true\n', voip_settings='''
+  ha_integration:
+    message_waiting: true
+  on_message_waiting:
+    then:
+      - if:
+          condition:
+            voip_stack.has_waiting_messages:
+              account_id: direct
+          then:
+            - logger.log: Messages available
+''', generate=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    defines = next(tmp_path.rglob('defines.h')).read_text()
+    generated = next(tmp_path.rglob('main.cpp')).read_text()
+    assert '#define USE_ESPHOME_VOIP_HA_MWI' in defines
+    assert '#define USE_ESPHOME_VOIP_REGISTRATION' not in defines
+    assert 'HasWaitingMessagesCondition' in generated
+    assert 'on_api_client_disconnected(client_info, client_address)' in generated
+
+
+def test_message_waiting_disconnect_precedes_existing_delayed_user_automation(tmp_path):
+    result = validate(tmp_path, '''
+api:
+  custom_services: true
+  on_client_disconnected:
+    then:
+      - delay: 10s
+      - logger.log: User disconnect hook
+''', voip_settings='''
+  ha_integration:
+    message_waiting: true
+''', generate=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    generated = next(tmp_path.rglob('main.cpp')).read_text()
+    wrapper = re.search(r'mwi_disconnect->add_action\(new LambdaAction[^\n]+', generated)
+    assert wrapper is not None
+    text = wrapper.group()
+    assert text.index('on_api_client_disconnected') < text.index('->trigger(')
+    assert 'User disconnect hook' in generated and '10000' in generated
 
 
 def test_missing_api_service_support_is_actionable(tmp_path):

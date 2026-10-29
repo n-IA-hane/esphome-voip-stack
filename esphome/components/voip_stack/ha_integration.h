@@ -3,6 +3,9 @@
 #include "esphome/components/api/custom_api_device.h"
 #include "esphome/core/component.h"
 #include "voip_stack.h"
+#ifdef USE_ESPHOME_VOIP_HA_MWI
+#include "esphome/components/api/api_connection.h"
+#endif
 
 namespace esphome::voip_stack {
 // Native API adapter only. The parent retains all call and phonebook ownership.
@@ -23,6 +26,10 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
     this->register_service(&VoipHAIntegration::remove_contact, "remove_contact", {"entry"});
     this->register_service(&VoipHAIntegration::flush_contacts, "flush_contacts");
     this->register_service(&VoipHAIntegration::update_contacts, "update_contacts");
+#ifdef USE_ESPHOME_VOIP_HA_MWI
+    this->register_service(&VoipHAIntegration::set_message_waiting, "set_message_waiting",
+        {"available", "waiting", "new_messages", "old_messages", "source_client_info", "source_client_address"});
+#endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
     this->register_service(&VoipHAIntegration::set_account, "set_account",
         {"account_id", "registrar", "port", "domain", "username", "password", "auth_username", "proxy", "proxy_port", "transport", "expires", "persist"});
@@ -37,6 +44,38 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
     this->defer([this]() { this->parent_->publish_entity_states(); });
   }
   float get_setup_priority() const override { return setup_priority::AFTER_CONNECTION; }
+#ifdef USE_ESPHOME_VOIP_HA_MWI
+  void set_message_waiting(bool available, bool waiting, int32_t new_messages, int32_t old_messages,
+                           std::string source_client_info, std::string source_client_address) {
+    if (new_messages < 0 || old_messages < 0 || source_client_info.empty() || source_client_address.empty())
+      return;
+    api::APIConnection *source = nullptr;
+    for (const auto &client : api::global_api_server->active_clients()) {
+      if (this->matches_source_(client.get(), source_client_info, source_client_address))
+        source = client.get();
+    }
+    if (source == nullptr) return;
+    this->message_waiting_source_ = available ? source : nullptr;
+    this->parent_->set_ha_message_waiting(available, waiting, new_messages, old_messages);
+  }
+
+  void on_api_client_disconnected(const std::string &client_info, const std::string &client_address) {
+    if (this->message_waiting_source_ == nullptr) return;
+    // The API server removes a client before this event. Never dereference the
+    // saved pointer: another authenticated API client may still own the state.
+    for (const auto &client : api::global_api_server->active_clients()) {
+      if (client.get() == this->message_waiting_source_ && client->is_authenticated()) return;
+    }
+    this->message_waiting_source_ = nullptr;
+    for (const auto &client : api::global_api_server->active_clients()) {
+      if (this->matches_source_(client.get(), client_info, client_address)) {
+        this->message_waiting_source_ = client.get();
+        return;
+      }
+    }
+    this->parent_->set_ha_message_waiting(false, false, 0, 0);
+  }
+#endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   void set_account(std::string id, std::string registrar, int32_t port, std::string domain, std::string username,
       std::string password, std::string auth_username, std::string proxy, int32_t proxy_port,
@@ -69,6 +108,17 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
   void remove_contact(std::string entry) { this->parent_->remove_contact(entry); }
   void flush_contacts() { this->parent_->flush_contacts(); }
   void update_contacts() { this->parent_->update_contacts(); }
+
+#ifdef USE_ESPHOME_VOIP_HA_MWI
+ protected:
+  api::APIConnection *message_waiting_source_{nullptr};
+  bool matches_source_(api::APIConnection *client, const std::string &client_info,
+                       const std::string &client_address) const {
+    if (!client->is_authenticated() || client_info != client->get_name()) return false;
+    char address[socket::SOCKADDR_STR_LEN];
+    return client_address == client->get_peername_to(address);
+  }
+#endif
 };
 }  // namespace esphome::voip_stack
 #endif
