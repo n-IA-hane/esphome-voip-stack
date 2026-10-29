@@ -104,6 +104,33 @@ The Waveshare Box S3 has a display but no camera. Its initial receive scenario
 uses video sent by the HA browser. Testing simultaneous capture and display on
 one S3 requires a board with both peripherals and a compatible pin allocation.
 
+## JPEG image-size preferences
+
+The JPEG SIP profile advertises the configured receive window through
+[RFC 6236 imageattr](https://www.rfc-editor.org/rfc/rfc6236.html).
+For a 240 by 240 renderer, the receive preference is:
+
+```sdp
+a=imageattr:26 recv [x=[8:8:240],y=[8:8:240],sar=1.0,q=1.0]
+```
+
+Compatible senders apply these bounds before JPEG encoding, preserving the
+source aspect ratio. A camera source advertises its actual fixed send size
+independently of this receive preference. The `q` parameter expresses preference;
+JPEG compression quality belongs to the sender's encoder.
+
+An answer includes this extension when the offer contains a usable imageattr
+attribute. Peers that omit or ignore it retain the existing bounded JPEG decode
+and scaling path. A valid answer containing incompatible preferences schedules
+one offer without imageattr through the existing SIP transaction owner, while
+the established audio remains active.
+
+The bounded parser handles payload 26 and wildcard payloads, separate send/recv
+lines, single sizes, lists and stepped ranges, plus square-pixel SAR preferences.
+Unknown extension parameters are ignored. Picture-aspect (`par`) constraints
+outside this subset use the compatibility fallback. This extension is compiled
+with the JPEG video profile.
+
 ## Buffer ownership and scheduling
 
 The component reserves two JPEG input slots and two RGB565 output surfaces at
@@ -162,9 +189,9 @@ partial row or column. LVGL receives the resulting width, height and stride.
 Images are centered without upscaling or aspect-ratio distortion. Set 224x168
 for a 4:3 output that fits a 240x240 display.
 
-The current JPEG call contract negotiates encoding and frame rate, without
-transmitting the renderer's width and height as remote camera constraints.
-The receiver therefore checks each image and applies the bounded reduction.
+JPEG calls can additionally negotiate the preferred input dimensions through
+standard SDP `imageattr`. The receiver still validates every image and retains
+bounded decoder reduction for peers that send larger pictures.
 
 `get_stats()` returns admissions, replacements, rejections, successful decodes,
 decode errors, LVGL submissions and maximum elapsed decode/frame-age times.
@@ -192,9 +219,13 @@ recognition suspended during video, measured these LVGL submission rates:
 | 240x240 | 240x240 | 15 | 9.6 |
 | 640x480 | 160x120 | 5-15 | 4.0-4.1 |
 
-The Spotpear package therefore defaults to a 5 FPS ceiling. Producing a JPEG
-near the destination size avoids decoding detail that is later discarded.
-These measurements use moving test images and eight-second steady windows;
+The Spotpear package defaults to a 10 FPS ceiling. With RFC 6236 image-size
+negotiation, a 640x480 source produced 240x180 content in a 240x184 JPEG and
+reached 9.97 LVGL submissions/s in a six-second steady window. A portrait source
+reached the same cadence using a 184x240 JPEG. The legacy 640x480 stream remained
+usable at about 4.1 submissions/s. Producing a JPEG near the destination size
+avoids decoding detail that is later discarded.
+These measurements use moving test images and six- or eight-second steady windows;
 scene complexity, sender encoding, Wi-Fi and other active features affect the
 result. They do not establish a universal hardware maximum, simultaneous
 camera/display performance or acoustic quality. Screenshots independently

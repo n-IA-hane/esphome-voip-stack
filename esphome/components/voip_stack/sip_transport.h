@@ -284,7 +284,7 @@ class SipTransport : public SipPhoneTransport {
   bool prepare_video_session_locked_();
   void reset_video_negotiation_();
   bool send_video_direction_reinvite_unlocked_(bool enabled,
-                                                bool retry = false);
+                                                bool retry = false, bool imageattr_fallback = false);
   bool handle_video_direction_response_(const std::string &message,
                                         const sockaddr_in &src,
                                         uint16_t status,
@@ -789,6 +789,11 @@ class SipTransport : public SipPhoneTransport {
   bool video_negotiated_{false};
   bool video_send_enabled_{false};
   bool video_receive_enabled_{false};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  enum : uint8_t { IMAGEATTR_PEER = 1, IMAGEATTR_OFFERED = 2,
+                   IMAGEATTR_DISABLED = 4, IMAGEATTR_FALLBACK = 8, IMAGEATTR_ACTIVE = 16 };
+  uint8_t video_imageattr_state_{0};
+#endif
   std::atomic<bool> video_send_requested_{true};
   uint32_t remote_video_ip_v4_{0};
   uint16_t remote_video_rtp_port_{0};

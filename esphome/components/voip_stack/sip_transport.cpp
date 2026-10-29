@@ -363,6 +363,9 @@ bool SipTransport::prepare_video_session_locked_() {
 }
 
 void SipTransport::reset_video_negotiation_() {
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  this->video_imageattr_state_ &= ~IMAGEATTR_PEER;
+#endif
   this->video_offered_ = false;
   this->video_negotiated_ = false;
   this->video_send_enabled_ = false;
@@ -1326,6 +1329,9 @@ void SipTransport::reset_dialog_media_locked_() {
   this->pending_video_direction_invite_.clear();
   reset_string(this->confirmed_local_sdp_);
   this->reset_video_negotiation_();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  this->video_imageattr_state_ = 0;
+#endif
   this->emit_video_active_state_(false);
   this->emit_video_send_state_(false, false);
   }
@@ -1777,13 +1783,32 @@ std::string SipTransport::build_video_direction_offer_(
   } else {
     offer.insert(video_end, std::string("\r\n") + direction);
   }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  if (this->video_imageattr_state_ & IMAGEATTR_DISABLED) {
+    size_t attr = offer.find("\r\na=imageattr:", video_line_end);
+    while (attr != std::string::npos) {
+      const size_t next_media = offer.find("\r\nm=", video_line_end);
+      if (next_media != std::string::npos && attr >= next_media) break;
+      const size_t start = attr + 2;
+      const size_t end = offer.find("\r\n", start);
+      offer.erase(start, (end == std::string::npos ? offer.size() : end + 2) - start);
+      attr = offer.find("\r\na=imageattr:", video_line_end);
+    }
+  }
+#endif
   return offer;
 }
 
 bool SipTransport::send_video_direction_reinvite_unlocked_(bool enabled,
-                                                           bool retry) {
+                                                           bool retry, bool imageattr_fallback) {
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  const bool attribute_update = retry ? (this->video_imageattr_state_ & IMAGEATTR_ACTIVE) != 0 : imageattr_fallback;
+#else
+  const bool attribute_update = false;
+  (void) imageattr_fallback;
+#endif
   if (!this->media_active_.load(std::memory_order_acquire) ||
-      !this->video_negotiated_ || this->video_source_ == nullptr ||
+      !this->video_negotiated_ || (this->video_source_ == nullptr && !attribute_update) ||
       this->remote_tag_.empty()) {
     return false;
   }
@@ -1861,6 +1886,13 @@ bool SipTransport::send_video_direction_reinvite_unlocked_(bool enabled,
   pending.transaction.udp =
       !this->remote_sip_tcp_.load(std::memory_order_acquire);
   pending.transaction.completed = false;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  if (offer.find("\r\na=imageattr:26 ") != std::string::npos)
+    this->video_imageattr_state_ |= IMAGEATTR_OFFERED;
+  else
+    this->video_imageattr_state_ &= ~IMAGEATTR_OFFERED;
+  if (attribute_update) this->video_imageattr_state_ |= IMAGEATTR_ACTIVE;
+#endif
   ESP_LOGI(TAG,
            "SIP video direction re-INVITE sent cseq=%u target=%s retry=%u",
            (unsigned) cseq, enabled ? "send" : "receive-only",
@@ -1923,6 +1955,9 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
       this->remote_rtp_port_.load(std::memory_order_acquire);
   const auto old_media_shape = this->remote_media_shape_;
   const bool old_video_offered = this->video_offered_;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  const uint8_t old_imageattr_state = this->video_imageattr_state_;
+#endif
   const bool old_video_negotiated = this->video_negotiated_;
   const bool old_video_send = this->video_send_enabled_;
   const bool old_video_receive = this->video_receive_enabled_;
@@ -1948,6 +1983,9 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
   const uint16_t new_audio_port =
       this->remote_rtp_port_.load(std::memory_order_acquire);
   const bool new_video_negotiated = this->video_negotiated_;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  const uint8_t new_imageattr_state = this->video_imageattr_state_;
+#endif
   const bool new_video_send = this->video_send_enabled_;
   const bool new_video_receive = this->video_receive_enabled_;
   const uint32_t new_video_ip = this->remote_video_ip_v4_;
@@ -1964,6 +2002,9 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
   this->remote_rtp_port_.store(old_audio_port, std::memory_order_release);
   this->remote_media_shape_ = old_media_shape;
   this->video_offered_ = old_video_offered;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  this->video_imageattr_state_ = old_imageattr_state;
+#endif
   this->video_negotiated_ = old_video_negotiated;
   this->video_send_enabled_ = old_video_send;
   this->video_receive_enabled_ = old_video_receive;
@@ -2010,6 +2051,9 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
   this->video_send_enabled_ = new_video_send;
   this->video_send_requested_.store(new_video_send,
                                     std::memory_order_release);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  this->video_imageattr_state_ = new_imageattr_state;
+#endif
   *accepted_send = new_video_send;
   return true;
 }
@@ -3060,6 +3104,9 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   const std::string old_remote_target_uri = this->remote_target_uri_;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   const bool old_video_offered = this->video_offered_;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  const uint8_t old_imageattr_state = this->video_imageattr_state_;
+#endif
   const bool old_video_negotiated = this->video_negotiated_;
   const bool old_video_send = this->video_send_enabled_;
   const bool old_video_receive = this->video_receive_enabled_;
@@ -3080,6 +3127,9 @@ bool SipTransport::handle_reinvite_(const std::string &message,
     this->remote_media_shape_ = old_media_shape;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
     this->video_offered_ = old_video_offered;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  this->video_imageattr_state_ = old_imageattr_state;
+#endif
     this->video_negotiated_ = old_video_negotiated;
     this->video_send_enabled_ = old_video_send;
     this->video_receive_enabled_ = old_video_receive;
@@ -3142,6 +3192,9 @@ bool SipTransport::handle_reinvite_(const std::string &message,
       this->remote_rtp_port_.load(std::memory_order_acquire);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   const bool new_video_offered = this->video_offered_;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  const uint8_t new_imageattr_state = this->video_imageattr_state_;
+#endif
   const bool new_video_negotiated = this->video_negotiated_;
   const bool new_video_send = this->video_send_enabled_;
   const bool new_video_receive = this->video_receive_enabled_;
@@ -3338,6 +3391,9 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   this->reset_rtp_latch_();
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->video_offered_ = new_video_offered;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  this->video_imageattr_state_ = new_imageattr_state;
+#endif
   this->video_negotiated_ = new_video_negotiated;
   this->video_send_enabled_ = new_video_send;
   this->video_receive_enabled_ = new_video_receive;
@@ -3587,7 +3643,24 @@ bool SipTransport::handle_video_direction_response_(
 
 void SipTransport::pump_video_direction_transaction_() {
   auto &pending = this->pending_video_direction_invite_;
-  if (!pending.pending()) return;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  if ((this->video_imageattr_state_ & IMAGEATTR_FALLBACK) && !pending.pending() &&
+      this->media_active_.load(std::memory_order_acquire) && this->video_negotiated_ &&
+      !this->outgoing_invite_pending_.load(std::memory_order_acquire) &&
+      !this->completed_invite_.awaiting_ack && this->pending_bye_.empty() &&
+      !this->transport_stopping_.load(std::memory_order_acquire)) {
+    // One attempt per dialog, serialised by the same owner as camera changes.
+    this->video_imageattr_state_ &= ~IMAGEATTR_FALLBACK;
+    if (!this->send_video_direction_reinvite_unlocked_(this->video_send_enabled_, false, true))
+      ESP_LOGW(TAG, "Image attribute fallback offer could not be sent; media retained");
+  }
+#endif
+  if (!pending.pending()) {
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+    this->video_imageattr_state_ &= ~IMAGEATTR_ACTIVE;
+#endif
+    return;
+  }
   const uint32_t now = millis();
   if (pending.waiting_retry) {
     if (!time_reached(now, pending.retry_at_ms)) return;

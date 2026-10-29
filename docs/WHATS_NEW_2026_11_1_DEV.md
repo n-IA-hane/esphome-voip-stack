@@ -56,6 +56,12 @@ JPEG frames into that surface within the documented input limits. Buffering
 keeps the latest queued image, and session changes discard stale decoded frames.
 The existing P4 renderer remains the hardware-oriented choice for P4 displays.
 
+Standard SDP `imageattr` lets JPEG receivers request suitable image dimensions.
+Compatible senders can reduce the picture before compression, while existing
+peers continue using the bounded decoder scaling. Fixed camera sources retain
+their actual output dimensions, independently of the local display size.
+The coordinated Spotpear profile uses a 10 FPS budget for its 240x240 display.
+
 Tune the worker and memory placement with `task_core`, `task_priority`,
 `task_stack_size`, `task_stack_in_psram` and `buffer_in_psram`. Image dimensions,
 `framerate` and `max_jpeg_bytes` provide the corresponding image budget controls.
