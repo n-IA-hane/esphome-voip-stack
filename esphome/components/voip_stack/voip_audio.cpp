@@ -352,9 +352,13 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
                              uint32_t revision) {
   if (this->speaker_ == nullptr || pcm == nullptr || bytes == 0)
     return;
-  if (silence_reason == SilenceReason::NONE && this->rx_silence_chunk_ != nullptr &&
+  if (silence_reason == SilenceReason::NONE && this->rx_audio_chunk_ != nullptr &&
+      bytes <= this->rx_audio_chunk_alloc_bytes_ &&
       this->volume_.load(std::memory_order_relaxed) <= 0.001f) {
-    pcm = this->rx_silence_chunk_;
+    // The RX task owns decode and playout serially, including partial writes.
+    // Zero PCM after decoding so codec prediction/PLC state still advances.
+    memset(this->rx_audio_chunk_, 0, bytes);
+    pcm = this->rx_audio_chunk_;
     silence_reason = SilenceReason::MUTED_SINK;
   }
 
@@ -395,8 +399,9 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
 
 void VoipStack::play_silence_frame_(SilenceReason reason, TickType_t ticks_to_wait, uint32_t revision) {
   const size_t silence_bytes = this->get_current_rx_audio_format_().nominal_frame_bytes();
-  if (this->rx_silence_chunk_ != nullptr && silence_bytes <= this->rx_audio_chunk_alloc_bytes_) {
-    this->play_rx_frame_(this->rx_silence_chunk_, silence_bytes, reason, ticks_to_wait, revision);
+  if (this->rx_audio_chunk_ != nullptr && silence_bytes <= this->rx_audio_chunk_alloc_bytes_) {
+    memset(this->rx_audio_chunk_, 0, silence_bytes);
+    this->play_rx_frame_(this->rx_audio_chunk_, silence_bytes, reason, ticks_to_wait, revision);
   }
 }
 

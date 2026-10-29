@@ -71,6 +71,11 @@ def mwi_binary(tmp_path_factory):
         "refresh-response-tag",
         "refresh-terminal",
         "notify-new-connection",
+        "borrowed-refresh",
+        "borrowed-password",
+        "borrowed-revision",
+        "borrowed-remove-reuse",
+        "legacy-temporary",
     ],
 )
 def test_mwi_wire_lifecycle(mwi_binary, transport, scenario):

@@ -291,7 +291,13 @@ bool SipRegistration::set_account(const SipAccountConfig& c, uint32_t now) {
       }
   if (i < 0) return false;
   auto& a = this->accounts_[i];
+#ifdef USE_ESPHOME_VOIP_MWI
+  const uint32_t revision = a.config_revision + 1;
+#endif
   a = {};
+#ifdef USE_ESPHOME_VOIP_MWI
+  a.config_revision = revision;
+#endif
   a.config = c;
   a.occupied = true;
   a.desired = c.enabled;
@@ -304,7 +310,13 @@ bool SipRegistration::set_account(const SipAccountConfig& c, uint32_t now) {
 bool SipRegistration::remove_account(const std::string& id) {
   const int i = this->find(id);
   if (i < 0) return false;
+#ifdef USE_ESPHOME_VOIP_MWI
+  const uint32_t revision = this->accounts_[i].config_revision + 1;
+#endif
   this->accounts_[i] = {};
+#ifdef USE_ESPHOME_VOIP_MWI
+  this->accounts_[i].config_revision = revision;
+#endif
   return true;
 }
 bool SipRegistration::request_registration(const std::string& id, bool on, uint32_t now) {

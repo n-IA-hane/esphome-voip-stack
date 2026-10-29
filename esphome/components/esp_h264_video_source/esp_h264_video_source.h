@@ -52,6 +52,7 @@ class EspH264VideoSource
   void set_gop(uint8_t value) { this->gop_ = value; }
 
   voip_stack::VideoCapability get_video_capability() const override;
+  bool uses_access_unit_leases() const override { return true; }
   bool prepare_video(
       const voip_stack::VideoCapability &capability) override;
   bool start_video(
@@ -139,7 +140,9 @@ class EspH264VideoSource
   std::atomic<uint32_t> raw_callbacks_in_flight_{0};
   std::atomic<bool> shutdown_pending_{false};
   TaskHandle_t tx_task_handle_{nullptr};
+#ifndef USE_ESP_IDF
   StaticTask_t tx_task_tcb_{};
+#endif
   StackType_t *tx_task_stack_{nullptr};
   bool tx_task_with_caps_{false};
   SemaphoreHandle_t tx_done_{nullptr};

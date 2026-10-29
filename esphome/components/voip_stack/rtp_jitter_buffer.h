@@ -51,14 +51,13 @@ class RtpJitterBuffer {
 
  protected:
   struct Slot {
-    bool valid{false};
-    bool has_metadata{false};
-    bool source_changed{false};
     uint32_t format_packed{0};
-    uint16_t sequence{0};
     uint32_t timestamp{0};
     size_t bytes{0};
-    uint8_t *pcm{nullptr};
+    uint16_t sequence{0};
+    bool valid : 1;
+    bool has_metadata : 1;
+    bool source_changed : 1;
   };
 
   static int16_t sequence_delta_(uint16_t sequence, uint16_t reference) {
@@ -91,9 +90,6 @@ inline RtpJitterBuffer::RtpJitterBuffer(uint8_t *storage, size_t frame_capacity,
     this->prebuffer_ = 1;
   if (this->prebuffer_ > this->slot_count_)
     this->prebuffer_ = this->slot_count_;
-  for (uint8_t i = 0; i < this->slot_count_; i++) {
-    this->slots_[i].pcm = this->storage_ + (static_cast<size_t>(i) * this->frame_capacity_);
-  }
 }
 
 inline void RtpJitterBuffer::clear_slots_() {
@@ -182,7 +178,7 @@ inline bool RtpJitterBuffer::push(const Frame &frame) {
     this->counters_.discarded_frames++;
   }
 
-  memcpy(slot.pcm, frame.pcm, frame.bytes);
+  memcpy(this->storage_ + (sequence % this->slot_count_) * this->frame_capacity_, frame.pcm, frame.bytes);
   slot.valid = true;
   slot.has_metadata = frame.has_metadata;
   slot.source_changed = frame.source_changed;
@@ -246,7 +242,7 @@ inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t ca
     if (actual_bytes != nullptr) *actual_bytes = slot.bytes;
     if (source_changed != nullptr) *source_changed = slot.source_changed;
     if (format_packed != nullptr) *format_packed = slot.format_packed;
-    memcpy(out, slot.pcm, slot.bytes);
+    memcpy(out, this->storage_ + (this->next_sequence_ % this->slot_count_) * this->frame_capacity_, slot.bytes);
     slot.valid = false;
     slot.bytes = 0;
     if (this->valid_count_ > 0) this->valid_count_--;

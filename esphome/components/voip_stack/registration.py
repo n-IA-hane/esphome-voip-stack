@@ -4,7 +4,7 @@ import re
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import automation
-from esphome.core import CORE
+from esphome.core import CORE, ID
 from esphome.components import esp32
 
 CONF_REGISTRATION = "registration"
@@ -100,10 +100,20 @@ async def to_code(parent, config):
     cg.add_define("VOIP_REGISTRATION_CAPACITY", conf["max_accounts"])
     esp32.include_builtin_idf_component("mbedtls")
     cg.add(parent.configure_registration(conf["accept_direct_calls"], conf["default_line"]))
-    for a in conf["accounts"]:
-        cg.add(parent.add_registration_account(a["account_id"], a["registrar"], a["port"], a["domain"],
-            a["username"], a["password"], a["auth_username"], a["proxy"], a["proxy_port"],
-            a["transport"] == "tcp", a["expires"], a["enabled"]))
+    if conf["accounts"]:
+        view_type = NS.struct("SipAccountConfigView")
+        rows = [cg.StructInitializer(view_type,
+            ("id", a["account_id"]), ("registrar", a["registrar"]),
+            ("domain", a["domain"]), ("username", a["username"]),
+            ("password", a["password"]), ("auth_username", a["auth_username"]),
+            ("proxy", a["proxy"]), ("port", a["port"]),
+            ("proxy_port", a["proxy_port"]), ("expires", a["expires"]),
+            ("tcp", a["transport"] == "tcp"), ("enabled", a["enabled"]))
+            for a in conf["accounts"]]
+        accounts = cg.static_const_array(
+            ID(f"{config['id']}_registration_accounts", is_declaration=True,
+               type=view_type), rows)
+        cg.add(parent.set_registration_accounts(accounts, len(rows)))
     for conf in config.get("on_registration_state", []):
         await automation.build_automation(parent.get_registration_state_trigger(),
             [(cg.std_string, "account_id"), (cg.std_string, "state"), (cg.int_, "status_code")], conf)

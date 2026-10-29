@@ -282,7 +282,9 @@ protected:
   std::atomic<uint32_t> loss_generation_{0};
 #endif
   TaskHandle_t rx_task_handle_{nullptr};
+#ifndef USE_ESP_IDF
   StaticTask_t rx_task_tcb_{};
+#endif
   StackType_t *rx_task_stack_{nullptr};
   bool rx_task_with_caps_{false};
   SemaphoreHandle_t rx_done_{nullptr};

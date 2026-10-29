@@ -13,6 +13,7 @@ def test_registration_overlay_storage_contracts(tmp_path, capacity):
     saved_account = block(header, "struct SavedRegistrationAccount") + ";"
     saved = block(header, "struct SavedRegistration {") + ";"
     methods = "\n".join(block(source, name) for name in [
+        "void VoipStack::add_registration_account(",
         "bool VoipStack::load_registration_saved_(", "bool VoipStack::write_registration_saved_(",
         "bool VoipStack::save_registration_override_(", "bool VoipStack::reset_account(",
     ])
@@ -60,7 +61,14 @@ struct VoipStack {
  REPLACE_SAVED
  std::unique_ptr<SavedRegistration> registration_saved_=std::make_unique<SavedRegistration>();
  unsigned registration_nvs_handle_=1;
- std::array<SipAccountConfig,SipRegistration::CAPACITY> registration_baseline_{};
+ const SipAccountConfigView* registration_baseline_=nullptr;
+ std::unique_ptr<std::vector<SipAccountConfig>> registration_cpp_baseline_;
+ SipAccountConfig registration_baseline_at_(size_t i)const{
+  return registration_cpp_baseline_?(*registration_cpp_baseline_)[i]:registration_baseline_[i].materialize();}
+ bool registration_baseline_matches_(size_t i,const std::string&id)const{
+  return registration_cpp_baseline_?(*registration_cpp_baseline_)[i].id==id:id==registration_baseline_[i].id;}
+ void add_registration_account(const std::string&,const std::string&,uint16_t,const std::string&,const std::string&,
+ const std::string&,const std::string&,const std::string&,uint16_t,bool,uint32_t,bool);
  size_t registration_baseline_count_=0;
  std::unique_ptr<SipTransport>transport_=std::make_unique<SipTransport>();
  std::string default_line_="direct";
@@ -84,11 +92,19 @@ int main(){
  assert(v.save_registration_override_(second.id,nullptr,true));
  auto third=account("third");assert(v.save_registration_override_(third.id,&third,false));
  // Removing a YAML account uses only the separate bounded ID list.
- v.registration_baseline_[0]=first;v.registration_baseline_count_=1;
+ const SipAccountConfigView baseline[]{
+  {"first","pbx.example","pbx.example","100","test-only","","",5060,5060,3600,false,true}};
+ v.registration_baseline_=baseline;v.registration_baseline_count_=1;
  assert(v.save_registration_override_(first.id,nullptr,true));
  assert(std::string(v.registration_saved_->removed[0].data())=="first");
  assert(v.reset_account("first"));assert(v.registration_saved_->removed[0][0]==0);
  assert(v.transport_->present&&v.transport_->active.id=="first");
+ // The incremental C++ builder retains the immutable rows before adding.
+ if(SipRegistration::CAPACITY>1){
+  v.add_registration_account("added","pbx.example",5060,"pbx.example","101","test","","",5060,false,3600,true);
+  assert(v.registration_cpp_baseline_&&v.registration_baseline_count_==2);
+  assert(v.registration_baseline_matches_(0,"first")&&v.registration_baseline_matches_(1,"added"));
+ }
  // Clearing an orphan saved removal works even if no runtime account exists.
  v.transport_->present=false;v.registration_baseline_count_=0;
  std::strcpy(v.registration_saved_->removed[0].data(),"orphan");

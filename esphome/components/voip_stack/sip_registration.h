@@ -30,6 +30,20 @@ struct SipAccountConfig {
   bool valid() const;
 };
 
+// Immutable YAML baseline. Strings and rows have firmware lifetime in Flash;
+// runtime account state and persisted overrides continue to own their values.
+struct SipAccountConfigView {
+  const char *id, *registrar, *domain, *username, *password, *auth_username, *proxy;
+  uint16_t port, proxy_port;
+  uint32_t expires;
+  bool tcp, enabled;
+
+  SipAccountConfig materialize() const {
+    return {id, registrar, domain, username, password, auth_username, proxy,
+            port, proxy_port, expires, tcp, enabled};
+  }
+};
+
 enum class RegistrationState : uint8_t { DISABLED, REGISTERING, REGISTERED, UNREGISTERING, RETRY, FAILED };
 const char* registration_state_name(RegistrationState state);
 
@@ -61,6 +75,9 @@ class SipRegistration {
   };
   struct Account {
     SipAccountConfig config;
+#ifdef USE_ESPHOME_VOIP_MWI
+    uint32_t config_revision{0};
+#endif
     RegistrationState state{RegistrationState::DISABLED};
     SipDigest digest, proxy_digest;
     std::string call_id, tag, branch, contact;

@@ -116,8 +116,7 @@ bool SipTransport::park_inbound_control_(int socket, const sockaddr_in &source) 
 void SipTransport::pump_registration_mwi_(uint32_t now) {
   for (size_t i = 0; i < SipRegistration::CAPACITY; ++i) {
     const auto &account = this->registration_.account(i);
-    this->mwi_.update_account(i, account.config, account.target_ip, account.target_port, account.contact,
-        account.occupied && account.bound, account.occupied && account.desired, now);
+    this->mwi_.update_registered_account(i, account, now);
   }
   this->mwi_.tick(now);
 }
@@ -315,6 +314,9 @@ bool SipTransport::set_account(const SipAccountConfig& config, AccountCommit com
     if (!space) return false;
   }
   if (commit != nullptr && !commit(context, config.id, &config)) return false;
+#ifdef USE_ESPHOME_VOIP_MWI
+  if (i >= 0) this->mwi_.invalidate_account(i);
+#endif
   if (i >= 0) this->retire_registration_flow_(i);
   if (i >= 0) this->invalidate_registration_dns_(i);
   const bool result = this->registration_.set_account(config, millis());
@@ -329,6 +331,9 @@ bool SipTransport::remove_account(const std::string& id, AccountCommit commit, v
       this->registration_.account(i).bound)
     return false;
   if (commit != nullptr && !commit(context, id, nullptr)) return false;
+#ifdef USE_ESPHOME_VOIP_MWI
+  this->mwi_.invalidate_account(i);
+#endif
   const bool result = this->registration_.remove_account(id);
   this->invalidate_registration_dns_(i);
   this->retire_registration_flow_(i);

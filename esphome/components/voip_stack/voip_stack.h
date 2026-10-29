@@ -118,6 +118,11 @@ class VoipStack : public Component {
   void configure_registration(bool accept_direct, const std::string &default_line) {
     this->registration_accept_direct_ = accept_direct; this->default_line_ = default_line;
   }
+  void set_registration_accounts(const SipAccountConfigView *accounts, size_t count) {
+    this->registration_cpp_baseline_.reset();
+    this->registration_baseline_ = accounts;
+    this->registration_baseline_count_ = std::min(count, SipRegistration::CAPACITY);
+  }
   void add_registration_account(const std::string &id, const std::string &registrar, uint16_t port,
       const std::string &domain, const std::string &username, const std::string &password,
       const std::string &auth_username, const std::string &proxy, uint16_t proxy_port,
@@ -775,7 +780,6 @@ class VoipStack : public Component {
   uint8_t *rx_audio_chunk_{nullptr};
   uint8_t *rx_network_chunk_{nullptr};
   uint8_t *rx_jitter_pcm_storage_{nullptr};
-  uint8_t *rx_silence_chunk_{nullptr};
   size_t rx_audio_chunk_alloc_bytes_{0};
   size_t rx_jitter_frame_alloc_bytes_{0};
   std::unique_ptr<RtpJitterBuffer> rx_jitter_buffer_;
@@ -1011,7 +1015,17 @@ class VoipStack : public Component {
     std::array<SavedRegistrationAccount, SipRegistration::CAPACITY> accounts{};
     std::array<std::array<char, 33>, SipRegistration::CAPACITY> removed{};
   };
-  std::array<SipAccountConfig, SipRegistration::CAPACITY> registration_baseline_{};
+  const SipAccountConfigView *registration_baseline_{nullptr};
+  // Allocated only for advanced C++ callers using the incremental builder.
+  std::unique_ptr<std::vector<SipAccountConfig>> registration_cpp_baseline_;
+  SipAccountConfig registration_baseline_at_(size_t index) const {
+    return this->registration_cpp_baseline_ ? (*this->registration_cpp_baseline_)[index]
+                                          : this->registration_baseline_[index].materialize();
+  }
+  bool registration_baseline_matches_(size_t index, const std::string &id) const {
+    return this->registration_cpp_baseline_ ? (*this->registration_cpp_baseline_)[index].id == id
+                                          : id == this->registration_baseline_[index].id;
+  }
   size_t registration_baseline_count_{0};
   struct RegistrationSavedDeleter {
     void operator()(SavedRegistration *value) const {

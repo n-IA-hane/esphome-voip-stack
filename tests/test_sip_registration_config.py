@@ -37,7 +37,10 @@ def test_registration_generates_only_when_enabled(tmp_path):
     assert "#define VOIP_REGISTRATION_CAPACITY 2" in defines
     assert "#define USE_ESPHOME_VOIP_MWI" not in defines
     assert 'configure_registration(true, "direct")' in generated
-    assert 'add_registration_account("office", "pbx.example.org", 5060, "pbx.example.org", "100"' in generated
+    assert "static const voip_stack::SipAccountConfigView phone_registration_accounts[]" in generated
+    assert '.id = "office"' in generated and '.registrar = "pbx.example.org"' in generated
+    assert 'set_registration_accounts(phone_registration_accounts, 1)' in generated
+    assert "add_registration_account(" not in generated
 
 
 def test_direct_profile_has_no_registration_code(tmp_path):
@@ -47,6 +50,29 @@ def test_direct_profile_has_no_registration_code(tmp_path):
     assert "USE_ESPHOME_VOIP_REGISTRATION" not in defines
     assert "VOIP_REGISTRATION_CAPACITY" not in defines
     assert "configure_registration" not in next(tmp_path.rglob("main.cpp")).read_text()
+
+
+@pytest.mark.parametrize("count", [0, 1, 2, 4])
+def test_flash_baseline_has_only_yaml_rows_and_keeps_runtime_pool(tmp_path, count):
+    config = "  registration:\n    max_accounts: 4\n"
+    if count:
+        config += "    accounts:\n"
+        for index in range(count):
+            config += (f"      - account_id: line{index}\n"
+                       "        registrar: pbx.example.org\n"
+                       f"        username: '{100 + index}'\n"
+                       "        password: test-only-password\n")
+    result = run_config(tmp_path, config)
+    assert result.returncode == 0, result.stdout + result.stderr
+    generated = next(tmp_path.rglob("main.cpp")).read_text()
+    defines = next(tmp_path.rglob("defines.h")).read_text()
+    assert "#define VOIP_REGISTRATION_CAPACITY 4" in defines
+    if count:
+        assert f"set_registration_accounts(phone_registration_accounts, {count})" in generated
+        assert generated.count('.registrar = "pbx.example.org"') == count
+    else:
+        assert "phone_registration_accounts" not in generated
+    assert "add_registration_account(" not in generated
 
 
 def test_pbx_only_single_account_selects_it_automatically(tmp_path):

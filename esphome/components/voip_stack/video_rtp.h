@@ -209,6 +209,7 @@ class VideoRtpSession {
   VideoCapability receive_capability_{};
   uint16_t local_rtp_port_{40002};
   size_t max_payload_{1200};
+  size_t receive_access_unit_capacity_{0};
   std::atomic<uint32_t> remote_ip_v4_{0};
   std::atomic<uint16_t> remote_rtp_port_{0};
   std::atomic<uint32_t> remote_rtcp_ip_v4_{0};
@@ -245,14 +246,18 @@ class VideoRtpSession {
   Mutex stop_mutex_;
   mutable Mutex socket_mutex_;
   TaskHandle_t task_handle_{nullptr};
+#ifndef USE_ESP_IDF
   StaticTask_t task_tcb_{};
+#endif
   StackType_t *task_stack_{nullptr};
   bool task_with_caps_{false};
   SemaphoreHandle_t task_done_{nullptr};
   StaticSemaphore_t task_done_storage_{};
   bool task_done_observed_{false};
   TaskHandle_t sender_task_handle_{nullptr};
+#ifndef USE_ESP_IDF
   StaticTask_t sender_task_tcb_{};
+#endif
   StackType_t *sender_task_stack_{nullptr};
   bool sender_task_with_caps_{false};
   SemaphoreHandle_t sender_task_done_{nullptr};

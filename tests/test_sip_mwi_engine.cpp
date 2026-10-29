@@ -227,7 +227,99 @@ int main(int argc, char **argv) {
     return 0;
   }
   Harness h(tcp);
-  if (scenario == "auth" || scenario == "digest" || scenario == "wire") {
+  if (scenario == "legacy-temporary") {
+    h.client.connection_lost(0, 0);
+    h.client.update_account(0, SipAccountConfig(h.config), INADDR_LOOPBACK, h.first.port,
+                            "sip:alice@127.0.0.1:5060", true, true, 0);
+    h.config.username = "mutated";
+    h.config.password.assign(512, 'x');
+    h.client.tick(0);
+    auto sub = h.first.receive();
+    assert(field(sub, "From").find("sip:alice@") != std::string::npos);
+    h.answer(response(sub, 200, "Expires: 60\r\n"));
+    assert(h.notification(notify(sub)).rfind("SIP/2.0 200", 0) == 0);
+  } else if (scenario == "borrowed-refresh" || scenario == "borrowed-password" ||
+             scenario == "borrowed-remove-reuse" || scenario == "borrowed-revision") {
+    SipRegistration owner;
+    assert(owner.set_account(h.config, 0));
+    const auto bind = [&](uint32_t now) {
+      auto &account = owner.account(0);
+      account.bound = true;
+      account.target_ip = INADDR_LOOPBACK;
+      account.target_port = h.first.port;
+      account.contact = "sip:" + account.config.username + "@127.0.0.1:5060";
+      h.client.update_registered_account(0, account, now);
+      h.client.tick(now);
+      return h.first.receive();
+    };
+    auto sub = bind(0);
+    if (scenario == "borrowed-refresh") {
+      h.answer(response(sub, 200, "Expires: 60\r\n"));
+      assert(h.notification(notify(sub)).rfind("SIP/2.0 200", 0) == 0);
+      h.client.tick(48002);
+      auto refresh = h.first.receive();
+      assert(field(refresh, "Call-ID") == field(sub, "Call-ID"));
+      h.answer(response(refresh, 200, "Expires: 60\r\n"), 48003);
+      assert(h.notification(notify(refresh, 2), 48004).rfind("SIP/2.0 200", 0) == 0);
+      owner.account(0).desired = false;
+      h.client.update_registered_account(0, owner.account(0), 48005);
+      h.client.tick(48005);
+      auto unsubscribe = h.first.receive();
+      assert(field(unsubscribe, "Expires") == "0");
+      assert(h.notification(notify(unsubscribe, 3, "", "terminated;reason=timeout"), 48006)
+                 .rfind("SIP/2.0 200", 0) == 0);
+      assert(!h.client.state(0).available);
+    } else {
+      if (scenario == "borrowed-remove-reuse") {
+        h.answer(response(sub, 200, "Expires: 60\r\n"));
+        assert(h.notification(notify(sub)).rfind("SIP/2.0 200", 0) == 0);
+      }
+      const auto revision = owner.account(0).config_revision;
+      // This is the same ordering used by SipTransport under dialog_mutex_.
+      // An advanced caller may update the stable pool and then reconcile in
+      // the same critical section. Revision comparison must also detect it.
+      if (scenario != "borrowed-revision") h.client.invalidate_account(0);
+      assert(!h.client.state(0).available);
+      if (scenario == "borrowed-password" || scenario == "borrowed-revision") {
+        h.config.password = "new-test-password";
+        assert(owner.set_account(h.config, 10));
+      } else {
+        assert(owner.remove_account(h.config.id));
+        h.client.update_registered_account(0, owner.account(0), 10);
+        h.client.tick(10);
+        assert(h.first.quiet());
+        h.config.id = "replacement";
+        h.config.username = "bob";
+        assert(owner.set_account(h.config, 11));
+      }
+      assert(owner.account(0).config_revision != revision);
+      auto fresh = bind(12);
+      assert(field(fresh, "Call-ID") != field(sub, "Call-ID"));
+      // A delayed challenge and a replay of the old NOTIFY cannot touch the
+      // replacement generation, including the cached successful NOTIFY case.
+      assert(!h.client.handle_response(h.first.deliver(response(sub, 401,
+          "WWW-Authenticate: Digest realm=\"example.test\", nonce=\"old\", qop=\"auth\"\r\n")),
+          INADDR_LOOPBACK, h.first.port, tcp, 0, 13));
+      assert(h.notification(notify(sub), 14).rfind("SIP/2.0 481", 0) == 0);
+      h.answer(response(fresh, 401,
+          "WWW-Authenticate: Digest realm=\"example.test\", nonce=\"new\", qop=\"auth\"\r\n"), 15);
+      auto authorized = h.first.receive();
+      const auto auth = field(authorized, "Authorization");
+      assert(!auth.empty());
+      const auto cnonce_at = auth.find("cnonce=\"");
+      assert(cnonce_at != std::string::npos);
+      const auto cnonce_end = auth.find('"', cnonce_at + 8);
+      const auto cnonce = auth.substr(cnonce_at + 8, cnonce_end - cnonce_at - 8);
+      const auto ha1 = hash_value("MD5", h.config.username + ":example.test:" + h.config.password);
+      const auto ha2 = hash_value("MD5", "SUBSCRIBE:sip:" + h.config.username + "@example.test");
+      const auto expected = hash_value("MD5", ha1 + ":new:00000001:" + cnonce + ":auth:" + ha2);
+      assert(auth.find("response=\"" + expected + '"') != std::string::npos);
+      assert(field(authorized, "From").find("sip:" + h.config.username + "@") != std::string::npos);
+      h.answer(response(authorized, 200, "Expires: 60\r\n"), 16);
+      assert(h.notification(notify(authorized), 17).rfind("SIP/2.0 200", 0) == 0);
+      assert(h.client.state(0).available && h.client.state(0).account_id == h.config.id);
+    }
+  } else if (scenario == "auth" || scenario == "digest" || scenario == "wire") {
     auto sub = h.start();
     assert(field(sub, "Event") == "message-summary" &&
            field(sub, "Accept") == "application/simple-message-summary");

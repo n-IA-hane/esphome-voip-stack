@@ -29,7 +29,17 @@ void VoipStack::add_registration_account(const std::string& id, const std::strin
                                          const std::string& proxy, uint16_t proxy_port, bool tcp,
                                          uint32_t expires, bool enabled) {
   if (this->registration_baseline_count_ >= SipRegistration::CAPACITY) return;
-  auto& c = this->registration_baseline_[this->registration_baseline_count_++];
+  if (!this->registration_cpp_baseline_) {
+    auto owned = std::make_unique<std::vector<SipAccountConfig>>();
+    owned->reserve(SipRegistration::CAPACITY);
+    for (size_t i = 0; i < this->registration_baseline_count_; ++i)
+      owned->push_back(this->registration_baseline_[i].materialize());
+    this->registration_cpp_baseline_ = std::move(owned);
+    this->registration_baseline_ = nullptr;
+  }
+  this->registration_cpp_baseline_->emplace_back();
+  ++this->registration_baseline_count_;
+  auto& c = this->registration_cpp_baseline_->back();
   c.id = id;
   c.registrar = registrar;
   c.port = port;
@@ -62,7 +72,7 @@ void VoipStack::initialize_registration_() {
   }
   if (!this->registration_saved_) {
     // A persistence allocation failure must not disable ordinary volatile SIP.
-    for (size_t i = 0; i < this->registration_baseline_count_; ++i) transport->set_account(this->registration_baseline_[i]);
+    for (size_t i = 0; i < this->registration_baseline_count_; ++i) transport->set_account(this->registration_baseline_at_(i));
     return;
   }
   if (this->registration_nvs_handle_ != 0) nvs_close(this->registration_nvs_handle_);
@@ -70,7 +80,7 @@ void VoipStack::initialize_registration_() {
     this->registration_nvs_handle_ = 0;
   this->load_registration_saved_();
   for (size_t i = 0; i < this->registration_baseline_count_; ++i) {
-    const auto& base = this->registration_baseline_[i];
+    const auto base = this->registration_baseline_at_(i);
     bool overridden = false;
     for (const auto& item : this->registration_saved_->accounts)
       if (item.used && item.id[sizeof(item.id) - 1] == 0 && base.id == item.id) overridden = true;
@@ -182,7 +192,7 @@ bool VoipStack::save_registration_override_(const std::string& id, const SipAcco
   if (removed) {
     bool baseline = false;
     for (size_t i = 0; i < this->registration_baseline_count_; ++i)
-      if (this->registration_baseline_[i].id == id) baseline = true;
+      if (this->registration_baseline_matches_(i, id)) baseline = true;
     if (baseline) {
       bool found = false;
       for (auto& name : next.removed)
@@ -245,9 +255,15 @@ bool VoipStack::remove_account(const std::string& id, bool persist) {
 bool VoipStack::reset_account(const std::string& id) {
   if (this->transport_ == nullptr) return false;
   auto* transport = static_cast<SipTransport*>(this->transport_.get());
-  const SipAccountConfig* baseline = nullptr;
-  for (size_t i = 0; i < this->registration_baseline_count_; ++i)
-    if (this->registration_baseline_[i].id == id) baseline = &this->registration_baseline_[i];
+  SipAccountConfig baseline;
+  bool has_baseline = false;
+  for (size_t i = 0; i < this->registration_baseline_count_; ++i) {
+    if (this->registration_baseline_matches_(i, id)) {
+      baseline = this->registration_baseline_at_(i);
+      has_baseline = true;
+      break;
+    }
+  }
   SipTransport::AccountCommit commit = [](void* ctx, const std::string& id, const SipAccountConfig*) {
     auto* self = static_cast<VoipStack*>(ctx);
     if (!self->registration_saved_) return false;
@@ -260,10 +276,10 @@ bool VoipStack::reset_account(const std::string& id) {
     *self->registration_saved_ = next;
     return true;
   };
-  const bool changed = baseline != nullptr ? transport->set_account(*baseline, commit, this)
+  const bool changed = has_baseline ? transport->set_account(baseline, commit, this)
                                            : transport->remove_account(id, commit, this, true);
   if (!changed) return false;
-  if (baseline == nullptr && this->default_line_ == id) this->default_line_ = "direct";
+  if (!has_baseline && this->default_line_ == id) this->default_line_ = "direct";
   return true;
 }
 bool VoipStack::register_account(const std::string& id) {

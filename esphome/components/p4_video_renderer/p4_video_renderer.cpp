@@ -1152,7 +1152,13 @@ bool P4VideoRenderer::start_rx_task_() {
   return voip_audio_core::start_managed_pinned_task(
       P4VideoRenderer::rx_task_trampoline_, "p4_video_rx", kTaskStackBytes,
       this, kTaskPriority, 1, kTaskStackInPsram, TAG,
-      &this->rx_task_handle_, &this->rx_task_tcb_, &this->rx_task_stack_,
+      &this->rx_task_handle_,
+#ifdef USE_ESP_IDF
+          nullptr,
+#else
+          &this->rx_task_tcb_,
+#endif
+          &this->rx_task_stack_,
       &this->rx_task_with_caps_);
 }
 

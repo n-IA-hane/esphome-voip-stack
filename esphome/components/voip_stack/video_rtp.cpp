@@ -233,11 +233,29 @@ bool VideoRtpSession::prepare_buffers() {
 
 bool VideoRtpSession::allocate_persistent_buffers_() {
   if (this->sink_ != nullptr) {
+    const size_t sink_limit = this->sink_->max_encoded_access_unit_bytes();
+    const size_t capacity = sink_limit == 0 ? kMaxAccessUnitBytes :
+        std::min(kMaxAccessUnitBytes, sink_limit);
+    if (capacity != this->receive_access_unit_capacity_) {
+      // Endpoints can be rebound only while the workers are stopped. A sink
+      // may still hold an old lease; never resize its storage underneath it.
+      for (const auto &slot : this->receive_access_units_)
+        if (slot.state.load(std::memory_order_acquire) == 2) return false;
+      this->reset_reassembly_();
+      this->reassembly_ = nullptr;
+      this->reassembly_slot_ = nullptr;
+      for (auto &slot : this->receive_access_units_) {
+        if (slot.data != nullptr) heap_caps_free(slot.data);
+        slot.data = nullptr;
+        slot.state.store(0, std::memory_order_release);
+      }
+      this->receive_access_unit_capacity_ = capacity;
+    }
     for (auto &slot : this->receive_access_units_) {
       slot.owner = this;
       if (slot.data == nullptr) {
         slot.data = static_cast<uint8_t *>(heap_caps_malloc(
-            kMaxAccessUnitBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+            this->receive_access_unit_capacity_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
       }
       if (slot.data == nullptr) {
         ESP_LOGE(TAG, "Video reassembly PSRAM allocation failed at setup");
@@ -250,7 +268,7 @@ bool VideoRtpSession::allocate_persistent_buffers_() {
     if (!this->ensure_jpeg_quantization_cache_()) return false;
 #endif
   }
-  if (this->source_ != nullptr) {
+  if (this->source_ != nullptr && !this->source_->uses_access_unit_leases()) {
     for (auto &slot : this->tx_access_units_) {
       if (slot.data == nullptr) {
         slot.data = static_cast<uint8_t *>(heap_caps_malloc(
@@ -571,7 +589,13 @@ bool VideoRtpSession::start(bool activate) {
   if (!voip_audio_core::start_managed_pinned_task(
           VideoRtpSession::task_trampoline_, "voip_video_rtp", kTaskStackBytes,
           this, kReceiveTaskPriority, 0, this->task_stack_in_psram_, TAG,
-          &this->task_handle_, &this->task_tcb_, &this->task_stack_,
+          &this->task_handle_,
+#ifdef USE_ESP_IDF
+          nullptr,
+#else
+          &this->task_tcb_,
+#endif
+          &this->task_stack_,
           &this->task_with_caps_)) {
     ESP_LOGE(TAG, "Video prepare failed: receive task unavailable");
     this->running_.store(false, std::memory_order_release);
@@ -601,8 +625,10 @@ bool VideoRtpSession::start(bool activate) {
   }
 
   bool tx_queue_prepared = true;
-  for (const auto &slot : this->tx_access_units_)
-    tx_queue_prepared = tx_queue_prepared && slot.data != nullptr;
+  if (this->source_ == nullptr || !this->source_->uses_access_unit_leases()) {
+    for (const auto &slot : this->tx_access_units_)
+      tx_queue_prepared = tx_queue_prepared && slot.data != nullptr;
+  }
   if (negotiated_send && !tx_queue_prepared)
     ESP_LOGE(TAG, "Video prepare failed: TX queue unavailable");
   bool send_prepared = source_prepared && tx_queue_prepared;
@@ -1020,7 +1046,8 @@ void VideoRtpSession::queue_access_unit_(
   }
 #endif
   auto &slot = this->tx_access_units_[this->tx_write_slot_];
-  if (slot.data == nullptr) {
+  if (slot.data == nullptr && access_unit.release_callback == nullptr) {
+    this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
     release_input();
     return;
   }
@@ -1075,7 +1102,13 @@ bool VideoRtpSession::start_sender_task_() {
           VideoRtpSession::sender_task_trampoline_, "voip_video_tx",
           kSenderTaskStackBytes, this, kSenderTaskPriority, kSenderTaskCore,
           this->task_stack_in_psram_, TAG, &this->sender_task_handle_,
-          &this->sender_task_tcb_, &this->sender_task_stack_,
+
+#ifdef USE_ESP_IDF
+          nullptr,
+#else
+          &this->sender_task_tcb_,
+#endif
+          &this->sender_task_stack_,
           &this->sender_task_with_caps_)) {
     return true;
   }
@@ -1820,7 +1853,7 @@ bool VideoRtpSession::handle_h264_payload_(const uint8_t *payload,
       this->fu_nal_type_ = fragment_type;
       uint8_t prefix_and_header[5]{0, 0, 0, 1, reconstructed};
       if (this->reassembly_size_ + sizeof(prefix_and_header) >
-          kMaxAccessUnitBytes) {
+          this->receive_access_unit_capacity_) {
         this->reassembly_damaged_ = true;
       } else {
         memcpy(this->reassembly_ + this->reassembly_size_, prefix_and_header,
@@ -1830,7 +1863,7 @@ bool VideoRtpSession::handle_h264_payload_(const uint8_t *payload,
     }
     if (!this->reassembly_damaged_) {
       const size_t fragment = payload_size - 2;
-      if (this->reassembly_size_ + fragment > kMaxAccessUnitBytes) {
+      if (this->reassembly_size_ + fragment > this->receive_access_unit_capacity_) {
         this->reassembly_damaged_ = true;
       } else {
         memcpy(this->reassembly_ + this->reassembly_size_, payload + 2,
@@ -1879,7 +1912,7 @@ bool VideoRtpSession::handle_jpeg_payload_(const uint8_t *payload,
   size_t access_unit_size = 0;
   const RtpJpegPushResult result = this->jpeg_depacketizer_.push(
       payload, payload_size, marker, timestamp, this->reassembly_,
-      kMaxAccessUnitBytes, &access_unit_size);
+      this->receive_access_unit_capacity_, &access_unit_size);
   if (result == RtpJpegPushResult::DROPPED) {
     this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
     this->reassembly_damaged_ = false;
@@ -1927,7 +1960,7 @@ bool VideoRtpSession::append_annex_b_nal_(const uint8_t *nal, size_t size) {
   static constexpr uint8_t START_CODE[4]{0, 0, 0, 1};
   if (nal == nullptr || size == 0 ||
       this->reassembly_size_ + sizeof(START_CODE) + size >
-          kMaxAccessUnitBytes) {
+          this->receive_access_unit_capacity_) {
     return false;
   }
   memcpy(this->reassembly_ + this->reassembly_size_, START_CODE,
@@ -1976,7 +2009,7 @@ void VideoRtpSession::finish_access_unit_(uint32_t timestamp) {
     const size_t parameter_prefix = sps_prefix + pps_prefix;
     if (parameter_prefix != 0) {
       if (this->reassembly_size_ + parameter_prefix >
-          kMaxAccessUnitBytes) {
+          this->receive_access_unit_capacity_) {
         this->dropped_access_units_.fetch_add(
             1, std::memory_order_acq_rel);
         this->send_rtcp_pli_();

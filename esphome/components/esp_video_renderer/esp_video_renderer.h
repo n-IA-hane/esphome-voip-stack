@@ -46,6 +46,7 @@ public:
   uint16_t get_width() const { return this->width_; }
   uint16_t get_height() const { return this->height_; }
   uint8_t get_framerate() const { return this->framerate_; }
+  size_t get_max_jpeg_bytes() const { return this->max_jpeg_bytes_; }
 
   // Attach from lvgl.on_boot. All LVGL operations remain in the main loop.
   void attach_video_container(lv_obj_t *container);

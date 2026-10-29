@@ -424,36 +424,29 @@ void VoipStack::set_contacts(const std::string &contacts_csv) {
 }
 
 std::string VoipStack::normalize_phonebook_for_transport_(const std::string &contacts_csv) {
-  const auto raw_entries = Phonebook::split(contacts_csv, ',');
-  std::vector<ParsedPhonebookSlot> slots;
-  slots.reserve(raw_entries.size());
-
-  for (const auto &raw : raw_entries) {
-    ParsedPhonebookSlot slot;
-    if (!parse_slot_for_normalize(raw, &slot)) {
-      continue;
-    }
-    slots.push_back(slot);
-  }
-
-  if (slots.empty()) return contacts_csv;
-
   std::string out;
-  for (const auto &slot : slots) {
-    const auto &entry = slot.entry;
-
-    if (entry.endpoint_type == ContactEndpointType::SIP) {
-      append_csv(&out, serialize_endpoint(entry.name, entry.route,
-                                          entry.endpoint_type, entry.ip,
-                                          entry.port, entry.rtp_port,
-                                          entry.sip_transport_tcp));
-      continue;
+  size_t start = 0;
+  size_t valid = 0;
+  while (start <= contacts_csv.size() && valid < Phonebook::MAX_CONTACTS) {
+    const size_t comma = contacts_csv.find(',', start);
+    const size_t end = comma == std::string::npos ? contacts_csv.size() : comma;
+    ParsedPhonebookSlot slot;
+    if (parse_slot_for_normalize(contacts_csv.substr(start, end - start), &slot)) {
+      ++valid;
+      const auto &entry = slot.entry;
+      if (entry.endpoint_type == ContactEndpointType::SIP) {
+        append_csv(&out, serialize_endpoint(entry.name, entry.route,
+                                            entry.endpoint_type, entry.ip,
+                                            entry.port, entry.rtp_port,
+                                            entry.sip_transport_tcp));
+      } else {
+        append_csv(&out, entry.name);
+      }
     }
-
-    append_csv(&out, entry.name);
+    if (comma == std::string::npos) break;
+    start = comma + 1;
   }
-
-  return out;
+  return valid == 0 ? contacts_csv : out;
 }
 
 bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {

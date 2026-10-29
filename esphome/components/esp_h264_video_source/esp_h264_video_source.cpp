@@ -760,7 +760,13 @@ bool EspH264VideoSource::start_tx_task_() {
   if (voip_audio_core::start_managed_pinned_task(
           EspH264VideoSource::tx_task_trampoline_, "p4_video_tx", 8192,
           this, 16, 0, true, TAG, &this->tx_task_handle_,
-          &this->tx_task_tcb_, &this->tx_task_stack_,
+
+#ifdef USE_ESP_IDF
+          nullptr,
+#else
+          &this->tx_task_tcb_,
+#endif
+          &this->tx_task_stack_,
           &this->tx_task_with_caps_)) {
     return true;
   }

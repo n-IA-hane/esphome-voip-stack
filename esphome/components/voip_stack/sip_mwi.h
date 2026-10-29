@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 namespace esphome::voip_stack {
@@ -40,6 +41,10 @@ public:
                       uint32_t target_ip, uint16_t target_port,
                       const std::string &contact, bool bound, bool desired,
                       uint32_t now);
+  // The registration pool owns stable slots. Invalidate before replacing a
+  // slot under the transport's dialog lock, then borrow its current revision.
+  void update_registered_account(size_t index, const SipRegistration::Account &account, uint32_t now);
+  void invalidate_account(size_t index);
   void tick(uint32_t now);
   bool next_deadline(uint32_t now, uint32_t *remaining) const;
   bool handle_response(const std::string &message, uint32_t source_ip,
@@ -57,7 +62,11 @@ public:
 
 protected:
   struct Account {
-    SipAccountConfig config;
+    const SipAccountConfig *config_{nullptr};
+    // Only standalone C++ callers of update_account need an owned copy.
+    std::unique_ptr<SipAccountConfig> owned_config;
+    uint32_t config_revision{0};
+    const SipAccountConfig &config() const { return *this->config_; }
     MessageWaitingState state;
     SipDigest digest, proxy_digest;
     RegistrationMessage request;
@@ -80,6 +89,9 @@ protected:
   };
   std::array<Account, CAPACITY> accounts_{};
   Hooks hooks_{};
+  void update_account_(size_t index, const SipAccountConfig &config, uint32_t revision,
+                       uint32_t target_ip, uint16_t target_port, const std::string &contact,
+                       bool bound, bool desired, uint32_t now);
   bool begin_(size_t index, uint32_t now);
   void retry_(size_t index, uint32_t now, uint32_t delay_ms = 0,
               bool new_dialog = false);

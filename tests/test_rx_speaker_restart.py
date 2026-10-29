@@ -55,7 +55,7 @@ struct VoipStack {
  std::atomic<CallState> call_state_{CallState::IN_CALL};
  std::atomic<uint32_t> rx_underrun_start_ms_{0},media_rx_queue_depth_{0};
  std::atomic<float> volume_{1};
- uint8_t data[320]{},silence[320]{};uint8_t *rx_audio_chunk_=data,*rx_silence_chunk_=silence;
+ uint8_t data[320]{};uint8_t *rx_audio_chunk_=data;
  uint8_t *rx_network_chunk_=data;
  size_t rx_audio_chunk_alloc_bytes_=320,rx_jitter_frame_alloc_bytes_=320;
  static constexpr unsigned kRxSilenceAfterMs=100;

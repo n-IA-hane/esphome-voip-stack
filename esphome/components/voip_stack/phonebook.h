@@ -130,25 +130,20 @@ class Phonebook {
   bool replace_all(std::vector<ContactEntry> entries) {
     const std::string selected = this->current_name();
     const std::string selected_route = this->current_route();
-    std::vector<ContactEntry> normalized;
-    normalized.reserve(std::min(entries.size(), MAX_CONTACTS));
-    for (auto &entry : entries) {
-      if (normalized.size() >= MAX_CONTACTS) break;
+    size_t count = 0;
+    for (size_t i = 0; i < entries.size() && count < MAX_CONTACTS; ++i) {
+      auto &entry = entries[i];
       if (!valid_entry_(entry)) continue;
       if (!this->self_name_.empty() && entry.name == this->self_name_) continue;
       entry.missing_count = 0;
-      bool replaced = false;
-      for (auto &existing : normalized) {
-        if (existing.route != entry.route) continue;
-        existing = std::move(entry);
-        replaced = true;
-        break;
-      }
-      if (!replaced) normalized.push_back(std::move(entry));
+      size_t target = 0;
+      while (target < count && entries[target].route != entry.route) ++target;
+      if (target != i) entries[target] = std::move(entry);
+      if (target == count) ++count;
     }
-
-    const bool changed = !same_entries_(this->entries_, normalized);
-    this->entries_ = std::move(normalized);
+    entries.resize(count);
+    const bool changed = !same_entries_(this->entries_, entries);
+    this->entries_ = std::move(entries);
     this->index_ = 0;
     if (!selected_route.empty() && !this->select(selected_route) &&
         !selected.empty()) {

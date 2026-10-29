@@ -15,6 +15,7 @@ def test_received_pcm_is_retained_until_accepted_or_cancelled(tmp_path):
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <cstring>
 #include <vector>
 using TickType_t=uint32_t;
 #define pdTRUE 1
@@ -33,7 +34,7 @@ struct Speaker {
  }
 };
 struct VoipStack {
- Speaker *speaker_;uint8_t *rx_silence_chunk_=nullptr;
+ Speaker *speaker_;uint8_t *rx_audio_chunk_=nullptr;size_t rx_audio_chunk_alloc_bytes_=0;
  std::atomic<float> volume_{1};
  std::atomic<bool> audio_devices_active_{true};
  std::atomic<CallState> call_state_{CallState::IN_CALL};
@@ -53,6 +54,17 @@ int main(){
   tick=waits=0;Speaker sink;VoipStack v;v.speaker_=&sink;
   v.play_rx_frame_(pcm.data(),pcm.size(),SilenceReason::NONE,10,0);
   assert(sink.accepted==pcm&&waits==0&&tick==0);
+ }
+ {
+  tick=waits=0;Speaker sink;sink.chunk=3;sink.blocked=2;
+  VoipStack v;v.speaker_=&sink;std::vector<uint8_t> scratch(64,0xab);
+  v.rx_audio_chunk_=scratch.data();v.rx_audio_chunk_alloc_bytes_=scratch.size();v.volume_=0;
+  v.play_rx_frame_(pcm.data(),pcm.size(),SilenceReason::NONE,10,0);
+  assert(sink.accepted==std::vector<uint8_t>(64,0));
+  assert(pcm[1]==13); // Other input storage remains borrowed and unchanged.
+  sink.accepted.clear();v.volume_=1;
+  v.play_rx_frame_(pcm.data(),pcm.size(),SilenceReason::NONE,10,0);
+  assert(sink.accepted==pcm);
  }
  for(bool reset:{false,true}) {
   tick=waits=0;Speaker sink;sink.blocked=100;VoipStack v;v.speaker_=&sink;

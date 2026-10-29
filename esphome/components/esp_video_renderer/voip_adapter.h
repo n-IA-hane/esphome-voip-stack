@@ -19,6 +19,9 @@ public:
     capability.max_fps = this->renderer_->get_framerate();
     return capability;
   }
+  size_t max_encoded_access_unit_bytes() const override {
+    return this->renderer_->get_max_jpeg_bytes();
+  }
   bool start_video(const voip_stack::VideoCapability &capability) override {
     return capability.valid() && capability.is_jpeg() &&
            capability.width <= this->renderer_->get_width() &&

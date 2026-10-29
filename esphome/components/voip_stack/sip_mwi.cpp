@@ -229,7 +229,9 @@ void SipMwi::publish_(size_t index, const MessageWaitingState &state) {
 }
 void SipMwi::unavailable_(size_t index) {
   MessageWaitingState state;
-  state.account_id = this->accounts_[index].config.id;
+  const auto &account = this->accounts_[index];
+  if (account.config_ == nullptr && account.state.account_id.empty()) return;
+  state.account_id = account.state.account_id.empty() ? account.config().id : account.state.account_id;
   if (state.account_id.empty())
     return;
   this->publish_(index, state);
@@ -252,23 +254,53 @@ void SipMwi::reset_dialog_(size_t index) {
   a.expires_ms = 0;
   a.auth_attempts = a.proxy_auth_attempts = 0;
 }
+void SipMwi::invalidate_account(size_t index) {
+  if (index >= CAPACITY) return;
+  auto &a = this->accounts_[index];
+  if (a.config_ != nullptr) this->unavailable_(index);
+  auto state = std::move(a.state);
+  a = Account{};
+  a.state = std::move(state);
+}
+
 void SipMwi::update_account(size_t index, const SipAccountConfig &config,
                             uint32_t ip, uint16_t port,
                             const std::string &contact, bool bound,
                             bool desired, uint32_t now) {
-  if (index >= CAPACITY)
-    return;
+  if (index >= CAPACITY) return;
   auto &a = this->accounts_[index];
-  const bool changed = !a.occupied || !same_config(a.config, config) ||
-                       a.target_ip != ip || a.target_port != port ||
-                       a.contact != contact;
+  if (a.owned_config == nullptr || !same_config(*a.owned_config, config)) {
+    auto owned = std::make_unique<SipAccountConfig>(config);
+    this->invalidate_account(index);
+    a.owned_config = std::move(owned);
+  }
+  this->update_account_(index, *a.owned_config, 0, ip, port, contact, bound, desired, now);
+}
+
+void SipMwi::update_registered_account(size_t index, const SipRegistration::Account &account, uint32_t now) {
+  if (index >= CAPACITY) return;
+  if (!account.occupied) {
+    if (this->accounts_[index].config_ != nullptr) this->invalidate_account(index);
+    return;
+  }
+  this->update_account_(index, account.config, account.config_revision, account.target_ip,
+                        account.target_port, account.contact, account.bound, account.desired, now);
+}
+
+void SipMwi::update_account_(size_t index, const SipAccountConfig &config, uint32_t revision,
+                             uint32_t ip, uint16_t port, const std::string &contact,
+                             bool bound, bool desired, uint32_t now) {
+  auto &a = this->accounts_[index];
+  const bool changed = !a.occupied || a.config_ != &config || a.config_revision != revision ||
+                       a.target_ip != ip || a.target_port != port || a.contact != contact;
   if (changed) {
-    if (a.occupied)
-      this->unavailable_(index);
+    if (a.occupied) this->unavailable_(index);
     this->reset_dialog_(index);
     a.digest = SipDigest{};
     a.proxy_digest = SipDigest{};
-    a.config = config;
+    a.config_ = &config;
+    a.config_revision = revision;
+    if (a.owned_config.get() != &config) a.owned_config.reset();
     a.contact = contact;
     a.target_ip = ip;
     a.target_port = port;
@@ -276,7 +308,9 @@ void SipMwi::update_account(size_t index, const SipAccountConfig &config,
     a.supported = true;
     a.failures = 0;
     a.expires = 3600;
-    this->unavailable_(index);
+    MessageWaitingState state;
+    state.account_id = config.id;
+    this->publish_(index, state);
   }
   const bool old_desired = a.desired;
   const bool rebound = bound && !a.bound;
@@ -328,7 +362,7 @@ bool SipMwi::begin_(size_t index, uint32_t now) {
   }
   ++a.cseq;
   a.branch = "z9hG4bK" + this->token_();
-  const std::string aor = "sip:" + a.config.username + "@" + a.config.domain;
+  const std::string aor = "sip:" + a.config().username + "@" + a.config().domain;
   std::string target = a.remote_target.empty() ? aor : a.remote_target;
   std::string routes = a.routes;
   if (!routes.empty()) {
@@ -346,7 +380,7 @@ bool SipMwi::begin_(size_t index, uint32_t now) {
   }
   std::string message =
       "SUBSCRIBE " + target + " SIP/2.0\r\nVia: SIP/2.0/" +
-      (a.config.tcp ? "TCP " : "UDP ") + local + ':' +
+      (a.config().tcp ? "TCP " : "UDP ") + local + ':' +
       std::to_string(this->hooks_.local_port) + ";branch=" + a.branch +
       ";rport\r\nMax-Forwards: 70\r\nFrom: <" + aor + ">;tag=" + a.tag +
       "\r\nTo: <" + aor + '>' +
@@ -362,7 +396,7 @@ bool SipMwi::begin_(size_t index, uint32_t now) {
   for (SipDigest *digest : {&a.digest, &a.proxy_digest}) {
     if (!digest->empty()) {
       const std::string auth = digest->authorization(
-          a.config, "SUBSCRIBE", target, this->token_(), this->hooks_.hash);
+          a.config(), "SUBSCRIBE", target, this->token_(), this->hooks_.hash);
       if (auth.empty()) {
         this->retry_(index, now);
         return false;
@@ -381,7 +415,7 @@ bool SipMwi::begin_(size_t index, uint32_t now) {
   a.waiting_notify = true;
   a.notify_deadline_ms = now + TRANSACTION_MS;
   if (!this->hooks_.send(this->hooks_.context, index, message, a.target_ip,
-                         a.target_port, a.config.tcp)) {
+                         a.target_port, a.config().tcp)) {
     this->retry_(index, now);
     return false;
   }
@@ -435,7 +469,7 @@ void SipMwi::tick(uint32_t now) {
         this->retry_(i, now);
         continue;
       }
-      if (!a.config.tcp && reached(now, a.next_ms)) {
+      if (!a.config().tcp && reached(now, a.next_ms)) {
         this->hooks_.send(this->hooks_.context, i,
                           static_cast<std::string>(a.request), a.target_ip,
                           a.target_port, false);
@@ -462,7 +496,7 @@ bool SipMwi::next_deadline(uint32_t now, uint32_t *remaining) const {
     };
     if (a.pending) {
       consider(a.deadline_ms);
-      if (!a.config.tcp)
+      if (!a.config().tcp)
         consider(a.next_ms);
     } else if (a.scheduled)
       consider(a.next_ms);
@@ -488,7 +522,7 @@ bool SipMwi::handle_response(const std::string &message, uint32_t ip,
     if (!a.occupied || id != a.call_id)
       continue;
     if (!a.pending || ip != a.target_ip || port != a.target_port ||
-        tcp != a.config.tcp || (tcp && flow != static_cast<int>(i)) ||
+        tcp != a.config().tcp || (tcp && flow != static_cast<int>(i)) ||
         seq != a.cseq || tag(header(message, "From")) != a.tag ||
         parameter(header(message, "Via"), "branch") != a.branch)
       return true;
@@ -698,7 +732,7 @@ bool SipMwi::handle_notify(const std::string &message, uint32_t ip,
   const size_t index = static_cast<size_t>(selected);
   auto &a = this->accounts_[index];
   if (!a.bound || (!a.supported && !a.subscribed) || ip != a.target_ip ||
-      tcp != a.config.tcp ||
+      tcp != a.config().tcp ||
       (tcp ? (flow >= 0 && flow != selected) : port != a.target_port) ||
       local_tag != a.tag ||
       (!a.remote_tag.empty() && remote_tag != a.remote_tag) ||
@@ -737,7 +771,7 @@ bool SipMwi::handle_notify(const std::string &message, uint32_t ip,
     return true;
   }
   MessageWaitingState next;
-  next.account_id = a.config.id;
+  next.account_id = a.config().id;
   if (!body.empty()) {
     const std::string type = header(message, "Content-Type");
     if (lower(trim(type.substr(0, type.find(';')))) !=

@@ -164,10 +164,6 @@ void VoipStack::cleanup_partial_setup_() {
                            this->rx_jitter_frame_alloc_bytes_ * VoipStack::kRxQueuedFrames);
     this->rx_jitter_pcm_storage_ = nullptr;
   }
-  if (this->rx_silence_chunk_ != nullptr) {
-    rx_u8_alloc.deallocate(this->rx_silence_chunk_, this->rx_audio_chunk_alloc_bytes_);
-    this->rx_silence_chunk_ = nullptr;
-  }
   this->rx_audio_chunk_alloc_bytes_ = 0;
   this->rx_jitter_frame_alloc_bytes_ = 0;
 #endif
@@ -232,8 +228,7 @@ bool VoipStack::allocate_setup_buffers_() {
         psram_u8.allocate(this->rx_jitter_frame_alloc_bytes_);
     this->rx_jitter_pcm_storage_ =
         psram_u8.allocate(this->rx_jitter_frame_alloc_bytes_ * VoipStack::kRxQueuedFrames);
-    this->rx_silence_chunk_ = psram_u8.allocate(this->rx_audio_chunk_alloc_bytes_);
-    if (!this->rx_audio_chunk_ || !this->rx_jitter_pcm_storage_ || !this->rx_silence_chunk_
+    if (!this->rx_audio_chunk_ || !this->rx_jitter_pcm_storage_
         || !this->rx_network_chunk_
     ) {
       ESP_LOGE(TAG, "Failed to allocate RX playout buffers");
@@ -243,7 +238,6 @@ bool VoipStack::allocate_setup_buffers_() {
         this->rx_jitter_pcm_storage_, this->rx_jitter_frame_alloc_bytes_,
         static_cast<uint8_t>(VoipStack::kRxQueuedFrames),
         static_cast<uint8_t>(VoipStack::kRxPrebufferFrames));
-    memset(this->rx_silence_chunk_, 0, this->rx_audio_chunk_alloc_bytes_);
   }
 #endif
 

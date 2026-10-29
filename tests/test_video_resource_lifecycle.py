@@ -113,7 +113,8 @@ def video_pool_binary(tmp_path_factory, request):
     })
     source = (VIDEO / "video_rtp.cpp").read_text()
     names = ["VideoRtpSession::VideoRtpSession", "VideoRtpSession::~VideoRtpSession",
-             "VideoRtpSession::allocate_persistent_buffers_", "VideoRtpSession::acquire_reassembly_slot_"]
+             "VideoRtpSession::allocate_persistent_buffers_", "VideoRtpSession::acquire_reassembly_slot_",
+             "VideoRtpSession::reset_reassembly_", "VideoRtpSession::queue_access_unit_"]
     if "bool VideoRtpSession::prepare_buffers()" in source:
         names.append("VideoRtpSession::prepare_buffers")
     if codec == "JPEG":
@@ -126,8 +127,11 @@ def video_pool_binary(tmp_path_factory, request):
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
+#include <algorithm>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 #include <string>
 #define protected public
 #include "video_rtp.h"
@@ -149,13 +153,16 @@ void VideoRtpSession::quiesce_tasks_(){}
 void VideoRtpSession::close_sockets_(){}
 void VideoRtpSession::wake_task_(){}
 struct Source:EncodedVideoSource {
+ bool leased=false;
+ bool uses_access_unit_leases()const override{return leased;}
  VideoCapability get_video_capability()const override{return {};}
  bool prepare_video(const VideoCapability&)override{return true;}
  bool start_video(EncodedVideoAccessUnitCallback,void*,const VideoCapability&)override{return true;}
  void stop_video()override{}
 };
 struct Sink:EncodedVideoSink {
- unsigned delivered=0; const uint8_t *first=nullptr;
+ unsigned delivered=0; const uint8_t *first=nullptr;size_t limit=0;
+ size_t max_encoded_access_unit_bytes()const override{return limit;}
  VideoCapability get_receive_video_capability()const override{return {};}
  bool start_video(const VideoCapability&)override{return true;}
  bool set_video_active(bool)override{return true;}
@@ -170,7 +177,7 @@ struct Sink:EncodedVideoSink {
 int main(int argc,char **argv){
  using namespace esphome::voip_stack;
  assert(argc==3);unsigned role=std::stoul(argv[1]),failure=std::stoul(argv[2]);
- Source source;Sink sink;
+ Source source;Sink sink;source.leased=role&8;sink.limit=(role&16)?1024:0;
  {
   VideoRtpSession session(false);
   assert(allocations.empty() && "bind endpoints before allocating media pools");
@@ -193,13 +200,38 @@ int main(int argc,char **argv){
    const size_t calls=allocation_calls;
    for(unsigned i=0;i<1000;i++)assert(session.handle_jpeg_payload_(packet,sizeof(packet),true,9000*i));
    assert(sink.delivered==1000 && allocation_calls==calls);
+   if(sink.limit){
+    std::vector<uint8_t> too_large(sink.limit+16,0x55);
+    const uint8_t header[]={0,0,0,0,0,50,1,1};
+    std::copy(header,header+8,too_large.begin());
+    assert(!session.handle_jpeg_payload_(too_large.data(),too_large.size(),true,90000001));
+    assert(sink.delivered==1000 && allocation_calls==calls);
+   }
   }
 #else
   assert(rx==((role&2)?3U:0U));
 #endif
-  assert(tx==((role&1)?session.kTxAccessUnitSlots:0U));
+  assert(tx==((role&1)&&!source.leased?session.kTxAccessUnitSlots:0U));
+  if((role&1)&&source.leased){
+   session.running_=true;session.sender_running_=true;session.send_enabled_=true;
+   uint8_t payload[]{1,2,3,4};unsigned releases=0;
+   EncodedVideoAccessUnit frame{payload,sizeof(payload),42,true,
+     [](void *p){++*static_cast<unsigned*>(p);},&releases};
+   for(unsigned n=0;n<session.kTxAccessUnitSlots;n++)session.queue_access_unit_(frame);
+   assert(releases==0);
+   session.queue_access_unit_(frame);assert(releases==1); // Full queue returns its lease.
+   for(auto &slot:session.tx_access_units_){
+    assert(slot.access_unit.data==payload&&slot.data==nullptr&&slot.state==1);
+    slot.access_unit.release();slot.access_unit={};slot.state=0;
+   }
+   assert(releases==session.kTxAccessUnitSlots+1);
+   // An incorrectly borrowed frame from a lease-only source cannot write null memory.
+   session.queue_access_unit_(EncodedVideoAccessUnit{payload,sizeof(payload),42,true});
+   for(auto &slot:session.tx_access_units_)assert(slot.state==0);
+   session.running_=false;session.sender_running_=false;
+  }
   size_t bytes=0;for(const auto &entry:allocations)bytes+=entry.second;
-  size_t expected=(rx+tx)*session.kMaxAccessUnitBytes;
+  size_t expected=rx*(sink.limit?sink.limit:session.kMaxAccessUnitBytes)+tx*session.kMaxAccessUnitBytes;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   if(role&2)expected+=RtpJpegDepacketizer::kQuantizationCacheBytes;
 #endif
@@ -216,7 +248,8 @@ int main(int argc,char **argv){
     return compile_harness(tmp_path, harness, defines=defines, sources=[VIDEO / "rtp_jpeg.cpp"] if codec == "JPEG" else [])
 
 
-@pytest.mark.parametrize("role", [0, 1, 2, 3], ids=["none", "source", "sink", "duplex"])
+@pytest.mark.parametrize("role", [0, 1, 2, 3, 9, 11, 18, 19],
+                         ids=["none", "source", "sink", "duplex", "leased-source", "leased-duplex", "bounded-sink", "bounded-duplex"])
 def test_video_pool_matches_codec_and_bound_endpoints(video_pool_binary, role):
     run(video_pool_binary, role, 0)
 
@@ -285,6 +318,8 @@ class ESPVideoCamera {public:
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
+#include <algorithm>
 #include <string>
 #include <algorithm>
 #include <thread>

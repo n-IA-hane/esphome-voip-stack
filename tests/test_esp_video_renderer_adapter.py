@@ -19,6 +19,7 @@ def test_jpeg_adapter_releases_only_accepted_leases(tmp_path):
 namespace esphome::esp_video_renderer {
 struct EspVideoRenderer {
  bool accepting=true,prepared=false,active=false;unsigned submissions=0;
+ size_t get_max_jpeg_bytes()const{return 131072;}
  unsigned get_width()const{return 320;}unsigned get_height()const{return 240;}unsigned get_framerate()const{return 2;}
  bool prepare(unsigned fps){assert(fps==2);prepared=true;return true;}
  bool set_active(bool enabled){active=enabled;return true;}
@@ -29,6 +30,7 @@ struct EspVideoRenderer {
 int main(){
  using namespace esphome;esp_video_renderer::EspVideoRenderer renderer;
  esp_video_renderer::EspVideoRendererSink sink(&renderer);
+ assert(sink.max_encoded_access_unit_bytes()==131072);
  auto capability=sink.get_receive_video_capability();assert(capability.valid());assert(capability.is_jpeg());
  assert(sink.start_video(capability)&&renderer.prepared);assert(sink.set_video_active(true)&&renderer.active);
  unsigned releases=0;uint8_t jpeg[]={0xff,0xd8,0xff,0xd9};
