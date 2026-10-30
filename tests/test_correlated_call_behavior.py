@@ -59,8 +59,8 @@ public:
   struct CallSnapshot {std::string call_id,caller_route,caller_name,dest_route,dest_name;};
   CallSnapshot identity;
   bool can_start_call_() const;
-  void start();void start_with_id_(const std::string &);
-  void start_call_attempt_(bool,const std::string & = {});
+  void start();void start_with_id_(const std::string &,const std::string & = {});
+  void start_call_attempt_(bool,const std::string & = {},const std::string & = {});
   void call(const std::string &);void call_(const std::string &,const std::string &);
   void call_via_ha(const std::string &,const std::string &);void hangup_call_if_id(const std::string &);
   const char *get_call_state_str() const{return "state";}
@@ -75,10 +75,10 @@ public:
   std::string get_current_destination() const{return phonebook_.selected;}
   std::string get_current_destination_route() const{return phonebook_.selected;}
   void clear_terminal_call_snapshot_(){} void clear_terminal_response_(){}
-  void set_call_identity_(const std::string &id,const std::string &cr,const std::string &cn,const std::string &dr,const std::string &dn){identity={id,cr,cn,dr,dn};}
+  void set_call_identity_(const std::string &id,const std::string &cr,const std::string &cn,const std::string &dr,const std::string &dn,bool=false){identity={id,cr,cn,dr,dn};}
   void set_current_media_formats_(int,int,int,int){} void set_call_state_(CallState s){call_state_=s;}
   void set_remote_sip_transport_tcp(bool){} void set_remote_endpoint(const std::string &,uint16_t,uint16_t){}
-  void set_audio_devices_active_(bool){} void publish_destination_(){if(on_publish)on_publish();}
+  void set_audio_devices_active_(bool){} void publish_destination_(bool=true){if(on_publish)on_publish();}
   template<typename T> void defer(T f){f();}
   void request_call_termination_(TerminationIntent){call_state_=CallState::IDLE;identity={};}
   bool send_sip_invite_(const std::string &id,const std::string &,const std::string &,const std::string &dest,const std::string &){assert(id==identity.call_id);assert(dest==identity.dest_route);++invites;return send_ok;}

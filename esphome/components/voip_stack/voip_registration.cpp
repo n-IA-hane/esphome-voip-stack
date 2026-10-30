@@ -332,7 +332,7 @@ bool VoipStack::select_line(const std::string& id) {
   this->default_line_ = id;
   return true;
 }
-void VoipStack::start_call_on_line(const std::string& target, const std::string& line) {
+void VoipStack::start_call_on_line(const std::string& target, const std::string& line, const std::string& display_name) {
   if (!this->can_start_call_()) return;
   std::string cleaned = sip_normalize_dial_target(target, Phonebook::MAX_ROUTE_BYTES);
   if (cleaned.empty()) return;
@@ -345,7 +345,7 @@ void VoipStack::start_call_on_line(const std::string& target, const std::string&
   if (!this->is_registered(line)) return;
   this->pending_line_ = line;
   this->pending_dialplan_target_ = cleaned;
-  this->start_with_id_({});
+  this->start_with_id_({}, display_name);
   this->pending_line_.clear();
 }
 void VoipStack::registration_state_callback_(void* ctx, const std::string& id, RegistrationState state,

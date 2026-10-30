@@ -57,8 +57,8 @@ struct VoipStack {
  bool can_start_call_()const{return ready;}
  bool is_registered(const std::string&id){return owner.registration_.is_registered(id);}
  void call_(const std::string&t,const std::string&){++calls;dialed=t;line="direct";}
- void start_with_id_(const std::string&){++calls;dialed=pending_dialplan_target_;line=pending_line_;}
- void start_call_on_line(const std::string&,const std::string&);
+ void start_with_id_(const std::string&,const std::string& = {}){++calls;dialed=pending_dialplan_target_;line=pending_line_;}
+ void start_call_on_line(const std::string&,const std::string&,const std::string& = {});
  MessageWaitingState get_message_waiting(const std::string&);
  bool mailbox_target_(const std::string&,const std::string&,std::string*,std::string*);
  bool can_call_mailbox(const std::string&="",const std::string&="");

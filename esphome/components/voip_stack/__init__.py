@@ -71,6 +71,7 @@ CONF_AEC_REF_DELAY_MS = "aec_reference_delay_ms"
 CONF_RINGING_TIMEOUT = "ringing_timeout"
 CONF_CALLING_TIMEOUT = "calling_timeout"
 CONF_ON_DESTINATION_CHANGED = "on_destination_changed"
+CONF_ON_PEER_CHANGED = "on_peer_changed"
 CONF_ON_PHONEBOOK_UPDATE = "on_phonebook_update"
 CONF_DELETE_CONTACT_MISSING_FROM = "delete_contact_missing_from"
 CONF_UPDATES_NUMBER = "updates_number"
@@ -746,6 +747,7 @@ CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), ha_integration.p
         cv.Optional(CONF_ON_HANGUP): automation.validate_automation(single=True),
         cv.Optional(CONF_ON_CALL_FAILED): automation.validate_automation(single=True),
         cv.Optional(CONF_ON_DESTINATION_CHANGED): automation.validate_automation(single=True),
+        cv.Optional(CONF_ON_PEER_CHANGED): automation.validate_automation(single=True),
         # Fires after every real phonebook mutation: HA roster push, manual
         # add/remove/set/flush, or stale-contact pruning.
         cv.Optional(CONF_ON_PHONEBOOK_UPDATE): automation.validate_automation(single=True),
@@ -1243,6 +1245,12 @@ async def _build_voip_automations(var, config):
     if CONF_ON_DESTINATION_CHANGED in config:
         await automation.build_automation(
             var.get_destination_changed_trigger(), [(cg.std_string, "destination")], config[CONF_ON_DESTINATION_CHANGED]
+        )
+
+    if CONF_ON_PEER_CHANGED in config:
+        cg.add_define("USE_ESPHOME_VOIP_PEER_EVENTS")
+        await automation.build_automation(
+            var.get_peer_changed_trigger(), [(cg.std_string, "peer")], config[CONF_ON_PEER_CHANGED]
         )
 
     if CONF_ON_PHONEBOOK_UPDATE in config:

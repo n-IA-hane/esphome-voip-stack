@@ -934,15 +934,14 @@ bool VoipStack::get_current_contact_directional_audio_v1() const {
   return c != nullptr && c->directional_audio_v1;
 }
 
-void VoipStack::publish_destination_() {
+void VoipStack::publish_destination_(bool include_snapshot) {
   std::string current = this->get_current_destination();
   const CallState state = this->call_state_.load(std::memory_order_acquire);
   const CallSnapshot call = this->snapshot_call_identity_();
-  if (!this->pending_dialplan_target_.empty()) {
-    current = this->pending_dialplan_target_;
-  } else if (state != CallState::IDLE && !call.dest_name.empty() &&
-             call.caller_name == this->device_name_) {
+  if (!call.call_id.empty() && !call.dialed_dest_name.empty() && !call.dest_name.empty()) {
     current = call.dest_name;
+  } else if (!this->pending_dialplan_target_.empty()) {
+    current = this->pending_dialplan_target_;
   } else if (state == CallState::IDLE && !this->last_reason_.empty() &&
              this->last_terminal_direction_ == "outgoing" &&
              !this->last_terminal_dest_name_.empty()) {
@@ -957,7 +956,7 @@ void VoipStack::publish_destination_() {
     this->last_published_destination_ = current;
     this->destination_changed_trigger_.trigger(current);
   }
-  this->publish_sip_snapshot_();
+  if (include_snapshot) this->publish_sip_snapshot_();
 }
 
 void VoipStack::publish_caller_(const std::string &caller_name) {

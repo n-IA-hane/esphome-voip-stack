@@ -149,7 +149,7 @@ class VoipStack : public Component {
     this->account_changed_callbacks_.add(std::forward<F>(callback));
   }
   bool select_line(const std::string &id);
-  void start_call_on_line(const std::string &target, const std::string &line);
+  void start_call_on_line(const std::string &target, const std::string &line, const std::string &display_name = {});
   Trigger<std::string, std::string, int> *get_registration_state_trigger() { return &this->registration_state_trigger_; }
 #endif
 #ifdef USE_ESPHOME_VOIP_MWI
@@ -467,6 +467,8 @@ class VoipStack : public Component {
   bool get_current_contact_sip_transport_tcp() const;
   bool get_current_contact_directional_audio_v1() const;
   std::string get_caller() const { return this->current_caller_name_; }
+  // The remote party of the owned dialog, independent of contact selection.
+  std::string get_active_peer_name() const;
   size_t get_contact_count() const { return this->phonebook_.size(); }
   // Main-loop views, valid only until the next phonebook mutation.
   const ContactEntry *get_contact(size_t index) const { return this->phonebook_.at(index); }
@@ -523,6 +525,9 @@ class VoipStack : public Component {
   Trigger<std::string, std::string> *get_hangup_trigger() { return &this->hangup_trigger_; }
   Trigger<std::string, std::string> *get_call_failed_trigger() { return &this->call_failed_trigger_; }
   Trigger<std::string> *get_destination_changed_trigger() { return &this->destination_changed_trigger_; }
+#ifdef USE_ESPHOME_VOIP_PEER_EVENTS
+  Trigger<std::string> *get_peer_changed_trigger() { return &this->peer_changed_trigger_; }
+#endif
   // Fires after every real phonebook mutation: HA roster push, manual
   // add/remove/set/flush, or stale-contact pruning.
   Trigger<std::string> *get_phonebook_update_trigger() { return &this->phonebook_update_trigger_; }
@@ -662,7 +667,7 @@ class VoipStack : public Component {
   void publish_state_();
   void publish_media_route_();
   void publish_last_reason_(const std::string &reason);
-  void publish_destination_();
+  void publish_destination_(bool include_snapshot = true);
   void publish_caller_(const std::string &caller_name);
   void publish_contacts_();
   void publish_transport_();
@@ -1020,12 +1025,12 @@ class VoipStack : public Component {
   // === Call-identity helpers (mutex-protected) ===
   void set_call_identity_(const std::string &call_id,
                           const std::string &caller_route, const std::string &caller_name,
-                          const std::string &dest_route, const std::string &dest_name);
+                          const std::string &dest_route, const std::string &dest_name, bool originated = false);
   void clear_call_identity_();
   bool can_start_call_() const;
-  void start_with_id_(const std::string &call_id);
+  void start_with_id_(const std::string &call_id, const std::string &display_name = {});
   void call_(const std::string &target, const std::string &call_id);
-  void start_call_attempt_(bool via_ha, const std::string &requested_call_id = {});
+  void start_call_attempt_(bool via_ha, const std::string &requested_call_id = {}, const std::string &display_name = {});
   CallSnapshot snapshot_call_identity_() const;
   std::string get_current_call_id_() const;
   void set_terminal_response_(const std::string &call_id, const std::string &reason);
@@ -1097,6 +1102,9 @@ class VoipStack : public Component {
   Trigger<std::string, std::string> hangup_trigger_;
   Trigger<std::string, std::string> call_failed_trigger_;
   Trigger<std::string> destination_changed_trigger_;
+#ifdef USE_ESPHOME_VOIP_PEER_EVENTS
+  Trigger<std::string> peer_changed_trigger_;
+#endif
   Trigger<std::string> phonebook_update_trigger_;
 #ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
   static void transport_dtmf_callback_(void *, char, uint32_t);

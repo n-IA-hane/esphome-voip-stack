@@ -69,7 +69,8 @@ bool VoipStack::pickup_contact(const std::string &id) {
   if (!state.available || state.ringing_dialogs == 0) return false;
   const std::string target = sip_prefix_target_user(entry->route, this->blf_pickup_prefix_);
   if (target.empty() || target.size() > Phonebook::MAX_ROUTE_BYTES) return false;
-  this->start_call_on_line(target, state.account_id);
+  const std::string display_name(entry->name);
+  this->start_call_on_line(target, state.account_id, display_name);
   return true;
 }
 

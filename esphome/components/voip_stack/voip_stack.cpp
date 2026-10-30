@@ -956,9 +956,9 @@ std::string VoipStack::build_sip_snapshot_string_() const {
   CallSnapshot call = this->snapshot_call_identity_();
   const std::string state = this->get_call_state_str();
   std::string direction;
-  if (!call.caller_name.empty() && call.caller_name == this->device_name_) {
+  if (!call.dialed_dest_name.empty()) {
     direction = "outgoing";
-  } else if (!call.dest_name.empty() && call.dest_name == this->device_name_) {
+  } else if (!call.call_id.empty()) {
     direction = "incoming";
   } else if (this->call_state_.load(std::memory_order_acquire) == CallState::CALLING) {
     direction = "outgoing";

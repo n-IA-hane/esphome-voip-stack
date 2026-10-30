@@ -26,14 +26,14 @@ using namespace esphome::voip_stack;
         code += block(parser, marker) + "\n"
     code += r'''
 struct VoipStack {
- Phonebook phonebook_;std::string blf_pickup_prefix_,dialed,line;
+ Phonebook phonebook_;std::string blf_pickup_prefix_,dialed,line,display;
  std::string pending_line_,pending_dialplan_target_;bool force_direct_call_=false;
  bool can_start_call_(){return true;}
  BlfStateInfo get_contact_blf_info_(const std::string&id){BlfStateInfo s;s.contact_id=id;s.account_id="ha";s.available=true;s.ringing_dialogs=1;return s;}
  bool is_registered(const std::string&account){return account=="ha";}
  void call_(const std::string&target,const std::string&){dialed=target;line=force_direct_call_?"direct":"wrong";}
- void start_with_id_(const std::string&){dialed=pending_dialplan_target_;line=pending_line_;}
- void start_call_on_line(const std::string&,const std::string&);
+ void start_with_id_(const std::string&,const std::string&name={}){dialed=pending_dialplan_target_;line=pending_line_;display=name;}
+ void start_call_on_line(const std::string&,const std::string&,const std::string& = {});
  bool pickup_contact(const std::string&);
 };
 '''
@@ -57,6 +57,7 @@ int main(){
  assert(phone.phonebook_.replace_directory(&phone,{camera})==DirectoryCommitResult::APPLIED);
  phone.blf_pickup_prefix_="pickup.";assert(phone.pickup_contact(camera.id));
  assert(phone.dialed=="sip:pickup.camera@pbx.example.test;transport=tcp"&&phone.line=="ha");
+ assert(phone.display=="Camera");
  phone.blf_pickup_prefix_="**";assert(phone.pickup_contact(camera.id));
  assert(phone.dialed=="sip:%2A%2Acamera@pbx.example.test;transport=tcp");
  phone.start_call_on_line("101","direct");assert(phone.dialed=="101"&&phone.line=="direct");
