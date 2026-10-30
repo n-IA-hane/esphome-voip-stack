@@ -75,6 +75,99 @@ std::string sip_uri_user_decode(const std::string &raw) {
   return sip_header_token(out);
 }
 
+std::string sip_prefix_target_user(const std::string &target, const std::string &prefix) {
+  const std::string value = trim_copy(target);
+  if (value.empty() || value.size() > 512 || prefix.size() > 32) return "";
+  for (const unsigned char ch : value)
+    if (ch < 32 || ch == 127 || ch == '<' || ch == '>' || ch == '"') return "";
+  for (const unsigned char ch : prefix)
+    if (ch <= 32 || ch == 127 || ch == '<' || ch == '>' || ch == '"') return "";
+  const bool sip = value.size() >= 4 && std::tolower(static_cast<unsigned char>(value[0])) == 's' &&
+      std::tolower(static_cast<unsigned char>(value[1])) == 'i' &&
+      std::tolower(static_cast<unsigned char>(value[2])) == 'p' && value[3] == ':';
+  if (!sip) {
+    if (value.size() >= 5 && std::tolower(static_cast<unsigned char>(value[0])) == 's' &&
+        std::tolower(static_cast<unsigned char>(value[1])) == 'i' &&
+        std::tolower(static_cast<unsigned char>(value[2])) == 'p' &&
+        std::tolower(static_cast<unsigned char>(value[3])) == 's' && value[4] == ':') return "";
+    return prefix + value;
+  }
+  if (value.find(' ') != std::string::npos || value.find('?') != std::string::npos) return "";
+  const auto at = value.find('@', 4);
+  if (at == std::string::npos || at == 4 || at + 1 == value.size()) return "";
+  const std::string user = value.substr(4, at - 4);
+  if (user.find(':') != std::string::npos || user.size() > 3 * VOIP_STACK_MAX_ROUTE_ID_LEN) return "";
+  std::string decoded_user;
+  for (size_t i = 0; i < user.size(); ++i) {
+    unsigned char ch = user[i];
+    if (user[i] == '%') {
+      if (i + 2 >= user.size() || hex_value(user[i + 1]) == 0xFF || hex_value(user[i + 2]) == 0xFF) return "";
+      ch = (hex_value(user[i + 1]) << 4) | hex_value(user[i + 2]);
+      i += 2;
+    }
+    if (ch < 32 || ch == 127) return "";
+    decoded_user.push_back(static_cast<char>(ch));
+  }
+  const auto authority_end = value.find_first_of(";?", at + 1);
+  const auto authority = value.substr(at + 1, authority_end - at - 1);
+  if (authority.empty() || authority.find('@') != std::string::npos) return "";
+  const auto colon = authority.find(':');
+  const auto host = authority.substr(0, colon);
+  if (host.empty() || host.size() > 253) return "";
+  size_t label_size = 0;
+  for (size_t i = 0; i < host.size(); ++i) {
+    if (host[i] == '.') {
+      if (label_size == 0 || host[i - 1] == '-') return "";
+      label_size = 0;
+    } else {
+      if ((label_size == 0 && host[i] == '-') || ++label_size > 63) return "";
+    }
+  }
+  if (host.back() == '-') return "";
+  for (unsigned char ch : host)
+    if (!std::isalnum(ch) && ch != '-' && ch != '.') return "";
+  if (colon != std::string::npos) {
+    uint32_t port = 0;
+    const auto text = authority.substr(colon + 1);
+    if (text.empty()) return "";
+    for (unsigned char ch : text) {
+      if (ch < '0' || ch > '9') return "";
+      port = port * 10U + ch - '0';
+      if (port > 65535) return "";
+    }
+    if (port == 0) return "";
+  }
+  bool transport_seen = false;
+  for (size_t position = authority_end; position != std::string::npos && position < value.size();) {
+    const auto end = value.find(';', position + 1);
+    const auto parameter = value.substr(position + 1, end - position - 1);
+    if (parameter.empty()) return "";
+    const auto equals = parameter.find('=');
+    std::string key = parameter.substr(0, equals);
+    if (key.empty()) return "";
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) { return std::tolower(ch); });
+    if (key == "transport") {
+      if (transport_seen || equals == std::string::npos) return "";
+      std::string transport = parameter.substr(equals + 1);
+      std::transform(transport.begin(), transport.end(), transport.begin(), [](unsigned char ch) { return std::tolower(ch); });
+      if (transport != "udp" && transport != "tcp") return "";
+      transport_seen = true;
+    }
+    position = end;
+  }
+  const auto prefixed = sip_uri_user_encode(prefix + decoded_user);
+  const std::string result = "sip:" + prefixed + value.substr(at);
+  return result.size() <= 512 ? result : "";
+}
+
+std::string sip_target_uri(const std::string &target, const std::string &fallback_authority) {
+  const auto normalized = sip_prefix_target_user(target, "");
+  if (normalized.empty()) return "";
+  if (normalized.rfind("sip:", 0) == 0) return normalized;
+  const std::string result = "sip:" + sip_uri_user_encode(normalized) + "@" + fallback_authority;
+  return result.size() <= 512 ? result : "";
+}
+
 std::string header_value(const std::string &msg, const char *name) {
   std::string canonical = name;
   for (char &ch : canonical) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));

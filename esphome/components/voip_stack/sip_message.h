@@ -23,6 +23,8 @@ static constexpr size_t MAX_SIP_TCP_RX_BUFFER = 8192;
 std::string trim_copy(const std::string &value);
 std::string sip_uri_user_encode(const std::string &raw);
 std::string sip_uri_user_decode(const std::string &raw);
+std::string sip_prefix_target_user(const std::string &target, const std::string &prefix);
+std::string sip_target_uri(const std::string &target, const std::string &fallback_authority);
 std::string header_value(const std::string &message, const char *name);
 std::string header_values(const std::string &message, const char *name);
 bool parse_decimal_u32(const std::string &raw, uint32_t max_value,

@@ -38,6 +38,7 @@ jobs:
           esphome==2026.10.0
           pytest==9.0.3
           ruff==0.15.21
+          -r tests/requirements-phone-clients.txt
 
       - name: Install native codec regression dependencies
         run: sudo apt-get update && sudo apt-get install -y libopus-dev libssl-dev pkg-config

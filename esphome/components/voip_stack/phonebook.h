@@ -3,13 +3,21 @@
 #ifdef USE_ESP32
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iterator>
+#include <memory>
+#include <new>
+#include <type_traits>
 #include <string>
 #include <unordered_set>
 #include <vector>
+#if defined(ESP_PLATFORM) && defined(USE_ESPHOME_VOIP_DIRECTORY)
+#include <esp_heap_caps.h>
+#endif
 
 namespace esphome {
 namespace voip_stack {
@@ -18,6 +26,12 @@ enum class ContactEndpointType : uint8_t {
   UNKNOWN,
   SIP,
 };
+
+enum class ContactKind : uint8_t { UNKNOWN, ESP, SIP_ACCOUNT, BROWSER, CONTACT, AUTOMATION, GROUP };
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+enum class ContactOrigin : uint8_t { MANUAL, HA, LDAP };
+enum class DirectoryCommitResult : uint8_t { APPLIED, UNCHANGED, INVALID, CONFLICT, CAPACITY };
+#endif
 
 inline const char *contact_endpoint_type_to_str(ContactEndpointType endpoint_type) {
   switch (endpoint_type) {
@@ -47,7 +61,71 @@ struct ContactEntry {
   bool directional_audio_v1{false};
   std::string audio_capability;
   uint8_t missing_count{0};
+  ContactKind kind{ContactKind::UNKNOWN};
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  std::string id;
+  ContactOrigin origin{ContactOrigin::MANUAL};
+  const void *provider{nullptr};
+#endif
+  const std::string &stable_id() const {
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+    if (!this->id.empty()) return this->id;
+#endif
+    return this->route;
+  }
 };
+
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+// Cold signaling storage follows the existing VoIP signaling placement. PCM
+// staging has a separate owner and remains unaffected by the phonebook.
+template<typename T> struct PhonebookAllocator {
+  using value_type = T;
+  using propagate_on_container_move_assignment = std::true_type;
+  using propagate_on_container_swap = std::true_type;
+  using is_always_equal = std::true_type;
+  T *pending{nullptr};
+  PhonebookAllocator() = default;
+  explicit PhonebookAllocator(T *memory) : pending(memory) {}
+  template<typename U> PhonebookAllocator(const PhonebookAllocator<U> &) {}
+  static T *allocate_nothrow(size_t count) {
+#ifdef ESP_PLATFORM
+    if (count > SIZE_MAX / sizeof(T)) return nullptr;
+#ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
+    constexpr unsigned caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#else
+    constexpr unsigned caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+#endif
+    return static_cast<T *>(heap_caps_malloc(count * sizeof(T), caps));
+#else
+    return static_cast<T *>(::operator new(count * sizeof(T), std::nothrow));
+#endif
+  }
+  T *allocate(size_t count) {
+    if (this->pending != nullptr) {
+      auto *result = this->pending;
+      this->pending = nullptr;
+      return result;
+    }
+#ifdef ESP_PLATFORM
+    auto *memory = allocate_nothrow(count);
+    if (memory == nullptr && count != 0) std::abort();
+    return memory;
+#else
+    return std::allocator<T>{}.allocate(count);
+#endif
+  }
+  void deallocate(T *memory, size_t count) {
+#ifdef ESP_PLATFORM
+    (void) count;
+    heap_caps_free(memory);
+#else
+    std::allocator<T>{}.deallocate(memory, count);
+#endif
+  }
+  template<typename U> bool operator==(const PhonebookAllocator<U> &) const { return true; }
+  template<typename U> bool operator!=(const PhonebookAllocator<U> &) const { return false; }
+};
+#endif
 
 /// add_one outcome - lets a batch upload defer publish_* side-effects.
 enum class AddResult : uint8_t {
@@ -129,9 +207,14 @@ class Phonebook {
   /// Replace the entire phonebook from an authoritative typed source while
   /// preserving the selected contact when that name still exists.
   bool replace_all(std::vector<ContactEntry> entries) {
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+    const auto selected = this->snapshot_selection_();
+#else
     const std::string selected = this->current_name();
-    const std::string selected_route = this->current_route();
+    const auto *current = this->current();
+    const std::string selected_route = current == nullptr ? "" : current->stable_id();
     const size_t previous_capacity_bound = std::min(entries.size(), MAX_CONTACTS);
+#endif
     size_t count = 0;
     for (size_t i = 0; i < entries.size() && count < MAX_CONTACTS; ++i) {
       auto &entry = entries[i];
@@ -144,6 +227,15 @@ class Phonebook {
       if (target == count) ++count;
     }
     entries.resize(count);
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+    const bool changed = !same_entries_(this->entries_, entries);
+    if (changed) {
+      if (!this->ensure_directory_capacity_(entries.size())) return false;
+      this->entries_.assign(std::make_move_iterator(entries.begin()), std::make_move_iterator(entries.end()));
+      this->restore_selection_(selected);
+    }
+    return changed;
+#else
     // Advanced C++ callers may over-reserve their input. Retain no more than
     // the previous capped normalization would have allocated in that case.
     if (entries.capacity() > previous_capacity_bound) {
@@ -159,7 +251,90 @@ class Phonebook {
       this->select(selected);
     }
     return changed;
+#endif
   }
+
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  // One canonical list, with atomic replacement of one provider's records.
+  // Tokens belong to application-lifetime components; no duplicate source DB.
+  DirectoryCommitResult replace_directory(const void *provider, std::vector<ContactEntry> entries) {
+    return this->replace_directory(provider, entries.data(), entries.size());
+  }
+  DirectoryCommitResult replace_provider(ContactOrigin source, const void *provider, std::vector<ContactEntry> entries) {
+    return this->replace_provider(source, provider, entries.data(), entries.size());
+  }
+  DirectoryCommitResult replace_directory(const void *provider, ContactEntry *entries, size_t count) {
+    return this->replace_provider(ContactOrigin::LDAP, provider, entries, count);
+  }
+  bool prepare_directory_storage() {
+#ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
+    if (this->entries_.capacity() >= MAX_CONTACTS) return true;
+    auto *memory = PhonebookAllocator<ContactEntry>::allocate_nothrow(MAX_CONTACTS);
+    if (memory == nullptr) return false;
+    decltype(this->entries_) prepared{PhonebookAllocator<ContactEntry>{memory}};
+    prepared.reserve(MAX_CONTACTS);  // Consumes the checked allocation, not a second heap request.
+    prepared.assign(std::make_move_iterator(this->entries_.begin()), std::make_move_iterator(this->entries_.end()));
+    this->entries_.swap(prepared);
+#endif
+    return true;
+  }
+  DirectoryCommitResult replace_provider(ContactOrigin source, const void *provider, ContactEntry *entries, size_t count) {
+    if (provider == nullptr || (entries == nullptr && count != 0)) return DirectoryCommitResult::INVALID;
+    if (count > MAX_CONTACTS) return DirectoryCommitResult::CAPACITY;
+    for (size_t i = 0; i < count; ++i) {
+      if (!valid_entry_(entries[i])) return DirectoryCommitResult::INVALID;
+      for (size_t j = 0; j < i; ++j)
+        if (entries[j].stable_id() == entries[i].stable_id() || entries[j].route == entries[i].route)
+          return DirectoryCommitResult::INVALID;
+    }
+    const auto retained = [source, provider](const ContactEntry &entry) {
+      return entry.origin != source || entry.provider != provider;
+    };
+    const auto shadowed = [&](const ContactEntry &entry) {
+      if (!this->self_name_.empty() && entry.name == this->self_name_) return true;
+      for (const auto &old : this->entries_)
+        if (retained(old) && old.origin == ContactOrigin::MANUAL &&
+            (old.stable_id() == entry.stable_id() || old.route == entry.route)) return true;
+      return false;
+    };
+    size_t final_count = 0;
+    for (const auto &old : this->entries_)
+      final_count += retained(old);
+    for (size_t i = 0; i < count; ++i) {
+      auto &entry = entries[i];
+      if (shadowed(entry)) continue;
+      for (const auto &old : this->entries_) {
+        if (!retained(old)) continue;
+        if (old.stable_id() != entry.stable_id() && old.route != entry.route) continue;
+        if (old.origin != ContactOrigin::MANUAL) return DirectoryCommitResult::CONFLICT;
+      }
+      if (++final_count > MAX_CONTACTS) return DirectoryCommitResult::CAPACITY;
+      entry.origin = source;
+      entry.provider = provider;
+    }
+    bool unchanged = final_count == this->entries_.size();
+    size_t position = 0;
+    for (const auto &old : this->entries_)
+      if (retained(old)) {
+        if (unchanged && !same_entry_(this->entries_[position], old)) unchanged = false;
+        ++position;
+      }
+    for (size_t i = 0; i < count; ++i)
+      if (!shadowed(entries[i])) {
+        if (unchanged && !same_entry_(this->entries_[position], entries[i])) unchanged = false;
+        ++position;
+      }
+    if (unchanged) return DirectoryCommitResult::UNCHANGED;
+    if (!this->ensure_directory_capacity_(final_count)) return DirectoryCommitResult::CAPACITY;
+    const auto selected = this->snapshot_selection_();
+    this->entries_.erase(std::remove_if(this->entries_.begin(), this->entries_.end(),
+                        [&](const ContactEntry &entry) { return !retained(entry); }), this->entries_.end());
+    for (size_t i = 0; i < count; ++i)
+      if (!shadowed(entries[i])) this->entries_.push_back(std::move(entries[i]));
+    this->restore_selection_(selected);
+    return DirectoryCommitResult::APPLIED;
+  }
+#endif
 
   /// Drop every entry, reset the cursor.
   void clear() {
@@ -175,6 +350,9 @@ class Phonebook {
   /// Returns true if at least one slot was removed (caller should re-publish).
   bool commit_cycle(const std::unordered_set<std::string> &seen, uint8_t threshold) {
     for (auto &entry : this->entries_) {
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+      if (entry.origin == ContactOrigin::LDAP) continue;
+#endif
       if (seen.count(entry.name)) {
         entry.missing_count = 0;
       } else if (entry.missing_count < 255) {
@@ -184,6 +362,9 @@ class Phonebook {
     if (threshold == 0) return false;
     std::vector<std::string> to_remove;
     for (const auto &entry : this->entries_) {
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+      if (entry.origin == ContactOrigin::LDAP) continue;
+#endif
       if (entry.missing_count >= threshold) to_remove.push_back(entry.name);
     }
     bool changed = false;
@@ -213,6 +394,13 @@ class Phonebook {
 
   /// Move the cursor to the named contact. Returns false if not present.
   bool select(const std::string &name) {
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+    for (size_t i = 0; i < this->entries_.size(); ++i)
+      if (!this->entries_[i].id.empty() && this->entries_[i].id == name) {
+        this->index_ = i;
+        return true;
+      }
+#endif
     for (size_t i = 0; i < this->entries_.size(); i++) {
       if (this->entries_[i].name == name || this->entries_[i].route == name) {
         this->index_ = i;
@@ -235,6 +423,12 @@ class Phonebook {
   const ContactEntry *current() const {
     if (this->entries_.empty()) return nullptr;
     return &this->entries_[this->index_ % this->entries_.size()];
+  }
+  const ContactEntry *at(size_t index) const { return index < this->entries_.size() ? &this->entries_[index] : nullptr; }
+  const ContactEntry *find_id(const std::string &id) const {
+    for (const auto &entry : this->entries_)
+      if (entry.stable_id() == id) return &entry;
+    return nullptr;
   }
 
   /// Lookup without moving the cursor (safe on the FSM hot path).
@@ -293,13 +487,7 @@ class Phonebook {
       if (incoming.ip.empty() && incoming.port == 0 && incoming.rtp_port == 0) {
         return AddResult::Noop;
       }
-      if (existing.ip == incoming.ip && existing.port == incoming.port &&
-          existing.rtp_port == incoming.rtp_port &&
-          existing.endpoint_type == incoming.endpoint_type &&
-          existing.sip_transport_tcp == incoming.sip_transport_tcp &&
-          existing.directional_audio_v1 == incoming.directional_audio_v1 &&
-          existing.audio_capability == incoming.audio_capability &&
-          existing.name == incoming.name) {
+      if (same_entry_(existing, incoming)) {
         return AddResult::Noop;
       }
       const bool was_unset = existing.ip.empty() && existing.port == 0 &&
@@ -312,16 +500,28 @@ class Phonebook {
       existing.sip_transport_tcp = incoming.sip_transport_tcp;
       existing.directional_audio_v1 = incoming.directional_audio_v1;
       existing.audio_capability = incoming.audio_capability;
+      existing.kind = incoming.kind;
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+      existing.id = incoming.id;
+      existing.origin = incoming.origin;
+      existing.provider = incoming.provider;
+#endif
       return was_unset ? AddResult::Upgraded : AddResult::EndpointReplaced;
     }
     // New name: append; cursor unchanged so the UI doesn't jump.
     if (this->entries_.size() >= MAX_CONTACTS) return AddResult::Rejected;
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+    if (!this->ensure_directory_capacity_(this->entries_.size() + 1)) return AddResult::Rejected;
+#endif
     this->entries_.push_back(incoming);
     return AddResult::Added;
   }
 
   static bool same_entry_(const ContactEntry &a, const ContactEntry &b) {
-    return a.name == b.name && a.route == b.route && a.ip == b.ip &&
+    return a.name == b.name && a.route == b.route && a.ip == b.ip && a.kind == b.kind &&
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+           a.id == b.id && a.origin == b.origin && a.provider == b.provider &&
+#endif
            a.endpoint_type == b.endpoint_type &&
            a.port == b.port && a.rtp_port == b.rtp_port &&
            a.sip_transport_tcp == b.sip_transport_tcp &&
@@ -329,8 +529,8 @@ class Phonebook {
            a.audio_capability == b.audio_capability;
   }
 
-  static bool same_entries_(const std::vector<ContactEntry> &a,
-                            const std::vector<ContactEntry> &b) {
+  template<typename Left, typename Right>
+  static bool same_entries_(const Left &a, const Right &b) {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); i++) {
       if (!same_entry_(a[i], b[i])) return false;
@@ -445,11 +645,14 @@ class Phonebook {
   static bool valid_entry_(const ContactEntry &entry) {
     if (entry.name.empty() || entry.route.empty() ||
         !valid_text_field_(entry.name, MAX_NAME_BYTES, true) ||
-        !valid_text_field_(entry.route, MAX_ROUTE_BYTES, true) ||
+        !valid_text_field_(entry.route, MAX_ROUTE_BYTES, entry.route.rfind("sip:", 0) != 0) ||
         !valid_text_field_(entry.ip, MAX_ADDRESS_BYTES, true) ||
         !valid_text_field_(entry.audio_capability, MAX_CAPABILITY_BYTES, true)) {
       return false;
     }
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+    if (!valid_text_field_(entry.id, MAX_ROUTE_BYTES, true)) return false;
+#endif
     if (entry.endpoint_type == ContactEndpointType::SIP) {
       return !entry.ip.empty() && entry.port != 0;
     }
@@ -457,7 +660,40 @@ class Phonebook {
            entry.port == 0 && entry.rtp_port == 0;
   }
 
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  struct Selection {
+    std::array<char, MAX_ROUTE_BYTES + 1> id{};
+    std::array<char, MAX_NAME_BYTES + 1> name{};
+  };
+  Selection snapshot_selection_() const {
+    Selection result;
+    if (const auto *current = this->current()) {
+      const auto &id = current->stable_id();
+      std::memcpy(result.id.data(), id.data(), std::min(id.size(), MAX_ROUTE_BYTES));
+      std::memcpy(result.name.data(), current->name.data(), std::min(current->name.size(), MAX_NAME_BYTES));
+    }
+    return result;
+  }
+  void restore_selection_(const Selection &selection) {
+    this->index_ = 0;
+    for (size_t i = 0; selection.id[0] != '\0' && i < this->entries_.size(); ++i)
+      if (this->entries_[i].stable_id() == selection.id.data()) { this->index_ = i; return; }
+    for (size_t i = 0; selection.name[0] != '\0' && i < this->entries_.size(); ++i)
+      if (this->entries_[i].name == selection.name.data()) { this->index_ = i; return; }
+  }
+  bool ensure_directory_capacity_(size_t required) {
+    if (required <= this->entries_.capacity()) return true;
+#ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
+    return this->prepare_directory_storage();
+#else
+    this->entries_.reserve(std::min(MAX_CONTACTS, std::max(required, this->entries_.capacity() * 2)));
+    return true;
+#endif
+  }
+  std::vector<ContactEntry, PhonebookAllocator<ContactEntry>> entries_;
+#else
   std::vector<ContactEntry> entries_;
+#endif
   size_t index_{0};
   std::string self_name_;
 

@@ -1,0 +1,32 @@
+# ESP32-S3 with PSRAM. Adapt the I2S pins in native-full-duplex.yaml to your board.
+# Enable the optional directory/mailbox services in coordinated HA VoIP Stack.
+substitutions:
+  voip_stack_source: github://n-IA-hane/esphome-voip-stack@dev
+packages:
+  native_audio: !include native-full-duplex.yaml
+  voicemail_playback: !include phone-services-playback.yaml
+psram:
+  mode: octal
+  speed: 80MHz
+external_components:
+  - source: ${voip_stack_source}
+    components: [ldap_directory, imap_voicemail, phone_client]
+voip_stack:
+  ha_integration:
+    auto_register: true
+  blf:
+    max_subscriptions: 16
+    buffers_in_psram: true
+ldap_directory:
+  id: directory
+  voip_stack_id: phone
+  account_id: ha
+  managed_by_ha: true
+  task_stack_in_psram: true
+imap_voicemail:
+  id: voicemail
+  voip_stack_id: phone
+  account_id: ha
+  managed_by_ha: true
+  task_stack_in_psram: true
+  codecs: [wav]

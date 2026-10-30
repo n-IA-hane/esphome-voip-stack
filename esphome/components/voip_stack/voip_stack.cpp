@@ -434,6 +434,13 @@ void VoipStack::fail_setup_() {
 
 void VoipStack::setup() {
   ESP_LOGI(TAG, "Setting up VoIP Stack...");
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  if (!this->phonebook_.prepare_directory_storage()) {
+    ESP_LOGE(TAG, "Could not reserve the directory phonebook storage");
+    this->fail_setup_();
+    return;
+  }
+#endif
 
 #if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
     defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
@@ -772,6 +779,7 @@ std::string VoipStack::local_ip_string_() const {
   return "";
 }
 
+#ifdef USE_ESPHOME_VOIP_LEGACY_ENDPOINT
 std::string VoipStack::build_endpoint_string_() const {
   const std::string name = !this->device_name_.empty()
                                ? this->device_name_
@@ -844,6 +852,7 @@ std::string VoipStack::build_endpoint_string_() const {
   }
   return buf;
 }
+#endif
 
 void VoipStack::set_extension(const std::string &extension) {
   const std::string normalized = normalize_endpoint_label(extension);
@@ -1040,6 +1049,7 @@ void VoipStack::publish_sip_snapshot_() {
 }
 
 void VoipStack::publish_endpoint_() {
+#ifdef USE_ESPHOME_VOIP_LEGACY_ENDPOINT
   std::string endpoint = this->build_endpoint_string_();
   if (endpoint.empty()) {
     ESP_LOGW(TAG, "VoIP endpoint waiting for IPv4 address from ESPHome network");
@@ -1050,6 +1060,7 @@ void VoipStack::publish_endpoint_() {
     this->last_endpoint_ = endpoint;
     this->endpoint_sensor_->publish_state(endpoint);
   }
+#endif
 #endif
   this->publish_sip_snapshot_();
 }

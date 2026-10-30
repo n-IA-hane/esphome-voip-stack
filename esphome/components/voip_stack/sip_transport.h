@@ -10,7 +10,8 @@
 #include "sip_signaling_string.h"
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
 #include "sip_registration.h"
-#ifdef USE_ESPHOME_VOIP_MWI
+#include "sip_account_view.h"
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
 #include "sip_mwi.h"
 #endif
 #endif
@@ -22,6 +23,7 @@
 #endif
 
 #include "esphome/core/helpers.h"
+#include "esphome/core/hal.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
@@ -37,6 +39,10 @@
 #include <string>
 #include <vector>
 #include <utility>
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+#include <esp_heap_caps.h>
+#include <new>
+#endif
 
 namespace esphome {
 namespace voip_stack {
@@ -72,6 +78,10 @@ class SipTransport : public SipPhoneTransport {
                       bool allow_missing = false);
   bool register_account(const std::string &id, bool enabled);
   bool is_registered(const std::string &id);
+  bool get_account_snapshot(const std::string &id, SipAccountSnapshot *out);
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  uint16_t get_managed_retirement_status() const { return this->managed_retirement_status_.load(std::memory_order_relaxed); }
+#endif
   bool prepare_account_line(const std::string &id, std::string *host, uint16_t *port, bool *tcp);
   void clear_account_line();
   void set_accept_direct_calls(bool enabled) { this->accept_direct_calls_ = enabled; }
@@ -81,8 +91,14 @@ class SipTransport : public SipPhoneTransport {
     this->registration_callback_ = cb; this->registration_context_ = ctx; this->registration_wake_callback_ = wake;
   }
   void wake_registration_from_main_loop() {
-    if (this->running_.load(std::memory_order_acquire) && !this->transport_stopping_.load(std::memory_order_acquire))
-      this->wake_sip_task_();
+    if (!this->running_.load(std::memory_order_acquire) || this->transport_stopping_.load(std::memory_order_acquire)) return;
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+    {
+      LockGuard lock(this->dialog_mutex_);
+      this->pump_managed_account_(millis());
+    }
+#endif
+    this->wake_sip_task_();
   }
 #endif
 #ifdef USE_ESPHOME_VOIP_MWI
@@ -90,6 +106,12 @@ class SipTransport : public SipPhoneTransport {
   bool has_waiting_messages(const std::string &id);
   using MessageWaitingCallback = void (*)(void *, const MessageWaitingState &);
   void set_message_waiting_callback(MessageWaitingCallback callback) { this->message_waiting_callback_ = callback; }
+#endif
+#ifdef USE_ESPHOME_VOIP_BLF
+  using BlfCallback = void (*)(void *, const BlfStateInfo &);
+  bool configure_blf(uint8_t capacity, BlfCallback callback);
+  bool set_blf_watches(const std::vector<BlfWatchConfig> &watches);
+  bool get_blf_state(const std::string &id, BlfStateInfo *out);
 #endif
   void stop() override;
   void disconnect() override;
@@ -219,7 +241,8 @@ class SipTransport : public SipPhoneTransport {
                                 uint16_t status, const char *reason,
                                 const std::string &app_reason = "",
                                 bool cache_transaction = false,
-                                int retry_after_seconds = -1);
+                                int retry_after_seconds = -1,
+                                const std::string &body = "");
   std::string format_response_(uint16_t status, const char *reason,
                                const std::string &via, const std::string &from,
                                const std::string &to, const std::string &call_id,
@@ -261,6 +284,7 @@ class SipTransport : public SipPhoneTransport {
   bool handle_response_(const std::string &message, const sockaddr_in &src);
   bool send_connected_identity_update_();
   std::string build_sdp_offer_();
+  std::string build_sdp_capabilities_(uint32_t peer_ip) const;
   std::string build_sdp_answer_() const;
   std::string wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
                                  const std::string &maps, const std::string &flows,
@@ -276,7 +300,7 @@ class SipTransport : public SipPhoneTransport {
                                     bool remote_is_answer);
   std::string append_video_sdp_(const std::string &sdp,
                                 const std::string &local_ip,
-                                bool answer) const;
+                                bool answer, bool capabilities = false) const;
   VideoCapability local_video_send_capability_() const;
   VideoCapability local_video_receive_capability_() const;
   VideoCapability local_video_direction_capability_(
@@ -707,16 +731,49 @@ class SipTransport : public SipPhoneTransport {
   static bool registration_send_(void *, size_t, const std::string &, uint32_t, uint16_t, bool);
   static std::string registration_local_ip_(void *, uint32_t);
   static void registration_notify_(void *, const std::string &, RegistrationState, uint16_t);
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  struct ManagedAccountUpdate {
+#ifdef USE_ESP32
+    static void *operator new(size_t size, const std::nothrow_t &) noexcept {
+#ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
+      return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+      return heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 #endif
-#ifdef USE_ESPHOME_VOIP_MWI
+    }
+    static void operator delete(void *pointer) noexcept { heap_caps_free(pointer); }
+    static void operator delete(void *pointer, const std::nothrow_t &) noexcept { heap_caps_free(pointer); }
+#endif
+    SipAccountConfig config;
+    AccountCommit commit{nullptr};
+    void *context{nullptr};
+    uint32_t retiring_revision{0};
+    bool active{false}, removing{false}, retiring{false};
+  };
+  std::unique_ptr<ManagedAccountUpdate> managed_update_;
+  std::atomic<uint16_t> managed_retirement_status_{0};
+  bool queue_managed_account_(const SipAccountConfig &config, bool removing, AccountCommit commit, void *context);
+  bool managed_account_needs_main_loop_() const;
+  void notify_managed_account_main_loop_();
+  void pump_managed_account_(uint32_t now);
+#endif
+#endif
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
   SipMwi mwi_;
   SipTcpFlow inbound_control_flow_;
   uint32_t inbound_control_deadline_{0};
   bool park_inbound_control_(int socket, const sockaddr_in &source);
-  MessageWaitingCallback message_waiting_callback_{nullptr};
-  static void registration_mwi_notify_(void *, const MessageWaitingState &);
+  static void registration_binding_accepted_(void *, size_t, uint32_t);
   static bool registration_mwi_reply_(void *, const std::string &, uint32_t, uint16_t, bool, int);
   void pump_registration_mwi_(uint32_t now);
+#endif
+#ifdef USE_ESPHOME_VOIP_MWI
+  MessageWaitingCallback message_waiting_callback_{nullptr};
+  static void registration_mwi_notify_(void *, const MessageWaitingState &);
+#endif
+#ifdef USE_ESPHOME_VOIP_BLF
+  BlfCallback blf_callback_{nullptr};
+  static void registration_blf_notify_(void *, const BlfStateInfo &);
 #endif
   struct ReferDialog {
 #ifdef USE_ESPHOME_VOIP_REGISTRATION

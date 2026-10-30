@@ -52,6 +52,8 @@ CONFIG_SCHEMA = cv.All(
 
 
 async def to_code(config):
+    if config[CONF_TYPE] == TYPE_ENDPOINT:
+        cg.add_define("USE_ESPHOME_VOIP_LEGACY_ENDPOINT")
     parent = await cg.get_variable(resolve_parent_id(config))
     var = await text_sensor.new_text_sensor(config)
     setter = getattr(parent, TYPES[config[CONF_TYPE]][2])

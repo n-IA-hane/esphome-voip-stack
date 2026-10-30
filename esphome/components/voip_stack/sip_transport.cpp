@@ -630,7 +630,7 @@ bool SipTransport::close_tcp_dialog_() {
 }
 
 void SipTransport::handle_tcp_peer_loss_(SipTcpFlow *flow) {
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
   if (flow == &this->inbound_control_flow_) {
     this->close_tcp_flow_(*flow); this->inbound_control_deadline_ = 0; return;
   }
@@ -652,7 +652,7 @@ void SipTransport::handle_tcp_peer_loss_(SipTcpFlow *flow) {
       this->retire_registration_flow_(account);
       this->close_tcp_flow_(*flow);
       this->registration_.connection_lost(account, millis());
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
       this->mwi_.connection_lost(account, millis());
 #endif
       if (this->refer_dialog_ && this->refer_dialog_->active_account_ == account &&
@@ -705,7 +705,7 @@ void SipTransport::handle_tcp_peer_loss_(SipTcpFlow *flow) {
 
 SipTransport::SipTcpFlow *SipTransport::tcp_flow_for_socket_(int socket) {
   if (socket < 0) return nullptr;
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
   if (this->inbound_control_flow_.socket.load(std::memory_order_acquire) == socket) return &this->inbound_control_flow_;
 #endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
@@ -2100,6 +2100,7 @@ bool SipTransport::send_invite(const std::string &call_id,
 bool SipTransport::send_invite_unlocked_(const std::string &call_id,
     const std::string &caller_route, const std::string &caller_name,
     const std::string &dest_route, const std::string &dest_name) {
+  if (sip_prefix_target_user(dest_route, "").empty()) return false;
   if (!this->running_.load(std::memory_order_acquire) ||
       this->transport_stopping_.load(std::memory_order_acquire)) {
     return false;
@@ -2159,10 +2160,8 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
       ":" + std::to_string(this->sip_port_) + ";transport=" + uri_transport;
   const std::string remote_identity_uri = this->refer_context_active_ && this->refer_dialog_
       ? this->refer_dialog_->target_uri
-      : "sip:" + sip_uri_user_encode(this->destination_.route) + "@" +
-      std::string(ip_text) + ":" +
-      std::to_string(this->remote_sip_port_.load(std::memory_order_acquire)) +
-      ";transport=" + uri_transport;
+      : sip_target_uri(this->destination_.route, std::string(ip_text) + ":" +
+          std::to_string(this->remote_sip_port_.load(std::memory_order_acquire)) + ";transport=" + uri_transport);
   this->local_uri_ = sip_name_addr(local_identity_uri, this->caller_.name);
   this->local_contact_uri_ = sip_name_addr(local_identity_uri);
   this->remote_uri_ = sip_name_addr(remote_identity_uri, this->destination_.name);
@@ -2174,7 +2173,7 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
     this->local_contact_uri_ = sip_name_addr(account.contact);
     const std::string account_target = this->refer_context_active_ && this->refer_dialog_
         ? this->refer_dialog_->target_uri
-        : "sip:" + sip_uri_user_encode(dest_route) + "@" + account.config.domain;
+        : sip_target_uri(dest_route, account.config.domain);
     this->remote_uri_ = sip_name_addr(account_target, dest_name);
     this->remote_target_uri_ = strip_angle_uri(this->remote_uri_);
   }
@@ -4198,7 +4197,8 @@ void SipTransport::handle_sip_datagram_unlocked_(const char *data, size_t len, c
   } else if (method == "UPDATE") {
     this->handle_update_(msg, src);
   } else if (method == "OPTIONS") {
-    this->send_stateless_response_(msg, src, 200, "OK");
+    this->send_stateless_response_(msg, src, 200, "OK", "", false, -1,
+        this->build_sdp_capabilities_(ntohl(src.sin_addr.s_addr)));
   } else if (sip_method_known_(method)) {
     this->send_stateless_response_(msg, src, 405, "Method Not Allowed");
   } else {
@@ -4291,7 +4291,7 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
     }
     const std::string msg = flow->rx_buffer.substr(0, total);
     flow->rx_buffer.erase(0, total);
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
     if (flow == &this->inbound_control_flow_ && msg.rfind("INVITE ", 0) == 0) {
       LockGuard lock(this->dialog_mutex_);
       if (this->call_id_.empty()) {
@@ -4309,7 +4309,7 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
     this->dispatch_socket_ = -1;
 #endif
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
     // This is the already-budgeted transient third client slot. Release it
     // after complete control records so another PBX can notify during calls.
     if (flow == &this->inbound_control_flow_ && flow->rx_buffer.empty()) {
@@ -4401,9 +4401,13 @@ void SipTransport::sip_task_() {
     this->pump_udp_retransmits_();
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
     {
-      LockGuard lock(this->dialog_mutex_); this->pump_registration_dns_(); this->registration_.tick(millis());
-#ifdef USE_ESPHOME_VOIP_MWI
+      LockGuard lock(this->dialog_mutex_); this->pump_registration_dns_();
+      this->registration_.tick(millis());
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
       this->pump_registration_mwi_(millis());
+#endif
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+      this->notify_managed_account_main_loop_();
 #endif
     }
     for (auto &flow : this->registration_flows_) this->prepare_tcp_flow_(flow);
@@ -4446,7 +4450,7 @@ void SipTransport::sip_task_() {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
       continue;
     }
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
     const int inbound_control = this->inbound_control_flow_.socket.load(std::memory_order_acquire);
     if (inbound_control >= 0) { FD_SET(inbound_control, &readfds); max_fd = std::max(max_fd, inbound_control); }
 #endif
@@ -4563,7 +4567,7 @@ void SipTransport::sip_task_() {
           (!have_timeout || registration_timeout < timeout_ms)) {
         timeout_ms = registration_timeout; have_timeout = true; timeout_ptr = &timeout;
       }
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
       if (this->mwi_.next_deadline(millis(), &registration_timeout) &&
           (!have_timeout || registration_timeout < timeout_ms)) {
         timeout_ms = registration_timeout; have_timeout = true; timeout_ptr = &timeout;
@@ -4583,7 +4587,7 @@ void SipTransport::sip_task_() {
       timeout.tv_usec = (timeout_ms % 1000) * 1000;
     }
     const int ready = ::select(max_fd + 1, &readfds, &writefds, nullptr, timeout_ptr);
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
     if (this->inbound_control_flow_.socket.load(std::memory_order_acquire) >= 0 &&
         time_reached(millis(), this->inbound_control_deadline_)) this->handle_tcp_peer_loss_(&this->inbound_control_flow_);
 #endif
@@ -4667,7 +4671,7 @@ void SipTransport::sip_task_() {
         if (replaces_owned_transport ||
             (this->dialog_active_() && active_client >= 0 &&
              active_ip_v4 != 0 && active_ip_v4 != accepted_ip_v4)) {
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
           if (this->park_inbound_control_(client, src)) continue;
 #endif
           char ip[16];
@@ -4714,7 +4718,7 @@ void SipTransport::sip_task_() {
     const int sockets[] = {this->tcp_flow_.socket.load(std::memory_order_acquire),
         this->refer_dialog_ ? this->refer_dialog_->tcp_flow_.socket.load(std::memory_order_acquire) : -1};
 #endif
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
     const int control_socket = this->inbound_control_flow_.socket.load(std::memory_order_acquire);
     if (control_socket >= 0 && FD_ISSET(control_socket, &readfds)) {
       sockaddr_in source{}; socklen_t length = sizeof(source);
@@ -4733,7 +4737,7 @@ void SipTransport::sip_task_() {
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   for (auto &flow : this->registration_flows_) this->close_tcp_flow_(flow);
 #endif
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
   this->close_tcp_flow_(this->inbound_control_flow_);
 #endif
   this->close_tcp_client_from_sip_task_();

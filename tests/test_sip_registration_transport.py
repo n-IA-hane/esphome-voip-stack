@@ -8,16 +8,35 @@ from test_refer_wire_runtime import wire_source
 from test_refer_dialog_runtime import SOURCE, block
 
 
+def guarded_region(source, marker):
+    """Keep nested compile gates intact when composing the host owner."""
+    begin = source.index(marker)
+    guard = source.rfind("\n#ifdef ", 0, begin)
+    alternative = source.rfind("\n#if ", 0, begin)
+    guard = max(guard, alternative)
+    depth = 1
+    position = source.index("\n", guard + 1) + 1
+    while position < len(source):
+        end = source.index("\n", position)
+        line = source[position:end].strip()
+        if line.startswith(("#if ", "#ifdef ", "#ifndef ")):
+            depth += 1
+        elif line == "#endif" or line.startswith("#endif "):
+            depth -= 1
+            if depth == 0:
+                return source[begin:position]
+        position = end + 1
+    raise AssertionError("Unbalanced production compile gate")
+
+
 def registration_transport_source(mwi=False):
     source = (SOURCE / "sip_transport.cpp").read_text()
     header = (SOURCE / "sip_transport.h").read_text()
     adapter = (SOURCE / "sip_registration_transport.cpp").read_text()
     code = wire_source()
     # Enable the new code after standard fixture includes have been declared.
-    begin = header.index("  SipRegistration registration_;")
-    members = header[begin:header.index("#endif", begin)]
-    begin = header.index("  void initialize_registration();")
-    public = header[begin:header.index("#endif", begin)]
+    members = guarded_region(header, "  SipRegistration registration_;")
+    public = guarded_region(header, "  void initialize_registration();")
     public = public.replace("void initialize_registration();", "")
     extra = public + "\n" + members + r'''
  void emit_connection_change_(bool){++connection_losses;}
@@ -27,14 +46,13 @@ def registration_transport_source(mwi=False):
  bool send_sip_tcp_record_(const std::string&s,int fd){return send_sip_tcp_record_(s.data(),s.size(),fd);}
 '''
     if mwi:
-        begin = header.index("  bool get_message_waiting(")
-        extra += header[begin:header.index("#endif", begin)]
-        begin = header.index("  SipMwi mwi_;")
-        extra += header[begin:header.index("#endif", begin)]
+        extra += guarded_region(header, "  bool get_message_waiting(")
+        extra += guarded_region(header, "  SipMwi mwi_;")
+        extra += guarded_region(header, "  MessageWaitingCallback message_waiting_callback_")
     code = code.replace("void handle_tcp_peer_loss_(SipTcpFlow*f){close_tcp_flow_(*f);}", "")
     code += "\nvoid SipTransport::invalidate_registration_dns_(size_t) {}\n"
     names = ["registration_flow_index_", "registration_socket_index_", "account_in_use_", "retire_registration_flow_", "set_account", "remove_account",
-             "register_account", "is_registered", "prepare_account_line", "clear_account_line", "registration_ingress_",
+             "register_account", "is_registered", "get_account_snapshot", "prepare_account_line", "clear_account_line", "registration_ingress_",
              "retry_authenticated_request_", "remember_registration_routes_", "registration_send_"]
     if mwi:
         names += ["park_inbound_control_", "registration_mwi_reply_"]
@@ -46,11 +64,13 @@ def registration_transport_source(mwi=False):
     code = code.replace("using SipTcpFlow=::SipTcpFlow;", "using SipTcpFlow=::SipTcpFlow;\n" + extra)
     code = code.replace("struct SipTransport: SipPhoneTransport {", "struct SipTransport: SipPhoneTransport {\n")
     prefix = '''#include "sip_registration.h"
+#include "sip_account_view.h"
 #ifdef USE_ESPHOME_VOIP_MWI
 #include "sip_mwi.h"
 #endif
 #include <openssl/evp.h>
 using esphome::voip_stack::SipRegistration;
+using esphome::voip_stack::SipAccountSnapshot;
 #ifdef USE_ESPHOME_VOIP_MWI
 using esphome::voip_stack::SipMwi;
 using esphome::voip_stack::MessageWaitingState;

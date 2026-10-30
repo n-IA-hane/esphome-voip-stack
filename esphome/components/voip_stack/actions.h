@@ -58,7 +58,7 @@ class SetAccountAction : public Action<Ts...>, public Parented<VoipStack> {
 };
 #endif
 
-#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_HA_MWI)
+#ifdef USE_ESPHOME_VOIP_MWI
 template<typename... Ts>
 class HasWaitingMessagesCondition : public Condition<Ts...>, public Parented<VoipStack> {
  public:
@@ -157,6 +157,22 @@ class SetContactAction : public Action<Ts...>, public Parented<VoipStack> {
     this->parent_->set_contact(this->contact_.value(x...));
   }
 };
+
+template<typename... Ts>
+class CallContactAction : public Action<Ts...>, public Parented<VoipStack> {
+ public:
+  TEMPLATABLE_VALUE(std::string, contact_id)
+  void play(const Ts &...x) override { this->parent_->call_contact(this->contact_id_.value(x...)); }
+};
+
+#ifdef USE_ESPHOME_VOIP_BLF
+template<typename... Ts>
+class PickupContactAction : public Action<Ts...>, public Parented<VoipStack> {
+ public:
+  TEMPLATABLE_VALUE(std::string, contact_id)
+  void play(const Ts &...x) override { this->parent_->pickup_contact(this->contact_id_.value(x...)); }
+};
+#endif
 
 template<typename... Ts>
 class CallAction : public Action<Ts...>, public Parented<VoipStack> {

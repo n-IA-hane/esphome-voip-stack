@@ -10,6 +10,9 @@
 #include "cJSON.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+#include "sip_message.h"
+#endif
 
 namespace esphome {
 namespace voip_stack {
@@ -450,6 +453,9 @@ std::string VoipStack::normalize_phonebook_for_transport_(const std::string &con
 }
 
 bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  if (!this->ha_roster_enabled_) return false;
+#endif
   if (roster_json.empty()) return false;
   if (roster_json.size() > MAX_ROSTER_JSON_BYTES) {
     ESP_LOGW(TAG, "Ignoring HA roster_json: payload exceeds %u bytes",
@@ -502,7 +508,11 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
     // clears stale contacts. A non-empty but wholly malformed payload leaves
     // the last known-good phonebook untouched.
     if (roster_size == 0 || saw_valid_slot) {
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+      return this->phonebook_.replace_provider(ContactOrigin::HA, this, {}) == DirectoryCommitResult::APPLIED;
+#else
       return this->phonebook_.replace_all({});
+#endif
     }
     return false;
   }
@@ -530,6 +540,11 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
     ContactEntry entry;
     entry.name = slot.name;
     entry.route = slot.route;
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+    entry.id = slot.route;
+    entry.origin = ContactOrigin::HA;
+    entry.provider = this;
+#endif
 
     if (slot.local_ha) {
       entry.endpoint_type = local_endpoint_type;
@@ -558,7 +573,14 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
     if (this->cycle_active_) this->seen_in_cycle_.insert(entry.name);
     entries.push_back(std::move(entry));
   }
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  const auto committed = this->phonebook_.replace_provider(ContactOrigin::HA, this, std::move(entries));
+  if (committed == DirectoryCommitResult::CONFLICT || committed == DirectoryCommitResult::CAPACITY)
+    ESP_LOGW(TAG, "HA roster conflicts with a directory or exceeds contact capacity; keeping current contacts");
+  return committed == DirectoryCommitResult::APPLIED;
+#else
   return this->phonebook_.replace_all(std::move(entries));
+#endif
 }
 
 void VoipStack::update_contacts() {
@@ -631,6 +653,16 @@ void VoipStack::flush_contacts() {
   ESP_LOGI(TAG, "Contacts flushed (empty list)");
 }
 
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+void VoipStack::set_ha_display_name(const std::string &name) {
+  const std::string cleaned = Phonebook::trim(name);
+  if (cleaned.empty() || cleaned.size() > Phonebook::MAX_NAME_BYTES) return;
+  for (const unsigned char ch : cleaned)
+    if (ch < 32 || ch == 127) return;
+  this->ha_display_name_ = cleaned;
+}
+#endif
+
 bool VoipStack::set_contact(const std::string &name) {
   if (this->phonebook_.empty()) {
     ESP_LOGW(TAG, "set_contact('%s') failed: contacts list is empty", name.c_str());
@@ -649,6 +681,105 @@ bool VoipStack::set_contact(const std::string &name) {
   this->defer([this, name, msg]() { this->call_failed_trigger_.trigger(name, msg); });
   return false;
 }
+
+bool VoipStack::call_contact(const std::string &id) {
+  if (!this->can_start_call_()) return false;
+  const auto *entry = this->phonebook_.find_id(id);
+  if (entry == nullptr) return false;
+  if (!this->phonebook_.select(id)) return false;
+  this->pending_dialplan_target_.clear();
+  this->publish_destination_();
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->pending_line_ = this->get_contact_account(id);
+#endif
+  this->start();
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->pending_line_.clear();
+#endif
+  return true;
+}
+
+std::string VoipStack::get_contact_account(const std::string &id) const {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  const auto *entry = this->phonebook_.find_id(id);
+  if (entry != nullptr && entry->provider != nullptr)
+    for (const auto &provider : this->directory_providers_)
+      if (provider.owner == entry->provider && !provider.account_id.empty()) return provider.account_id;
+#else
+  (void) id;
+#endif
+  return this->default_line_;
+#else
+  (void) id;
+  return "direct";
+#endif
+}
+
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+void VoipStack::set_ha_roster_enabled(bool enabled) {
+  this->ha_roster_enabled_ = enabled;
+  if (!enabled && this->phonebook_.replace_provider(ContactOrigin::HA, this, {}) == DirectoryCommitResult::APPLIED)
+    this->publish_phonebook_changed_();
+}
+
+DirectoryCommitResult VoipStack::commit_contact_directory(const void *provider, std::vector<ContactEntry> entries,
+                                                          const std::string &account_id) {
+  return this->commit_contact_directory(provider, entries.data(), entries.size(), account_id);
+}
+
+DirectoryCommitResult VoipStack::commit_contact_directory(const void *provider, ContactEntry *entries, size_t count,
+                                                          const std::string &account_id) {
+  if (entries == nullptr && count != 0) return DirectoryCommitResult::INVALID;
+  if (count > Phonebook::MAX_CONTACTS) return DirectoryCommitResult::CAPACITY;
+  if (account_id.size() > 32) return DirectoryCommitResult::INVALID;
+  DirectoryProvider *binding = nullptr;
+  for (auto &item : this->directory_providers_)
+    if (item.owner == provider) { binding = &item; break; }
+  if (binding == nullptr && count != 0)
+    for (auto &item : this->directory_providers_)
+      if (item.owner == nullptr) { binding = &item; break; }
+  if (binding == nullptr && count != 0) return DirectoryCommitResult::CAPACITY;
+  std::string own_aor, own_default_aor;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  SipAccountSnapshot account;
+  if (!account_id.empty() && this->get_account_snapshot(account_id, &account)) {
+    std::string authority = account.config.domain;
+    // Match only this account's authority. An identical user at another PBX
+    // or port remains a distinct contact, and the display name is irrelevant.
+    if (authority.find(':') == std::string::npos) {
+      if (account.config.port == 5060) own_default_aor = sip_target_uri(account.config.username, authority);
+      authority += ":" + std::to_string(account.config.port);
+    }
+    own_aor = sip_target_uri(account.config.username, authority);
+  }
+#endif
+  const auto self = [this, &own_aor, &own_default_aor](const ContactEntry &entry) {
+    if (entry.route == this->device_route_id_ || entry.stable_id() == this->device_route_id_) return true;
+    if (own_aor.empty()) return false;
+    const std::string normalized = sip_prefix_target_user(entry.route, "");
+    return normalized == own_aor || (!own_default_aor.empty() && normalized == own_default_aor);
+  };
+  size_t retained_count = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (self(entries[i])) continue;
+    if (retained_count != i) entries[retained_count] = std::move(entries[i]);
+    ++retained_count;
+  }
+  const auto result = this->phonebook_.replace_directory(provider, entries, retained_count);
+  if (result == DirectoryCommitResult::APPLIED || result == DirectoryCommitResult::UNCHANGED) {
+    const bool route_changed = binding != nullptr && (binding->owner != provider || binding->account_id != account_id);
+    bool retained = false;
+    for (size_t i = 0; i < this->phonebook_.size(); ++i) retained |= this->phonebook_.at(i)->provider == provider;
+    if (binding != nullptr) {
+      binding->owner = retained ? provider : nullptr;
+      binding->account_id = retained ? account_id : "";
+    }
+    if (result == DirectoryCommitResult::APPLIED || route_changed) this->publish_phonebook_changed_();
+  }
+  return result;
+}
+#endif
 
 void VoipStack::call(const std::string &value) { this->call_(value, {}); }
 
@@ -815,6 +946,9 @@ void VoipStack::publish_phonebook_changed_() {
   this->publish_destination_();
   this->publish_contacts_();
   this->phonebook_update_trigger_.trigger(this->get_current_destination());
+#ifdef USE_ESPHOME_VOIP_BLF
+  this->sync_blf_contacts_();
+#endif
 }
 
 std::string VoipStack::get_contacts_csv() const {

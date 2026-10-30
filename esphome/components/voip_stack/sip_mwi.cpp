@@ -1,7 +1,8 @@
 #include "sip_mwi.h"
-#if defined(USE_ESPHOME_VOIP_REGISTRATION) && defined(USE_ESPHOME_VOIP_MWI)
+#if defined(USE_ESPHOME_VOIP_REGISTRATION) && (defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF))
 
 #include <algorithm>
+#include <string_view>
 #include <cctype>
 #include <cstdio>
 #include <limits>
@@ -203,6 +204,132 @@ bool SipMwi::parse_summary(const std::string &body,
   return true;
 }
 
+#ifdef USE_ESPHOME_VOIP_BLF
+bool SipMwi::configure_blf(uint8_t capacity) {
+  if (capacity == 0 || capacity > 64) return false;
+  if (this->blf_accounts_ != nullptr) return this->blf_capacity_ == capacity;
+  std::unique_ptr<BlfWatch[]> storage(new (std::nothrow) BlfWatch[capacity]);
+  if (storage == nullptr) return false;
+  this->blf_accounts_ = std::move(storage);
+  this->blf_capacity_ = capacity;
+  return true;
+}
+
+void SipMwi::publish_blf_(size_t index) {
+  auto &watch = this->blf_accounts_[index - MWI_CAPACITY];
+  const bool available = watch.blf.available;
+  const auto state = watch.blf.state;
+  const uint32_t version = watch.blf.version;
+  const auto ringing = watch.blf.ringing_dialogs, active = watch.blf.active_dialogs, held = watch.blf.held_dialogs;
+  watch.dialogs.snapshot(&watch.blf);
+  if (!watch.blf.contact_id.empty() && this->hooks_.notify_blf != nullptr &&
+      (available != watch.blf.available || state != watch.blf.state || version != watch.blf.version ||
+       ringing != watch.blf.ringing_dialogs || active != watch.blf.active_dialogs || held != watch.blf.held_dialogs))
+    this->hooks_.notify_blf(this->hooks_.context, watch.blf);
+}
+
+void SipMwi::begin_blf_watch_(size_t slot, size_t account_index, const SipRegistration::Account &account,
+                              const std::string &id, const std::string &target, uint32_t now) {
+  auto &watch = this->blf_accounts_[slot];
+  watch = BlfWatch{};
+  watch.dialog = true;
+  watch.account_index = account_index;
+  watch.watch_target = target;
+  watch.blf.account_id = account.config.id;
+  watch.blf.contact_id = id;
+  this->update_account_(MWI_CAPACITY + slot, account.config, account.config_revision,
+      account.target_ip, account.target_port, account.contact, account.bound, account.desired, now);
+}
+
+void SipMwi::retire_blf_watch_(size_t slot, uint32_t now) {
+  auto &watch = this->blf_accounts_[slot];
+  watch.desired = false;
+  this->unavailable_(MWI_CAPACITY + slot);
+  if (!watch.bound || watch.call_id.empty()) {
+    this->reset_dialog_(MWI_CAPACITY + slot);
+    watch.occupied = false;
+  } else if (!watch.pending && !watch.waiting_notify) {
+    watch.scheduled = true;
+    watch.next_ms = now;
+  }
+}
+
+bool SipMwi::set_blf_watch(size_t index, size_t account_index, const SipRegistration::Account &account,
+                           const std::string &id, const std::string &target, uint32_t now) {
+  if (index >= this->blf_capacity_ || account_index >= CAPACITY || !account.occupied ||
+      id.empty() || id.size() > 96 || !safe_uri(target)) return false;
+  auto &watch = this->blf_accounts_[index];
+  if (watch.dialog && watch.desired && watch.blf.account_id == account.config.id &&
+      watch.blf.contact_id == id && watch.watch_target == target) {
+    this->update_account_(MWI_CAPACITY + index, account.config, account.config_revision,
+        account.target_ip, account.target_port, account.contact, account.bound, account.desired, now);
+    return true;
+  }
+  if (!watch.call_id.empty() || watch.pending || watch.waiting_notify) {
+    watch.pending_account = account.config.id;
+    watch.pending_account_index = account_index;
+    watch.pending_id = id; watch.pending_target = target;
+    watch.replace_pending = true;
+    this->retire_blf_watch_(index, now);
+    return true;
+  }
+  this->begin_blf_watch_(index, account_index, account, id, target, now);
+  return true;
+}
+
+void SipMwi::clear_blf_watch(size_t index, uint32_t now) {
+  if (index >= this->blf_capacity_) return;
+  auto &watch = this->blf_accounts_[index];
+  watch.replace_pending = false;
+  watch.pending_account.clear(); watch.pending_id.clear(); watch.pending_target.clear();
+  this->retire_blf_watch_(index, now);
+}
+
+void SipMwi::invalidate_blf_account(size_t account_index) {
+  for (size_t slot = 0; slot < this->blf_capacity_; ++slot) {
+    auto &watch = this->blf_accounts_[slot];
+    if (!watch.dialog || watch.account_index != account_index) continue;
+    this->unavailable_(MWI_CAPACITY + slot);
+    this->reset_dialog_(MWI_CAPACITY + slot);
+    watch.bound = watch.occupied = false;
+    watch.config_ = nullptr;
+  }
+}
+
+void SipMwi::update_blf_account(size_t index, const SipRegistration::Account &account, uint32_t now) {
+  for (size_t slot = 0; slot < this->blf_capacity_; ++slot) {
+    auto &watch = this->blf_accounts_[slot];
+    if (watch.replace_pending && watch.pending_account_index == index && account.occupied &&
+        watch.pending_account == account.config.id && watch.call_id.empty() &&
+        !watch.pending && !watch.waiting_notify) {
+      const std::string id = std::move(watch.pending_id), target = std::move(watch.pending_target);
+      this->begin_blf_watch_(slot, index, account, id, target, now);
+    }
+    if (!watch.dialog || watch.account_index != index || !watch.desired) continue;
+    if (!account.occupied || watch.blf.account_id != account.config.id) {
+      this->unavailable_(MWI_CAPACITY + slot);
+      this->reset_dialog_(MWI_CAPACITY + slot);
+      watch.bound = watch.occupied = false; watch.config_ = nullptr;
+      continue;
+    }
+    this->update_account_(MWI_CAPACITY + slot, account.config, account.config_revision,
+        account.target_ip, account.target_port, account.contact, account.bound, account.desired, now);
+  }
+}
+
+const BlfStateInfo *SipMwi::blf_state(size_t index) const {
+  return index < this->blf_capacity_ ? &this->blf_accounts_[index].blf : nullptr;
+}
+const std::string &SipMwi::blf_watch_id(size_t index) const {
+  const auto &watch = this->blf_accounts_[index];
+  return watch.replace_pending ? watch.pending_id : watch.blf.contact_id;
+}
+bool SipMwi::blf_watch_requested(size_t index) const {
+  return index < this->blf_capacity_ &&
+      (this->blf_accounts_[index].replace_pending || this->blf_accounts_[index].desired);
+}
+#endif
+
 std::string SipMwi::token_() {
   static uint32_t fallback = 1;
   char text[24];
@@ -217,7 +344,10 @@ std::string SipMwi::token_() {
 }
 
 void SipMwi::publish_(size_t index, const MessageWaitingState &state) {
-  auto &old = this->accounts_[index].state;
+#ifdef USE_ESPHOME_VOIP_BLF
+  if (this->account_(index).dialog) { this->publish_blf_(index); return; }
+#endif
+  auto &old = this->account_(index).state;
   if (old.account_id == state.account_id && old.available == state.available &&
       old.waiting == state.waiting && old.new_messages == state.new_messages &&
       old.old_messages == state.old_messages &&
@@ -228,8 +358,15 @@ void SipMwi::publish_(size_t index, const MessageWaitingState &state) {
     this->hooks_.notify(this->hooks_.context, old);
 }
 void SipMwi::unavailable_(size_t index) {
+#ifdef USE_ESPHOME_VOIP_BLF
+  if (this->account_(index).dialog) {
+    this->blf_accounts_[index - MWI_CAPACITY].dialogs.invalidate();
+    this->publish_blf_(index);
+    return;
+  }
+#endif
   MessageWaitingState state;
-  const auto &account = this->accounts_[index];
+  const auto &account = this->account_(index);
   if (account.config_ == nullptr && account.state.account_id.empty()) return;
   state.account_id = account.state.account_id.empty() ? account.config().id : account.state.account_id;
   if (state.account_id.empty())
@@ -237,7 +374,14 @@ void SipMwi::unavailable_(size_t index) {
   this->publish_(index, state);
 }
 void SipMwi::reset_dialog_(size_t index) {
-  auto &a = this->accounts_[index];
+  auto &a = this->account_(index);
+#ifdef USE_ESPHOME_VOIP_BLF
+  if (a.dialog) {
+    auto &watch = this->blf_accounts_[index - MWI_CAPACITY];
+    watch.dialogs.invalidate();
+    watch.needs_full = watch.full_refresh_requested = false;
+  }
+#endif
   a.call_id.clear();
   a.tag.clear();
   a.remote_tag.clear();
@@ -250,13 +394,14 @@ void SipMwi::reset_dialog_(size_t index) {
   a.waiting_notify = false;
   a.notify_seen = false;
   a.request_in_dialog = false;
+  a.refresh_after_register = false;
   a.notify_cseq = 0;
   a.expires_ms = 0;
   a.auth_attempts = a.proxy_auth_attempts = 0;
 }
 void SipMwi::invalidate_account(size_t index) {
-  if (index >= CAPACITY) return;
-  auto &a = this->accounts_[index];
+  if (index >= MWI_CAPACITY) return;
+  auto &a = this->account_(index);
   if (a.config_ != nullptr) this->unavailable_(index);
   auto state = std::move(a.state);
   a = Account{};
@@ -267,30 +412,58 @@ void SipMwi::update_account(size_t index, const SipAccountConfig &config,
                             uint32_t ip, uint16_t port,
                             const std::string &contact, bool bound,
                             bool desired, uint32_t now) {
-  if (index >= CAPACITY) return;
-  auto &a = this->accounts_[index];
+  if (index >= MWI_CAPACITY) return;
+  auto &a = this->account_(index);
   if (a.owned_config == nullptr || !same_config(*a.owned_config, config)) {
     auto owned = std::make_unique<SipAccountConfig>(config);
     this->invalidate_account(index);
     a.owned_config = std::move(owned);
   }
+#ifdef USE_ESPHOME_VOIP_BLF
+  a.account_index = index;
+#endif
   this->update_account_(index, *a.owned_config, 0, ip, port, contact, bound, desired, now);
 }
 
 void SipMwi::update_registered_account(size_t index, const SipRegistration::Account &account, uint32_t now) {
-  if (index >= CAPACITY) return;
+  if (index >= MWI_CAPACITY) return;
   if (!account.occupied) {
-    if (this->accounts_[index].config_ != nullptr) this->invalidate_account(index);
+    if (this->account_(index).config_ != nullptr) this->invalidate_account(index);
     return;
   }
+#ifdef USE_ESPHOME_VOIP_BLF
+  this->account_(index).account_index = index;
+#endif
   this->update_account_(index, account.config, account.config_revision, account.target_ip,
                         account.target_port, account.contact, account.bound, account.desired, now);
+}
+
+void SipMwi::on_registration_accepted(size_t index, const SipRegistration::Account &account, uint32_t now) {
+  if (index >= CAPACITY || !account.occupied || !account.bound || !account.desired) return;
+#ifdef USE_ESPHOME_VOIP_MWI
+  this->update_registered_account(index, account, now);
+#endif
+#ifdef USE_ESPHOME_VOIP_BLF
+  this->update_blf_account(index, account, now);
+#endif
+  for (size_t row = 0; row < this->total_capacity_(); ++row) {
+    auto &subscription = this->account_(row);
+    if (subscription.occupied && this->owner_index_(row) == index && subscription.bound &&
+        subscription.desired && subscription.supported)
+      subscription.refresh_after_register = true;
+  }
+}
+
+bool SipMwi::registration_refresh_ready_(const Account &account, uint32_t now) {
+  return account.refresh_after_register && account.bound && account.desired && account.supported &&
+         !account.pending && !account.waiting_notify &&
+         !(account.scheduled && account.failures != 0 && !reached(now, account.next_ms));
 }
 
 void SipMwi::update_account_(size_t index, const SipAccountConfig &config, uint32_t revision,
                              uint32_t ip, uint16_t port, const std::string &contact,
                              bool bound, bool desired, uint32_t now) {
-  auto &a = this->accounts_[index];
+  auto &a = this->account_(index);
   const bool changed = !a.occupied || a.config_ != &config || a.config_revision != revision ||
                        a.target_ip != ip || a.target_port != port || a.contact != contact;
   if (changed) {
@@ -340,7 +513,7 @@ void SipMwi::update_account_(size_t index, const SipAccountConfig &config, uint3
 }
 
 bool SipMwi::begin_(size_t index, uint32_t now) {
-  auto &a = this->accounts_[index];
+  auto &a = this->account_(index);
   if (!a.occupied || !a.bound || this->hooks_.send == nullptr)
     return false;
   const std::string local =
@@ -363,7 +536,17 @@ bool SipMwi::begin_(size_t index, uint32_t now) {
   ++a.cseq;
   a.branch = "z9hG4bK" + this->token_();
   const std::string aor = "sip:" + a.config().username + "@" + a.config().domain;
-  std::string target = a.remote_target.empty() ? aor : a.remote_target;
+  std::string observed = aor;
+  const char *event_name = "message-summary";
+  const char *content_type = "application/simple-message-summary";
+#ifdef USE_ESPHOME_VOIP_BLF
+  if (a.dialog) {
+    observed = this->blf_accounts_[index - MWI_CAPACITY].watch_target;
+    event_name = "dialog";
+    content_type = "application/dialog-info+xml";
+  }
+#endif
+  std::string target = a.remote_target.empty() ? observed : a.remote_target;
   std::string routes = a.routes;
   if (!routes.empty()) {
     const auto close = routes.find('>');
@@ -383,12 +566,11 @@ bool SipMwi::begin_(size_t index, uint32_t now) {
       (a.config().tcp ? "TCP " : "UDP ") + local + ':' +
       std::to_string(this->hooks_.local_port) + ";branch=" + a.branch +
       ";rport\r\nMax-Forwards: 70\r\nFrom: <" + aor + ">;tag=" + a.tag +
-      "\r\nTo: <" + aor + '>' +
+      "\r\nTo: <" + observed + '>' +
       (a.remote_tag.empty() ? "" : ";tag=" + a.remote_tag) +
       "\r\nCall-ID: " + a.call_id + "\r\nCSeq: " + std::to_string(a.cseq) +
       " SUBSCRIBE\r\nContact: <" + a.contact +
-      ">\r\nEvent: message-summary\r\nAccept: "
-      "application/simple-message-summary\r\nExpires: ";
+      ">\r\nEvent: " + event_name + "\r\nAccept: " + content_type + "\r\nExpires: ";
   a.requested_expires = a.desired ? a.expires : 0;
   message += std::to_string(a.requested_expires) + "\r\n";
   if (!routes.empty())
@@ -406,6 +588,7 @@ bool SipMwi::begin_(size_t index, uint32_t now) {
   }
   message += "Content-Length: 0\r\n\r\n";
   a.request_in_dialog = !a.remote_tag.empty();
+  a.refresh_after_register = false;
   a.request = message;
   a.pending = true;
   a.scheduled = false;
@@ -414,7 +597,7 @@ bool SipMwi::begin_(size_t index, uint32_t now) {
   a.deadline_ms = now + TRANSACTION_MS;
   a.waiting_notify = true;
   a.notify_deadline_ms = now + TRANSACTION_MS;
-  if (!this->hooks_.send(this->hooks_.context, index, message, a.target_ip,
+  if (!this->hooks_.send(this->hooks_.context, this->owner_index_(index), message, a.target_ip,
                          a.target_port, a.config().tcp)) {
     this->retry_(index, now);
     return false;
@@ -423,7 +606,7 @@ bool SipMwi::begin_(size_t index, uint32_t now) {
 }
 void SipMwi::retry_(size_t index, uint32_t now, uint32_t delay_ms,
                     bool new_dialog) {
-  auto &a = this->accounts_[index];
+  auto &a = this->account_(index);
   const bool keep = !new_dialog && a.bound && a.subscribed &&
                     a.expires_ms != 0 && !reached(now, a.expires_ms);
   if (!keep) {
@@ -442,16 +625,27 @@ void SipMwi::retry_(size_t index, uint32_t now, uint32_t delay_ms,
                            : std::min<uint32_t>(60000, 1000U << a.failures));
 }
 void SipMwi::connection_lost(size_t index, uint32_t now) {
-  if (index < CAPACITY) {
-    this->accounts_[index].bound = false;
-    this->retry_(index, now);
-  }
+  for (size_t row = 0; row < this->total_capacity_(); ++row)
+    if (this->account_(row).occupied && this->owner_index_(row) == index) {
+      this->account_(row).bound = false;
+      this->retry_(row, now);
+    }
 }
 void SipMwi::tick(uint32_t now) {
-  for (size_t i = 0; i < CAPACITY; ++i) {
-    auto &a = this->accounts_[i];
+  for (size_t i = 0; i < this->total_capacity_(); ++i) {
+    auto &a = this->account_(i);
     if (!a.occupied)
       continue;
+#ifdef USE_ESPHOME_VOIP_BLF
+    if (a.dialog) {
+      auto &watch = this->blf_accounts_[i - MWI_CAPACITY];
+      if (watch.needs_full && a.desired && a.subscribed && !a.pending && !a.waiting_notify) {
+        watch.needs_full = false;
+        a.scheduled = true;
+        a.next_ms = now;
+      }
+    }
+#endif
     if (a.waiting_notify && reached(now, a.notify_deadline_ms)) {
       this->retry_(i, now, 0, true);
       continue;
@@ -464,13 +658,18 @@ void SipMwi::tick(uint32_t now) {
       this->retry_(i, now, remaining_backoff, true);
       continue;
     }
+    if (registration_refresh_ready_(a, now)) {
+      a.refresh_after_register = false;
+      a.scheduled = true;
+      a.next_ms = now;
+    }
     if (a.pending) {
       if (reached(now, a.deadline_ms)) {
         this->retry_(i, now);
         continue;
       }
       if (!a.config().tcp && reached(now, a.next_ms)) {
-        this->hooks_.send(this->hooks_.context, i,
+        this->hooks_.send(this->hooks_.context, this->owner_index_(i),
                           static_cast<std::string>(a.request), a.target_ip,
                           a.target_port, false);
         a.interval_ms = std::min<uint32_t>(a.interval_ms * 2, 4000);
@@ -485,7 +684,8 @@ bool SipMwi::next_deadline(uint32_t now, uint32_t *remaining) const {
     return false;
   bool found = false;
   uint32_t best = 0;
-  for (const auto &a : this->accounts_) {
+  for (size_t index = 0; index < this->total_capacity_(); ++index) {
+    const auto &a = this->account_(index);
     if (!a.occupied)
       continue;
     auto consider = [&](uint32_t deadline) {
@@ -494,6 +694,7 @@ bool SipMwi::next_deadline(uint32_t now, uint32_t *remaining) const {
         best = delta;
       found = true;
     };
+    if (registration_refresh_ready_(a, now)) consider(now);
     if (a.pending) {
       consider(a.deadline_ms);
       if (!a.config().tcp)
@@ -517,12 +718,12 @@ bool SipMwi::handle_response(const std::string &message, uint32_t ip,
       !sequence(header(message, "CSeq"), "SUBSCRIBE", &seq))
     return false;
   const std::string id = header(message, "Call-ID");
-  for (size_t i = 0; i < CAPACITY; ++i) {
-    auto &a = this->accounts_[i];
+  for (size_t i = 0; i < this->total_capacity_(); ++i) {
+    auto &a = this->account_(i);
     if (!a.occupied || id != a.call_id)
       continue;
     if (!a.pending || ip != a.target_ip || port != a.target_port ||
-        tcp != a.config().tcp || (tcp && flow != static_cast<int>(i)) ||
+        tcp != a.config().tcp || (tcp && flow != static_cast<int>(this->owner_index_(i))) ||
         seq != a.cseq || tag(header(message, "From")) != a.tag ||
         parameter(header(message, "Via"), "branch") != a.branch)
       return true;
@@ -607,7 +808,7 @@ bool SipMwi::handle_response(const std::string &message, uint32_t ip,
       }
       return true;
     }
-    if (status == 403 || status == 404 || status == 405 || status == 489 ||
+    if (status == 403 || status == 405 || status == 489 ||
         status == 501)
       a.supported = false;
     uint32_t retry = 0;
@@ -677,14 +878,18 @@ bool SipMwi::handle_notify(const std::string &message, uint32_t ip,
                     event = header(message, "Event");
   const bool is_mwi =
       lower(trim(event.substr(0, event.find(';')))) == "message-summary";
+  bool is_dialog = false;
+#ifdef USE_ESPHOME_VOIP_BLF
+  is_dialog = lower(trim(event.substr(0, event.find(';')))) == "dialog";
+#endif
   int selected = -1;
-  for (size_t i = 0; i < CAPACITY; ++i)
-    if (this->accounts_[i].occupied && !id.empty() &&
-        id == this->accounts_[i].call_id) {
+  for (size_t i = 0; i < this->total_capacity_(); ++i)
+    if (this->account_(i).occupied && !id.empty() &&
+        id == this->account_(i).call_id) {
       selected = i;
       break;
     }
-  if (!is_mwi) {
+  if (!is_mwi && !is_dialog) {
     if (selected < 0)
       return false; // REFER's implicit subscription belongs to its existing
                     // owner.
@@ -711,14 +916,14 @@ bool SipMwi::handle_notify(const std::string &message, uint32_t ip,
     this->reply_(message, 400, ip, port, tcp, flow);
     return true;
   }
-  for (size_t cached = 0; cached < CAPACITY; ++cached) {
-    const auto &a = this->accounts_[cached];
+  for (size_t cached = 0; cached < this->total_capacity_(); ++cached) {
+    const auto &a = this->account_(cached);
     if (id == a.last_notify_id && seq == a.last_notify_cseq &&
         local_tag == a.last_notify_tag &&
         remote_tag == a.last_notify_remote_tag &&
         branch == a.last_notify_branch && ip == a.last_notify_ip &&
         tcp == a.last_notify_tcp &&
-        (tcp ? (flow < 0 || flow == static_cast<int>(cached))
+        (tcp ? (flow < 0 || flow == static_cast<int>(this->owner_index_(cached)))
              : port == a.last_notify_port) &&
         !reached(now, a.last_notify_until)) {
       this->reply_(message, 200, ip, port, tcp, flow);
@@ -730,10 +935,16 @@ bool SipMwi::handle_notify(const std::string &message, uint32_t ip,
     return true;
   }
   const size_t index = static_cast<size_t>(selected);
-  auto &a = this->accounts_[index];
+  auto &a = this->account_(index);
+#ifdef USE_ESPHOME_VOIP_BLF
+  if (a.dialog != is_dialog) {
+    this->reply_(message, 489, ip, port, tcp, flow);
+    return true;
+  }
+#endif
   if (!a.bound || (!a.supported && !a.subscribed) || ip != a.target_ip ||
       tcp != a.config().tcp ||
-      (tcp ? (flow >= 0 && flow != selected) : port != a.target_port) ||
+      (tcp ? (flow >= 0 && flow != static_cast<int>(this->owner_index_(index))) : port != a.target_port) ||
       local_tag != a.tag ||
       (!a.remote_tag.empty() && remote_tag != a.remote_tag) ||
       (!a.subscribed &&
@@ -761,7 +972,7 @@ bool SipMwi::handle_notify(const std::string &message, uint32_t ip,
     this->reply_(message, 400, ip, port, tcp, flow);
     return true;
   }
-  const std::string body = message.substr(body_at + 4);
+  const std::string_view body(message.data() + body_at + 4, message.size() - body_at - 4);
   const auto content_length = header(message, "Content-Length");
   uint32_t length = 0;
   if (body.size() > 4096 ||
@@ -774,12 +985,30 @@ bool SipMwi::handle_notify(const std::string &message, uint32_t ip,
   next.account_id = a.config().id;
   if (!body.empty()) {
     const std::string type = header(message, "Content-Type");
-    if (lower(trim(type.substr(0, type.find(';')))) !=
-        "application/simple-message-summary") {
+    const char *expected_type = is_dialog ? "application/dialog-info+xml" : "application/simple-message-summary";
+    if (lower(trim(type.substr(0, type.find(';')))) != expected_type) {
       this->reply_(message, 415, ip, port, tcp, flow);
       return true;
     }
-    if (!this->parse_summary(body, &next)) {
+#ifdef USE_ESPHOME_VOIP_BLF
+    if (is_dialog) {
+      auto &watch = this->blf_accounts_[index - MWI_CAPACITY];
+      const auto parsed = watch.dialogs.apply(body);
+      if (parsed == BlfDocumentResult::INVALID) {
+        this->reply_(message, 400, ip, port, tcp, flow);
+        return true;
+      }
+      if (parsed == BlfDocumentResult::NEED_FULL || parsed == BlfDocumentResult::LIMIT) {
+        watch.dialogs.invalidate();
+        if (!watch.full_refresh_requested) {
+          watch.needs_full = watch.full_refresh_requested = true;
+        }
+      } else if (parsed == BlfDocumentResult::APPLIED) {
+        watch.needs_full = watch.full_refresh_requested = false;
+      }
+    } else
+#endif
+    if (!this->parse_summary(std::string(body), &next)) {
       this->reply_(message, 400, ip, port, tcp, flow);
       return true;
     }

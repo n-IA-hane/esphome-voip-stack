@@ -109,6 +109,26 @@ Registration and media negotiation are separate. The PBX must support the
 configured audio formats, sample rates, directions and packet times. A successful
 REGISTER does not demonstrate an audio conversation or configure NAT traversal.
 
+## Automatic HA account
+
+The generic component leaves automatic registration disabled. Maintained HA
+phone packages set `ha_integration.auto_register: true`; a custom board can opt
+in to the same setting. HA generates and provisions the `ha` account through
+the existing ESPHome native API. The actual device name is the technical
+username; HA's friendly name becomes the SIP caller display name.
+
+Keep one free `max_accounts` slot for `ha`. It may coexist with manual PBX
+accounts and direct incoming calls. An identical configuration is an idempotent
+operation. Replacing a managed account waits until the current call, REFER and
+terminal transaction have finished; the existing SIP worker unregisters the old
+binding before applying the latest requested account. A failed retirement is
+reported while the old remote lease is left to expire normally.
+
+The managed native `set_account` action accepts `transport: auto` for account
+`ha`, using the ESP's configured UDP/TCP transport. Manual accounts retain the
+explicit `udp` or `tcp` choices. `set_ha_display_name` updates caller display
+without changing the authentication identity.
+
 ## Actions and state
 
 When the existing native HA adapter is enabled (`api.custom_services: true`),
@@ -141,10 +161,11 @@ pass an empty string for unused `proxy` or `auth_username`, port 5060 for an
 unused `proxy_port`, and `persist: false` for a temporary change. An empty domain
 uses the registrar hostname. YAML account actions apply the documented defaults.
 
-Accounts used by a call cannot be replaced, removed or reset. For a registered
-account, first request `unregister_account` and wait for the `disabled` event
-before changing its credentials or server. The binding and the call connection
-have separate owners, so deregistration does not hang up an established call.
+Manual accounts used by a call retain their existing replacement/removal guards.
+For a registered manual account, request `unregister_account` and wait for the
+`disabled` event before changing its credentials or server. Managed `ha`
+replacements use the deferred transaction described above. Binding and call
+connections have separate owners, so deregistration preserves an established call.
 
 Equivalent YAML automations work without the HA adapter:
 
@@ -213,11 +234,11 @@ capabilities intact. For example, a 16 kHz transmitter and a 16/48 kHz receiver
 advertise 16 kHz to an ordinary bidirectional SIP peer, while the explicitly
 directional path can negotiate 16 kHz transmit and 48 kHz receive.
 
-When the HA adapter is enabled, schema validation reserves enough space for a
-full IPv4 address in the endpoint state and enforces HA's 255-character limit.
-An error identifies configurations whose names or extensions need shortening.
-Runtime extension edits use the remaining character and UTF-8 byte budget;
-rejected edits preserve the current extension and its saved value.
+The coordinated HA backend resolves managed phones through their SIP binding
+and queries media capabilities with OPTIONS. Each call negotiates its final
+formats through SDP. The optional legacy endpoint sensor retains its
+255-character validation when explicitly enabled with
+`ha_integration.endpoint: true`.
 
 
 ## Remote hold and resume
@@ -238,10 +259,10 @@ Set `registration.message_waiting: true` to subscribe to the registered PBXs'
 RFC 3842 `message-summary` events. The default is false; the SIP subscription
 pool and protocol handling are excluded from registration-only firmware.
 
-For a mailbox owned by Home Assistant VoIP Stack, use
-`ha_integration.message_waiting: true` instead. It works over the authenticated
-native API with no REGISTER. Both sources can coexist; the HA source uses the
-reserved account ID `direct`. See [mailbox sources and examples](SIP_MWI.md).
+The managed Home Assistant account uses the same SIP MWI path under account ID
+`ha`. `ha_integration.auto_register: true` configures that account automatically
+and enables MWI unless explicitly overridden. See [mailbox examples](SIP_MWI.md)
+and [LDAP, BLF and IMAP setup](PHONE_SERVICES.md).
 
 The subscription shares the existing SIP worker and account connections. A
 notification changes mailbox data and does not change the call FSM. The

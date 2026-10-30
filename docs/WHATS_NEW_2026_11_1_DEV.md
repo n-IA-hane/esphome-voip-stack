@@ -1,98 +1,81 @@
 # ESP VoIP Stack 2026.11.1-dev
 
-## Use your ESP as a registered PBX phone
+Changes since stable **2026.11.0**.
 
-Optional SIP REGISTER accounts let the same firmware connect to PBXs such as
-Asterisk and FreeSWITCH. Accounts support UDP or TCP, automatic renewal and
-Digest authentication with MD5 or SHA-256, including their session variants.
+## New phone services
 
-- Keep direct Home Assistant calling and add registered PBX accounts alongside it.
-- For a PBX-only endpoint, set `registration.accept_direct_calls: false`.
-  The SIP listener stays available for incoming PBX calls.
-- Choose an outgoing account with `registration.default_line`, `voip_stack.select_line`, or
-  `voip_stack.start_call_on_line`. Existing HA configurations need no line setting.
-- Keep several accounts registered while one physical call uses the ESP's audio.
-  Changing the selected line applies to future calls.
+**Registered PBX accounts.** Connect an ESP to Asterisk, FreeSWITCH or another
+compatible SIP registrar, alongside its direct route. Configure up to four
+accounts in YAML or through native ESPHome actions. Accounts support UDP/TCP,
+Digest authentication, automatic renewal and optional persistent overrides.
+The default generic configuration remains direct SIP.
 
-The account pool defaults to two slots; `max_accounts` accepts one through four.
-Omitting `registration` excludes its account, authentication and timer support
-from the firmware.
+**Automatic Home Assistant identity.** Maintained HA phone packages opt in to
+`ha_integration.auto_register`. The integration creates and provisions one `ha`
+account; its credential also serves the optional LDAP and IMAP clients. The
+friendly device name becomes caller display and contact label. Custom firmware
+chooses this behavior explicitly.
 
-## Configure accounts in YAML or from Home Assistant
+**SIP BLF and MWI.** Watch other contacts' idle, ringing, active and held states,
+perform directed pickup through the correct account, and receive mailbox waiting
+counts. Both subscriptions share the existing SIP worker and standard Digest
+handling. BLF preallocates 16 watchers by default, accepts a configurable limit
+from 1 through 64, and supports PSRAM placement.
 
-Declare accounts in YAML, or provision them through the ESPHome native actions
-exposed by the HA adapter. Register, unregister, replace, remove or reset an
-account without maintaining a separate firmware for each PBX identity.
+**LDAP directories.** The optional `ldap_directory` component imports stable
+contact IDs, names, SIP destinations and categories into the existing bounded
+phonebook. Updates preserve manual overrides and replace only their own provider.
+Call and pickup actions can address a contact by stable ID.
 
-Runtime edits are temporary by default. Use `persist: true` when an account
-change should survive a restart; reset clears the saved override and restores
-the YAML baseline. `on_registration_state` and `voip_stack.is_registered` let
-automations react to the actual binding state.
+**IMAP visual voicemail.** The optional `imap_voicemail` component provides a
+paginated catalog, message metadata and native MediaSource playback. Read/delete
+operations use UID and UIDVALIDITY; UIDPLUS deletion targets the selected
+message. Use independent server credentials or share a configured SIP account.
+The existing SIP/DTMF voicemail menu remains another access method.
 
-[PBX configuration, actions and persistence guide](https://github.com/n-IA-hane/esphome-voip-stack/blob/dev/docs/SIP_REGISTRATION.md)
+[Phone services and examples](PHONE_SERVICES.md) ·
+[PBX accounts](SIP_REGISTRATION.md) · [MWI](SIP_MWI.md)
 
-## Message waiting from your PBX
+## JPEG reception on ESP32-S3
 
-Enable `registration.message_waiting: true` to receive standard RFC 3842
-`message-summary` notifications for registered accounts.
+`esp_video_renderer` decodes complete baseline JPEG frames into an LVGL surface.
+It can receive through `voip_stack.video.sink` or work with a separate JPEG
+producer. Bounded scaling fits larger images into the configured display;
+standard SDP `imageattr` lets compatible senders resize before compression.
+The renderer keeps the newest queued frame and releases display surfaces only
+through its presentation handoff.
 
-`on_message_waiting` provides the account, availability, waiting indicator and
-voice-message counts, including urgent messages. Use `voip_stack.has_waiting_messages`
-in YAML conditions to drive your own LED, badge or display automation.
-Mailbox updates have their own subscription lifecycle alongside phone calls.
-MWI is optional and excluded from firmware when disabled.
+The coordinated 240x240 receive profile has a 10 FPS budget. Camera transmission
+and display reception have been exercised separately on S3; simultaneous camera,
+rendering and the complete FULL workload still need their own qualification.
+The P4 hardware renderer remains a separate implementation. Tune image limits,
+worker affinity and stack/buffer placement using the [renderer settings](ESP_VIDEO_RENDERER.md).
 
-[Message waiting configuration](https://github.com/n-IA-hane/esphome-voip-stack/blob/dev/docs/SIP_MWI.md)
+## Reliability and interoperability
 
-## JPEG video reception for S3 displays
+- Managed account updates are idempotent. Real replacements wait for active call
+  and REFER cleanup, retire the previous binding, and apply the latest request.
+- OPTIONS reports configured audio/video capabilities without opening audio or
+  reserving media ports. Each call's SDP exchange remains authoritative.
+- Ordinary bidirectional SIP offers describe shared send/receive formats.
+  Explicitly coordinated peers can negotiate directional PCM capabilities.
+- Standard hold/resume updates media direction while retaining prepared audio.
+- Subscription refresh, transport loss, partial BLF resynchronization and account
+  replacement keep state scoped to their actual account and dialog generation.
 
-The new `esp_video_renderer` decodes baseline JPEG into an LVGL display surface.
-Use its optional adapter with `voip_stack.video.sink`, or feed complete JPEG
-images from another producer without loading VoIP.
+## Migration
 
-The renderer defaults to a 320x240 display surface and up to two admitted frames
-per second. Bounded native, half-size and quarter-size decoding fits larger
-JPEG frames into that surface within the documented input limits. Buffering
-keeps the latest queued image, and session changes discard stale decoded frames.
-The existing P4 renderer remains the hardware-oriented choice for P4 displays.
+Update the coordinated HA integration before adopting managed phone services,
+then rebuild with the current device package. The generic component keeps its
+existing direct configuration; manual external PBX accounts remain selectable.
+LDAP, IMAP, BLF and the JPEG renderer are optional additions.
 
-Standard SDP `imageattr` lets JPEG receivers request suitable image dimensions.
-Compatible senders can reduce the picture before compression, while existing
-peers continue using the bounded decoder scaling. Fixed camera sources retain
-their actual output dimensions, independently of the local display size.
-The coordinated Spotpear profile uses a 10 FPS budget for its 240x240 display.
+The legacy endpoint capability sensor is now opt-in with
+`ha_integration.endpoint: true`. Current HA discovers managed accounts and queries
+SIP capabilities; older firmware discovery remains supported by the backend.
+The sensor's 255-character validation applies only when that legacy surface is enabled.
 
-Tune the worker and memory placement with `task_core`, `task_priority`,
-`task_stack_size`, `task_stack_in_psram` and `buffer_in_psram`. Image dimensions,
-`framerate` and `max_jpeg_bytes` provide the corresponding image budget controls.
-
-[Renderer setup and resource options](https://github.com/n-IA-hane/esphome-voip-stack/blob/dev/docs/ESP_VIDEO_RENDERER.md)
-
-
-
-## Remote hold and resume
-
-SIP peers can hold and resume an established call using standard media
-directions. The call keeps its prepared audio resources while RTP transmission
-and reception follow the negotiated direction. Held calls remain available
-without triggering the receive-loss timeout; resuming continues the same call.
-
-The existing wake-word listening policy continues during audio hold.
-
-## More reliable SIP negotiation and Home Assistant discovery
-
-Standard bidirectional SIP offers advertise formats the ESP can both send and
-receive. Peers can select any advertised codec; endpoints sharing the explicit
-directional capability retain independent transmit and receive formats.
-
-Home Assistant endpoint descriptions retain all declared formats in a compact
-state. ESPHome validates its 255-character limit before compilation and explains
-which label to shorten. Runtime extension edits preserve the previous value
-when the endpoint description would exceed that limit.
-
-## Compatibility and migration
-
-PBX accounts, message waiting and the JPEG renderer are opt-in. Existing direct
-HA calling keeps its current configuration. Add the desired YAML blocks and
-external components, then rebuild and upload the ESP firmware. The SDP, discovery and
-remote-hold improvements apply when using the updated firmware.
+For earlier preview configurations, replace
+`ha_integration.message_waiting: true` with `ha_integration.auto_register: true`
+(or an explicitly configured SIP account with `registration.message_waiting`).
+Mailbox notifications now use standard SIP for both HA and conventional PBXs.

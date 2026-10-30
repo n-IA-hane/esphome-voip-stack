@@ -1,0 +1,47 @@
+# Independent PBX, LDAP and IMAP services. API is optional for this configuration.
+# ESP32-S3 with PSRAM; adapt native-full-duplex.yaml I2S pins to your board.
+substitutions:
+  voip_stack_source: github://n-IA-hane/esphome-voip-stack@dev
+packages:
+  native_audio: !include native-full-duplex.yaml
+  voicemail_playback: !include phone-services-playback.yaml
+psram:
+  mode: octal
+  speed: 80MHz
+external_components:
+  - source: ${voip_stack_source}
+    components: [ldap_directory, imap_voicemail, phone_client]
+voip_stack:
+  ha_integration: false
+  registration:
+    max_accounts: 1
+    default_line: office
+    message_waiting: true
+    accounts:
+      - account_id: office
+        registrar: pbx.example.org
+        username: "100"
+        password: !secret office_sip_password
+  blf:
+    account_id: office
+    max_subscriptions: 16
+    buffers_in_psram: true
+    # Replace with your PBX's configured directed-pickup feature code.
+    pickup_prefix: "**"
+ldap_directory:
+  id: directory
+  voip_stack_id: phone
+  host: directory.example.org
+  base_dn: ou=people,dc=example,dc=org
+  username: uid=reader,ou=people,dc=example,dc=org
+  password: !secret directory_password
+  task_stack_in_psram: true
+imap_voicemail:
+  id: voicemail
+  voip_stack_id: phone
+  host: mail.example.org
+  username: "100"
+  password: !secret mailbox_password
+  folder: INBOX
+  task_stack_in_psram: true
+  codecs: [wav]

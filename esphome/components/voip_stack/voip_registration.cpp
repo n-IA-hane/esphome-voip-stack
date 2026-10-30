@@ -1,12 +1,14 @@
 #include "voip_stack.h"
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_REGISTRATION)
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <new>
 #include <esp_memory_utils.h>
 #include <cstring>
 
 #include "sip_transport.h"
+#include "sip_message.h"
 
 namespace esphome::voip_stack {
 void VoipStack::dump_registration_memory_() {
@@ -14,6 +16,11 @@ void VoipStack::dump_registration_memory_() {
       static_cast<unsigned>(SipRegistration::CAPACITY), static_cast<unsigned>(sizeof(SavedRegistration)),
       YESNO(this->registration_saved_ != nullptr),
       YESNO(this->registration_saved_ && esp_ptr_external_ram(this->registration_saved_.get())));
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  if (this->transport_ != nullptr)
+    ESP_LOGI("voip_stack.registration", "managed_retirement_status=%u",
+        static_cast<unsigned>(static_cast<SipTransport *>(this->transport_.get())->get_managed_retirement_status()));
+#endif
 }
 namespace {
 template <size_t N>
@@ -58,7 +65,11 @@ void VoipStack::initialize_registration_() {
   auto* transport = static_cast<SipTransport*>(this->transport_.get());
   transport->initialize_registration();
   transport->set_accept_direct_calls(this->registration_accept_direct_);
-  transport->set_registration_callback(registration_state_callback_, this, registration_dns_ready_callback_);
+  transport->set_registration_callback(registration_state_callback_, this, registration_main_ready_callback_);
+#ifdef USE_ESPHOME_VOIP_BLF
+  this->blf_ready_ = transport->configure_blf(this->blf_capacity_, blf_callback_);
+  if (!this->blf_ready_) ESP_LOGE("voip_stack.blf", "Could not preallocate BLF subscription pool");
+#endif
 #ifdef USE_ESPHOME_VOIP_MWI
   transport->set_message_waiting_callback(message_waiting_callback_);
 #endif
@@ -167,7 +178,9 @@ bool VoipStack::write_registration_saved_(const SavedRegistration& next) {
   if (this->registration_nvs_handle_ == 0 || !this->registration_saved_) return false;
   // Dedicated namespace/key avoids the global preferences queue: another
   // component's failed flush cannot make this successfully stored key appear
-  // uncommitted. Account preflight still owns the transport mutex here.
+  // uncommitted. Only the application context reaches this backend; managed
+  // SIP work signals that owner before committing. Account preflight still
+  // owns the transport mutex here.
   if (nvs_set_blob(this->registration_nvs_handle_, "accounts", &next, sizeof(next)) != ESP_OK) return false;
   if (nvs_commit(this->registration_nvs_handle_) == ESP_OK) return true;
   // Preserve the previous overlay when a backend reports a commit failure.
@@ -239,7 +252,9 @@ bool VoipStack::set_account(const SipAccountConfig& config, bool persist) {
     commit = [](void* ctx, const std::string& id, const SipAccountConfig* c) {
       return static_cast<VoipStack*>(ctx)->save_registration_override_(id, c, false);
     };
-  return static_cast<SipTransport*>(this->transport_.get())->set_account(config, commit, this);
+  const bool changed = static_cast<SipTransport*>(this->transport_.get())->set_account(config, commit, this);
+  if (changed) this->publish_account_changed_(config.id);
+  return changed;
 }
 bool VoipStack::remove_account(const std::string& id, bool persist) {
   if (this->transport_ == nullptr) return false;
@@ -250,6 +265,7 @@ bool VoipStack::remove_account(const std::string& id, bool persist) {
     };
   if (!static_cast<SipTransport*>(this->transport_.get())->remove_account(id, commit, this)) return false;
   if (this->default_line_ == id) this->default_line_ = "direct";
+  this->publish_account_changed_(id);
   return true;
 }
 bool VoipStack::reset_account(const std::string& id) {
@@ -280,7 +296,15 @@ bool VoipStack::reset_account(const std::string& id) {
                                            : transport->remove_account(id, commit, this, true);
   if (!changed) return false;
   if (!has_baseline && this->default_line_ == id) this->default_line_ = "direct";
+  this->publish_account_changed_(id);
   return true;
+}
+bool VoipStack::get_account_snapshot(const std::string &id, SipAccountSnapshot *out) {
+  return this->transport_ != nullptr &&
+         static_cast<SipTransport *>(this->transport_.get())->get_account_snapshot(id, out);
+}
+void VoipStack::publish_account_changed_(const std::string &id) {
+  this->defer([this, id]() { this->account_changed_callbacks_.call(id); });
 }
 bool VoipStack::register_account(const std::string& id) {
   return this->transport_ != nullptr &&
@@ -310,10 +334,15 @@ bool VoipStack::select_line(const std::string& id) {
 }
 void VoipStack::start_call_on_line(const std::string& target, const std::string& line) {
   if (!this->can_start_call_()) return;
-  const std::string cleaned = Phonebook::trim(target);
-  if (cleaned.empty() || cleaned.size() > Phonebook::MAX_NAME_BYTES ||
-      cleaned.find_first_of("|,;\r\n") != std::string::npos)
-    return;
+  std::string cleaned = Phonebook::trim(target);
+  if (cleaned.empty() || cleaned.size() > Phonebook::MAX_ROUTE_BYTES) return;
+  for (unsigned char ch : cleaned) if (ch < 32 || ch == 127) return;
+  std::string scheme = cleaned.substr(0, cleaned.find(':'));
+  std::transform(scheme.begin(), scheme.end(), scheme.begin(), [](unsigned char ch) { return std::tolower(ch); });
+  if (scheme == "sip" || scheme == "sips") {
+    cleaned = sip_prefix_target_user(cleaned, "");
+    if (cleaned.empty() || cleaned.size() > Phonebook::MAX_ROUTE_BYTES) return;
+  } else if (cleaned.find_first_of("|,;\r\n") != std::string::npos || cleaned.find("://") != std::string::npos) return;
   if (line == "direct") {
     this->force_direct_call_ = true;
     this->call_(cleaned, {});
@@ -331,20 +360,25 @@ void VoipStack::registration_state_callback_(void* ctx, const std::string& id, R
   auto* self = static_cast<VoipStack*>(ctx);
   self->defer([self, id, state, status]() {
     self->registration_state_trigger_.trigger(id, registration_state_name(state), status);
+    self->account_changed_callbacks_.call(id);
+#ifdef USE_ESPHOME_VOIP_BLF
+    self->sync_blf_contacts_();
+#endif
   });
 }
 
-void VoipStack::registration_dns_ready_callback_(void* ctx, SipTransport* owner) {
+void VoipStack::registration_main_ready_callback_(void* ctx, SipTransport* owner) {
   auto* self = static_cast<VoipStack*>(ctx);
+  // DNS readiness and managed account commits share this main-context bridge.
   // ESPHome Components have application lifetime. The transport can be
   // replaced, so retain only its identity until the main task checks it.
-  self->registration_dns_owner_.store(owner, std::memory_order_release);
+  self->registration_main_owner_.store(owner, std::memory_order_release);
   self->enable_loop_soon_any_context();
 }
 
 void VoipStack::pump_registration_wake_() {
-  if (this->registration_dns_owner_.load(std::memory_order_acquire) == nullptr) return;
-  auto* owner = this->registration_dns_owner_.exchange(nullptr, std::memory_order_acq_rel);
+  if (this->registration_main_owner_.load(std::memory_order_acquire) == nullptr) return;
+  auto* owner = this->registration_main_owner_.exchange(nullptr, std::memory_order_acq_rel);
   if (owner != nullptr && this->transport_.get() == owner) owner->wake_registration_from_main_loop();
 }
 

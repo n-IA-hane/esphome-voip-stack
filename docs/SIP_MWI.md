@@ -1,19 +1,14 @@
 # Message Waiting Indication
 
-Available in the **2026.11.1-dev preview**. Choose the source of mailbox
-state independently of the audio and display:
+MWI reports mailbox state using standard SIP `SUBSCRIBE` and `NOTIFY` with
+RFC 3842 `message-summary`. It provides the waiting indicator and optional new,
+old and urgent counts. The separate [IMAP client](PHONE_SERVICES.md#imap-visual-voicemail)
+provides a message catalog and audio playback.
 
-| Mailbox owner | Opt-in | Delivery |
-| --- | --- | --- |
-| Home Assistant VoIP Stack | `ha_integration.message_waiting: true` | Authenticated ESPHome API, with no SIP registration |
-| Asterisk, FreeSWITCH or another registrar | `registration.message_waiting: true` | Standard SIP `SUBSCRIBE` and `NOTIFY` |
-| Both | Enable both settings | Independent snapshots, with one combined waiting condition |
+## Home Assistant mailbox
 
-## Home Assistant mailbox, without REGISTER
-
-Add this to an existing VoIP configuration that already connects to Home
-Assistant through the ESPHome API. Configure the ESP's mailbox in Home
-Assistant VoIP Stack and use the coordinated development integration.
+The coordinated HA phone packages provision the managed SIP account `ha` and
+enable MWI. A custom board can opt in using its existing microphone and speaker:
 
 ```yaml
 api:
@@ -22,7 +17,7 @@ api:
 voip_stack:
   id: phone
   ha_integration:
-    message_waiting: true
+    auto_register: true
   on_message_waiting:
     then:
       - lambda: |-
@@ -32,81 +27,53 @@ voip_stack:
                    static_cast<unsigned>(old_messages));
 ```
 
-The account ID is `direct`. Home Assistant owns the archive and pushes its
-snapshot on setup, mailbox changes and ESP reconnection. Disabling or removing
-the mailbox clears the indication. Unloading the integration or losing its
-own authenticated API connection makes that source unavailable. Disconnecting
-an unrelated debugger leaves the HA mailbox indication intact.
+HA generates the account credential and provisions the existing native account
+action. The phone then uses standard REGISTER and MWI subscription traffic. The
+native API carries configuration; SIP carries mailbox notifications. The
+account ID for this mailbox is `ha`.
 
-The native API action is `set_message_waiting`, exposed as
-`esphome.<node_name>_set_message_waiting`. Its fields are `available`, `waiting`,
-`new_messages`, `old_messages`, `source_client_info` and `source_client_address`.
-The HA bridge supplies the identity of its active authenticated API client;
-the ESP verifies that identity before accepting the snapshot. Ordinary mailbox
-use needs no manual action calls, new task, polling or REGISTER.
+Earlier development configurations using `ha_integration.message_waiting`
+should switch to `auto_register: true` and rebuild with the coordinated HA
+integration. The old native `set_message_waiting` channel has been retired.
+Generic direct SIP remains available with automatic registration disabled.
 
-## Registered PBX mailbox
-
-MWI reports the mailbox state using SIP `SUBSCRIBE` and `NOTIFY` with the
-`message-summary` event package. A successful `REGISTER` makes the phone
-reachable; mailbox notification is a separate subscription.
-
-Enable MWI explicitly in the optional registration configuration:
+## External PBX mailbox
 
 ```yaml
 voip_stack:
   id: phone
+  ha_integration: false
   registration:
-    max_accounts: 2
+    max_accounts: 1
     message_waiting: true
+    default_line: office
     accounts:
       - account_id: office
-        registrar: pbx.local
+        registrar: pbx.example.org
         username: "100"
         password: !secret pbx_password
-  on_message_waiting:
-    then:
-      - lambda: |-
-          ESP_LOGI("phone.mwi", "Account %s: available=%u waiting=%u new=%u old=%u",
-                   account_id.c_str(), available, waiting,
-                   static_cast<unsigned>(new_messages),
-                   static_cast<unsigned>(old_messages));
 ```
 
+A successful REGISTER makes the phone reachable. The independent MWI
+subscription asks the PBX for mailbox notifications; the PBX must support and
+authorize that event package.
+
 The callback provides `account_id`, `available`, `waiting`, `new_messages`,
-`old_messages`, `urgent_new` and `urgent_old`. Use it to update an indicator or
-publish ordinary ESPHome entities. `available: false` means that a valid mailbox
-state is unavailable, including while waiting for the first notification or
-when the PBX does not support the subscription. `available: true` with
-`waiting: false` is a valid mailbox-empty indication.
+`old_messages`, `urgent_new` and `urgent_old`. An unavailable subscription and a
+valid empty mailbox are distinct: inspect `available` before interpreting
+`waiting` or the counts.
 
-The `voip_stack.has_waiting_messages` condition accepts an optional `account_id`.
-Without an account ID it checks every enabled source, including `direct` when
-the HA bridge is enabled. Select `account_id: direct` to inspect only the HA
-mailbox. Advanced lambdas can read one snapshot with
-`id(phone).get_message_waiting("office")` or
-`id(phone).get_message_waiting("direct")`.
+`voip_stack.has_waiting_messages` accepts an optional `account_id`. Omit it to
+combine all enabled account mailboxes, or select `ha`/`office` explicitly.
+Advanced lambdas can read `id(phone).get_message_waiting("office")`.
+`add_on_message_waiting_callback` delivers aggregate changes on the main loop,
+so a custom display can refresh only when mailbox state changes.
 
-Keep these meanings distinct when building a display:
-
-| Information | Current ESP interface |
-| --- | --- |
-| This ESP's call state | Local call triggers, conditions and state entities |
-| Messages in the HA-owned mailbox | `on_message_waiting` with `account_id: direct`, the condition and the snapshot |
-| Messages in a registered account's mailbox | `on_message_waiting`, `has_waiting_messages` and the account snapshot |
-| Busy or ringing state of other extensions through BLF | Remote-extension subscriptions and watchlists are outside the current ESP API |
-
-The local phonebook stores call destinations. MWI reports the
-selected HA mailbox or registered account mailbox. It does not subscribe to
-every phonebook contact. The
-optional Home Assistant backend provides its own BLF and dashboard features.
-
-Both `message_waiting` settings default to false. SIP subscription state and
-protocol handling are included only when `registration.message_waiting` is
-true. The HA snapshot adapter is included only when
-`ha_integration.message_waiting` is true. With both disabled, the shared MWI
-triggers and conditions are excluded as well. Audio and registration retain
-their existing behavior.
+Enable `registration.message_waiting: true` for manual accounts. It defaults to
+false; automatic HA registration supplies true unless explicitly overridden.
+Compile-time gates exclude the MWI pool and protocol path when disabled.
+[BLF](PHONE_SERVICES.md#blf-subscriptions-and-pickup) uses the same SIP worker to
+watch other contacts, with separate dialogs and state.
 
 ## Protocol and ownership
 
@@ -142,8 +109,9 @@ the existing dialog and state until its known expiry; Retry-After remains in
 effect even if that lease expires first. Terminal responses end that dialog.
 Unsubscription uses Expires 0 and accepts
 the terminal NOTIFY, including retransmission of that notification. Mailbox
-playback remains an ordinary call to the PBX's configured mailbox-access
-number on the chosen line; MWI only reports message state.
+playback can use an ordinary call to the PBX's mailbox-access number and DTMF
+menu, or the optional IMAP MediaSource when that server exposes audio messages.
+MWI itself reports mailbox state.
 
 ## Verification
 

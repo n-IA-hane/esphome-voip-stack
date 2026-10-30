@@ -1,0 +1,67 @@
+# Shared by the two phone-service examples. The source id is voicemail.
+speaker:
+  - platform: mixer
+    id: phone_mixer
+    output_speaker: native_speaker
+    num_channels: 1
+    task_stack_in_psram: true
+    source_speakers:
+      - id: call_mixer_input
+        sample_rate: 48000
+        bits_per_sample: 16
+        num_channels: 1
+        buffer_duration: 128ms
+      - id: voicemail_mixer_input
+        sample_rate: 48000
+        bits_per_sample: 16
+        num_channels: 1
+        buffer_duration: 100ms
+  - platform: resampler
+    id: voicemail_speaker
+    output_speaker: voicemail_mixer_input
+    sample_rate: 48000
+    bits_per_sample: 16
+    num_channels: 1
+    task_stack_in_psram: true
+    buffer_duration: 100ms
+
+media_player:
+  - platform: speaker_source
+    id: voicemail_player
+    name: Voicemail player
+    announcement_pipeline:
+      speaker: voicemail_speaker
+      sample_rate: 48000
+      num_channels: 1
+      format: WAV
+      sources: [voicemail]
+
+script:
+  - id: stop_voicemail
+    then:
+      - media_player.stop:
+          id: voicemail_player
+          announcement: true
+      - lambda: id(voicemail).stop();
+
+voip_stack:
+  speaker: call_mixer_input
+  on_ringing:
+    - script.execute: stop_voicemail
+  on_calling:
+    - script.execute: stop_voicemail
+
+button:
+  - platform: template
+    name: Refresh voicemail
+    on_press:
+      - imap_voicemail.refresh:
+          id: voicemail
+  - platform: template
+    name: Play newest voicemail
+    on_press:
+      - lambda: |-
+          if (!id(phone).is_idle()) return;
+          const auto *message = id(voicemail).get_message(0);
+          if (message != nullptr)
+            id(voicemail).request_play_uid(message->uid, message->uid_validity);

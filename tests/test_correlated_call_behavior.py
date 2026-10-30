@@ -64,6 +64,7 @@ public:
   void call(const std::string &);void call_(const std::string &,const std::string &);
   void call_via_ha(const std::string &,const std::string &);void hangup_call_if_id(const std::string &);
   const char *get_call_state_str() const{return "state";}
+  const std::string &get_caller_display_name() const{return device_name_;}
   CallSnapshot snapshot_call_identity_() const{return identity;}
   std::string get_current_call_id_() const{return identity.call_id;}
   std::string get_current_contact_ip() const {auto c=phonebook_.find(phonebook_.selected);return c?c->ip:"";}

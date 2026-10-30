@@ -11,7 +11,7 @@ def test_dns_callback_never_uses_bsd_socket_context(tmp_path):
     context = block(adapter, "struct RegistrationDnsContext") + ";"
     found = block(adapter, "void registration_dns_found(")
     wake = block(adapter, "ctx.wake = []") + ";"
-    ready = block(owner, "void VoipStack::registration_dns_ready_callback_(")
+    ready = block(owner, "void VoipStack::registration_main_ready_callback_(")
     pump = block(owner, "void VoipStack::pump_registration_wake_(")
     resume = block(header, "void wake_registration_from_main_loop()")
     code = r'''
@@ -37,9 +37,9 @@ struct SipTransport {
 };
 struct VoipStack {
  std::unique_ptr<SipTransport> transport_;
- std::atomic<SipTransport*> registration_dns_owner_{nullptr};
+ std::atomic<SipTransport*> registration_main_owner_{nullptr};
  void enable_loop_soon_any_context(){++main_wakes;}
- static void registration_dns_ready_callback_(void*,SipTransport*);
+ static void registration_main_ready_callback_(void*,SipTransport*);
  void pump_registration_wake_();
 };
 '''.replace("REPLACE_RESUME", resume)
@@ -49,7 +49,7 @@ int main(){
  VoipStack component;component.transport_=std::make_unique<SipTransport>();
  auto*transport=component.transport_.get();
  transport->registration_context_=&component;
- transport->registration_wake_callback_=VoipStack::registration_dns_ready_callback_;
+ transport->registration_wake_callback_=VoipStack::registration_main_ready_callback_;
  RegistrationDnsContext ctx;ctx.owner=transport;ctx.generation=1;ctx.request_generation=1;ctx.pending=true;
  REPLACE_WAKE
  ip_addr_t result{htonl(0x7f000001)};

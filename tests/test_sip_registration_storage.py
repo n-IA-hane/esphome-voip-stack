@@ -75,6 +75,7 @@ struct VoipStack {
  bool load_registration_saved_();bool write_registration_saved_(const SavedRegistration&);
  bool save_registration_override_(const std::string&,const SipAccountConfig*,bool);
  bool reset_account(const std::string&);
+ void publish_account_changed_(const std::string&){}
 };
 '''.replace("REPLACE_ACCOUNT", saved_account).replace("REPLACE_SAVED", saved)
     main = r'''

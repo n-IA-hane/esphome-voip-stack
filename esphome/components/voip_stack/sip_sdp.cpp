@@ -81,8 +81,8 @@ std::string SipTransport::rejected_media_answer_(
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 std::string SipTransport::append_video_sdp_(const std::string &sdp,
                                             const std::string &local_ip,
-                                            bool answer) const {
-  if (this->refer_context_active_ || (this->video_source_ == nullptr && this->video_sink_ == nullptr)) {
+                                            bool answer, bool capabilities) const {
+  if ((!capabilities && this->refer_context_active_) || (this->video_source_ == nullptr && this->video_sink_ == nullptr)) {
     return sdp;
   }
   if (answer && this->video_offered_ && !this->video_negotiated_) {
@@ -94,7 +94,7 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
   const VideoCapability local_receive =
       this->local_video_receive_capability_();
   const bool offer_send =
-      this->video_send_requested_.load(std::memory_order_acquire) &&
+      (capabilities || this->video_send_requested_.load(std::memory_order_acquire)) &&
       this->video_source_ != nullptr && local_send.valid();
   const bool offer_receive =
       this->video_sink_ != nullptr && local_receive.valid();
@@ -122,14 +122,14 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
       send && receive ? "sendrecv"
                       : send ? "sendonly" : receive ? "recvonly" : "inactive";
   std::string out = sdp;
-  out += "m=video " + std::to_string(this->video_rtp_port_) +
+  out += "m=video " + std::to_string(capabilities ? 0 : this->video_rtp_port_) +
          " RTP/AVP " + std::to_string(capability.payload_type) + "\r\n";
   out += "c=IN IP4 " + local_ip + "\r\n";
   if (capability.max_bitrate_bps != 0) {
     out += "b=TIAS:" + std::to_string(capability.max_bitrate_bps) + "\r\n";
   }
   out += "a=rtcp:" +
-         std::to_string(static_cast<uint16_t>(this->video_rtp_port_ + 1)) +
+         std::to_string(capabilities ? 0 : static_cast<uint16_t>(this->video_rtp_port_ + 1)) +
          " IN IP4 " + local_ip + "\r\n";
   out += "a=rtpmap:" + std::to_string(capability.payload_type) +
          " " + capability.encoding + "/90000\r\n";
@@ -155,7 +155,7 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
   // a lower receive budget than the hardware encoder without a private fmtp.
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   if (capability.is_jpeg() && (send || receive) &&
-      !(this->video_imageattr_state_ & IMAGEATTR_DISABLED) &&
+      (capabilities || !(this->video_imageattr_state_ & IMAGEATTR_DISABLED)) &&
       (!answer || (this->video_imageattr_state_ & IMAGEATTR_PEER))) {
     out += "a=imageattr:26";
     if (send) {
@@ -175,6 +175,73 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
   return out;
 }
 #endif
+
+std::string SipTransport::build_sdp_capabilities_(uint32_t peer_ip) const {
+  // OPTIONS describes configured endpoints without touching offer maps,
+  // dialog generations, RTP reservations or the running media session.
+  AudioFormatList formats;
+  std::array<uint8_t, VOIP_STACK_MAX_AUDIO_FORMATS> directions{};
+  const auto collect = [&](const AudioFormatList &input, uint8_t direction) {
+    for (uint8_t i = 0; i < input.count; ++i) {
+      const auto &format = input.formats[i];
+      if (audio_format_rtp_encoding(format, this->udp_max_payload_) == nullptr) continue;
+      uint8_t slot = 0;
+      while (slot < formats.count && !audio_formats_share_wire_encoding(formats.formats[slot], format)) ++slot;
+      if (slot == formats.count) {
+        if (formats.count == VOIP_STACK_MAX_AUDIO_FORMATS) continue;
+        formats.formats[formats.count++] = format;
+      }
+      directions[slot] |= direction;
+    }
+  };
+  collect(this->offer_rx_formats_, 2);
+  collect(this->offer_tx_formats_, 1);
+  if (formats.count == 0) return "";
+  std::string payloads, maps, flows;
+  for (uint8_t i = 0; i < formats.count && i < 24; ++i) {
+    const auto &format = formats.formats[i];
+    const uint8_t pt = 96 + i;
+    if (!payloads.empty()) payloads.push_back(' ');
+    payloads += std::to_string(pt);
+    maps += "a=rtpmap:" + std::to_string(pt) + " " + audio_format_rtp_encoding(format, this->udp_max_payload_) +
+            "/" + std::to_string(audio_format_rtp_clock_rate(format)) + "/" +
+            std::to_string(audio_format_rtp_channels(format)) + "\r\n";
+    if (format.codec == AudioCodec::OPUS)
+      maps += "a=fmtp:" + std::to_string(pt) + " stereo=0;sprop-stereo=0;maxaveragebitrate=28000\r\n";
+    const char *flow = directions[i] == 3 ? "sendrecv" : directions[i] == 1 ? "send" : "recv";
+    flows += "a=x-voip-stack-flow:" + std::to_string(pt) + " " + flow + "\r\n";
+  }
+  std::string local_ip = "0.0.0.0";
+  this->local_ip_for_peer_(peer_ip, &local_ip);
+  uint8_t ptime = choose_common_audio_ptime(this->offer_tx_formats_, this->offer_rx_formats_, this->udp_max_payload_);
+  // A capability union may contain codecs with different packet-time sets.
+  // Omit the hint unless every described direction can use that one value.
+  const auto supports_time = [&](const AudioFormatList &list, const AudioFormat &format) {
+    for (uint8_t i = 0; i < list.count; ++i)
+      if (list.formats[i].frame_ms == ptime && audio_formats_share_wire_encoding(list.formats[i], format)) return true;
+    return false;
+  };
+  for (uint8_t i = 0; i < formats.count && ptime != 0; ++i)
+    if (((directions[i] & 1) && !supports_time(this->offer_tx_formats_, formats.formats[i])) ||
+        ((directions[i] & 2) && !supports_time(this->offer_rx_formats_, formats.formats[i]))) ptime = 0;
+  std::string result = this->wrap_sdp_envelope_(local_ip, payloads, maps, flows, ptime,
+      audio_direction_attribute(this->offer_tx_formats_.count != 0, this->offer_rx_formats_.count != 0));
+  if (ptime == 0) {
+    for (const char *hint : {"a=ptime:0\r\n", "a=maxptime:0\r\n"}) {
+      const auto at = result.find(hint);
+      if (at != std::string::npos) result.erase(at, std::strlen(hint));
+    }
+  }
+  const auto start = result.find("m=audio ");
+  if (start != std::string::npos) {
+    const auto end = result.find(' ', start + 8);
+    result.replace(start + 8, end - start - 8, "0");
+  }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  result = this->append_video_sdp_(result, local_ip, false, true);
+#endif
+  return result;
+}
 
 std::string SipTransport::build_sdp_offer_() {
   this->local_offered_rx_payloads_.count = 0;

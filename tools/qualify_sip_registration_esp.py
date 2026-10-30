@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from urllib.request import urlopen
 
 
@@ -136,7 +137,7 @@ class EspWitness:
     def on_log(self, entry):
         value = entry.message.decode(errors="replace") if isinstance(entry.message, bytes) else str(entry.message)
         value = re.sub(r"\x1b\[[0-9;]*m", "", value)
-        if any(tag in value for tag in ("registration.hil", "voip_stack", "esp_screenshot", "esp_video_renderer", "runtime_controller")):
+        if any(tag in value for tag in ("registration.hil", "phone.hil", "voip_stack", "esp_screenshot", "esp_video_renderer", "runtime_controller")):
             self.log.append({"time": time.monotonic(), "message": value})
             self.changed.set()
         renderer = re.search(r"decoded/errors/LVGL: (\d+)/(\d+)/(\d+)", value)
@@ -741,6 +742,8 @@ async def qualify(args):
         info = await witness.client.device_info()
         if info.mac_address.replace(":", "").lower() != args.expected_mac.replace(":", "").lower():
             raise RuntimeError("API MAC differs from the approved physical target")
+        if getattr(args, "expected_build", None) and info.compilation_time != args.expected_build:
+            raise RuntimeError("Running firmware build differs from the approved candidate")
         result["device"] = {"mac": info.mac_address, "name": info.name, "build": info.compilation_time,
                             "esphome": info.esphome_version}
         await witness.silence()
@@ -790,11 +793,16 @@ async def qualify(args):
             await ha_matrix(witness, args, result)
         elif args.operation == "persist":
             await persistence_matrix(witness, args, result)
-        await witness.service("registration_runtime_diagnostics")
+        elif args.operation == "phone-services":
+            sys.path.insert(0, str(args.intercom / "tools"))
+            from ha_voip_lab.phone_services_hil import run
+            await run(witness, args, result, BareSipWire)
+        await witness.service("phone_runtime_snapshot" if args.operation == "phone-services" else "registration_runtime_diagnostics")
         await asyncio.sleep(0.4)
         result.update(passed=True, final_call_state=witness.call_state, registration_states=witness.account_states)
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
+        result["error_traceback"] = traceback.format_exc()
         if args.operation == "call" and witness.call_state not in {"", "idle"}:
             try:
                 await witness.service("hangup_call")
@@ -818,7 +826,23 @@ def main():
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--address", required=True)
     parser.add_argument("--expected-mac", required=True)
-    parser.add_argument("--operation", choices=["observe", "provision", "call", "remove", "asterisk", "video", "browser-video", "ha", "persist"], required=True)
+    parser.add_argument("--expected-build", help="Exact native DeviceInfo compilation time, checked before any setter")
+    parser.add_argument("--operation", choices=["observe", "provision", "call", "remove", "asterisk", "video", "browser-video", "ha", "persist", "phone-services"], required=True)
+    parser.add_argument("--home-auth", type=Path, help="Private existing HA refresh credential file")
+    parser.add_argument("--mailbox-device", help="Existing native device ID; never creates a phone")
+    parser.add_argument("--mailbox-username", help="Existing managed SIP username")
+    parser.add_argument("--voicemail-audio", type=Path, help="Existing synthetic ordinary-speech WAV")
+    parser.add_argument("--ha-sip-host", help="HA SIP address, defaults to the existing HA URL host")
+    parser.add_argument("--ha-sip-port", type=int, default=5060)
+    parser.add_argument("--ha-ssh", default="hass", help="Existing SSH alias for owner-scoped standard IMAP identity lookup")
+    parser.add_argument("--ha-python", default="/var/lib/hass/.venv/bin/python")
+    parser.add_argument("--phone-services-only", action="append", choices=["mailbox", "blf", "subscriptions"],
+                        help="Select a Home HA phase; BLF requires visual JPEG confirmation over stdin before SIP pickup")
+    parser.add_argument("--phone-services-checkpoint", action="store_true",
+                        help="Pause before deleting the owned voicemail for visual review and up to two native replays")
+    parser.add_argument("--contacts-row-height", type=int, default=48, help="Actual native contact row height in pixels")
+    parser.add_argument("--contacts-viewport", type=int, default=96, help="Actual native contact scroll viewport height")
+    parser.add_argument("--contacts-capture-offset", type=int, help="Capture a single previously inspected contact viewport")
     parser.add_argument("--account", type=Path)
     parser.add_argument("--ha-peer", type=Path)
     parser.add_argument("--ha-only", action="append", choices=["calls", "cancel", "hold", "refer", "voicemail"])

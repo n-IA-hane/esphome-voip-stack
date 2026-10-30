@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,8 +27,9 @@ def test_native_ha_minimal_codegen(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     generated = next(tmp_path.rglob('main.cpp')).read_text()
     assert 'VoipHAIntegration' in generated
-    for role in ['endpoint', 'state', 'contacts', 'media_route', 'extension']:
+    for role in ['state', 'contacts', 'media_route', 'extension']:
         assert 'voip_' + role in generated
+    assert 'voip_endpoint' not in generated
 
 
 def test_standalone_has_no_ha_adapter(tmp_path):
@@ -44,29 +44,34 @@ def test_standalone_has_no_ha_adapter(tmp_path):
     assert 'USE_ESPHOME_VOIP_HA_MWI' not in defines
 
 
-def test_direct_message_waiting_requires_no_registration_pool(tmp_path):
+def test_managed_registration_and_blf_are_explicit_codegen_options(tmp_path):
     result = validate(tmp_path, '\napi:\n  custom_services: true\n', voip_settings='''
   ha_integration:
-    message_waiting: true
+    auto_register: true
+  blf:
+    max_subscriptions: 4
   on_message_waiting:
     then:
       - if:
           condition:
             voip_stack.has_waiting_messages:
-              account_id: direct
+              account_id: ha
           then:
             - logger.log: Messages available
 ''', generate=True)
     assert result.returncode == 0, result.stdout + result.stderr
     defines = next(tmp_path.rglob('defines.h')).read_text()
     generated = next(tmp_path.rglob('main.cpp')).read_text()
-    assert '#define USE_ESPHOME_VOIP_HA_MWI' in defines
-    assert '#define USE_ESPHOME_VOIP_REGISTRATION' not in defines
+    assert '#define USE_VOIP_HA_AUTO_REGISTER' in defines
+    assert '#define USE_ESPHOME_VOIP_MWI' in defines
+    assert '#define USE_ESPHOME_VOIP_BLF' in defines
+    assert '#define USE_ESPHOME_VOIP_REGISTRATION' in defines
     assert 'HasWaitingMessagesCondition' in generated
-    assert 'on_api_client_disconnected(client_info, client_address)' in generated
+    assert 'configure_registration(true, "ha")' in generated
+    assert 'pickup.' in generated
 
 
-def test_message_waiting_disconnect_precedes_existing_delayed_user_automation(tmp_path):
+def test_retired_native_mailbox_push_has_actionable_migration(tmp_path):
     result = validate(tmp_path, '''
 api:
   custom_services: true
@@ -77,14 +82,9 @@ api:
 ''', voip_settings='''
   ha_integration:
     message_waiting: true
-''', generate=True)
-    assert result.returncode == 0, result.stdout + result.stderr
-    generated = next(tmp_path.rglob('main.cpp')).read_text()
-    wrapper = re.search(r'mwi_disconnect->add_action\(new LambdaAction[^\n]+', generated)
-    assert wrapper is not None
-    text = wrapper.group()
-    assert text.index('on_api_client_disconnected') < text.index('->trigger(')
-    assert 'User disconnect hook' in generated and '10000' in generated
+''')
+    assert result.returncode != 0
+    assert 'Use registration.message_waiting' in result.stdout + result.stderr
 
 
 def test_missing_api_service_support_is_actionable(tmp_path):
@@ -144,4 +144,4 @@ def test_native_ha_speaker_only_codegen(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     generated = next(tmp_path.rglob('main.cpp')).read_text()
     assert 'VoipHAIntegration' in generated
-    assert 'voip_endpoint' in generated
+    assert 'voip_endpoint' not in generated

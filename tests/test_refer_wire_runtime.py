@@ -32,6 +32,7 @@ template<class T>void reset_string(T&s){s.clear();}
     for marker in ['static bool is_sip_uri_unreserved(', 'std::string via_branch(', 'std::string message_body(', 'bool sip_content_length(',
                    'std::string reason_text_from_header(', 'bool sip_option_supported(',
                    'std::string sip_uri_user_encode(', 'std::string sip_quoted(',
+                   'std::string sip_prefix_target_user(', 'std::string sip_target_uri(',
                    'std::string sip_name_addr(', 'std::string response_via_with_rport(']:
         extra += block(parser, marker) + '\n'
     # Default arguments normally come from sip_message.h.
@@ -46,7 +47,7 @@ template<class T>void reset_string(T&s){s.clear();}
         ('send_stateless_response_', requests),
     ]
     declarations = {
-        'send_stateless_response_': 'bool send_stateless_response_(const std::string&,const sockaddr_in&,uint16_t,const char*,const std::string& = "",bool=false,int=-1);',
+        'send_stateless_response_': 'bool send_stateless_response_(const std::string&,const sockaddr_in&,uint16_t,const char*,const std::string& = "",bool=false,int=-1,const std::string& = "");',
     }
     for name, text in methods:
         # Remove the fixture implementation, retaining the production declaration.
@@ -114,6 +115,7 @@ template<class T>void reset_string(T&s){s.clear();}
  bool send_response_(uint16_t,const char*){assert(false);return false;}
  bool send_connected_identity_update_(){return false;}
  std::string build_sdp_offer_(){return "v=0\r\nm=audio 40000 RTP/AVP 96\r\na=rtpmap:96 L16/16000/1\r\n";}
+ std::string build_sdp_capabilities_(uint32_t)const{return "v=0\r\nm=audio 0 RTP/AVP 96\r\na=rtpmap:96 L16/16000/1\r\n";}
  bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool){return true;}
 ''')
     marker = 'bool remote_audio_expected() const override'

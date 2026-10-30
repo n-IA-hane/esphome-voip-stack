@@ -49,9 +49,9 @@ The published endpoint mode is inferred from YAML wiring:
 - microphone only: ``mic_only``;
 - speaker only: ``speaker_only``.
 
-The mode is published in the endpoint text sensor so peers and Home Assistant do
-not attempt an audio direction that the device cannot provide. At least one
-audio direction is required; a signaling-only endpoint is not supported.
+The actual directions are described by SIP SDP and read-only OPTIONS capabilities.
+An explicit legacy endpoint sensor remains available for older discovery flows.
+At least one audio direction is required.
 Microphone-only offers advertise ``sendonly`` and speaker-only offers
 ``recvonly``. Settings for absent hardware do not add a fictitious direction.
 
@@ -151,16 +151,17 @@ Conditions
 Boundaries
 ----------
 
-ESP devices are SIP peers, not registrar clients. There is no SIP registration
-or digest authentication support in the ESP component. Provider trunks,
-registrar accounts, central routing and the Lovelace softphone card are provided
-by the Home Assistant integration in ``esphome-intercom``.
+Direct SIP remains the generic default. Optional ``registration`` accounts
+support Digest-authenticated REGISTER and PBX calling over UDP/TCP. Maintained
+HA packages enable ``ha_integration.auto_register`` to provision a shared ``ha``
+identity automatically. Central routing and browser cards belong to the
+``esphome-intercom`` backend. See ``docs/SIP_REGISTRATION.md``.
 
 The phonebook controls outbound resolution; it is not an inbound caller
 allowlist. SIP has no TLS and RTP has no SRTP on ESP, so expose the listeners
-only on a trusted LAN/VPN or behind network admission policy. Session-changing
-in-dialog INVITE (including hold) is rejected with ``488`` while the original
-dialog remains established and can later receive BYE normally.
+only on a trusted LAN/VPN or behind network admission policy. Standard in-dialog hold/resume changes media direction while retaining the
+prepared audio path. Unsupported codec or endpoint changes receive ``488``
+while preserving the established dialog.
 
 Correlated Home Assistant calls
 -------------------------------
@@ -182,8 +183,10 @@ Video scope
 -----------
 
 An existing native ESPHome ``esp32_camera`` can transmit JPEG on ESP32-S3.
-Displaying the remote video on an S3 screen remains future work. ESP32-P4
-adapters support both camera transmission and remote-video decode/display.
+The optional ``esp_video_renderer`` receives JPEG on S3 LVGL displays. Camera
+transmission and receive rendering are independent choices; their simultaneous
+FULL workload needs separate qualification. ESP32-P4 adapters support hardware
+camera transmission and remote-video decode/display.
 JPEG and H.264 are separate compile-time profiles. Two-way audio is retained
 on devices with both microphone and speaker.
 
@@ -195,8 +198,23 @@ Established IPv4 audio calls can accept blind in-dialog REFER over UDP or TCP,
 including mixed-transport handoffs. The current caller remains available while
 the destination rings, unless that caller hangs up. Local hangup cancels the
 attempt; the real result is reported with NOTIFY. Video transfers, hostname
-targets, attended-transfer URI headers and Digest-authenticated retry are
-outside this receiver's supported scope.
+targets and attended-transfer URI headers remain outside this receiver's
+supported scope. Candidate requests reuse the selected account's Digest
+credentials where applicable.
+
+Directories, BLF and voicemail
+------------------------------
+
+Optional ``ldap_directory`` imports into the existing 64-contact phonebook.
+``voip_stack.blf`` subscribes to remote contacts' standard dialog-info state;
+``registration.message_waiting`` subscribes to mailbox counts. Both SIP event
+packages share the existing SIP worker and account credentials.
+
+``imap_voicemail`` provides a paginated message catalog, public MediaSource
+playback and UID-scoped read/delete operations. These clients can share a SIP
+account or use explicit external server credentials. The display remains a YAML
+responsibility. See ``docs/PHONE_SERVICES.md`` for schemas, resource bounds,
+protocol limits and examples.
 
 See Also
 --------

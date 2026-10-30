@@ -1,0 +1,4 @@
+# Independent LDAP servers and an IMAP reference server for protocol tests.
+ldap3==2.9.1
+ldaptor==21.2.0
+pymap==0.36.7

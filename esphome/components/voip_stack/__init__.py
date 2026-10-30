@@ -14,7 +14,7 @@ from esphome.const import (
 )
 from esphome.components import audio, esp32, microphone, psram, speaker, wifi, text_sensor as esphome_text_sensor
 
-from . import endpoint_budget, ha_integration, registration
+from . import blf, endpoint_budget, ha_integration, registration
 from esphome.components import esp32_camera as esp32_camera_component
 
 CODEOWNERS = ["@n-IA-hane"]
@@ -556,6 +556,8 @@ SetMicGainDbAction = voip_stack_ns.class_("SetMicGainDbAction", automation.Actio
 SetVideoSendAction = voip_stack_ns.class_("SetVideoSendAction", automation.Action)
 SetContactsAction = voip_stack_ns.class_("SetContactsAction", automation.Action)
 SetContactAction = voip_stack_ns.class_("SetContactAction", automation.Action)
+CallContactAction = voip_stack_ns.class_("CallContactAction", automation.Action)
+PickupContactAction = voip_stack_ns.class_("PickupContactAction", automation.Action)
 CallAction = voip_stack_ns.class_("CallAction", automation.Action)
 SetRemoteEndpointAction = voip_stack_ns.class_("SetRemoteEndpointAction", automation.Action)
 AddContactAction = voip_stack_ns.class_("AddContactAction", automation.Action)
@@ -614,6 +616,8 @@ CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), ha_integration.p
     {
         cv.Optional("ha_integration"): ha_integration.schema,
         cv.Optional("registration"): registration.SCHEMA,
+        cv.Optional("blf"): blf.SCHEMA,
+        cv.Optional("on_blf_state"): automation.validate_automation(),
         cv.Optional("on_registration_state"): automation.validate_automation(),
         cv.Optional("on_message_waiting"): automation.validate_automation(),
         cv.GenerateID("ha_adapter_id"): cv.declare_id(VoipHAIntegration),
@@ -798,6 +802,8 @@ def _consume_voip_sockets(config):
 def _final_validate(config):
     """Cross-component validation + socket reservation."""
     ha_integration.validate(config, fv.full_config.get())
+    registration.final_validate(config)
+    blf.final_validate(config, fv.full_config.get())
     protocol = config.get(CONF_TRANSPORT, TRANSPORT_UDP)
     audio_task_stacks_in_psram = config[CONF_AUDIO_TASK_STACKS_IN_PSRAM]
     if config[CONF_TASK_STACKS_IN_PSRAM] or audio_task_stacks_in_psram:
@@ -1256,6 +1262,7 @@ async def to_code(config):
     await _bind_ha_phonebook_sensor(var, config)
     await ha_integration.to_code(var, config)
     await registration.to_code(var, config)
+    await blf.to_code(var, config)
 
 
 # === Action registrations ===
@@ -1422,6 +1429,22 @@ _register_templated_action(
     cg.std_string,
     lambda var, value: var.set_target(value),
 )
+_register_templated_action(
+    "voip_stack.call_contact", CallContactAction, "contact_id", cv.string, cg.std_string,
+    lambda var, value: var.set_contact_id(value),
+)
+
+
+@automation.register_action("voip_stack.pickup_contact", PickupContactAction, cv.Schema({
+    cv.GenerateID(): cv.use_id(VoipStack),
+    cv.Required("contact_id"): cv.templatable(cv.string),
+}), synchronous=True)
+async def pickup_contact_to_code(config, action_id, template_arg, args):
+    if "blf" not in ((CORE.config or {}).get("voip_stack") or {}):
+        raise cv.Invalid("voip_stack.pickup_contact requires voip_stack.blf")
+    var = await _new_parented_action(config, action_id, template_arg)
+    cg.add(var.set_contact_id(await cg.templatable(config["contact_id"], args, cg.std_string)))
+    return var
 
 
 @automation.register_action(

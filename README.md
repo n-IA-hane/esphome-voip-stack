@@ -3,8 +3,7 @@
 **ESPHome 2026.10.0 or newer is required.**
 
 Use the official ESPHome audio, mixer, resampler, media player, Voice Assistant,
-Micro Wake Word and OTA components. VoIP Stack does not require replacement
-providers for those components. Audio Stack and Runtime Controller remain
+Micro Wake Word and OTA components. Audio Stack and Runtime Controller are
 optional external components for configurations that use them.
 
 *Developed and maintained by n-IA-hane, with community contributions and support. [❤️ Sponsor the project](https://github.com/sponsors/n-IA-hane)*
@@ -53,14 +52,15 @@ Two scope decisions shape the component:
 
 **`voip_stack` does not own audio hardware or echo cancellation.** It consumes microphone and speaker interfaces. When software AEC/AFE is needed, [`esp_audio_stack`](https://github.com/n-IA-hane/esphome-audio-stack) owns the audio graph and hands `voip_stack` a clean post-processor microphone. Legacy processing options on `voip_stack` are intentionally gone.
 
-**Direct SIP remains the default.** ESP devices call each other and Home Assistant without registration. Optional [PBX accounts](docs/SIP_REGISTRATION.md) let the same endpoint register with an external PBX while retaining its direct HA route. Account selection affects future calls; one physical conversation owns the audio devices.
+**Choose direct SIP or a registered phone.** The generic component defaults to direct SIP. Optional [PBX accounts](docs/SIP_REGISTRATION.md) register with a conventional PBX. Maintained Home Assistant device packages now configure a managed SIP account automatically, including shared identity for optional LDAP and IMAP services. One physical conversation owns the audio devices.
 
 ## Choose how the ESP connects
 
 One component covers direct SIP and optional registered accounts. The
-**2026.11.1-dev preview** adds REGISTER accounts and MWI. Select `@dev` on the
-existing ESP VoIP Stack external-component source to try these additions.
-Direct SIP keeps its existing configuration.
+**2026.11.1-dev preview** adds registered PBX accounts, standard BLF/MWI, LDAP
+contacts, IMAP visual voicemail and S3 JPEG reception. Select `@dev` on the
+component source to use these additions. See the [feature guide](docs/PHONE_SERVICES.md)
+and [release delta](docs/WHATS_NEW_2026_11_1_DEV.md).
 
 An **account** is an identity registered at a PBX. A **line** chooses the direct
 route or one account for a new outgoing call. The PBX's own trunk configuration
@@ -69,7 +69,8 @@ speaker and audio-format configuration.
 
 | Installation | REGISTER | Outgoing line | Incoming calls |
 | --- | --- | --- | --- |
-| Home Assistant / ESP peers | Omitted | `direct` | Direct SIP |
+| Generic direct HA / ESP peers | Omitted | `direct` | Direct SIP |
+| Maintained HA phone packages | Automatic `ha` account | `ha` | Registered HA plus direct SIP |
 | PBX with a static route to the ESP | Omitted | `direct` | Direct SIP from the PBX |
 | Registered PBX phone | One account | Account ID | Matching registered PBX |
 | HA plus a registered PBX | One account | `direct` or account ID | Both routes |
@@ -259,27 +260,26 @@ audio devices at a time.
 
 [Full account fields, actions, persistence and registration state](docs/SIP_REGISTRATION.md)
 
-### Mailbox state and remote contact state
+### A complete phone, with optional directory and voicemail
 
-Choose the mailbox source independently of your call route:
+- **Automatic HA account:** `ha_integration.auto_register: true` lets the
+  coordinated integration provision a shared SIP/LDAP/IMAP identity. The generic
+  default remains false; maintained HA packages enable it.
+- **MWI:** `registration.message_waiting: true` receives standard mailbox counts
+  through SIP, including the managed `ha` account.
+- **BLF:** `blf` watches contacts through SIP dialog subscriptions. YAML receives
+  idle, ringing, active, held and availability updates, and can perform directed
+  pickup through the contact's own account.
+- **LDAP:** `ldap_directory` commits a bounded directory into the existing
+  phonebook, retaining manual overrides, stable IDs and contact categories.
+- **IMAP:** `imap_voicemail` provides a paginated message catalog and streams
+  selected audio through a native ESPHome MediaSource. Read/delete operations
+  use the server's UID and UIDVALIDITY identities.
 
-- `ha_integration.message_waiting: true` receives the HA-managed mailbox over
-  the authenticated ESPHome API, with no REGISTER. Its account ID is `direct`.
-- `registration.message_waiting: true` subscribes to registered PBX mailboxes
-  using standard SIP MWI.
-- Enable both to retain their individual states and combine them in one waiting
-  indicator.
-
-`on_message_waiting` supplies the account, availability, waiting flag and
-message counts. YAML can update an LED or screen from that callback, and
-`voip_stack.has_waiting_messages` checks all enabled sources or one chosen
-account. Home Assistant pushes mailbox changes and reconnect snapshots without
-polling. See the [MWI examples](docs/SIP_MWI.md).
-
-BLF subscriptions and remote-extension watchlists are outside the current ESP
-API. The local call-state sensors describe this ESP, while MWI describes its
-HA or PBX mailbox. Home Assistant's separate BLF and dashboard features belong to the
-HA backend.
+The maintained display packages use shared vertical contact and voicemail lists.
+Custom YAML can build its own interface from the same callbacks and snapshots.
+[SIP mailbox state](docs/SIP_MWI.md) and
+[contacts, BLF and visual voicemail](docs/PHONE_SERVICES.md) describe each layer.
 
 ## What it gives you
 
@@ -301,13 +301,13 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 **A phonebook that is a dial plan, not a gatekeeper.** Contacts define where outbound calls go. Inbound calls are not rejected just because the caller is unknown; the INVITE carries caller and destination identity, and HA-side resolution handles routed/NAT installs.
 
-**Self-describing devices.** The component publishes text sensors for state, transport, endpoint identity, destination, caller, contacts, SIP snapshot and last terminal reason.
+**SIP capability discovery.** OPTIONS describes configured media capabilities without opening audio or allocating RTP ports. Offer/answer remains authoritative for each call. Optional entities expose call state, caller, destination, contacts, diagnostics and the last terminal reason.
 
 **Honest failure taxonomy.** The FSM distinguishes `BUSY`, `DECLINED`, `CANCELLED`, `MEDIA_INCOMPATIBLE`, `TRANSPORT_UNREACHABLE` and `AUTH_REQUIRED_UNSUPPORTED`.
 
 **Compile-time pruning.** A speaker-only build contains no VoIP TX path and a mic-only build contains no RX-to-speaker path.
 
-**Optional video.** Native ESP32-S3 cameras can transmit JPEG during calls; rendering received video on S3 screens remains future work. ESP32-P4 adapters support camera transmission and remote-video decode/display. JPEG and H.264 remain separate compile-time profiles. The camera component owns capture and borrowed frames, the codec-specific source owns encoding or compressed-frame forwarding, and `p4_video_renderer` owns receive decode and panel presentation. Audio-only builds do not include these components or their codec dependencies.
+**Optional video.** Native ESP32-S3 cameras transmit JPEG; the separate `esp_video_renderer` receives JPEG on S3 LVGL displays. Camera transmission and display reception are independently selectable. ESP32-P4 adapters provide hardware-oriented video transmission and presentation, with separate JPEG and H.264 profiles. VoIP owns transport, the camera/source owns capture, and the selected renderer owns decoding and presentation. See the [renderer guide](docs/ESP_VIDEO_RENDERER.md) for limits and qualification scope.
 
 **Full ESPHome automation surface.** Triggers, actions and conditions are normal ESPHome automations.
 
@@ -367,11 +367,11 @@ Other hardware and PBX combinations still need their own runtime tests.
 
 ## Core concepts
 
-**Endpoint.** The published identity of a device: name, optional host/IP, SIP port, RTP port, signaling transport, capability mode, and advertised TX/RX PCM capabilities. The `endpoint` text sensor is the authoritative record Home Assistant consumes.
+**Endpoint.** One SIP phone with its account identity and actual SDP capabilities. The coordinated HA integration discovers managed phones through their existing API configuration and SIP registration, and queries OPTIONS for capabilities. The legacy `endpoint` text sensor is an explicit compatibility option.
 
 **Capability mode.** Derived from wiring. It gates task creation at runtime and code inclusion at compile time.
 
-**Phonebook.** The outbound dial plan: an ordered list of contacts the device can call, navigated by `next_contact`/`prev_contact` or addressed by name. Sources are static YAML contacts, runtime actions, and the HA-managed roster.
+**Phonebook.** The outbound dial plan: one ordered contact collection, selectable by stable ID, name or the existing `next_contact`/`prev_contact` actions. Sources include static/manual contacts and optional LDAP directories. Managed LDAP replaces the legacy HA roster source while preserving manual entries.
 
 **Audio format contract.** `audio.tx` describes what the device sends, `audio.rx` what it accepts. The internal no-audio placeholder is never used to repair missing endpoint formats.
 
@@ -418,19 +418,24 @@ in 2026.10.0; it is not another required migration for an up-to-date 2026.10.1 Y
 
 ### Add a custom ESP phone to Home Assistant
 
-With ESPHome 2026.10.0 or newer, `voip_stack` provides discovery entities,
-call-control actions and HA phonebook reception directly. No VoIP HA package
-is needed. Enable native service registration alongside any API encryption:
+The native adapter exposes call controls and entities. To use the coordinated
+managed-account setup, enable automatic registration alongside your board's
+existing audio configuration:
 
 ```yaml
 api:
   custom_services: true
+
+voip_stack:
+  ha_integration:
+    auto_register: true
 ```
 
 Keep your microphone and/or speaker configuration. The component works with
-native ESPHome audio as well as Audio Stack. HA integration is enabled when
-API is configured; use `voip_stack.ha_integration: false` for standalone SIP.
-Routing through HA remains controlled separately by `use_ha_as_first_contact`.
+native ESPHome audio as well as Audio Stack. The coordinated HA backend provisions
+the `ha` SIP identity automatically. Add LDAP or IMAP using the
+[phone-service guide](docs/PHONE_SERVICES.md). The generic component keeps
+`auto_register: false`; use `ha_integration: false` to omit its HA adapter.
 
 For an HA action that selects an outgoing trunk for one call, the native API also
 provides `start_call_via_ha(dest, call_id)` and `hangup_call_if_id(call_id)`.
@@ -735,6 +740,8 @@ Phonebook actions: `voip_stack.next_contact`, `voip_stack.prev_contact`,
 `voip_stack.set_contact`, `voip_stack.set_contacts`,
 `voip_stack.flush_contacts`, `voip_stack.update_contacts`,
 `voip_stack.set_roster_json`, and `voip_stack.set_ha_peer_name`.
+Typed directory actions `voip_stack.call_contact` and `voip_stack.pickup_contact`
+accept `contact_id`; pickup requires the optional BLF configuration.
 
 Audio and diagnostic actions: `voip_stack.set_volume`,
 `voip_stack.set_mic_gain_db`, and `voip_stack.publish_entity_states`.
@@ -747,7 +754,7 @@ platform entities you need:
 
 | Platform | Type | Content |
 |---|---|---|
-| `text_sensor` | `endpoint` | Short endpoint identity record used by HA phonebook discovery. |
+| `text_sensor` | `endpoint` | Optional legacy discovery record, disabled by default. |
 | `text_sensor` | `state` | Current FSM state. |
 | `text_sensor` | `caller` | Current/last caller identity. |
 | `text_sensor` | `destination` | Currently selected dial-plan target. |
@@ -759,8 +766,11 @@ platform entities you need:
 | `text` | `conference_groups` | Editable comma-separated conference group memberships. |
 | `switch` | `conference_ring` | Ring this endpoint when another participant starts one of its conference groups. |
 
-For HA-managed installs, include the integration package from
-`esphome-intercom` or declare the equivalent entities manually:
+The native HA adapter already provides the normal control entities when API is
+enabled. Customize them under `voip_stack.ha_integration`. An older HA backend
+can explicitly retain its legacy discovery record with
+`ha_integration: {endpoint: true}`. For standalone SIP (`ha_integration: false`),
+declare individual entities as required:
 
 ```yaml
 text_sensor:
@@ -861,6 +871,9 @@ Removed options rejected with migration guidance: `processor_id`, `aec_reference
 - There is no speaker ring, speaker task or AEC reference buffer inside `voip_stack`; incoming audio is written directly to the configured ESPHome speaker.
 - `buffers_in_psram` affects only VoIP-owned staging buffers.
 - Keep RTP payloads inside `udp_max_payload`; raising it above the real path MTU trades a compile error for intermittent one-way audio.
+- Optional BLF preallocates 16 watchers by default, configurable from 1 to 64,
+  with PSRAM placement. LDAP and IMAP have independent, bounded buffer and
+  worker settings, included only when those components are declared.
 
 ## Scope and known boundaries
 
@@ -869,9 +882,9 @@ Removed options rejected with migration guidance: `processor_id`, `aec_reference
 - RTP media is UDP in both signaling modes and requires UDP reachability.
 - Audio supports PCM and compile-time optional Opus within the supported
   rate/format matrix. Opus is restricted to ESP32-S3 VoIP-only profiles.
-- In-dialog re-INVITE, including ordinary hold or codec renegotiation, receives
-  `488 Not Acceptable Here`. The established dialog/media remains active and a
-  later BYE still terminates the original call.
+- In-dialog hold/resume follows standard media directions while retaining the
+  prepared audio path. Unsupported codec or endpoint changes receive `488`,
+  preserving the established call.
 - The phonebook is independent of incoming admission. Direct profiles accept
   reachable peers; registered-only admission uses the configured account and
   trusted PBX peer. Plaintext SIP/RTP belongs on a trusted LAN/VPN or behind

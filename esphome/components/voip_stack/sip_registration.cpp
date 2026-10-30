@@ -291,13 +291,9 @@ bool SipRegistration::set_account(const SipAccountConfig& c, uint32_t now) {
       }
   if (i < 0) return false;
   auto& a = this->accounts_[i];
-#ifdef USE_ESPHOME_VOIP_MWI
-  const uint32_t revision = a.config_revision + 1;
-#endif
+  const uint32_t revision = ++this->next_config_revision_;
   a = {};
-#ifdef USE_ESPHOME_VOIP_MWI
   a.config_revision = revision;
-#endif
   a.config = c;
   a.occupied = true;
   a.desired = c.enabled;
@@ -310,13 +306,9 @@ bool SipRegistration::set_account(const SipAccountConfig& c, uint32_t now) {
 bool SipRegistration::remove_account(const std::string& id) {
   const int i = this->find(id);
   if (i < 0) return false;
-#ifdef USE_ESPHOME_VOIP_MWI
-  const uint32_t revision = this->accounts_[i].config_revision + 1;
-#endif
+  const uint32_t revision = ++this->next_config_revision_;
   this->accounts_[i] = {};
-#ifdef USE_ESPHOME_VOIP_MWI
   this->accounts_[i].config_revision = revision;
-#endif
   return true;
 }
 bool SipRegistration::request_registration(const std::string& id, bool on, uint32_t now) {
@@ -550,6 +542,10 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
             this->hooks_.random == nullptr ? 0 : this->hooks_.random() % (expires * 50 + 1);
         a.next_ms = now + std::max<uint32_t>(1000, expires * 800 - jitter);
         a.scheduled = true;
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+        if (this->hooks_.binding_accepted != nullptr)
+          this->hooks_.binding_accepted(this->hooks_.context, i, now);
+#endif
       } else {
         this->state_(i, RegistrationState::DISABLED, status);
         a.scheduled = a.desired;

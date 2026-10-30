@@ -108,7 +108,7 @@ struct SipTransport {
  VideoCapability local_video_receive_capability_()const{return video_sink_?rx:VideoCapability{};}
  void reset_video_negotiation_();
  bool learn_remote_video_from_sdp_(const std::string&,uint32_t,bool);
- std::string append_video_sdp_(const std::string&,const std::string&,bool)const;
+ std::string append_video_sdp_(const std::string&,const std::string&,bool,bool=false)const;
  std::string build_video_direction_offer_(bool,uint32_t)const;
 };
 '''
@@ -167,6 +167,22 @@ int main(int argc,char**argv){assert(argc==2);unsigned scenario=std::atoi(argv[1
 }
 '''
     compile_run(tmp_path, code, str(scenario))
+
+
+def test_options_video_capabilities_ignore_active_call_preferences_without_mutation(tmp_path):
+    compile_run(tmp_path, sdp_source() + r'''
+int main(){SipTransport call;call.refer_context_active_=true;call.video_send_requested_=false;
+ call.video_imageattr_state_=call.IMAGEATTR_DISABLED|call.IMAGEATTR_FALLBACK;
+ call.video_negotiated_=true;call.video_receive_enabled_=true;call.remote_video_rtp_port_=44444;
+ const auto caps=call.append_video_sdp_("", "192.0.2.1", false, true);
+ assert(caps.find("m=video 0 RTP/AVP 26")!=std::string::npos);
+ assert(caps.find("a=recvonly")!=std::string::npos&&caps.find("recv [x=[8:8:240]")!=std::string::npos);
+ assert(call.refer_context_active_&&!call.video_send_requested_&&call.video_negotiated_&&call.video_receive_enabled_);
+ assert(call.remote_video_rtp_port_==44444&&call.video_imageattr_state_==(call.IMAGEATTR_DISABLED|call.IMAGEATTR_FALLBACK));
+ call.video_source_=&call;const auto duplex=call.append_video_sdp_("", "192.0.2.1", false, true);
+ assert(duplex.find("a=sendrecv")!=std::string::npos&&duplex.find("send [x=320,y=240,sar=1.0]")!=std::string::npos);
+}
+''')
 
 
 def test_fallback_runs_once_in_the_existing_sip_pump_and_keeps_audio(tmp_path):

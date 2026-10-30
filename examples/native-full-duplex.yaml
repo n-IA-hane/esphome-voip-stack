@@ -1,6 +1,7 @@
 substitutions:
   name: voip-native-example
   friendly_name: VoIP Native Example
+  voip_stack_source: github://n-IA-hane/esphome-voip-stack@main
 
 esphome:
   min_version: 2026.10.0
@@ -24,7 +25,7 @@ wifi:
   power_save_mode: NONE
 
 external_components:
-  - source: github://n-IA-hane/esphome-voip-stack@main
+  - source: ${voip_stack_source}
     components: [voip_stack]
 
 i2s_audio:

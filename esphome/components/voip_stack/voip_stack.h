@@ -46,11 +46,15 @@
 #include "sip_types.h"
 #include "transport.h"
 #include "voip_fsm.h"
-#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_HA_MWI)
+#ifdef USE_ESPHOME_VOIP_BLF
+#include "sip_blf.h"
+#endif
+#ifdef USE_ESPHOME_VOIP_MWI
 #include "message_waiting.h"
 #endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
 #include "sip_registration.h"
+#include "sip_account_view.h"
 #ifdef USE_ESPHOME_VOIP_MWI
 #include "sip_mwi.h"
 #endif
@@ -136,11 +140,15 @@ class VoipStack : public Component {
   bool register_account(const std::string &id);
   bool unregister_account(const std::string &id);
   bool is_registered(const std::string &id);
+  bool get_account_snapshot(const std::string &id, SipAccountSnapshot *out);
+  template<typename F> void add_on_account_changed_callback(F &&callback) {
+    this->account_changed_callbacks_.add(std::forward<F>(callback));
+  }
   bool select_line(const std::string &id);
   void start_call_on_line(const std::string &target, const std::string &line);
   Trigger<std::string, std::string, int> *get_registration_state_trigger() { return &this->registration_state_trigger_; }
 #endif
-#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_HA_MWI)
+#ifdef USE_ESPHOME_VOIP_MWI
   MessageWaitingState get_message_waiting(const std::string &id);
   bool has_waiting_messages(const std::string &id = "");
   template<typename F> void add_on_message_waiting_callback(F &&callback) {
@@ -150,9 +158,7 @@ class VoipStack : public Component {
     return &this->message_waiting_trigger_;
   }
 #endif
-#ifdef USE_ESPHOME_VOIP_HA_MWI
-  void set_ha_message_waiting(bool available, bool waiting, uint32_t new_messages, uint32_t old_messages);
-#endif
+
   // AFTER_CONNECTION: bind sockets and publish initial state only after
   // the HA API is up (AFTER_WIFI would race the API connection).
   float get_setup_priority() const override { return setup_priority::AFTER_CONNECTION; }
@@ -179,6 +185,15 @@ class VoipStack : public Component {
   void set_rx_task_stack_size(uint32_t bytes) { this->rx_task_stack_bytes_ = bytes; }
   void set_buffers_in_psram(bool enabled) { this->buffers_in_psram_ = enabled; }
   void set_device_name(const std::string &name) { this->device_name_ = name; }
+  const std::string &get_caller_display_name() const {
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+    if (!this->ha_display_name_.empty()) return this->ha_display_name_;
+#endif
+    return this->device_name_;
+  }
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  void set_ha_display_name(const std::string &name);
+#endif
   void set_extension(const std::string &extension);
   void set_extension_limits(uint8_t characters, uint8_t bytes) {
     this->extension_max_characters_ = characters;
@@ -209,6 +224,7 @@ class VoipStack : public Component {
       this->transport_->set_sip_signaling_transport(type == TransportType::TCP);
     }
   }
+  bool get_sip_transport_tcp() const { return this->protocol_ == TransportType::TCP; }
   void set_udp_max_payload(size_t bytes) { this->udp_max_payload_ = bytes; }
   void set_sip_port(uint16_t port) { this->sip_port_ = port; }
   void set_rtp_port(uint16_t port) { this->rtp_port_ = port; }
@@ -234,7 +250,13 @@ class VoipStack : public Component {
     this->video_max_rtp_payload_ = bytes;
   }
 #endif
-  std::string get_endpoint() const { return this->build_endpoint_string_(); }
+  std::string get_endpoint() const {
+#ifdef USE_ESPHOME_VOIP_LEGACY_ENDPOINT
+    return this->build_endpoint_string_();
+#else
+    return "";
+#endif
+  }
   const char *get_audio_capability() const { return this->audio_capability_(); }
 
   // Direct SIP URIs are dialed peer-to-peer. Logical names without host/port
@@ -363,7 +385,9 @@ class VoipStack : public Component {
   void set_caller_sensor(text_sensor::TextSensor *sensor) { this->caller_sensor_ = sensor; }
   void set_contacts_sensor(text_sensor::TextSensor *sensor) { this->contacts_sensor_ = sensor; }
   void set_transport_sensor(text_sensor::TextSensor *sensor) { this->transport_sensor_ = sensor; }
+#ifdef USE_ESPHOME_VOIP_LEGACY_ENDPOINT
   void set_endpoint_sensor(text_sensor::TextSensor *sensor) { this->endpoint_sensor_ = sensor; }
+#endif
   void set_last_reason_sensor(text_sensor::TextSensor *sensor) { this->last_reason_sensor_ = sensor; }
   void set_sip_snapshot_sensor(text_sensor::TextSensor *sensor) { this->sip_snapshot_sensor_ = sensor; }
   // Phonebook source from HA: shipped YAMLs wire a homeassistant text_sensor
@@ -430,6 +454,33 @@ class VoipStack : public Component {
   bool get_current_contact_directional_audio_v1() const;
   std::string get_caller() const { return this->current_caller_name_; }
   size_t get_contact_count() const { return this->phonebook_.size(); }
+  // Main-loop views, valid only until the next phonebook mutation.
+  const ContactEntry *get_contact(size_t index) const { return this->phonebook_.at(index); }
+  const ContactEntry *find_contact(const std::string &id) const { return this->phonebook_.find_id(id); }
+  bool call_contact(const std::string &id);
+  std::string get_contact_account(const std::string &id) const;
+#ifdef USE_ESPHOME_VOIP_BLF
+  void set_blf_configuration(const std::string &account_id, uint8_t capacity,
+                             const std::string &pickup_prefix, bool watch_contacts) {
+    this->blf_account_id_ = account_id; this->blf_capacity_ = capacity;
+    this->blf_pickup_prefix_ = pickup_prefix; this->blf_watch_contacts_ = watch_contacts;
+  }
+  BlfStateInfo get_contact_blf(const std::string &id);
+  bool set_blf_watches(const std::vector<BlfWatchConfig> &watches);
+  bool pickup_contact(const std::string &id);
+  template<typename F> void add_on_blf_state_callback(F &&callback) {
+    this->blf_callbacks_.add(std::forward<F>(callback));
+  }
+  Trigger<std::string, std::string, std::string, bool> *get_blf_state_trigger() { return &this->blf_state_trigger_; }
+#endif
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  void set_ha_roster_enabled(bool enabled);
+  DirectoryCommitResult commit_contact_directory(const void *provider, std::vector<ContactEntry> entries,
+                                                  const std::string &account_id = "");
+  // Mutable main-loop borrow. Entries may be moved; no view is retained.
+  DirectoryCommitResult commit_contact_directory(const void *provider, ContactEntry *entries, size_t count,
+                                                  const std::string &account_id = "");
+#endif
   std::string get_contacts_csv() const;
 
   // Call state triggers (exposed to YAML)
@@ -597,7 +648,9 @@ class VoipStack : public Component {
   static void ip_event_handler_(void *arg, esp_event_base_t event_base,
                                 int32_t event_id, void *event_data);
   std::string local_ip_string_() const;
+#ifdef USE_ESPHOME_VOIP_LEGACY_ENDPOINT
   std::string build_endpoint_string_() const;
+#endif
   std::string build_sip_snapshot_string_() const;
   static std::string audio_format_token_(const AudioFormat &fmt);
   static std::string audio_rtp_format_token_(const AudioFormat &fmt);
@@ -677,12 +730,16 @@ class VoipStack : public Component {
   text_sensor::TextSensor *caller_sensor_{nullptr};       // full: who is calling
   text_sensor::TextSensor *contacts_sensor_{nullptr};     // full: contact count (e.g. "3 contacts")
   text_sensor::TextSensor *transport_sensor_{nullptr};    // SIP signaling transport: "udp" or "tcp"
-  text_sensor::TextSensor *endpoint_sensor_{nullptr};     // HA roster row with SIP route and audio capabilities.
+#ifdef USE_ESPHOME_VOIP_LEGACY_ENDPOINT
+  text_sensor::TextSensor *endpoint_sensor_{nullptr};
+#endif
   text_sensor::TextSensor *last_reason_sensor_{nullptr};  // terminal reason for HA/card mirroring
   text_sensor::TextSensor *sip_snapshot_sensor_{nullptr};  // diagnostic SipPhoneState JSON
 #endif
   std::string last_reason_;
+#ifdef USE_ESPHOME_VOIP_LEGACY_ENDPOINT
   std::string last_endpoint_;
+#endif
   std::string last_sip_snapshot_;
   uint32_t last_sip_snapshot_refresh_ms_{0};
   std::atomic<bool> endpoint_publish_requested_{false};
@@ -734,6 +791,9 @@ class VoipStack : public Component {
   // hass.config.location_name through voip_stack.set_ha_peer_name for default
   // dial-plan selection. phonebook entry. Direct P2P usage can leave it empty.
   std::string ha_peer_name_;
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  std::string ha_display_name_;
+#endif
   bool use_ha_as_first_contact_{false};
   bool first_contacts_batch_committed_{false};
   uint8_t extension_max_characters_{32}, extension_max_bytes_{32};
@@ -1013,6 +1073,11 @@ class VoipStack : public Component {
   Trigger<std::string, std::string> call_failed_trigger_;
   Trigger<std::string> destination_changed_trigger_;
   Trigger<std::string> phonebook_update_trigger_;
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  struct DirectoryProvider { const void *owner{nullptr}; std::string account_id; };
+  std::array<DirectoryProvider, 4> directory_providers_{};
+  bool ha_roster_enabled_{true};
+#endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   struct SavedRegistrationAccount {
     uint8_t used{0}, removed{0}, tcp{0}, enabled{1};
@@ -1047,7 +1112,9 @@ class VoipStack : public Component {
   bool registration_accept_direct_{true}, force_direct_call_{false};
   std::string default_line_{"direct"}, pending_line_;
   Trigger<std::string, std::string, int> registration_state_trigger_;
-  std::atomic<SipTransport *> registration_dns_owner_{nullptr};
+  LazyCallbackManager<void(const std::string &)> account_changed_callbacks_{};
+  void publish_account_changed_(const std::string &id);
+  std::atomic<SipTransport *> registration_main_owner_{nullptr};
   void initialize_registration_();
   void dump_registration_memory_();
   bool load_registration_saved_();
@@ -1055,21 +1122,27 @@ class VoipStack : public Component {
   void pump_registration_wake_();
   bool save_registration_override_(const std::string &id, const SipAccountConfig *config, bool removed);
   static void registration_state_callback_(void *, const std::string &, RegistrationState, uint16_t);
-  static void registration_dns_ready_callback_(void *, SipTransport *);
+  static void registration_main_ready_callback_(void *, SipTransport *);
 #ifdef USE_ESPHOME_VOIP_MWI
   static void message_waiting_callback_(void *, const MessageWaitingState &);
 #endif
 #endif
-#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_HA_MWI)
+#ifdef USE_ESPHOME_VOIP_MWI
   Trigger<std::string, bool, bool, uint32_t, uint32_t, uint32_t, uint32_t> message_waiting_trigger_;
   LazyCallbackManager<void()> message_waiting_callbacks_{};
   void publish_message_waiting_(const MessageWaitingState &state);
 #endif
-#ifdef USE_ESPHOME_VOIP_HA_MWI
-  uint32_t ha_new_messages_{0}, ha_old_messages_{0};
-  bool ha_message_waiting_available_{false}, ha_message_waiting_{false};
-#endif
+
   CallbackManager<void(CallState)> state_callback_{};
+#ifdef USE_ESPHOME_VOIP_BLF
+  std::string blf_account_id_{"ha"}, blf_pickup_prefix_;
+  uint8_t blf_capacity_{16};
+  bool blf_ready_{false}, blf_watch_contacts_{true};
+  LazyCallbackManager<void(const BlfStateInfo &)> blf_callbacks_{};
+  Trigger<std::string, std::string, std::string, bool> blf_state_trigger_;
+  void sync_blf_contacts_();
+  static void blf_callback_(void *, const BlfStateInfo &);
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   // Bit 0 marks a fresh transport event, bit 1 is the committed send state,
   // bit 2 means an in-dialog direction transaction is still pending.

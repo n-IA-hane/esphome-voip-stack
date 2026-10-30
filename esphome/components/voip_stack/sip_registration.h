@@ -28,6 +28,13 @@ struct SipAccountConfig {
   uint32_t expires{3600};
   bool tcp{false}, enabled{true};
   bool valid() const;
+  bool same_settings(const SipAccountConfig &other) const {
+    return this->id == other.id && this->registrar == other.registrar && this->domain == other.domain &&
+        this->username == other.username && this->password == other.password &&
+        this->auth_username == other.auth_username && this->proxy == other.proxy &&
+        this->port == other.port && this->proxy_port == other.proxy_port &&
+        this->expires == other.expires && this->tcp == other.tcp && this->enabled == other.enabled;
+  }
 };
 
 // Immutable YAML baseline. Strings and rows have firmware lifetime in Flash;
@@ -69,15 +76,18 @@ class SipRegistration {
     uint32_t (*resolve)(void*, size_t, const std::string&){nullptr};
     std::string (*local_ip)(void*, uint32_t){nullptr};
     void (*notify)(void*, const std::string&, RegistrationState, uint16_t){nullptr};
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+    // Completed positive binding transactions, including a healthy refresh
+    // whose public registration state remains unchanged.
+    void (*binding_accepted)(void*, size_t, uint32_t){nullptr};
+#endif
     uint32_t (*random)(){nullptr};
     SipDigest::Hash hash{nullptr};
     uint16_t local_port{5060};
   };
   struct Account {
     SipAccountConfig config;
-#ifdef USE_ESPHOME_VOIP_MWI
     uint32_t config_revision{0};
-#endif
     RegistrationState state{RegistrationState::DISABLED};
     SipDigest digest, proxy_digest;
     std::string call_id, tag, branch, contact;
@@ -109,6 +119,7 @@ class SipRegistration {
 
  protected:
   std::array<Account, CAPACITY> accounts_{};
+  uint32_t next_config_revision_{0};
   Hooks hooks_{};
   bool begin_(size_t index, uint32_t now);
   void retry_(size_t index, uint16_t status, uint32_t now, uint32_t delay_ms = 0);

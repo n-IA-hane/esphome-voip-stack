@@ -16,8 +16,10 @@ def sdp_fixture_source():
     sdp = (base / "sip_sdp.cpp").read_text()
     source = r'''
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
+#include <cstring>
 #include <arpa/inet.h>
 #include "esphome/components/voip_stack/rtp_audio_payloads.h"
 #define USE_ESPHOME_VOIP_STACK_SPEAKER
@@ -58,6 +60,7 @@ struct SipTransport {
  void set_media_config_(const AudioFormat&a,const AudioFormat&b,uint8_t c,uint8_t d,const RtpAudioPayloads*e){tx=a;rx=b;tx_pt=c;rx_pt=d;accepted=*e;uint8_t p=(a.is_valid()?1:0)|(b.is_valid()?2:0);audio_direction_state_=p|(p<<2);}
  std::string wrap_sdp_envelope_(const std::string&,const std::string&,const std::string&,const std::string&,uint8_t,const char * = "sendrecv") const;
  std::string build_sdp_offer_();
+ std::string build_sdp_capabilities_(uint32_t) const;
  std::string build_sdp_answer_() const;
  bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false,bool=false);
 };
@@ -67,6 +70,7 @@ struct SipTransport {
                       "std::string SipTransport::rejected_media_answer_(",
                       "std::string SipTransport::build_sdp_answer_(",
                       "std::string SipTransport::build_sdp_offer_(",
+                      "std::string SipTransport::build_sdp_capabilities_(",
                       "bool SipTransport::learn_remote_rtp_from_sdp_("]:
         source += method(sdp, signature) + "\n"
     # Support immutable pre-fix sources in the red/green witness. Only the
@@ -153,6 +157,41 @@ int main(){SipTransport s;s.offer_tx_formats_.count=1;s.offer_tx_formats_.format
     cpp.write_text(code)
     binary = tmp_path / "pbx"
     build = subprocess.run(["g++", "-std=c++17", "-fsanitize=address,undefined", "-I", str(ROOT), str(cpp), "-o", str(binary)], capture_output=True, text=True)
+    assert build.returncode == 0, build.stderr
+    result = subprocess.run([binary], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_options_capabilities_are_read_only_and_do_not_invent_packet_time(tmp_path):
+    code = sdp_fixture_source() + r'''
+AudioFormat format(unsigned rate,unsigned time){AudioFormat f;f.sample_rate=rate;f.frame_ms=time;return f;}
+int main(){
+ SipTransport s;s.offer_tx_formats_.count=1;s.offer_tx_formats_.formats[0]=format(16000,16);
+ s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[0]=format(16000,16);s.offer_rx_formats_.formats[1]=format(48000,10);
+ s.local_offered_tx_formats_.count=1;s.local_offered_tx_formats_.formats[0]=format(8000,20);
+ s.local_offered_rx_payloads_.add(77,format(8000,20));
+ s.local_offered_directional_audio_v1_=false;s.peer_directional_audio_v1_=false;s.refer_context_active_=true;
+ s.sdp_session_version_=19;s.remote_rtp_port_=45678;
+ const auto caps=s.build_sdp_capabilities_(0);
+ assert(caps.find("m=audio 0 RTP/AVP")!=std::string::npos);
+ assert(caps.find("L16/48000/1")!=std::string::npos&&caps.find("L16/16000/1")!=std::string::npos);
+ assert(caps.find("a=ptime:")==std::string::npos&&caps.find("a=maxptime:")==std::string::npos);
+ assert(caps.find("a=x-voip-stack-flow:96 sendrecv")!=std::string::npos);
+ assert(caps.find("a=x-voip-stack-flow:97 recv")!=std::string::npos);
+ assert(s.local_offered_tx_formats_.count==1&&s.local_offered_tx_formats_.formats[0].sample_rate==8000);
+ assert(s.local_offered_rx_payloads_.count==1&&s.local_offered_rx_payloads_.entries[0].format.sample_rate==8000);
+ assert(!s.local_offered_directional_audio_v1_&&!s.peer_directional_audio_v1_&&s.refer_context_active_);
+ assert(s.sdp_session_version_==19&&s.remote_rtp_port_==45678&&s.rtp_port_==40000);
+ s.offer_tx_formats_.count=0;const auto receive=s.build_sdp_capabilities_(0);
+ assert(receive.find("a=recvonly")!=std::string::npos&&receive.find("m=audio 0 ")!=std::string::npos);
+ s.offer_rx_formats_.count=1;s.offer_rx_formats_.formats[0]=format(16000,16);
+ const auto single=s.build_sdp_capabilities_(0);assert(single.find("a=ptime:16")!=std::string::npos);
+}
+'''
+    cpp = tmp_path / "capabilities.cpp"
+    cpp.write_text(code)
+    binary = tmp_path / "capabilities"
+    build = subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined", "-fno-pie", "-no-pie", "-I", str(ROOT), str(cpp), "-o", str(binary)], capture_output=True, text=True)
     assert build.returncode == 0, build.stderr
     result = subprocess.run([binary], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

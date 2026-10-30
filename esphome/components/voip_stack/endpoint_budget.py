@@ -74,7 +74,8 @@ def endpoint_text(config, name, ipv4=MAX_IPV4_TEXT):
 
 
 def validate(config, name):
-    if config.get("ha_integration") is False:
+    ha = config.get("ha_integration") or {}
+    if "endpoint" not in ha or ha["endpoint"] is False:
         return config
     text = endpoint_text(config, name)
     # Home Assistant counts Unicode characters; the C++ snprintf buffer counts
@@ -94,7 +95,8 @@ def validate(config, name):
 
 def extension_limits(config, name):
     """Return the extension's remaining character/byte budget without allocations at runtime."""
-    if config.get("ha_integration") is False:
+    ha = config.get("ha_integration") or {}
+    if "endpoint" not in ha or ha["endpoint"] is False:
         return 32, 32
     base = dict(config, extension="")
     text = endpoint_text(base, name)

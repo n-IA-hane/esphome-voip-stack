@@ -2084,7 +2084,8 @@ def test_phonebook_capacity_and_transport_updates_are_centralized() -> None:
     ]
     assert "if (!valid_entry_(incoming))" in merge
     assert "this->entries_.size() >= MAX_CONTACTS" in merge
-    assert "existing.sip_transport_tcp == incoming.sip_transport_tcp" in merge
+    assert "same_entry_(existing, incoming)" in merge
+    assert "a.sip_transport_tcp == b.sip_transport_tcp" in phonebook
     add_batch = phonebook[
         phonebook.index("bool add_batch") :
         phonebook.index("\n  AddResult add_entry")
@@ -3422,10 +3423,10 @@ def test_call_action_is_universal_local_or_ha_dialplan() -> None:
     assert '"voip_stack.call"' in init_py
     assert "CONF_TARGET" in init_py
     assert "var.set_target(value)" in init_py
-    assert "voip_stack.call_contact" not in init_py
-    assert "CallContactAction" not in actions
+    assert '"voip_stack.call_contact"' in init_py
+    assert "CallContactAction" in actions
     assert "void call(const std::string &target);" in header
-    assert "void call_contact" not in header
+    assert "bool call_contact(const std::string &id);" in header
 
     call_body = settings[settings.index("void VoipStack::call(") : settings.index("\nvoid VoipStack::next_contact")]
     assert "this->phonebook_.select(target)" in call_body

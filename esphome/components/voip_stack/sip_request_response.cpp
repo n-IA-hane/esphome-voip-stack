@@ -353,7 +353,7 @@ bool SipTransport::send_response_(uint16_t status, const char *reason,
 bool SipTransport::send_stateless_response_(
     const std::string &request, const sockaddr_in &src, uint16_t status,
     const char *reason, const std::string &app_reason,
-    bool cache_transaction, int retry_after_seconds) {
+    bool cache_transaction, int retry_after_seconds, const std::string &body) {
   const uint32_t ip = ntohl(src.sin_addr.s_addr);
   const uint16_t port = ntohs(src.sin_port);
   const std::string via = header_values(request, "Via");
@@ -377,7 +377,7 @@ bool SipTransport::send_stateless_response_(
                            status >= 200 && status < 300;
   const std::string msg = this->format_response_(
       status, reason, response_via_with_rport(via, ip, port), from,
-      response_to, call_id, cseq, app_reason, "", add_contact, false, true,
+      response_to, call_id, cseq, app_reason, body, add_contact, false, true,
       retry_after_seconds);
 
   bool response_owned = false;

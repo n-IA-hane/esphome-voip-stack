@@ -70,9 +70,22 @@ def validate_registration(value):
         raise cv.Invalid("Increase registration.max_accounts to fit the configured accounts")
     if "default_line" not in value:
         value["default_line"] = ids[0] if not value["accept_direct_calls"] and len(ids) == 1 else "direct"
-    if value["default_line"] != "direct" and value["default_line"] not in ids:
-        raise cv.Invalid("default_line must be direct or the account_id of a configured account")
     return value
+
+
+def final_validate(config):
+    conf = config.get(CONF_REGISTRATION)
+    if conf is None:
+        return
+    ha = config.get("ha_integration") or {}
+    managed = bool(ha.get("auto_register", False))
+    ids = {item["account_id"] for item in conf["accounts"]}
+    if managed and "ha" in ids:
+        raise cv.Invalid("account_id ha is managed by ha_integration.auto_register; use a different ID for manual PBX accounts")
+    if managed and len(ids) >= conf["max_accounts"]:
+        raise cv.Invalid("Increase registration.max_accounts to leave one slot for the managed HA account")
+    if conf["default_line"] != "direct" and conf["default_line"] not in ids and not (managed and conf["default_line"] == "ha"):
+        raise cv.Invalid("default_line must be direct or the account_id of a configured account")
 
 
 SCHEMA = cv.All(cv.Schema({
@@ -85,10 +98,9 @@ SCHEMA = cv.All(cv.Schema({
 
 
 async def to_code(parent, config):
-    ha = config.get("ha_integration") or {}
-    mwi_enabled = (config.get(CONF_REGISTRATION) or {}).get("message_waiting", False) or ha.get("message_waiting", False)
+    mwi_enabled = (config.get(CONF_REGISTRATION) or {}).get("message_waiting", False)
     if "on_message_waiting" in config and not mwi_enabled:
-        raise cv.Invalid("on_message_waiting requires registration.message_waiting: true or ha_integration.message_waiting: true")
+        raise cv.Invalid("on_message_waiting requires registration.message_waiting: true")
     for trigger in config.get("on_message_waiting", []):
         await automation.build_automation(parent.get_message_waiting_trigger(),
             [(cg.std_string, "account_id"), (cg.bool_, "available"), (cg.bool_, "waiting"),
@@ -200,9 +212,8 @@ def register_mwi_condition(parent_type):
     }))
     async def condition_to_code(conf, condition_id, template_arg, args):
         config = (CORE.config or {}).get("voip_stack") or {}
-        if not ((config.get(CONF_REGISTRATION) or {}).get("message_waiting", False) or
-                (config.get("ha_integration") or {}).get("message_waiting", False)):
-            raise cv.Invalid("voip_stack.has_waiting_messages requires registration.message_waiting: true or ha_integration.message_waiting: true")
+        if not (config.get(CONF_REGISTRATION) or {}).get("message_waiting", False):
+            raise cv.Invalid("voip_stack.has_waiting_messages requires registration.message_waiting: true")
         action = cg.new_Pvariable(condition_id, template_arg)
         cg.add(action.set_parent(await cg.get_variable(conf["id"])))
         cg.add(action.set_account_id(await cg.templatable(conf["account_id"], args, cg.std_string)))

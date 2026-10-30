@@ -50,7 +50,7 @@ def full_audio():
 
 def endpoint(audio=None):
     return {
-        "ha_integration": {},
+        "ha_integration": {"endpoint": {}},
         "audio": full_audio() if audio is None else audio,
         "sip_port": 5060,
         "rtp_port": 40000,

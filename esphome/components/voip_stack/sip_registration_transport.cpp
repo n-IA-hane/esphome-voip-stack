@@ -63,6 +63,10 @@ void registration_dns_start(void* arg) {
 }  // namespace
 
 void SipTransport::initialize_registration() {
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  if (this->managed_update_ == nullptr)
+    this->managed_update_.reset(new (std::nothrow) ManagedAccountUpdate());
+#endif
   if (dns_mutex == nullptr) dns_mutex = xSemaphoreCreateMutexStatic(&dns_mutex_storage);
   xSemaphoreTake(dns_mutex, portMAX_DELAY);
   for (auto& ctx : dns_contexts) {
@@ -81,20 +85,34 @@ void SipTransport::initialize_registration() {
   hooks.resolve = registration_resolve_;
   hooks.local_ip = registration_local_ip_;
   hooks.notify = registration_notify_;
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+  hooks.binding_accepted = registration_binding_accepted_;
+#endif
   hooks.random = esp_random;
   hooks.hash = registration_hash_;
   hooks.local_port = this->sip_port_;
   this->registration_.set_hooks(hooks);
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
   SipMwi::Hooks mwi;
   mwi.context = this; mwi.send = registration_send_; mwi.reply = registration_mwi_reply_;
-  mwi.local_ip = registration_local_ip_; mwi.notify = registration_mwi_notify_;
+  mwi.local_ip = registration_local_ip_;
+#ifdef USE_ESPHOME_VOIP_MWI
+  mwi.notify = registration_mwi_notify_;
+#endif
+#ifdef USE_ESPHOME_VOIP_BLF
+  mwi.notify_blf = registration_blf_notify_;
+#endif
   mwi.random = esp_random; mwi.hash = registration_hash_; mwi.local_port = this->sip_port_;
   this->mwi_.set_hooks(mwi);
 #endif
 }
 
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+void SipTransport::registration_binding_accepted_(void *context, size_t index, uint32_t now) {
+  auto *self = static_cast<SipTransport *>(context);
+  self->mwi_.on_registration_accepted(index, self->registration_.account(index), now);
+}
+
 bool SipTransport::park_inbound_control_(int socket, const sockaddr_in &source) {
   if (this->inbound_control_flow_.socket.load(std::memory_order_acquire) >= 0) return false;
   bool trusted = false;
@@ -116,15 +134,23 @@ bool SipTransport::park_inbound_control_(int socket, const sockaddr_in &source) 
 void SipTransport::pump_registration_mwi_(uint32_t now) {
   for (size_t i = 0; i < SipRegistration::CAPACITY; ++i) {
     const auto &account = this->registration_.account(i);
+#ifdef USE_ESPHOME_VOIP_MWI
     this->mwi_.update_registered_account(i, account, now);
+#endif
+#ifdef USE_ESPHOME_VOIP_BLF
+    this->mwi_.update_blf_account(i, account, now);
+#endif
   }
   this->mwi_.tick(now);
 }
 
+#ifdef USE_ESPHOME_VOIP_MWI
 void SipTransport::registration_mwi_notify_(void *ctx, const MessageWaitingState &state) {
   auto *self = static_cast<SipTransport *>(ctx);
   if (self->message_waiting_callback_ != nullptr) self->message_waiting_callback_(self->registration_context_, state);
 }
+
+#endif
 
 bool SipTransport::registration_mwi_reply_(void *ctx, const std::string &message, uint32_t ip, uint16_t port,
                                           bool tcp, int) {
@@ -134,6 +160,7 @@ bool SipTransport::registration_mwi_reply_(void *ctx, const std::string &message
   return self->send_sip_tcp_record_(message, self->dispatch_socket_);
 }
 
+#ifdef USE_ESPHOME_VOIP_MWI
 bool SipTransport::get_message_waiting(const std::string &id, MessageWaitingState *state) {
   LockGuard lock(this->dialog_mutex_);
   const int index = this->registration_.find(id);
@@ -152,6 +179,70 @@ bool SipTransport::has_waiting_messages(const std::string &id) {
   return false;
 }
 
+#endif
+#endif
+
+#ifdef USE_ESPHOME_VOIP_BLF
+bool SipTransport::configure_blf(uint8_t capacity, BlfCallback callback) {
+  LockGuard lock(this->dialog_mutex_);
+  if (!this->mwi_.configure_blf(capacity)) return false;
+  this->blf_callback_ = callback;
+  return true;
+}
+
+bool SipTransport::set_blf_watches(const std::vector<BlfWatchConfig> &watches) {
+  LockGuard lock(this->dialog_mutex_);
+  if (watches.size() > this->mwi_.blf_capacity()) return false;
+  for (size_t i = 0; i < watches.size(); ++i) {
+    const auto &watch = watches[i];
+    const int owner_index = this->registration_.find(watch.account_id);
+    if (watch.contact_id.empty() || watch.contact_id.size() > 96 || watch.target.empty() ||
+        watch.target.size() > 512 || owner_index < 0) return false;
+    for (unsigned char c : watch.target)
+      if (c <= 32 || c == 127 || c == '<' || c == '>' || c == '"') return false;
+    for (size_t j = 0; j < i; ++j)
+      if (watches[j].contact_id == watch.contact_id) return false;
+    if (sip_target_uri(watch.target, this->registration_.account(owner_index).config.domain).empty()) return false;
+  }
+  const uint32_t now = millis();
+  for (size_t slot = 0; slot < this->mwi_.blf_capacity(); ++slot) {
+    if (!this->mwi_.blf_watch_requested(slot)) continue;
+    bool retained = false;
+    for (const auto &watch : watches) retained |= watch.contact_id == this->mwi_.blf_watch_id(slot);
+    if (!retained) this->mwi_.clear_blf_watch(slot, now);
+  }
+  for (const auto &watch : watches) {
+    size_t slot = 0;
+    while (slot < this->mwi_.blf_capacity() &&
+           (!this->mwi_.blf_watch_requested(slot) || this->mwi_.blf_watch_id(slot) != watch.contact_id)) ++slot;
+    if (slot == this->mwi_.blf_capacity()) {
+      slot = 0;
+      while (slot < this->mwi_.blf_capacity() && this->mwi_.blf_watch_requested(slot)) ++slot;
+    }
+    if (slot == this->mwi_.blf_capacity()) return false;
+    const size_t account_index = this->registration_.find(watch.account_id);
+    const auto &account = this->registration_.account(account_index);
+    const std::string target = sip_target_uri(watch.target, account.config.domain);
+    if (!this->mwi_.set_blf_watch(slot, account_index, account, watch.contact_id, target, now)) return false;
+  }
+  this->wake_sip_task_();
+  return true;
+}
+
+bool SipTransport::get_blf_state(const std::string &id, BlfStateInfo *out) {
+  if (out == nullptr) return false;
+  LockGuard lock(this->dialog_mutex_);
+  for (size_t slot = 0; slot < this->mwi_.blf_capacity(); ++slot) {
+    const auto *state = this->mwi_.blf_state(slot);
+    if (state != nullptr && state->contact_id == id) { *out = *state; return true; }
+  }
+  return false;
+}
+
+void SipTransport::registration_blf_notify_(void *context, const BlfStateInfo &state) {
+  auto *self = static_cast<SipTransport *>(context);
+  if (self->blf_callback_ != nullptr) self->blf_callback_(self->registration_context_, state);
+}
 #endif
 
 std::string SipTransport::registration_hash_(const std::string& algorithm, const std::string& input) {
@@ -300,7 +391,19 @@ void SipTransport::retire_registration_flow_(size_t index) {
 bool SipTransport::set_account(const SipAccountConfig& config, AccountCommit commit, void* context) {
   LockGuard lock(this->dialog_mutex_);
   const int i = this->registration_.find(config.id);
-  if (this->account_in_use_(i) || !config.valid()) return false;
+  if (!config.valid()) return false;
+  if (i >= 0 && this->registration_.account(i).config.same_settings(config) &&
+      this->registration_.account(i).desired == config.enabled
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+      && !(config.id == "ha" && this->managed_update_ != nullptr && this->managed_update_->active)
+#endif
+      ) {
+    return commit == nullptr || commit(context, config.id, &config);
+  }
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  if (config.id == "ha") return this->queue_managed_account_(config, false, commit, context);
+#endif
+  if (this->account_in_use_(i)) return false;
   // Retire a registered binding explicitly before replacing credentials or
   // registrar. A successful unregister leaves the same slot reusable.
   if (i >= 0 && this->registration_.account(i).bound) return false;
@@ -317,6 +420,9 @@ bool SipTransport::set_account(const SipAccountConfig& config, AccountCommit com
 #ifdef USE_ESPHOME_VOIP_MWI
   if (i >= 0) this->mwi_.invalidate_account(i);
 #endif
+#ifdef USE_ESPHOME_VOIP_BLF
+  if (i >= 0) this->mwi_.invalidate_blf_account(i);
+#endif
   if (i >= 0) this->retire_registration_flow_(i);
   if (i >= 0) this->invalidate_registration_dns_(i);
   const bool result = this->registration_.set_account(config, millis());
@@ -326,6 +432,12 @@ bool SipTransport::set_account(const SipAccountConfig& config, AccountCommit com
 bool SipTransport::remove_account(const std::string& id, AccountCommit commit, void* context, bool allow_missing) {
   LockGuard lock(this->dialog_mutex_);
   const int i = this->registration_.find(id);
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  if (id == "ha" && (i >= 0 || (this->managed_update_ != nullptr && this->managed_update_->active))) {
+    SipAccountConfig removal; removal.id = id;
+    return this->queue_managed_account_(removal, true, commit, context);
+  }
+#endif
   if (i < 0) return allow_missing && commit != nullptr && commit(context, id, nullptr);
   if (this->account_in_use_(i) || this->registration_.account(i).pending ||
       this->registration_.account(i).bound)
@@ -334,12 +446,116 @@ bool SipTransport::remove_account(const std::string& id, AccountCommit commit, v
 #ifdef USE_ESPHOME_VOIP_MWI
   this->mwi_.invalidate_account(i);
 #endif
+#ifdef USE_ESPHOME_VOIP_BLF
+  this->mwi_.invalidate_blf_account(i);
+#endif
   const bool result = this->registration_.remove_account(id);
   this->invalidate_registration_dns_(i);
   this->retire_registration_flow_(i);
   this->wake_sip_task_();
   return result;
 }
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+bool SipTransport::queue_managed_account_(const SipAccountConfig &config, bool removing,
+                                         AccountCommit commit, void *context) {
+  if (this->managed_update_ == nullptr || config.id != "ha" || (!removing && !config.valid())) return false;
+  auto &update = *this->managed_update_;
+  if (!update.active) update.retiring = false;
+  update.config = config;
+  update.commit = commit;
+  update.context = context;
+  update.removing = removing;
+  update.active = true;
+  this->wake_sip_task_();
+  return true;
+}
+
+bool SipTransport::managed_account_needs_main_loop_() const {
+  if (this->managed_update_ == nullptr || !this->managed_update_->active) return false;
+  const auto &update = *this->managed_update_;
+  const int index = this->registration_.find(update.config.id);
+  if (this->account_in_use_(index)) return false;
+  if (!update.retiring || index < 0) return true;
+  const auto &old = this->registration_.account(index);
+  return old.config_revision != update.retiring_revision || old.desired ||
+         (!old.pending && !old.scheduled && !old.resolving);
+}
+
+void SipTransport::notify_managed_account_main_loop_() {
+  // Coalesce onto the same application-context handoff already used by DNS.
+  // Waiting calls and REGISTER transactions do not cause application wakeups.
+  if (this->registration_wake_callback_ != nullptr && this->managed_account_needs_main_loop_())
+    this->registration_wake_callback_(this->registration_context_, this);
+}
+
+void SipTransport::pump_managed_account_(uint32_t now) {
+  if (this->managed_update_ == nullptr || !this->managed_update_->active) return;
+  auto &update = *this->managed_update_;
+  const int index = this->registration_.find(update.config.id);
+  if (this->account_in_use_(index)) return;
+  if (index >= 0) {
+    auto &old = this->registration_.account(index);
+    if (!update.retiring) {
+      if (!update.removing && old.config.same_settings(update.config) && old.desired == update.config.enabled) {
+        if (update.commit != nullptr && !update.commit(update.context, update.config.id, &update.config))
+          ESP_LOGE("voip_stack.registration", "Managed account persistence failed");
+        update.active = false;
+        return;
+      }
+      if (old.bound || old.pending) {
+        update.retiring_revision = old.config_revision;
+        update.retiring = true;
+        this->registration_.request_registration(update.config.id, false, now);
+        return;
+      }
+    } else if (old.config_revision == update.retiring_revision) {
+      if (old.desired) {
+        this->registration_.request_registration(update.config.id, false, now);
+        return;
+      }
+      if (old.pending || old.scheduled || old.resolving) return;
+      this->managed_retirement_status_.store(old.last_status, std::memory_order_relaxed);
+      if (old.last_status >= 300)
+        ESP_LOGW("voip_stack.registration", "Retiring managed account after unregister status %u; old remote lease may expire later",
+                 static_cast<unsigned>(old.last_status));
+    } else {
+      // The original generation was removed by another accepted operation.
+      // Re-evaluate the latest record rather than touching a reused slot.
+      update.retiring = false;
+      return;
+    }
+  }
+  if (update.commit != nullptr &&
+      !update.commit(update.context, update.config.id, update.removing ? nullptr : &update.config)) {
+    ESP_LOGE("voip_stack.registration", "Managed account persistence failed; current configuration retained");
+    update.active = false;
+    return;
+  }
+  if (index >= 0) {
+#ifdef USE_ESPHOME_VOIP_MWI
+    this->mwi_.invalidate_account(index);
+#endif
+#ifdef USE_ESPHOME_VOIP_BLF
+    this->mwi_.invalidate_blf_account(index);
+#endif
+    this->invalidate_registration_dns_(index);
+    this->retire_registration_flow_(index);
+  }
+  const std::string id = update.config.id;
+  const bool applied = update.removing ? (index < 0 || this->registration_.remove_account(id)) :
+                                       this->registration_.set_account(update.config, now);
+  update.active = false;
+  update.retiring = false;
+  if (!applied) {
+    ESP_LOGE("voip_stack.registration", "Managed account could not acquire a registration slot");
+    return;
+  }
+  // A new generation starts genuinely unbound. This is local retirement after
+  // the old unregister transaction completed, not a fabricated remote ACK.
+  this->registration_notify_(this, id, RegistrationState::DISABLED, 0);
+}
+#endif
+
 bool SipTransport::register_account(const std::string& id, bool enabled) {
   LockGuard lock(this->dialog_mutex_);
   const int i = this->registration_.find(id);
@@ -351,6 +567,17 @@ bool SipTransport::register_account(const std::string& id, bool enabled) {
 bool SipTransport::is_registered(const std::string& id) {
   LockGuard lock(this->dialog_mutex_);
   return this->registration_.is_registered(id);
+}
+bool SipTransport::get_account_snapshot(const std::string &id, SipAccountSnapshot *out) {
+  if (out == nullptr) return false;
+  LockGuard lock(this->dialog_mutex_);
+  const int index = this->registration_.find(id);
+  if (index < 0) return false;
+  const auto &account = this->registration_.account(index);
+  out->config = account.config;
+  out->revision = account.config_revision;
+  out->registered = account.bound && account.desired;
+  return true;
 }
 bool SipTransport::prepare_account_line(const std::string& id, std::string* host, uint16_t* port, bool* tcp) {
   LockGuard lock(this->dialog_mutex_);
