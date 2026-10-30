@@ -30,6 +30,11 @@ contact IDs, names, SIP destinations and categories into the existing bounded
 phonebook. Updates preserve manual overrides and replace only their own provider.
 Call and pickup actions can address a contact by stable ID.
 
+**Connected identity events.** Optional `on_peer_changed` automations receive the
+connected-party name after a SIP identity update. `get_active_peer_name()` gives
+custom screens the current call's remote name independently of phonebook
+selection. Connection setup remains in `on_in_call`.
+
 **SIP mailbox access.** `voip_stack.call_mailbox` opens the notified mailbox URI
 or a configured PBX access code through the ordinary registered call path.
 Aggregate waiting badges select an account with waiting messages. Audio, keypad,
@@ -57,6 +62,11 @@ worker affinity and stack/buffer placement using the [renderer settings](ESP_VID
 
 ## Reliability and interoperability
 
+- Contact-based pickup uses the target's friendly name during setup and applies
+  the PBX's connected identity after answer. Maintained screens refresh the call
+  label and keypad when that identity arrives later in the same call.
+- Idle keypads clear their editable number buffer after a call. Delete keeps
+  an empty composer empty, ready for a new number.
 - LDAP streams into a bounded staging table and commits directly into the
   existing phonebook. Reused storage removes transient merged-roster copies;
   signaling placement stays independent of realtime PCM staging.

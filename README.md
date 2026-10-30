@@ -640,7 +640,7 @@ voip_stack:
     - name: Front Gate
 ```
 
-`name` is required; everything else is optional. Static contacts serve offline installs, diagnostics and direct SIP peers. Normal installs receive the HA-managed roster through the native `set_roster_json` action.
+`name` is required; everything else is optional. Static contacts serve offline installs, diagnostics and direct SIP peers. They can coexist with LDAP contacts: directory refreshes replace their own entries and preserve manual contacts. Omit `directory` for a static-only phonebook. Managed HA installs use LDAP; the native `set_roster_json` action remains available through the optional legacy roster adapter.
 
 Inbound INVITEs carry caller and destination identity. Direct profiles accept callers independently of the phonebook; optional PBX-only admission can restrict new incoming calls to configured accounts. HA maps its trunk numbers and inbound DTMF routes to local phonebook targets.
 
@@ -713,6 +713,7 @@ Triggers:
 | `on_calling` | Outbound call enters `CALLING`; provides `peer`. |
 | `on_dest_ringing` | Remote side reports ringing; provides `peer`. |
 | `on_in_call` | Media is established; provides `peer`. |
+| `on_peer_changed` | Connected-party identity is updated during the same call; provides `peer`. Optional. |
 | `on_video_start` | Negotiated video media becomes active. Audio-only calls do not fire it. |
 | `on_video_end` | Active video media ends or is removed from an established call. |
 | `on_hangup` | Call ends normally; provides `peer` and `reason`. |
@@ -721,9 +722,17 @@ Triggers:
 | `on_incoming_call` | Inbound INVITE parsed; provides `call_id`, `caller`, `callee`, `uri`. |
 | `on_outgoing_call` | Outbound call placed. |
 | `on_bridge_request` | An ESP-originated route explicitly targets the HA peer. |
-| `on_destination_changed` | Selected destination changed; provides `destination`. |
+| `on_destination_changed` | Selected destination or active outgoing destination label changes; provides `destination`. |
 | `on_phonebook_update` | Contact list changed; provides `destination`. |
 | `on_blf_state` | Watched contact changes: `contact_id`, `account_id`, `state` (`idle`, `calling`, `ringing`, `active`, `held`, `unknown`) and `available`. Requires BLF. |
+
+Use `on_in_call` for connection setup and `on_peer_changed` to refresh the
+connected name after a SIP identity update. For example, picking up a call from
+Casa to Test connects this ESP to Casa. The display follows that connected
+identity even when another phonebook contact is selected.
+`id(phone).get_active_peer_name()` returns an owned string from the current call,
+or an empty string after the dialog is released.
+See the [minimal callback example](docs/PHONE_SERVICES.md#connected-peer-names).
 
 Version 2026.10.1 adds `voip_stack.is_active`, which is true during call setup,
 ringing and an established call. It is false during termination and terminal
@@ -891,6 +900,11 @@ Removed options rejected with migration guidance: `processor_id`, `aec_reference
 - Optional BLF preallocates 16 watchers by default, configurable from 1 to 64,
   with PSRAM placement. LDAP has independent, bounded buffer and worker
   settings, included only when that component is declared.
+- `on_peer_changed` is compiled only when configured. The maintained display
+  binding uses 40 bytes of static control objects in the measured ESP32-S3 and
+  ESP32-P4 target layouts, including its trigger, automation and two actions.
+  Omitting the hook excludes those objects; custom actions determine their own
+  additional cost.
 
 ## Scope and known boundaries
 

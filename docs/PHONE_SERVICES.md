@@ -80,8 +80,46 @@ The keypad composes a destination while idle. During a call, it sends DTMF as
 negotiated RTP telephone events and shows the peer and elapsed call time.
 The call control becomes a red hangup control. Opening it preserves the
 conversation, so the same keypad works with voicemail and other IVRs.
+When the call returns to idle, maintained displays clear the editable number
+buffer. Delete leaves an empty composer empty; entering digits starts a new
+number. The call-ended notice keeps the last peer separate from that input.
 See the [maintained display setup](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_PHONE_SERVICES.md)
 for feature selection and the screen-state legend.
+
+### Connected peer names
+
+The selected contact, the pickup target and the connected party have distinct
+roles. If Casa calls Test and this ESP picks up Test, setup can show Test's
+friendly name. When the PBX supplies Casa's connected identity, maintained
+screens update both the call label and the in-call keypad from the current
+call's identity.
+
+Add these callbacks to an existing `voip_stack` configuration:
+
+```yaml
+voip_stack:
+  id: phone
+  on_in_call:
+    - lambda: |-
+        ESP_LOGI("phone", "Call established with %s", peer.c_str());
+  on_peer_changed:
+    - lambda: |-
+        ESP_LOGI("phone", "Connected peer is now %s", peer.c_str());
+```
+
+`on_peer_changed` reports accepted connected-party updates, including RFC 4916
+identity updates after pickup. Connection setup remains in `on_in_call`;
+the identity event refreshes presentation during the same call.
+Identity can be refined during setup or after answer.
+Custom renderers can read `id(phone).get_active_peer_name()`. Its owned string
+comes from the current call, independently of phonebook selection, and becomes
+empty when that dialog is released. Use the event to refresh labels as the
+identity arrives.
+
+The optional hook and its automation are excluded when omitted. The maintained
+display binding occupies 40 bytes of static control objects in the measured
+ESP32-S3 and ESP32-P4 target layouts, including the trigger, automation and two
+actions. It reuses the existing call owner and display presenter.
 
 ## Automatic Home Assistant setup
 
