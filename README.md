@@ -65,19 +65,14 @@ and [release delta](docs/WHATS_NEW_2026_11_1_DEV.md).
 ### On a display phone
 
 <p>
-  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/contacts-scroll.gif" width="240" alt="Real ESP display with a scrolling contact directory" />
-  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/contacts-blf.jpg" width="240" alt="Real ESP display with live BLF contact states" />
+  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/contacts-scroll.gif" width="240" alt="Real ESP contact menu with scrolling, contact types, live BLF states and message waiting" />
   <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/options.jpg" width="240" alt="Real ESP display with audio and telephone options" />
-</p>
-<p>
-  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/voicemail.jpg" width="240" alt="Real ESP display with a new-message envelope" />
   <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/dtmf.jpg" width="240" alt="Real ESP display with the in-call DTMF keypad" />
 </p>
 
-_Real ESP screen captures with demo contacts: browse contacts,
-watch their BLF state, adjust options, call voicemail and use in-call DTMF.
-The left icon identifies the contact type; the right icon and color show its
-state. [Learn the controls](docs/PHONE_SERVICES.md#on-a-display-phone)._
+_Demo directory entries, captured on a real ESP display.
+The animated contact menu shows scrolling, BLF and message waiting, with
+options and DTMF alongside it. [Learn the controls](docs/PHONE_SERVICES.md#on-a-display-phone)._
 
 An **account** is an identity registered at a PBX. A **line** chooses the direct
 route or one account for a new outgoing call. The PBX's own trunk configuration
@@ -285,7 +280,7 @@ audio devices at a time.
 - **MWI:** `registration.message_waiting: true` receives standard mailbox counts
   through SIP, including the managed `ha` account.
 - **BLF:** `blf` watches contacts through SIP dialog subscriptions. YAML receives
-  idle, ringing, active, held and availability updates, and can perform directed
+  idle, calling, ringing, active, held and availability updates, and can perform directed
   pickup through the contact's own account.
 - **LDAP:** `ldap_directory` commits a bounded directory into the existing
   phonebook, retaining manual overrides, stable IDs and contact categories.
@@ -728,6 +723,7 @@ Triggers:
 | `on_bridge_request` | An ESP-originated route explicitly targets the HA peer. |
 | `on_destination_changed` | Selected destination changed; provides `destination`. |
 | `on_phonebook_update` | Contact list changed; provides `destination`. |
+| `on_blf_state` | Watched contact changes: `contact_id`, `account_id`, `state` (`idle`, `calling`, `ringing`, `active`, `held`, `unknown`) and `available`. Requires BLF. |
 
 Version 2026.10.1 adds `voip_stack.is_active`, which is true during call setup,
 ringing and an established call. It is false during termination and terminal

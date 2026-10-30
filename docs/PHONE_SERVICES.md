@@ -7,7 +7,7 @@ SIP endpoint. Each service has one responsibility:
 | --- | --- | --- |
 | SIP REGISTER | A reachable account and Digest credentials | `voip_stack.registration` |
 | SIP MWI | Mailbox waiting state and counts | `registration.message_waiting` |
-| SIP BLF | Other contacts' idle, ringing, active or held state | `voip_stack.blf` |
+| SIP BLF | Other contacts' idle, calling, ringing, active or held state | `voip_stack.blf` |
 | LDAPv3 | Names, stable contact IDs and dialable destinations | `ldap_directory` |
 | SIP mailbox access | Opens the configured voice mailbox | `voip_stack.call_mailbox` |
 | Display | Layout, colors, touch actions and page selection | Your YAML or maintained device package |
@@ -26,30 +26,42 @@ Both reuse the native I2S example and the ordinary VoIP speaker path.
 The maintained Intercom display packages turn these protocol services into
 touch controls. These captures are from a real 240-pixel ESP screen. Custom
 YAML can present the same component states and actions in another layout.
-Contact names shown here are demo entries.
+The animation uses demo directory entries and type assignments; the screen
+captures come from the real ESP display.
 
-### Scrolling directory
+### Contacts, live BLF and voicemail
 
-<img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/contacts-scroll.gif" width="240" alt="Real ESP display with a vertically scrolling contact list" />
+<img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/contacts-scroll.gif" width="240" alt="Real ESP contact menu showing scrolling, contact types, call states and the voicemail envelope" />
 
-Scroll vertically, then tap a contact to call it. The left icon identifies the
-contact kind: ESP, SIP account, browser, stored contact, automation or group.
+Scroll vertically, then tap a contact to call it. The left icon identifies an
+ESP (chip), SIP phone (desk phone), browser (Home Assistant logo), stored contact
+(cellphone), automation or Assist (robot), or group.
 LDAP supplies the directory entries; a manual phonebook can use the same list.
+The supplied icon mapping reads the category from LDAP's standard `ou` field:
 
-### Live BLF and directed pickup
-
-<p>
-  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/contacts-blf.jpg" width="240" alt="Real ESP contact list with Garden ringing and a blinking blue pickup indicator" />
-  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/contacts-held.jpg" width="240" alt="Real ESP contact list with Garage on hold in amber and Garden in a call in red" />
-</p>
-
-_Ringing and pickup on the left; held and active calls on the right._
+| `ou` value | Left icon |
+| --- | --- |
+| `esphome` | Electronic chip |
+| `sip_account` | Desk phone |
+| `browser` | Home Assistant logo |
+| `contact` | Cellphone |
+| `automation` | Robot, including the managed Assist destination |
+| `group` | Group of people |
 
 The right icon and detail line describe call activity. Green means idle,
-blinking blue means ringing, red means in a call and amber means on hold.
+blue with an outgoing arrow means Calling, blinking blue means ringing,
+red means in a call and amber means on hold.
 Gray identifies an unknown or unavailable state. Standard PIDF presence keeps
 reachability separate from an idle dialog report. Tap a ringing contact to
-request directed pickup through its account, subject to the PBX's policy.
+request directed pickup when offered, subject to the PBX's policy. Pickup needs
+a confirmed recipient leg; undirected legacy early-call reports keep the
+normal call action.
+
+SIP MWI updates the idle screen's envelope. Tapping it calls the notified
+`Message-Account` URI, or an explicitly configured mailbox target, through
+the regular SIP account. The PBX speaks its menu over the existing RTP audio
+path. The ESP needs the waiting notification and a mailbox call rather than
+an IMAP client, message catalog or separate media player.
 
 ### Phone options
 
@@ -59,16 +71,6 @@ The scrolling options page combines the selected audio/voice controls and a
 telephone section. Controls such as auto answer and Do Not Disturb act on the
 existing phone entities. Each firmware's enabled features determine which
 controls appear; the standalone VoIP component leaves presentation to YAML.
-
-### Message-waiting envelope
-
-<img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/voicemail.jpg" width="240" alt="Real ESP display with the SIP message-waiting envelope" />
-
-SIP MWI updates the idle screen's envelope. Tapping it calls the notified
-`Message-Account` URI, or an explicitly configured mailbox target, through
-the regular SIP account. The PBX speaks its menu over the existing RTP audio
-path. The ESP needs the waiting notification and a mailbox call rather than
-an IMAP client, message catalog or separate media player.
 
 ### In-call DTMF
 
@@ -299,20 +301,23 @@ Getter-only watches keep their shared state current without posting unused
 application callbacks. Adding a C++ observer or a YAML automation enables
 delivery, including when the automation is currently inactive.
 
-The public states are `idle`, `ringing`, `active`, `held` and `unknown`, with a
+The public states are `idle`, `calling`, `ringing`, `active`, `held` and `unknown`, with a
 separate `available` flag. Missing permission, a lost subscription or a partial
 update gap produces unavailable data. It does not prove the phone is offline.
 This flag describes the dialog cache; the `presence` field describes the
 resource's reported availability.
 Versioned partial notifications are merged only with a valid full snapshot.
 
-The callback supplies `contact_id`, `account_id`, `state` and `available`.
+`on_blf_state` supplies `contact_id`, `account_id`, `state` and `available`;
+its `state` string uses the public values above, including `calling` for
+outgoing setup.
 `id(phone).get_contact_blf(id)` returns a `BlfStatus` snapshot containing the
 primitive activity, presence, version and dialog counts. Reading it allocates
 no identity strings. C++ observers receive `BlfStateInfo` with owned account and
 contact IDs, copied only when event delivery needs them.
 Use `voip_stack.pickup_contact` with `contact_id` while that resource is
-ringing. It applies the configured prefix to the SIP URI's user, preserving the
+ringing with `ringing_dialogs > 0`. This count identifies confirmed recipient
+legs; outgoing setup is `calling`. It applies the configured prefix to the SIP URI's user, preserving the
 server address and transport. The managed HA setup defaults to `pickup.`;
 external PBXs use their own configured feature code. Pickup availability depends
 on the PBX's dial plan and authorization.

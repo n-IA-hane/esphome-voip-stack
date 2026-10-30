@@ -16,7 +16,7 @@ account; its credential also serves the optional LDAP directory. The
 friendly device name becomes caller display and contact label. Custom firmware
 chooses this behavior explicitly.
 
-**SIP BLF and MWI.** Watch other contacts' idle, ringing, active and held states,
+**SIP BLF and MWI.** Watch other contacts' idle, calling, ringing, active and held states,
 perform directed pickup through the correct account, and receive mailbox waiting
 counts. Both subscriptions share the existing SIP worker and standard Digest
 handling. BLF preallocates 16 watchers by default, accepts a configurable limit
