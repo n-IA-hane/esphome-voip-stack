@@ -65,7 +65,7 @@ and [release delta](docs/WHATS_NEW_2026_11_1_DEV.md).
 ### On a display phone
 
 <p>
-  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/contacts-scroll.gif" width="240" alt="Real ESP contact menu with scrolling, contact types, live BLF states and message waiting" />
+  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/contacts-scroll.gif" width="240" alt="Real ESP contact menu with contact types, live BLF states and message waiting" />
   <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/options.jpg" width="240" alt="Real ESP display with audio and telephone options" />
   <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/dtmf.jpg" width="240" alt="Real ESP display with the in-call DTMF keypad" />
 </p>
