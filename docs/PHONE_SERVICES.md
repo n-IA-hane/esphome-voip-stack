@@ -21,6 +21,66 @@ Runnable board examples: [managed HA phone](../examples/managed-ha-phone.yaml)
 and [independent server configuration](../examples/external-phone-services.yaml).
 Both reuse the native I2S example and the ordinary VoIP speaker path.
 
+## On a display phone
+
+The maintained Intercom display packages turn these protocol services into
+touch controls. These captures are from a real 240-pixel ESP screen. Custom
+YAML can present the same component states and actions in another layout.
+Contact names shown here are demo entries.
+
+### Scrolling directory
+
+<img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/contacts-scroll.gif" width="240" alt="Real ESP display with a vertically scrolling contact list" />
+
+Scroll vertically, then tap a contact to call it. The left icon identifies the
+contact kind: ESP, SIP account, browser, stored contact, automation or group.
+LDAP supplies the directory entries; a manual phonebook can use the same list.
+
+### Live BLF and directed pickup
+
+<p>
+  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/contacts-blf.jpg" width="240" alt="Real ESP contact list with Garden ringing and a blinking blue pickup indicator" />
+  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/contacts-held.jpg" width="240" alt="Real ESP contact list with Garage on hold in amber and Garden in a call in red" />
+</p>
+
+_Ringing and pickup on the left; held and active calls on the right._
+
+The right icon and detail line describe call activity. Green means idle,
+blinking blue means ringing, red means in a call and amber means on hold.
+Gray identifies an unknown or unavailable state. Standard PIDF presence keeps
+reachability separate from an idle dialog report. Tap a ringing contact to
+request directed pickup through its account, subject to the PBX's policy.
+
+### Phone options
+
+<img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/options.jpg" width="240" alt="Real ESP audio and telephone options page" />
+
+The scrolling options page combines the selected audio/voice controls and a
+telephone section. Controls such as auto answer and Do Not Disturb act on the
+existing phone entities. Each firmware's enabled features determine which
+controls appear; the standalone VoIP component leaves presentation to YAML.
+
+### Message-waiting envelope
+
+<img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/voicemail.jpg" width="240" alt="Real ESP display with the SIP message-waiting envelope" />
+
+SIP MWI updates the idle screen's envelope. Tapping it calls the notified
+`Message-Account` URI, or an explicitly configured mailbox target, through
+the regular SIP account. The PBX speaks its menu over the existing RTP audio
+path. The ESP needs the waiting notification and a mailbox call rather than
+an IMAP client, message catalog or separate media player.
+
+### In-call DTMF
+
+<img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/dtmf.jpg" width="240" alt="Real ESP in-call keypad with peer name, elapsed time and hangup control" />
+
+The keypad composes a destination while idle. During a call, it sends DTMF as
+negotiated RTP telephone events and shows the peer and elapsed call time.
+The call control becomes a red hangup control. Opening it preserves the
+conversation, so the same keypad works with voicemail and other IVRs.
+See the [maintained display setup](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_PHONE_SERVICES.md)
+for feature selection and the screen-state legend.
+
 ## Automatic Home Assistant setup
 
 Maintained packages expose directory, BLF and MWI as independent phone-service
@@ -204,6 +264,9 @@ BLF uses SIP `SUBSCRIBE`/`NOTIFY`, the `dialog` event package and
 local automations. A directory contact uses its directory account; other
 contacts use the selected default or `blf.account_id` for a direct default.
 The PBX controls permission to watch a resource.
+HA-managed directories automatically watch phone endpoints; saved contacts,
+groups, automations and services remain callable without automatic SIP watches.
+External LDAP mappings and explicit BLF watches retain their existing behavior.
 
 `max_subscriptions` defaults to **16** and accepts **1 through 64**. Watchers are
 preallocated at startup. With signaling PSRAM enabled, the measured ESP32-S3
@@ -261,6 +324,8 @@ uses an ordinary SIP call through the same registered account, with the PBX's
 voice menu and keypad controls. `voip_stack.call_mailbox` uses the notified
 `Message-Account` URI or an explicit PBX access target. The call retains the
 normal audio, hold and hangup behavior.
+In HA, disabling and re-enabling voicemail retains the account's MWI resource.
+Removing the phone or SIP account retires that resource.
 
 The display package exposes the waiting badge and in-call controls. Custom
 YAML can use `can_call_mailbox(account_id, target)` before enabling a button.

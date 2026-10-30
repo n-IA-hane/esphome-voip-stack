@@ -62,6 +62,23 @@ contacts, SIP mailbox access and S3 JPEG reception. Select `@dev` on the
 component source to use these additions. See the [feature guide](docs/PHONE_SERVICES.md)
 and [release delta](docs/WHATS_NEW_2026_11_1_DEV.md).
 
+### On a display phone
+
+<p>
+  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/contacts-scroll.gif" width="240" alt="Real ESP display with a scrolling contact directory" />
+  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/contacts-blf.jpg" width="240" alt="Real ESP display with live BLF contact states" />
+  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/options.jpg" width="240" alt="Real ESP display with audio and telephone options" />
+</p>
+<p>
+  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/voicemail.jpg" width="240" alt="Real ESP display with a new-message envelope" />
+  <img src="https://raw.githubusercontent.com/n-IA-hane/esphome-intercom/dev/docs/images/phone-services/dtmf.jpg" width="240" alt="Real ESP display with the in-call DTMF keypad" />
+</p>
+
+_Real ESP screen captures with demo contacts: browse contacts,
+watch their BLF state, adjust options, call voicemail and use in-call DTMF.
+The left icon identifies the contact type; the right icon and color show its
+state. [Learn the controls](docs/PHONE_SERVICES.md#on-a-display-phone)._
+
 An **account** is an identity registered at a PBX. A **line** chooses the direct
 route or one account for a new outgoing call. The PBX's own trunk configuration
 stays on the PBX. Each example below extends a working board's microphone,
