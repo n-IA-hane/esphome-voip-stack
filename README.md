@@ -71,7 +71,7 @@ and [release delta](docs/WHATS_NEW_2026_11_1_DEV.md).
 </p>
 
 _Demo directory entries, captured on a real ESP display.
-The animated contact menu shows scrolling, BLF and message waiting, with
+The animated contact menu shows BLF and message waiting, with
 options and DTMF alongside it. [Learn the controls](docs/PHONE_SERVICES.md#on-a-display-phone)._
 
 An **account** is an identity registered at a PBX. A **line** chooses the direct
