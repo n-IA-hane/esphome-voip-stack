@@ -21,14 +21,15 @@ def test_uri_targets_and_pickup_preserve_authority_and_parameters(tmp_path):
 using namespace esphome::voip_stack;
 '''
     for marker in ["std::string trim_copy(", "static uint8_t hex_value(", "static bool is_sip_uri_unreserved(",
-                   "std::string sip_uri_user_encode(", "std::string sip_prefix_target_user(", "std::string sip_target_uri("]:
+                   "std::string sip_uri_user_encode(", "std::string sip_prefix_target_user(", "std::string sip_target_uri(",
+                   "std::string sip_normalize_dial_target("]:
         code += block(parser, marker) + "\n"
     code += r'''
 struct VoipStack {
  Phonebook phonebook_;std::string blf_pickup_prefix_,dialed,line;
  std::string pending_line_,pending_dialplan_target_;bool force_direct_call_=false;
  bool can_start_call_(){return true;}
- BlfStateInfo get_contact_blf(const std::string&id){BlfStateInfo s;s.contact_id=id;s.account_id="ha";s.available=true;s.ringing_dialogs=1;return s;}
+ BlfStateInfo get_contact_blf_info_(const std::string&id){BlfStateInfo s;s.contact_id=id;s.account_id="ha";s.available=true;s.ringing_dialogs=1;return s;}
  bool is_registered(const std::string&account){return account=="ha";}
  void call_(const std::string&target,const std::string&){dialed=target;line=force_direct_call_?"direct":"wrong";}
  void start_with_id_(const std::string&){dialed=pending_dialplan_target_;line=pending_line_;}
@@ -65,7 +66,7 @@ int main(){
  for(const std::string bad:{"sips:101@host", "SIPS:101@host", "http://host/101", "sip:101@host;transport=tls",
      "sip:101@host;transport=udp;transport=tcp", "sip:101@host:0", "sip:101@host:65536", "sip:101@host:bad",
      "sip:101@.bad", "sip:101@host;=bad", "sip:101@[::1]", "sip:101@host?Subject=bad", "sip:bad%00@host",
-     "sip:101@host\r\nHeader", "Desk|Other", "Desk,Other", "Bad;Label"}) {
+     "sip:101@host\r\nHeader", "\r\n101", "101\r\n", "Desk|Other", "Desk,Other", "Bad;Label"}) {
   phone.dialed="unchanged";phone.start_call_on_line(bad,"ha");assert(phone.dialed=="unchanged");
  }
  phone.dialed="unchanged";phone.start_call_on_line(std::string("sip:bad\0@host",13),"ha");assert(phone.dialed=="unchanged");

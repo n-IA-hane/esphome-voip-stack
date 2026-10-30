@@ -22,7 +22,7 @@ def test_custom_api_action_parameters_use_esphome_supported_scalar_types():
     # Xtensa even though the host ABI aliases them, so host linking alone
     # cannot protect this native-action boundary.
     supported = {"std::string", "int32_t", "float", "bool"}
-    for component, owner in (("ldap_directory", "LdapDirectory"), ("imap_voicemail", "ImapVoicemail")):
+    for component, owner in (("ldap_directory", "LdapDirectory"),):
         folder = ROOT / "esphome/components" / component
         implementation = (folder / f"{component}.cpp").read_text()
         declaration = (folder / f"{component}.h").read_text()

@@ -15,9 +15,14 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
     this->register_service(&VoipHAIntegration::answer_call, "answer_call");
     this->register_service(&VoipHAIntegration::decline_call, "decline_call", {"reason"});
     this->register_service(&VoipHAIntegration::hangup_call, "hangup_call");
+#ifdef USE_ESPHOME_VOIP_DTMF
+    this->register_service(&VoipHAIntegration::send_dtmf, "send_dtmf", {"digit"});
+#endif
     this->register_service(&VoipHAIntegration::set_media_route, "set_media_route", {"call_id", "route"});
     this->register_service(&VoipHAIntegration::set_ha_peer_name, "set_ha_peer_name", {"name"});
+#ifdef USE_VOIP_HA_LEGACY_ROSTER
     this->register_service(&VoipHAIntegration::set_contacts, "set_roster_json", {"roster_json"});
+#endif
     this->register_service(&VoipHAIntegration::set_contacts, "set_contacts", {"contacts_csv"});
     this->register_service(&VoipHAIntegration::add_contact, "add_contact", {"entry"});
     this->register_service(&VoipHAIntegration::remove_contact, "remove_contact", {"entry"});
@@ -75,6 +80,11 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
   void answer_call() { this->parent_->answer_call(); }
   void decline_call(std::string reason) { this->parent_->decline_call(reason); }
   void hangup_call() { this->parent_->stop(); }
+#ifdef USE_ESPHOME_VOIP_DTMF
+  void send_dtmf(std::string digit) {
+    if (digit.size() == 1) this->parent_->send_dtmf(digit[0]);
+  }
+#endif
   void set_media_route(std::string call_id, std::string route) { this->parent_->set_media_route(call_id, route); }
   void set_ha_peer_name(std::string name) { this->parent_->set_ha_peer_name(name); }
   void set_contacts(std::string contacts) { this->parent_->set_contacts(contacts); }

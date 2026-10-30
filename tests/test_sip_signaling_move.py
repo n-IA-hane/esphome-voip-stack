@@ -36,6 +36,15 @@ int main(){
   assert(a.data()==pb && b.data()==pa && allocated==before);
   SipSignalingString c(std::move(a));assert(c.data()==pb && allocated==before);
   b=std::move(c);assert(b.data()==pb && allocated==before);
+  const std::string expected(2048,'b');
+  assert(b==expected && expected==b && !(b!=expected) && !(expected!=b));
+  assert(b!=std::string("different") && std::string("different")!=b);
+  assert((std::string("prefix")+b)==std::string("prefix")+expected);
+  assert(("prefix"+b)==std::string("prefix")+expected);
+  assert(b.capacity()>=b.size() && allocated==before);
+  const std::string_view borrowed=b;
+  assert(borrowed.data()==b.data() && borrowed==expected && b==borrowed && borrowed==b && allocated==before);
+  const int freed=released;b.clear();assert(b.empty() && released==freed+1);
  }
  assert(allocated==released);
 }

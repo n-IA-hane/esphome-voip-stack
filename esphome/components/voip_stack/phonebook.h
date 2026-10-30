@@ -1,4 +1,7 @@
 #pragma once
+#ifdef ESP_PLATFORM
+#include "esphome/core/defines.h"
+#endif
 
 #ifdef USE_ESP32
 
@@ -13,6 +16,10 @@
 #include <new>
 #include <type_traits>
 #include <string>
+#include <string_view>
+#if defined(USE_ESPHOME_VOIP_DIRECTORY) && defined(USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM)
+#include "sip_signaling_string.h"
+#endif
 #include <unordered_set>
 #include <vector>
 #if defined(ESP_PLATFORM) && defined(USE_ESPHOME_VOIP_DIRECTORY)
@@ -50,29 +57,38 @@ inline const char *contact_endpoint_type_to_str(ContactEndpointType endpoint_typ
 /// missing_count tracks consecutive update cycles where this slot was not seen
 /// by any source; commit_cycle() advances/resets it and prunes once the
 /// configured threshold is hit. Default 0 keeps pruning disabled.
+#if defined(USE_ESPHOME_VOIP_DIRECTORY) && defined(USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM)
+using ContactText = SipSignalingString;
+#else
+using ContactText = std::string;
+#endif
 struct ContactEntry {
-  std::string name;
-  std::string route;
-  std::string ip;
+  ContactText name;
+  ContactText route;
+  ContactText ip;
   ContactEndpointType endpoint_type{ContactEndpointType::UNKNOWN};
   uint16_t port{0};
   uint16_t rtp_port{0};
   bool sip_transport_tcp{false};
   bool directional_audio_v1{false};
-  std::string audio_capability;
+  ContactText audio_capability;
   uint8_t missing_count{0};
   ContactKind kind{ContactKind::UNKNOWN};
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
-  std::string id;
+  ContactText id;
   ContactOrigin origin{ContactOrigin::MANUAL};
   const void *provider{nullptr};
 #endif
-  const std::string &stable_id() const {
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
-    if (!this->id.empty()) return this->id;
-#endif
+  std::string_view stable_id() const {
+    if (!this->id.empty()) return {this->id.data(), this->id.size()};
+    return {this->route.data(), this->route.size()};
+  }
+#else
+  const std::string &stable_id() const {
     return this->route;
   }
+#endif
 };
 
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
@@ -376,7 +392,7 @@ class Phonebook {
 
   /// Cursor follows: removing before the cursor shifts it down; removing
   /// the cursor itself keeps it on the next slot (or wraps to 0).
-  bool remove_one(const std::string &name) {
+  bool remove_one(std::string_view name) {
     for (size_t i = 0; i < this->entries_.size(); i++) {
       if (this->entries_[i].name != name) continue;
       this->entries_.erase(this->entries_.begin() + i);
@@ -393,7 +409,7 @@ class Phonebook {
   }
 
   /// Move the cursor to the named contact. Returns false if not present.
-  bool select(const std::string &name) {
+  bool select(std::string_view name) {
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
     for (size_t i = 0; i < this->entries_.size(); ++i)
       if (!this->entries_[i].id.empty() && this->entries_[i].id == name) {
@@ -425,19 +441,33 @@ class Phonebook {
     return &this->entries_[this->index_ % this->entries_.size()];
   }
   const ContactEntry *at(size_t index) const { return index < this->entries_.size() ? &this->entries_[index] : nullptr; }
-  const ContactEntry *find_id(const std::string &id) const {
+  const ContactEntry *find_id(std::string_view id) const {
     for (const auto &entry : this->entries_)
       if (entry.stable_id() == id) return &entry;
     return nullptr;
   }
 
   /// Lookup without moving the cursor (safe on the FSM hot path).
-  const ContactEntry *find(const std::string &name) const {
+  const ContactEntry *find(std::string_view name) const {
     for (const auto &e : this->entries_) {
       if (e.name == name || e.route == name) return &e;
     }
     return nullptr;
   }
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  std::string_view current_name() const {
+    const auto *c = this->current();
+    return c == nullptr ? std::string_view{} : std::string_view(c->name.data(), c->name.size());
+  }
+  std::string_view current_route() const {
+    const auto *c = this->current();
+    return c == nullptr ? std::string_view{} : std::string_view(c->route.data(), c->route.size());
+  }
+  std::string_view current_ip() const {
+    const auto *c = this->current();
+    return c == nullptr ? std::string_view{} : std::string_view(c->ip.data(), c->ip.size());
+  }
+#else
   const std::string &current_name() const {
     static const std::string kEmpty;
     const auto *c = this->current();
@@ -453,6 +483,7 @@ class Phonebook {
     const auto *c = this->current();
     return c ? c->ip : kEmpty;
   }
+#endif
   uint16_t current_port() const {
     const auto *c = this->current();
     return c ? c->port : 0;
@@ -630,7 +661,7 @@ class Phonebook {
     return true;
   }
 
-  static bool valid_text_field_(const std::string &value, size_t max_bytes,
+  static bool valid_text_field_(std::string_view value, size_t max_bytes,
                                 bool reject_list_delimiters) {
     if (value.size() > max_bytes) return false;
     for (char ch : value) {

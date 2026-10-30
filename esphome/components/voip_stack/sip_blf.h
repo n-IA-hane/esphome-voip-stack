@@ -10,18 +10,27 @@
 namespace esphome::voip_stack {
 
 enum class BlfState : uint8_t { UNKNOWN, IDLE, RINGING, ACTIVE, HELD };
+enum class PresenceState : uint8_t { UNKNOWN, OPEN, CLOSED };
 enum class BlfDocumentResult : uint8_t { APPLIED, IGNORED, NEED_FULL, INVALID, LIMIT };
 
-struct BlfStateInfo {
-  std::string account_id, contact_id;
+struct BlfStatus {
   bool available{false};
   BlfState state{BlfState::UNKNOWN};
+  PresenceState presence{PresenceState::UNKNOWN};
   uint32_t version{0};
   uint8_t ringing_dialogs{0}, active_dialogs{0}, held_dialogs{0};
+};
+struct BlfStateInfo : BlfStatus {
+  std::string account_id, contact_id;
 };
 struct BlfWatchConfig {
   std::string contact_id, account_id, target;
 };
+#ifdef USE_ESPHOME_VOIP_PRESENCE
+// RFC 3863 basic availability is independent of RFC 4235 call activity.
+// The result is committed only after a complete bounded document validates.
+bool parse_presence(std::string_view xml, PresenceState *result);
+#endif
 
 // Fixed memory per watched resource. A missing partial update must never turn
 // an active phone into a false idle state. Unsupported volume requests a full
@@ -32,7 +41,7 @@ class BlfDialogCache {
   static constexpr size_t MAX_ID_BYTES = 128;
   BlfDocumentResult apply(std::string_view xml);
   void invalidate() { this->valid_ = false; }
-  void snapshot(BlfStateInfo *out) const;
+  void snapshot(BlfStatus *out) const;
 
  protected:
   struct Dialog {

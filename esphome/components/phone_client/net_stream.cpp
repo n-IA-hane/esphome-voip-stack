@@ -79,6 +79,13 @@ bool TcpStream::connect(const std::string &host, uint16_t port, uint32_t timeout
       esp_tls_conn_destroy(context);
       return false;
     }
+    // Keep the synchronous handshake's own timeout. After it completes, I/O
+    // follows the caller's deadline through select.
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+      esp_tls_conn_destroy(context);
+      return false;
+    }
     this->tls_ = context;
     this->fd_.store(fd);
     return true;
@@ -136,10 +143,14 @@ int TcpStream::read(uint8_t *data, size_t length, uint32_t timeout_ms) {
 #ifdef USE_PHONE_CLIENT_TLS
   if (this->tls_ != nullptr) {
     auto *tls = static_cast<esp_tls_t *>(this->tls_);
-    const int count = esp_tls_conn_read(tls, data, length);
-    if (count >= 0) return count;
-    if (!this->wait_(false, timeout_ms)) return -1;
-    return esp_tls_conn_read(tls, data, length);
+    const uint64_t deadline = monotonic_ms() + timeout_ms;
+    for (;;) {
+      // Plaintext may already be buffered by TLS while its socket is quiet.
+      const int count = esp_tls_conn_read(tls, data, length);
+      if (count >= 0) return count;
+      if (count != ESP_TLS_ERR_SSL_WANT_READ && count != ESP_TLS_ERR_SSL_WANT_WRITE) return count;
+      if (!this->wait_(count == ESP_TLS_ERR_SSL_WANT_WRITE, remaining(deadline))) return -1;
+    }
   }
 #endif
   if (!this->wait_(false, timeout_ms)) return -1;
@@ -148,10 +159,18 @@ int TcpStream::read(uint8_t *data, size_t length, uint32_t timeout_ms) {
 
 int TcpStream::write(const uint8_t *data, size_t length, uint32_t timeout_ms) {
   if (length == 0) return 0;
-  if (!this->wait_(true, timeout_ms)) return -1;
 #ifdef USE_PHONE_CLIENT_TLS
-  if (this->tls_ != nullptr) return esp_tls_conn_write(static_cast<esp_tls_t *>(this->tls_), data, length);
+  if (this->tls_ != nullptr) {
+    const uint64_t deadline = monotonic_ms() + timeout_ms;
+    for (;;) {
+      const int count = esp_tls_conn_write(static_cast<esp_tls_t *>(this->tls_), data, length);
+      if (count >= 0) return count;
+      if (count != ESP_TLS_ERR_SSL_WANT_READ && count != ESP_TLS_ERR_SSL_WANT_WRITE) return count;
+      if (!this->wait_(count == ESP_TLS_ERR_SSL_WANT_WRITE, remaining(deadline))) return -1;
+    }
+  }
 #endif
+  if (!this->wait_(true, timeout_ms)) return -1;
 #ifdef MSG_NOSIGNAL
   constexpr int flags = MSG_NOSIGNAL;
 #else

@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "esphome/core/helpers.h"
+#include "sip_types.h"
 
 namespace esphome {
 namespace voip_stack {
@@ -77,6 +78,8 @@ class RtpJitterBuffer {
   bool buffering_{true};
   bool next_sequence_valid_{false};
   uint16_t next_sequence_{0};
+  uint32_t next_audio_timestamp_{0};
+  uint32_t audio_timestamp_step_{0};
   Counters counters_{};
 };
 
@@ -124,6 +127,8 @@ inline void RtpJitterBuffer::reset() {
   this->buffering_ = true;
   this->next_sequence_valid_ = false;
   this->next_sequence_ = 0;
+  this->next_audio_timestamp_ = 0;
+  this->audio_timestamp_step_ = 0;
   this->counters_ = {};
 }
 
@@ -162,6 +167,7 @@ inline bool RtpJitterBuffer::push(const Frame &frame) {
     this->next_sequence_ = static_cast<uint16_t>(sequence - keep_frames + 1);
     this->keep_window_from_(this->next_sequence_);
     realigned = true;
+    this->audio_timestamp_step_ = 0;
     this->counters_.drops++;
   }
 
@@ -224,6 +230,21 @@ inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t ca
     }
   }
 
+  const Slot &expected = this->slots_[this->next_sequence_ % this->slot_count_];
+  if ((!expected.valid || expected.sequence != this->next_sequence_) && this->audio_timestamp_step_ != 0) {
+    // RTP sequence numbers also count telephone events. Only the nearest
+    // future audio frame can prove that sample time has no missing audio.
+    for (uint8_t offset = 1; offset < this->slot_count_; ++offset) {
+      const uint16_t sequence = static_cast<uint16_t>(this->next_sequence_ + offset);
+      const Slot &future = this->slots_[sequence % this->slot_count_];
+      if (!future.valid || future.sequence != sequence) continue;
+      if (future.has_metadata && !future.source_changed && future.format_packed != 0 &&
+          unpack_audio_format(future.format_packed).is_valid() && future.timestamp == this->next_audio_timestamp_)
+        this->next_sequence_ = sequence;
+      break;
+    }
+  }
+
   Slot &slot = this->slots_[this->next_sequence_ % this->slot_count_];
   if (slot.valid && slot.sequence == this->next_sequence_) {
     if (slot.bytes > capacity || (actual_bytes == nullptr && slot.bytes != capacity)) {
@@ -231,6 +252,7 @@ inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t ca
       slot.bytes = 0;
       if (this->valid_count_ > 0) this->valid_count_--;
       this->next_sequence_ = static_cast<uint16_t>(this->next_sequence_ + 1);
+      this->next_audio_timestamp_ += this->audio_timestamp_step_;
       this->counters_.drops++;
       this->counters_.discarded_frames++;
       return ReadResult::MISSING;
@@ -242,6 +264,13 @@ inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t ca
     if (actual_bytes != nullptr) *actual_bytes = slot.bytes;
     if (source_changed != nullptr) *source_changed = slot.source_changed;
     if (format_packed != nullptr) *format_packed = slot.format_packed;
+    this->audio_timestamp_step_ = 0;
+    if (slot.has_metadata && slot.format_packed != 0) {
+      const AudioFormat format = unpack_audio_format(slot.format_packed);
+      if (format.is_valid())
+        this->audio_timestamp_step_ = audio_format_rtp_clock_rate(format) * format.frame_ms / 1000U;
+    }
+    this->next_audio_timestamp_ = slot.timestamp + this->audio_timestamp_step_;
     memcpy(out, this->storage_ + (this->next_sequence_ % this->slot_count_) * this->frame_capacity_, slot.bytes);
     slot.valid = false;
     slot.bytes = 0;
@@ -260,6 +289,7 @@ inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t ca
 
   this->counters_.missing++;
   this->next_sequence_ = static_cast<uint16_t>(this->next_sequence_ + 1);
+  this->next_audio_timestamp_ += this->audio_timestamp_step_;
   return ReadResult::MISSING;
 }
 

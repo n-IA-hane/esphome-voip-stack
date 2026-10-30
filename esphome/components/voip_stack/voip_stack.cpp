@@ -318,6 +318,13 @@ bool VoipStack::setup_transport_() {
   this->transport_->set_media_quiesced_callback(
       VoipStack::transport_media_quiesced_callback_, this);
 
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  if (this->dtmf_events_ == nullptr)
+    this->dtmf_events_ = xQueueCreateStatic(8, sizeof(DtmfEvent), this->dtmf_events_buffer_, &this->dtmf_events_storage_);
+  if (this->dtmf_events_ != nullptr) xQueueReset(this->dtmf_events_);
+  if (this->dtmf_events_ == nullptr) return false;
+  this->transport_->set_dtmf_callback(VoipStack::transport_dtmf_callback_, this);
+#endif
   if (!this->transport_->start()) {
     ESP_LOGE(TAG, "Transport failed to start");
     return false;
@@ -353,6 +360,15 @@ bool VoipStack::transport_accept_callback_(void *ctx) {
 bool VoipStack::transport_dialog_active_callback_(void *ctx) {
   return static_cast<VoipStack *>(ctx)->is_active();
 }
+
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+void VoipStack::transport_dtmf_callback_(void *ctx, char digit, uint32_t generation) {
+  auto *self = static_cast<VoipStack *>(ctx);
+  const DtmfEvent event{generation, digit};
+  if (self->dtmf_events_ != nullptr && xQueueSend(self->dtmf_events_, &event, 0) == pdTRUE)
+    self->enable_loop_soon_any_context();
+}
+#endif
 
 void VoipStack::transport_media_quiesced_callback_(void *ctx) {
   auto *self = static_cast<VoipStack *>(ctx);
@@ -562,6 +578,12 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
 }
 
 void VoipStack::loop() {
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  DtmfEvent event;
+  while (this->dtmf_events_ != nullptr && xQueueReceive(this->dtmf_events_, &event, 0) == pdTRUE)
+    if (this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL && this->transport_ != nullptr &&
+        event.generation == this->transport_->dtmf_generation()) this->dtmf_trigger_.trigger(std::string(1, event.digit));
+#endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   this->pump_registration_wake_();
 #endif
@@ -986,7 +1008,7 @@ std::string VoipStack::build_sip_snapshot_string_() const {
       selected_rx_format = snap.selected_rx_format;
     }
   }
-  std::string contact = this->phonebook_.current_name();
+  std::string contact(this->phonebook_.current_name());
   char out[512];
   snprintf(out, sizeof(out),
            "st=%s; id=%s; dir=%s; from=%s; to=%s; ct=%s; tr=%s; sc=%u; "

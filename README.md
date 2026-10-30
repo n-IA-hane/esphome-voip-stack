@@ -52,13 +52,13 @@ Two scope decisions shape the component:
 
 **`voip_stack` does not own audio hardware or echo cancellation.** It consumes microphone and speaker interfaces. When software AEC/AFE is needed, [`esp_audio_stack`](https://github.com/n-IA-hane/esphome-audio-stack) owns the audio graph and hands `voip_stack` a clean post-processor microphone. Legacy processing options on `voip_stack` are intentionally gone.
 
-**Choose direct SIP or a registered phone.** The generic component defaults to direct SIP. Optional [PBX accounts](docs/SIP_REGISTRATION.md) register with a conventional PBX. Maintained Home Assistant device packages now configure a managed SIP account automatically, including shared identity for optional LDAP and IMAP services. One physical conversation owns the audio devices.
+**Choose direct SIP or a registered phone.** The generic component defaults to direct SIP. Optional [PBX accounts](docs/SIP_REGISTRATION.md) register with a conventional PBX. Maintained Home Assistant device packages now configure a managed SIP account automatically, including shared identity for the optional LDAP directory. One physical conversation owns the audio devices.
 
 ## Choose how the ESP connects
 
 One component covers direct SIP and optional registered accounts. The
 **2026.11.1-dev preview** adds registered PBX accounts, standard BLF/MWI, LDAP
-contacts, IMAP visual voicemail and S3 JPEG reception. Select `@dev` on the
+contacts, SIP mailbox access and S3 JPEG reception. Select `@dev` on the
 component source to use these additions. See the [feature guide](docs/PHONE_SERVICES.md)
 and [release delta](docs/WHATS_NEW_2026_11_1_DEV.md).
 
@@ -263,7 +263,7 @@ audio devices at a time.
 ### A complete phone, with optional directory and voicemail
 
 - **Automatic HA account:** `ha_integration.auto_register: true` lets the
-  coordinated integration provision a shared SIP/LDAP/IMAP identity. The generic
+  coordinated integration provision a shared SIP/LDAP identity. The generic
   default remains false; maintained HA packages enable it.
 - **MWI:** `registration.message_waiting: true` receives standard mailbox counts
   through SIP, including the managed `ha` account.
@@ -272,14 +272,14 @@ audio devices at a time.
   pickup through the contact's own account.
 - **LDAP:** `ldap_directory` commits a bounded directory into the existing
   phonebook, retaining manual overrides, stable IDs and contact categories.
-- **IMAP:** `imap_voicemail` provides a paginated message catalog and streams
-  selected audio through a native ESPHome MediaSource. Read/delete operations
-  use the server's UID and UIDVALIDITY identities.
+- **Mailbox access:** `voip_stack.call_mailbox` opens the PBX's voice mailbox
+  through the same registered account, using its notified URI or a configured
+  access code.
 
-The maintained display packages use shared vertical contact and voicemail lists.
-Custom YAML can build its own interface from the same callbacks and snapshots.
-[SIP mailbox state](docs/SIP_MWI.md) and
-[contacts, BLF and visual voicemail](docs/PHONE_SERVICES.md) describe each layer.
+The maintained display packages provide a vertical contact list, waiting badge
+and normal call controls. Custom YAML can build its own interface from the same
+callbacks and snapshots. [SIP mailbox state and access](docs/SIP_MWI.md) and
+[contacts, BLF and SIP voicemail](docs/PHONE_SERVICES.md) describe each layer.
 
 ## What it gives you
 
@@ -433,7 +433,7 @@ voip_stack:
 
 Keep your microphone and/or speaker configuration. The component works with
 native ESPHome audio as well as Audio Stack. The coordinated HA backend provisions
-the `ha` SIP identity automatically. Add LDAP or IMAP using the
+the `ha` SIP identity automatically. Add LDAP and select BLF/MWI using the
 [phone-service guide](docs/PHONE_SERVICES.md). The generic component keeps
 `auto_register: false`; use `ha_integration: false` to omit its HA adapter.
 
@@ -853,6 +853,7 @@ button:
 | `dc_offset_removal` | `false` | Remove DC bias on TX. |
 | `audio_debug` | `false` | Verbose audio-path diagnostics. |
 | `buffers_in_psram` | `false` | Place VoIP-owned buffers in PSRAM. |
+| `signaling_buffers_in_psram` | `false` | Place retained SIP text and directory records/text in PSRAM, independently of PCM staging. |
 | `task_stacks_in_psram` | `false` | Place signaling and media-transport task stacks in PSRAM where supported. |
 | `audio_task_stacks_in_psram` | `false` | Independently place the realtime `voip_tx`/`voip_rx` task stacks in PSRAM. |
 | `tx_task_stack_size` | `12288` | Realtime transmit task stack in bytes, minimum 4096. Change only from measured high-water marks. |
@@ -870,10 +871,13 @@ Removed options rejected with migration guidance: `processor_id`, `aec_reference
 - The mic ring buffer and TX chunk exist only when a mic path is configured.
 - There is no speaker ring, speaker task or AEC reference buffer inside `voip_stack`; incoming audio is written directly to the configured ESPHome speaker.
 - `buffers_in_psram` affects only VoIP-owned staging buffers.
+- `signaling_buffers_in_psram` places retained SIP messages, subscription metadata
+  and directory records/text in PSRAM. Its 64 contact slots are reserved at startup; the internal
+  placement grows on demand within the same 64-contact bound and reuses capacity.
 - Keep RTP payloads inside `udp_max_payload`; raising it above the real path MTU trades a compile error for intermittent one-way audio.
 - Optional BLF preallocates 16 watchers by default, configurable from 1 to 64,
-  with PSRAM placement. LDAP and IMAP have independent, bounded buffer and
-  worker settings, included only when those components are declared.
+  with PSRAM placement. LDAP has independent, bounded buffer and worker
+  settings, included only when that component is declared.
 
 ## Scope and known boundaries
 

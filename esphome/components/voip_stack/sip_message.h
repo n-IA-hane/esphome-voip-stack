@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace esphome {
 namespace voip_stack {
@@ -20,10 +21,11 @@ static constexpr uint32_t SIP_TRANSACTION_TIMEOUT_MS = 64 * SIP_T1_MS;
 static constexpr size_t MAX_SIP_BODY_BYTES = 4096;
 static constexpr size_t MAX_SIP_TCP_RX_BUFFER = 8192;
 
-std::string trim_copy(const std::string &value);
+std::string trim_copy(std::string_view value);
 std::string sip_uri_user_encode(const std::string &raw);
 std::string sip_uri_user_decode(const std::string &raw);
-std::string sip_prefix_target_user(const std::string &target, const std::string &prefix);
+std::string sip_prefix_target_user(std::string_view target, std::string_view prefix);
+std::string sip_normalize_dial_target(const std::string &target, size_t max_bytes);
 std::string sip_target_uri(const std::string &target, const std::string &fallback_authority);
 std::string header_value(const std::string &message, const char *name);
 std::string header_values(const std::string &message, const char *name);

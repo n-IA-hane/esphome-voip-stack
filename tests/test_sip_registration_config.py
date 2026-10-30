@@ -146,3 +146,27 @@ def test_message_waiting_callback_without_feature_has_actionable_error(tmp_path)
     result = run_config(tmp_path, ACCOUNT + "  on_message_waiting:\n    then:\n      - logger.log: Message\n")
     assert result.returncode != 0
     assert "registration.message_waiting: true" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_mailbox_call_action_is_independent_of_directory_and_imap(tmp_path, enabled):
+    registration = ACCOUNT.replace("    accounts:", "    message_waiting: true\n    accounts:") if enabled else ACCOUNT
+    registration += '''  on_idle:
+    then:
+      - voip_stack.call_mailbox:
+          id: phone
+          account_id: office
+          target: '*97'
+'''
+    result = run_config(tmp_path, registration)
+    if not enabled:
+        assert result.returncode != 0
+        assert 'voip_stack.call_mailbox requires registration.message_waiting: true' in result.stdout + result.stderr
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
+    generated = next(tmp_path.rglob('main.cpp')).read_text()
+    defines = next(tmp_path.rglob('defines.h')).read_text()
+    assert 'CallMailboxAction' in generated
+    assert 'USE_ESPHOME_VOIP_DIRECTORY' not in defines
+    assert 'USE_IMAP_VOICEMAIL' not in defines
+    assert 'runtime_controller' not in generated

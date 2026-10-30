@@ -176,9 +176,11 @@ struct Harness {
       h.replies++;
       return send(p.client, msg.data(), msg.size(), 0) == ssize_t(msg.size());
     };
+#ifdef USE_ESPHOME_VOIP_MWI
     hooks.notify = [](void *ctx, const MessageWaitingState &s) {
       static_cast<Harness *>(ctx)->updates.push_back(s);
     };
+#endif
     client.set_hooks(hooks);
     config.id = "desk";
     config.registrar = "127.0.0.1";

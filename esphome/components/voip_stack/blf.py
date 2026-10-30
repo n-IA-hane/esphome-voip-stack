@@ -10,6 +10,7 @@ SCHEMA = cv.Schema({
     cv.Optional("account_id", default="ha"): account_id,
     cv.Optional("max_subscriptions", default=16): cv.int_range(min=1, max=64),
     cv.Optional("watch_contacts", default=True): cv.boolean,
+    cv.Optional("presence", default=False): cv.boolean,
     cv.Optional("pickup_prefix", default=""): cv.string_strict,
     cv.Optional("buffers_in_psram"): cv.boolean,
 })
@@ -35,6 +36,8 @@ async def to_code(parent, config):
         return
     conf = config["blf"]
     cg.add_define("USE_ESPHOME_VOIP_BLF")
+    if conf["presence"]:
+        cg.add_define("USE_ESPHOME_VOIP_PRESENCE")
     if conf.get("buffers_in_psram", "psram" in (CORE.config or {})):
         cg.add_define("USE_ESPHOME_VOIP_BLF_PSRAM")
     cg.add(parent.set_blf_configuration(conf["account_id"], conf["max_subscriptions"],

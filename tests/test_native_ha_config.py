@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,12 +45,16 @@ def test_standalone_has_no_ha_adapter(tmp_path):
     assert 'USE_ESPHOME_VOIP_HA_MWI' not in defines
 
 
-def test_managed_registration_and_blf_are_explicit_codegen_options(tmp_path):
+@pytest.mark.parametrize("presence", [False, True])
+def test_managed_registration_and_blf_are_explicit_codegen_options(tmp_path, presence):
     result = validate(tmp_path, '\napi:\n  custom_services: true\n', voip_settings='''
   ha_integration:
     auto_register: true
+  registration:
+    message_waiting: true
   blf:
     max_subscriptions: 4
+    presence: PRESENCE
   on_message_waiting:
     then:
       - if:
@@ -58,17 +63,35 @@ def test_managed_registration_and_blf_are_explicit_codegen_options(tmp_path):
               account_id: ha
           then:
             - logger.log: Messages available
-''', generate=True)
+'''.replace("PRESENCE", str(presence).lower()), generate=True)
     assert result.returncode == 0, result.stdout + result.stderr
     defines = next(tmp_path.rglob('defines.h')).read_text()
     generated = next(tmp_path.rglob('main.cpp')).read_text()
     assert '#define USE_VOIP_HA_AUTO_REGISTER' in defines
     assert '#define USE_ESPHOME_VOIP_MWI' in defines
     assert '#define USE_ESPHOME_VOIP_BLF' in defines
+    assert ('#define USE_ESPHOME_VOIP_PRESENCE' in defines) is presence
     assert '#define USE_ESPHOME_VOIP_REGISTRATION' in defines
     assert 'HasWaitingMessagesCondition' in generated
     assert 'configure_registration(true, "ha")' in generated
     assert 'pickup.' in generated
+
+
+@pytest.mark.parametrize("managed,override,expected", [
+    (False, None, True), (False, False, False), (True, None, False), (True, True, True),
+])
+def test_legacy_roster_is_an_independent_compile_time_choice(tmp_path, managed, override, expected):
+    settings = f"  ha_integration:\n    auto_register: {str(managed).lower()}\n"
+    if override is not None:
+        settings += f"    legacy_roster: {str(override).lower()}\n"
+    result = validate(tmp_path, '\napi:\n  custom_services: true\n', voip_settings=settings, generate=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    defines = next(tmp_path.rglob('defines.h')).read_text()
+    assert ('#define USE_VOIP_HA_LEGACY_ROSTER' in defines) is expected
+    assert ('#define USE_ESPHOME_VOIP_REGISTRATION' in defines) is managed
+    assert '#define USE_ESPHOME_VOIP_MWI' not in defines
+    assert '#define USE_ESPHOME_VOIP_BLF' not in defines
+    assert '#define USE_ESPHOME_VOIP_DIRECTORY' not in defines
 
 
 def test_retired_native_mailbox_push_has_actionable_migration(tmp_path):

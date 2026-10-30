@@ -4,18 +4,21 @@ substitutions:
   voip_stack_source: github://n-IA-hane/esphome-voip-stack@dev
 packages:
   native_audio: !include native-full-duplex.yaml
-  voicemail_playback: !include phone-services-playback.yaml
 psram:
   mode: octal
   speed: 80MHz
 external_components:
   - source: ${voip_stack_source}
-    components: [ldap_directory, imap_voicemail, phone_client]
+    components: [ldap_directory, phone_client]
 voip_stack:
+  signaling_buffers_in_psram: true
   ha_integration:
     auto_register: true
+  registration:
+    message_waiting: true
   blf:
     max_subscriptions: 16
+    presence: true
     buffers_in_psram: true
 ldap_directory:
   id: directory
@@ -23,10 +26,9 @@ ldap_directory:
   account_id: ha
   managed_by_ha: true
   task_stack_in_psram: true
-imap_voicemail:
-  id: voicemail
-  voip_stack_id: phone
-  account_id: ha
-  managed_by_ha: true
-  task_stack_in_psram: true
-  codecs: [wav]
+button:
+  - platform: template
+    name: Open mailbox
+    on_press:
+      - voip_stack.call_mailbox:
+          id: phone

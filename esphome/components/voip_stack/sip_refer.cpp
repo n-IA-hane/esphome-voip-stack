@@ -276,6 +276,13 @@ void SipTransport::swap_negotiation_(ReferDialog &other) {
   other.negotiated_rx_payloads_ = payloads;
   other.remote_rtp_ip_v4_ = this->remote_rtp_ip_v4_.exchange(other.remote_rtp_ip_v4_);
   other.remote_rtp_port_ = this->remote_rtp_port_.exchange(other.remote_rtp_port_);
+#ifdef USE_ESPHOME_VOIP_DTMF
+  DtmfFormat dtmf_tx, dtmf_rx;
+  this->get_dtmf_config_(&dtmf_tx, &dtmf_rx);
+  this->set_dtmf_config_(other.dtmf_tx_format_, other.dtmf_rx_format_);
+  other.dtmf_tx_format_ = dtmf_tx; other.dtmf_rx_format_ = dtmf_rx;
+  std::swap(this->dtmf_offered_clocks_, other.dtmf_offered_clocks_);
+#endif
   using std::swap;
   swap(this->remote_media_shape_, other.remote_media_shape_);
   swap(this->local_offered_rx_payloads_, other.local_offered_rx_payloads_);

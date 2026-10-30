@@ -7,7 +7,9 @@
 #include <cmath>
 #include <cstring>
 
+#ifdef USE_VOIP_HA_LEGACY_ROSTER
 #include "cJSON.h"
+#endif
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
@@ -25,6 +27,7 @@ struct ParsedPhonebookSlot {
   ContactEntry entry;
 };
 
+#ifdef USE_VOIP_HA_LEGACY_ROSTER
 struct JsonRosterSlot {
   std::string name;
   std::string route;
@@ -39,6 +42,7 @@ struct JsonRosterSlot {
 };
 
 static constexpr size_t MAX_ROSTER_JSON_BYTES = 32768;
+#endif
 
 float db_to_linear(float db) {
   return std::pow(10.0f, db / 20.0f);
@@ -66,22 +70,25 @@ void append_csv(std::string *out, const std::string &entry) {
   *out += entry;
 }
 
-std::string serialize_endpoint(const std::string &name, const std::string &route,
+std::string serialize_endpoint(std::string_view name, std::string_view route,
                                ContactEndpointType endpoint_type,
-                               const std::string &ip, uint16_t port,
+                               std::string_view ip, uint16_t port,
                                uint16_t rtp_port, bool sip_transport_tcp = false) {
   if (name.empty()) return "";
-  if (ip.empty() || port == 0) return name;
+  if (ip.empty() || port == 0) return std::string(name);
   if (endpoint_type == ContactEndpointType::SIP) {
-    const std::string prefix = route.empty() || route == name
-        ? name
-        : name + "|" + route;
-    return prefix + "|" + ip + "|" + std::to_string(port) + "|" +
-           std::to_string(rtp_port) + "|" + (sip_transport_tcp ? "sip_tcp" : "sip_udp");
+    std::string result;
+    result.reserve(name.size() + route.size() + ip.size() + 24);
+    result.append(name.data(), name.size());
+    if (!route.empty() && route != name) { result.push_back('|'); result.append(route.data(), route.size()); }
+    result.push_back('|'); result.append(ip.data(), ip.size());
+    result += "|" + std::to_string(port) + "|" + std::to_string(rtp_port) + "|" + (sip_transport_tcp ? "sip_tcp" : "sip_udp");
+    return result;
   }
-  return name;
+  return std::string(name);
 }
 
+#ifdef USE_VOIP_HA_LEGACY_ROSTER
 const char *json_string(const cJSON *obj, const char *key) {
   const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
   return cJSON_IsString(item) && item->valuestring != nullptr ? item->valuestring : "";
@@ -212,6 +219,7 @@ bool parse_json_roster_slot(const cJSON *obj, JsonRosterSlot *slot) {
   slot->rtp_port = json_metadata_u16(obj, "rtp_port", json_u16(obj, "rtp_port", 40000));
   return true;
 }
+#endif
 
 }  // namespace
 
@@ -366,6 +374,14 @@ void VoipStack::set_mic_gain_db(float db) {
   this->schedule_save_settings_();
 }
 
+bool VoipStack::can_send_dtmf() const {
+  return this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL &&
+      this->transport_ != nullptr && this->transport_->can_send_dtmf();
+}
+bool VoipStack::send_dtmf(char digit, uint16_t duration_ms) {
+  return this->can_send_dtmf() && this->transport_->send_dtmf(digit, duration_ms);
+}
+
 // === Contacts ===
 // Phonebook owns merge logic. add/set route through the same idempotent
 // merge: same shape = noop, missing endpoint = upgrade, mismatch = replace.
@@ -401,6 +417,7 @@ void VoipStack::remove_contact(const std::string &name) {
 
 void VoipStack::set_contacts(const std::string &contacts_csv) {
   this->phonebook_.set_self_name(this->device_name_);
+#ifdef USE_VOIP_HA_LEGACY_ROSTER
   const std::string trimmed = Phonebook::trim(contacts_csv);
   if (!trimmed.empty() && (trimmed[0] == '{' || trimmed[0] == '[')) {
     const bool changed = this->apply_roster_json_contacts_(trimmed);
@@ -411,6 +428,13 @@ void VoipStack::set_contacts(const std::string &contacts_csv) {
     }
     return;
   }
+#else
+  const auto first = contacts_csv.find_first_not_of(" \t\r\n");
+  if (first != std::string::npos && (contacts_csv[first] == '{' || contacts_csv[first] == '[')) {
+    ESP_LOGW(TAG, "JSON contacts require ha_integration.legacy_roster: true");
+    return;
+  }
+#endif
   const std::string normalized_csv = this->normalize_phonebook_for_transport_(contacts_csv);
   if (normalized_csv.empty()) return;
   // Inside an open update cycle (started by update_contacts()), record names
@@ -452,6 +476,7 @@ std::string VoipStack::normalize_phonebook_for_transport_(const std::string &con
   return valid == 0 ? contacts_csv : out;
 }
 
+#ifdef USE_VOIP_HA_LEGACY_ROSTER
 bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
   if (!this->ha_roster_enabled_) return false;
@@ -582,6 +607,7 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
   return this->phonebook_.replace_all(std::move(entries));
 #endif
 }
+#endif
 
 void VoipStack::update_contacts() {
   // Re-entry: commit any cycle still open (e.g. previous trigger chain didn't
@@ -699,7 +725,7 @@ bool VoipStack::call_contact(const std::string &id) {
   return true;
 }
 
-std::string VoipStack::get_contact_account(const std::string &id) const {
+std::string VoipStack::get_contact_account(std::string_view id) const {
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
   const auto *entry = this->phonebook_.find_id(id);
@@ -863,6 +889,19 @@ void VoipStack::prev_contact() {
   ESP_LOGD(TAG, "Selected contact: %s", this->get_current_destination().c_str());
 }
 
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+std::string VoipStack::get_current_destination() const {
+  return std::string(this->phonebook_.current_name());
+}
+
+std::string VoipStack::get_current_destination_route() const {
+  return std::string(this->phonebook_.current_route());
+}
+
+std::string VoipStack::get_current_contact_ip() const {
+  return std::string(this->phonebook_.current_ip());
+}
+#else
 const std::string &VoipStack::get_current_destination() const {
   return this->phonebook_.current_name();
 }
@@ -874,6 +913,7 @@ const std::string &VoipStack::get_current_destination_route() const {
 const std::string &VoipStack::get_current_contact_ip() const {
   return this->phonebook_.current_ip();
 }
+#endif
 
 uint16_t VoipStack::get_current_contact_port() const {
   return this->phonebook_.current_port();

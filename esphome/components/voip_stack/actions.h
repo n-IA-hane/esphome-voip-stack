@@ -60,10 +60,38 @@ class SetAccountAction : public Action<Ts...>, public Parented<VoipStack> {
 
 #ifdef USE_ESPHOME_VOIP_MWI
 template<typename... Ts>
+class CallMailboxAction : public Action<Ts...>, public Parented<VoipStack> {
+ public:
+  TEMPLATABLE_VALUE(std::string, account_id)
+  TEMPLATABLE_VALUE(std::string, target)
+  void play(const Ts &...x) override {
+    this->parent_->call_mailbox(this->account_id_.value(x...), this->target_.value(x...));
+  }
+};
+template<typename... Ts>
 class HasWaitingMessagesCondition : public Condition<Ts...>, public Parented<VoipStack> {
  public:
   TEMPLATABLE_VALUE(std::string, account_id)
   bool check(const Ts &...x) override { return this->parent_->has_waiting_messages(this->account_id_.value(x...)); }
+};
+#endif
+
+#ifdef USE_ESPHOME_VOIP_DTMF
+template<typename... Ts>
+class SendDtmfAction : public Action<Ts...>, public Parented<VoipStack> {
+ public:
+  TEMPLATABLE_VALUE(std::string, digit)
+  TEMPLATABLE_VALUE(uint16_t, duration_ms)
+  void play(const Ts &...x) override {
+    const std::string value = this->digit_.value(x...);
+    if (value.size() == 1)
+      this->parent_->send_dtmf(value[0], this->duration_ms_.optional_value(x...).value_or(160));
+  }
+};
+template<typename... Ts>
+class VoipCanSendDtmfCondition : public Condition<Ts...>, public Parented<VoipStack> {
+ public:
+  bool check(const Ts &...) override { return this->parent_->can_send_dtmf(); }
 };
 #endif
 

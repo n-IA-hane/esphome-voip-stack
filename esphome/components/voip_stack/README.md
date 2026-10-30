@@ -94,14 +94,12 @@ static destinations as needed.
   defaults to 16 watches and accepts 1 through 64, with optional PSRAM placement.
 - [LDAP](../../../docs/PHONE_SERVICES.md#ldap-contact-ownership-and-mapping)
   imports stable contact identities into the existing 64-contact phonebook.
-- [IMAP](../../../docs/PHONE_SERVICES.md#imap-visual-voicemail) supplies a
-  paginated message catalog and native MediaSource playback, with UID-scoped
-  read/delete operations.
 
-SIP subscriptions share the existing SIP worker. LDAP and IMAP are independent,
-optional clients with bounded buffers and configurable worker affinity and
-memory placement. The shared account view is read-only; each session copies its
-credentials and rejects stale-generation results.
+SIP subscriptions share the existing SIP worker. The optional LDAP client uses
+bounded buffers and configurable worker affinity and memory placement. Its
+shared account view is read-only; each session copies its credentials and
+rejects stale-generation results. Mailbox access uses an ordinary SIP call and
+the PBX voice menu, controlled with negotiated RFC 4733 DTMF.
 
 The legacy endpoint text sensor is explicit opt-in with
 `ha_integration.endpoint: true`. Coordinated HA discovers managed phones through

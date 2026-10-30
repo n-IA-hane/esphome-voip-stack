@@ -232,7 +232,8 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
 #endif
   if (via_ha) {
     const auto *ha = this->phonebook_.find(this->ha_peer_name_);
-    dial_ip = ha != nullptr ? ha->ip : "";
+    if (ha != nullptr) dial_ip.assign(ha->ip.data(), ha->ip.size());
+    else dial_ip.clear();
     dial_port = ha != nullptr ? ha->port : 0;
     dial_rtp_port = ha != nullptr ? ha->rtp_port : 0;
     dial_sip_tcp = ha != nullptr && ha->sip_transport_tcp;

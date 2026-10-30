@@ -12,7 +12,7 @@ The default generic configuration remains direct SIP.
 
 **Automatic Home Assistant identity.** Maintained HA phone packages opt in to
 `ha_integration.auto_register`. The integration creates and provisions one `ha`
-account; its credential also serves the optional LDAP and IMAP clients. The
+account; its credential also serves the optional LDAP directory. The
 friendly device name becomes caller display and contact label. Custom firmware
 chooses this behavior explicitly.
 
@@ -21,17 +21,21 @@ perform directed pickup through the correct account, and receive mailbox waiting
 counts. Both subscriptions share the existing SIP worker and standard Digest
 handling. BLF preallocates 16 watchers by default, accepts a configurable limit
 from 1 through 64, and supports PSRAM placement.
+Optional standard SIP presence adds online, offline and unknown availability,
+independently of call activity. An idle dialog no longer needs to be interpreted
+as proof that a phone is reachable.
 
 **LDAP directories.** The optional `ldap_directory` component imports stable
 contact IDs, names, SIP destinations and categories into the existing bounded
 phonebook. Updates preserve manual overrides and replace only their own provider.
 Call and pickup actions can address a contact by stable ID.
 
-**IMAP visual voicemail.** The optional `imap_voicemail` component provides a
-paginated catalog, message metadata and native MediaSource playback. Read/delete
-operations use UID and UIDVALIDITY; UIDPLUS deletion targets the selected
-message. Use independent server credentials or share a configured SIP account.
-The existing SIP/DTMF voicemail menu remains another access method.
+**SIP mailbox access.** `voip_stack.call_mailbox` opens the notified mailbox URI
+or a configured PBX access code through the ordinary registered call path.
+Aggregate waiting badges select an account with waiting messages. Audio, keypad,
+hold and hangup use the normal phone controls. Negotiated RFC 4733 DTMF sends
+keypad digits while audio continues in both directions, using the existing RTP
+worker and a bounded command queue.
 
 [Phone services and examples](PHONE_SERVICES.md) ·
 [PBX accounts](SIP_REGISTRATION.md) · [MWI](SIP_MWI.md)
@@ -53,6 +57,19 @@ worker affinity and stack/buffer placement using the [renderer settings](ESP_VID
 
 ## Reliability and interoperability
 
+- LDAP streams into a bounded staging table and commits directly into the
+  existing phonebook. Reused storage removes transient merged-roster copies;
+  signaling placement stays independent of realtime PCM staging.
+- Retained directory text and subscription metadata follow the signaling PSRAM
+  option. Typed contact queries use borrowed views; BLF and presence transactions
+  carry only their own protocol state. Watches without application listeners
+  keep their SIP state current without scheduling unused UI notifications.
+- The new typed BLF getter returns a compact status snapshot for rendering.
+  Callbacks retain owned identity metadata; repeated row queries avoid those
+  string copies.
+- Mailbox subscriptions retry temporarily missing resources with bounded
+  backoff. Accepted REGISTER transactions renew MWI and BLF through the same
+  subscription owner, retaining healthy dialogs and rebuilding missing ones.
 - Managed account updates are idempotent. Real replacements wait for active call
   and REFER cleanup, retire the previous binding, and apply the latest request.
 - OPTIONS reports configured audio/video capabilities without opening audio or
@@ -68,7 +85,11 @@ worker affinity and stack/buffer placement using the [renderer settings](ESP_VID
 Update the coordinated HA integration before adopting managed phone services,
 then rebuild with the current device package. The generic component keeps its
 existing direct configuration; manual external PBX accounts remain selectable.
-LDAP, IMAP, BLF and the JPEG renderer are optional additions.
+LDAP, BLF, MWI and the JPEG renderer are optional additions.
+Automatic HA registration also leaves MWI disabled until
+`registration.message_waiting: true` is selected. Managed phones exclude the
+legacy JSON roster parser by default; `ha_integration.legacy_roster: true`
+keeps that API available for an existing configuration.
 
 The legacy endpoint capability sensor is now opt-in with
 `ha_integration.endpoint: true`. Current HA discovers managed accounts and queries
@@ -77,5 +98,6 @@ The sensor's 255-character validation applies only when that legacy surface is e
 
 For earlier preview configurations, replace
 `ha_integration.message_waiting: true` with `ha_integration.auto_register: true`
-(or an explicitly configured SIP account with `registration.message_waiting`).
+and `registration.message_waiting: true`, or use an explicitly configured SIP
+account with message waiting enabled.
 Mailbox notifications now use standard SIP for both HA and conventional PBXs.

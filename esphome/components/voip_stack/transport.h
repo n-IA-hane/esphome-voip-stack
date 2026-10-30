@@ -31,6 +31,9 @@ using TransportConnectionCallback = void (*)(void *ctx, bool connected);
 using TransportAcceptCallback = bool (*)(void *ctx);
 using TransportDialogActiveCallback = bool (*)(void *ctx);
 using TransportMediaQuiescedCallback = void (*)(void *ctx);
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+using TransportDtmfCallback = void (*)(void *ctx, char digit, uint32_t generation);
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 using TransportVideoSendStateCallback =
     void (*)(void *ctx, bool enabled, bool pending);
@@ -95,6 +98,8 @@ class SipPhoneTransport {
   /// Best-effort send. Payload is one PCM frame in the negotiated RTP format.
   /// Safe from a high-priority audio task; may drop on backpressure.
   virtual void send_audio_frame(const uint8_t *pcm, size_t bytes) = 0;
+  virtual bool can_send_dtmf() const { return false; }
+  virtual bool send_dtmf(char digit, uint16_t duration_ms = 160) { (void) digit; (void) duration_ms; return false; }
 
   /// Decode one negotiated encoded RTP payload after jitter reordering. A
   /// null payload requests codec packet-loss concealment for one frame.
@@ -236,6 +241,10 @@ class SipPhoneTransport {
     this->on_media_quiesced_ = cb;
     this->on_media_quiesced_ctx_ = ctx;
   }
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  virtual uint32_t dtmf_generation() const { return 0; }
+  void set_dtmf_callback(TransportDtmfCallback cb, void *ctx) { this->on_dtmf_ = cb; this->on_dtmf_ctx_ = ctx; }
+#endif
 
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   void set_video_send_state_callback(TransportVideoSendStateCallback cb,
@@ -299,6 +308,10 @@ class SipPhoneTransport {
     if (this->on_media_quiesced_ != nullptr)
       this->on_media_quiesced_(this->on_media_quiesced_ctx_);
   }
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  void emit_dtmf_(char digit, uint32_t generation) { if (this->on_dtmf_ != nullptr) this->on_dtmf_(this->on_dtmf_ctx_, digit, generation); }
+#endif
+
 
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   void emit_video_send_state_(bool enabled, bool pending) {
@@ -328,6 +341,10 @@ class SipPhoneTransport {
   void *dialog_active_ctx_{nullptr};
   TransportMediaQuiescedCallback on_media_quiesced_{nullptr};
   void *on_media_quiesced_ctx_{nullptr};
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  TransportDtmfCallback on_dtmf_{nullptr};
+  void *on_dtmf_ctx_{nullptr};
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   TransportVideoSendStateCallback on_video_send_state_{nullptr};
   void *on_video_send_state_ctx_{nullptr};

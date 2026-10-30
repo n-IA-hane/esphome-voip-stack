@@ -226,6 +226,80 @@ struct Patch {
 };
 }  // namespace
 
+#ifdef USE_ESPHOME_VOIP_PRESENCE
+bool parse_presence(std::string_view xml, PresenceState *result) {
+  constexpr std::string_view PIDF_NS = "urn:ietf:params:xml:ns:pidf";
+  if (result == nullptr || xml.empty() || xml.size() > 4096) return false;
+  for (const unsigned char ch : xml)
+    if (ch == 0 || (ch < 32 && ch != '\r' && ch != '\n' && ch != '\t')) return false;
+  XmlReader reader(xml);
+  XmlToken token;
+  bool root = false, complete = false, in_tuple = false, in_status = false, status_seen = false, basic_seen = false;
+  bool collecting = false, any_open = false, unknown = false;
+  size_t count = 0, length = 0;
+  std::array<std::string_view, 16> ids{};
+  std::array<char, 32> text{};
+  while (true) {
+    const auto type = reader.next(&token);
+    if (type == XmlToken::ERROR) return false;
+    if (type == XmlToken::END) break;
+    const auto name = local_name(token.name);
+    if (type == XmlToken::TEXT) {
+      if (collecting) {
+        if (length + token.text.size() >= text.size()) return false;
+        std::memcpy(text.data() + length, token.text.data(), token.text.size());
+        length += token.text.size();
+      } else if (token.depth == 0 && !trim(token.text).empty()) return false;
+      continue;
+    }
+    if (collecting && type == XmlToken::OPEN) return false;
+    if (type == XmlToken::OPEN && token.depth == 1) {
+      if (root || name != "presence" || token.ns != PIDF_NS || token.attr("entity").empty() ||
+          token.attr("entity").size() > 512) return false;
+      root = true;
+    } else if (type == XmlToken::CLOSE && token.depth == 1) {
+      if (name != "presence" || token.ns != PIDF_NS) return false;
+      complete = true;
+    } else if (token.ns == PIDF_NS && name == "tuple" && token.depth == 2) {
+      if (type == XmlToken::OPEN) {
+        if (count == ids.size()) return false;
+        std::array<char, BlfDialogCache::MAX_ID_BYTES + 1> current{}, previous{};
+        if (!decode(token.attr("id"), &current) || current[0] == 0) return false;
+        for (size_t i = 0; i < count; ++i) {
+          if (!decode(ids[i], &previous) || previous == current) return false;
+        }
+        ids[count++] = token.attr("id");
+        in_tuple = true; in_status = status_seen = basic_seen = false;
+      } else {
+        if (!status_seen) return false;
+        if (!basic_seen) unknown = true;
+        in_tuple = false;
+      }
+    } else if (in_tuple && token.ns == PIDF_NS && name == "status" && token.depth == 3) {
+      if (type == XmlToken::OPEN) {
+        if (status_seen) return false;
+        status_seen = in_status = true;
+      } else in_status = false;
+    } else if (in_tuple && in_status && token.ns == PIDF_NS && name == "basic" && token.depth == 4) {
+      if (type == XmlToken::OPEN) {
+        if (!status_seen || basic_seen) return false;
+        collecting = true; length = 0;
+      } else {
+        std::array<char, 32> value{};
+        if (!collecting || !decode(trim(std::string_view(text.data(), length)), &value)) return false;
+        const std::string_view status(value.data());
+        if (status != "open" && status != "closed") return false;
+        any_open |= status == "open";
+        collecting = false; basic_seen = true;
+      }
+    } else if (token.ns == PIDF_NS && (name == "basic" || name == "status" || name == "tuple")) return false;
+  }
+  if (!root || !complete || collecting || in_tuple) return false;
+  *result = any_open ? PresenceState::OPEN : count != 0 && !unknown ? PresenceState::CLOSED : PresenceState::UNKNOWN;
+  return true;
+}
+#endif
+
 BlfDocumentResult BlfDialogCache::apply(std::string_view xml) {
   if (xml.empty() || xml.size() > 4096) return BlfDocumentResult::LIMIT;
   for (const unsigned char ch : xml)
@@ -329,7 +403,7 @@ BlfDocumentResult BlfDialogCache::apply(std::string_view xml) {
   return BlfDocumentResult::APPLIED;
 }
 
-void BlfDialogCache::snapshot(BlfStateInfo *out) const {
+void BlfDialogCache::snapshot(BlfStatus *out) const {
   out->available = this->valid_; out->version = this->version_;
   out->ringing_dialogs = out->active_dialogs = out->held_dialogs = 0;
   out->state = this->valid_ ? BlfState::IDLE : BlfState::UNKNOWN;

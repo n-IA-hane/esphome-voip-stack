@@ -81,6 +81,7 @@ CONF_HA_PHONEBOOK_TEXT_SENSOR_ID = "ha_phonebook_text_sensor_id"
 CONF_ON_RINGING = "on_ringing"
 CONF_ON_IN_CALL = "on_in_call"
 CONF_ON_IDLE = "on_idle"
+CONF_ON_DTMF = "on_dtmf"
 CONF_ON_VIDEO_START = "on_video_start"
 CONF_ON_VIDEO_END = "on_video_end"
 # FSM triggers
@@ -559,6 +560,7 @@ SetContactAction = voip_stack_ns.class_("SetContactAction", automation.Action)
 CallContactAction = voip_stack_ns.class_("CallContactAction", automation.Action)
 PickupContactAction = voip_stack_ns.class_("PickupContactAction", automation.Action)
 CallAction = voip_stack_ns.class_("CallAction", automation.Action)
+SendDtmfAction = voip_stack_ns.class_("SendDtmfAction", automation.Action)
 SetRemoteEndpointAction = voip_stack_ns.class_("SetRemoteEndpointAction", automation.Action)
 AddContactAction = voip_stack_ns.class_("AddContactAction", automation.Action)
 RemoveContactAction = voip_stack_ns.class_("RemoveContactAction", automation.Action)
@@ -577,6 +579,7 @@ VoipIsRemoteRingingCondition = voip_stack_ns.class_("VoipIsRemoteRingingConditio
 VoipIsIncomingCondition = voip_stack_ns.class_("VoipIsIncomingCondition", automation.Condition)
 VoipDestinationIsCondition = voip_stack_ns.class_("VoipDestinationIsCondition", automation.Condition)
 VoipIsHaDestinationCondition = voip_stack_ns.class_("VoipIsHaDestinationCondition", automation.Condition)
+VoipCanSendDtmfCondition = voip_stack_ns.class_("VoipCanSendDtmfCondition", automation.Condition)
 
 PHONEBOOK_CONTACT_SCHEMA = cv.Schema(
     {
@@ -730,6 +733,7 @@ CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), ha_integration.p
         cv.Optional(CONF_ON_IN_CALL): automation.validate_automation(single=True),
         # Trigger when state returns to idle
         cv.Optional(CONF_ON_IDLE): automation.validate_automation(single=True),
+        cv.Optional(CONF_ON_DTMF): automation.validate_automation(single=True),
         # Trigger on negotiated video media lifecycle edges
         cv.Optional(CONF_ON_VIDEO_START): automation.validate_automation(single=True),
         cv.Optional(CONF_ON_VIDEO_END): automation.validate_automation(single=True),
@@ -1115,6 +1119,7 @@ async def _add_core_settings(var, config):
         )
         esp32.add_idf_sdkconfig_option("CONFIG_OPUS_FLOATING_POINT", False)
     cg.add_define("USE_ESPHOME_VOIP_SIP_TRANSPORT")
+    cg.add_define("USE_ESPHOME_VOIP_DTMF")
 
 
 def _add_transport_settings(var, config):
@@ -1175,6 +1180,12 @@ async def _build_voip_automations(var, config):
     if CONF_ON_IDLE in config:
         await automation.build_automation(
             var.get_idle_trigger(), [], config[CONF_ON_IDLE]
+        )
+
+    if CONF_ON_DTMF in config:
+        cg.add_define("USE_ESPHOME_VOIP_DTMF_EVENTS")
+        await automation.build_automation(
+            var.get_dtmf_trigger(), [(cg.std_string, "digit")], config[CONF_ON_DTMF]
         )
 
     if CONF_ON_VIDEO_START in config:
@@ -1249,8 +1260,9 @@ async def _bind_ha_phonebook_sensor(var, config):
 
 
 async def to_code(config):
-    # Settings and SIP phonebook serialization use ESP-IDF's cJSON component.
-    esp32.include_builtin_idf_component("json")
+    if ha_integration.legacy_roster_enabled(config):
+        cg.add_define("USE_VOIP_HA_LEGACY_ROSTER")
+        esp32.include_builtin_idf_component("json")
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
 
@@ -1334,6 +1346,8 @@ CONF_ENABLED = "enabled"
 CONF_CONTACTS_CSV = "contacts_csv"
 CONF_ROSTER_JSON = "roster_json"
 CONF_TARGET = "target"
+CONF_DIGIT = "digit"
+CONF_DURATION_MS = "duration_ms"
 
 
 def _register_templated_action(name, action_class, key, validator, cpp_type, setter):
@@ -1372,6 +1386,23 @@ _register_templated_action(
     float,
     lambda var, value: var.set_gain_db(value),
 )
+
+
+@automation.register_action(
+    "voip_stack.send_dtmf",
+    SendDtmfAction,
+    cv.Schema({
+        cv.GenerateID(): cv.use_id(VoipStack),
+        cv.Required(CONF_DIGIT): cv.templatable(cv.one_of(*"0123456789*#ABCDabcd", lower=False)),
+        cv.Optional(CONF_DURATION_MS, default=160): cv.templatable(cv.int_range(min=40, max=8000)),
+    }),
+    synchronous=True,
+)
+async def send_dtmf_action_to_code(config, action_id, template_arg, args):
+    var = await _new_parented_action(config, action_id, template_arg)
+    cg.add(var.set_digit(await cg.templatable(config[CONF_DIGIT], args, cg.std_string)))
+    cg.add(var.set_duration_ms(await cg.templatable(config[CONF_DURATION_MS], args, cg.uint16)))
+    return var
 
 
 @automation.register_action(
@@ -1581,6 +1612,7 @@ def _register_simple_condition(name, condition_class):
     return _to_code
 
 
+_register_simple_condition("voip_stack.can_send_dtmf", VoipCanSendDtmfCondition)
 _register_simple_condition("voip_stack.is_active", VoipIsActiveCondition)
 _register_simple_condition("voip_stack.is_idle", VoipIsIdleCondition)
 _register_simple_condition("voip_stack.is_ringing", VoipIsRingingCondition)

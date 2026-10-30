@@ -161,10 +161,24 @@ bool SipTransport::registration_mwi_reply_(void *ctx, const std::string &message
 }
 
 #ifdef USE_ESPHOME_VOIP_MWI
-bool SipTransport::get_message_waiting(const std::string &id, MessageWaitingState *state) {
+bool SipTransport::get_message_waiting(const std::string &id, MessageWaitingState *state, const std::string &preferred) {
+  if (state == nullptr) return false;
   LockGuard lock(this->dialog_mutex_);
-  const int index = this->registration_.find(id);
-  if (index < 0 || this->mwi_.state(index).account_id != id) return false;
+  int index = this->registration_.find(id);
+  if (id.empty()) {
+    int first = -1, waiting = -1, selected = -1;
+    for (size_t i = 0; i < SipRegistration::CAPACITY; ++i) {
+      const auto &account = this->registration_.account(i);
+      const auto &mailbox = this->mwi_.state(i);
+      if (!account.occupied || !mailbox.available || mailbox.account_id != account.config.id) continue;
+      if (first < 0) first = i;
+      if (waiting < 0 && mailbox.waiting) waiting = i;
+      if (account.config.id == preferred) selected = i;
+    }
+    index = selected >= 0 && this->mwi_.state(selected).waiting ? selected :
+        waiting >= 0 ? waiting : selected >= 0 ? selected : first;
+  }
+  if (index < 0 || (!id.empty() && this->mwi_.state(index).account_id != id)) return false;
   *state = this->mwi_.state(index); return true;
 }
 
@@ -229,7 +243,7 @@ bool SipTransport::set_blf_watches(const std::vector<BlfWatchConfig> &watches) {
   return true;
 }
 
-bool SipTransport::get_blf_state(const std::string &id, BlfStateInfo *out) {
+template<typename Result> bool SipTransport::copy_blf_state_(std::string_view id, Result *out) {
   if (out == nullptr) return false;
   LockGuard lock(this->dialog_mutex_);
   for (size_t slot = 0; slot < this->mwi_.blf_capacity(); ++slot) {
@@ -237,6 +251,14 @@ bool SipTransport::get_blf_state(const std::string &id, BlfStateInfo *out) {
     if (state != nullptr && state->contact_id == id) { *out = *state; return true; }
   }
   return false;
+}
+
+bool SipTransport::get_blf_state(std::string_view id, BlfStatus *out) {
+  return this->copy_blf_state_(id, out);
+}
+
+bool SipTransport::get_blf_info(std::string_view id, BlfStateInfo *out) {
+  return this->copy_blf_state_(id, out);
 }
 
 void SipTransport::registration_blf_notify_(void *context, const BlfStateInfo &state) {

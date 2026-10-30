@@ -7,8 +7,6 @@ import subprocess
 
 import pytest
 
-from test_refer_dialog_runtime import block
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -39,33 +37,45 @@ def response_wire(count):
     return b"".join(messages) + encode(done)
 
 
-@pytest.fixture(scope="module")
-def allocation_binary(tmp_path_factory):
+@pytest.fixture(scope="module", params=[False, True], ids=["internal", "signaling-psram"])
+def allocation_binary(tmp_path_factory, request):
     folder = tmp_path_factory.mktemp("ldap-allocation")
-    header = (ROOT / "esphome/components/voip_stack/phonebook.h").read_text()
-    fixture = "#pragma once\n#include <string>\n#include <cstdint>\n#define USE_ESPHOME_VOIP_DIRECTORY\nnamespace esphome::voip_stack {\n"
-    for name in ("enum class ContactEndpointType", "enum class ContactKind", "enum class ContactOrigin", "struct ContactEntry"):
-        fixture += block(header, name) + ";\n"
-    (folder / "contact_entry_fixture.h").write_text(fixture + "}\n")
+    external = request.param
+    (folder / "contact_entry_fixture.h").write_text(
+        '#pragma once\n#include "esphome/components/voip_stack/phonebook.h"\n')
+    helper = folder / "esphome/core/helpers.h"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("""#pragma once
+#include <cstdlib>
+namespace esphome { template<class T>struct RAMAllocator {
+ using value_type=T; enum { ALLOC_EXTERNAL=1 }; unsigned flags;
+ explicit RAMAllocator(unsigned value=0):flags(value){}
+ T*allocate(size_t n){return static_cast<T*>(std::malloc(n*sizeof(T)));}
+ void deallocate(T*p,size_t){std::free(p);}
+}; }
+""")
     binary = folder / "allocation"
     result = subprocess.run(["g++", "-std=c++17", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
         "-fsanitize=address,undefined", "-fno-pie", "-no-pie", "-I", str(folder), "-I", str(ROOT),
+        "-DUSE_ESP32", "-DUSE_ESPHOME_VOIP_DIRECTORY",
+        *(["-DUSE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM"] if external else []),
         str(ROOT / "tests/test_ldap_directory_allocation.cpp"),
         str(ROOT / "esphome/components/ldap_directory/ldap_protocol.cpp"),
         str(ROOT / "esphome/components/ldap_directory/directory_contact.cpp"),
         str(ROOT / "esphome/components/phone_client/net_stream.cpp"), "-o", str(binary)],
         capture_output=True, text=True, timeout=90)
     assert result.returncode == 0, result.stderr
-    return binary
+    return binary, external
 
 
 @pytest.mark.parametrize("count", [9, 64])
 def test_streamed_directory_bounds_peak_and_reuses_boot_stage(allocation_binary, tmp_path, count):
+    binary, external = allocation_binary
     packet = tmp_path / "entries.ber"
     packet.write_bytes(response_wire(count))
     modes = {}
     for mode in ("legacy", "stream"):
-        result = subprocess.run([str(allocation_binary), str(packet), str(count), mode],
+        result = subprocess.run([str(binary), str(packet), str(count), mode],
                                 capture_output=True, text=True, timeout=10)
         assert result.returncode == 0, result.stdout + result.stderr
         rounds = [dict(zip(("round", "peak_requested_heap_bytes", "allocation_calls", "retained_requested_heap_bytes", "boot_stage_host_bytes"),
@@ -78,7 +88,8 @@ def test_streamed_directory_bounds_peak_and_reuses_boot_stage(allocation_binary,
     current = modes["stream" if "client.search_each(" in worker else "legacy"]
     (tmp_path / "allocation-receipt.json").write_text(json.dumps({
         "scope": "Host ABI requested ordinary-allocator bytes, not physical ESP internal/DMA bytes",
-        "count": count, "rounds": modes, "target_boot_stage_bytes_at_64": 8960,
+        "count": count, "rounds": modes, "signaling_in_psram": external,
+        "target_boot_stage_bytes_at_64": 10240 if external else 8960,
         "receive_buffer_bytes": 8192, "string_allocations_remain_transient": True,
     }, indent=2) + "\n")
     assert current[0]["peak_requested_heap_bytes"] < modes["legacy"][0]["peak_requested_heap_bytes"] * .70

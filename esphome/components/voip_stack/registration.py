@@ -205,15 +205,32 @@ def register_automations(parent_type):
 
 
 def register_mwi_condition(parent_type):
+    def require_mwi(name):
+        config = (CORE.config or {}).get("voip_stack") or {}
+        if not (config.get(CONF_REGISTRATION) or {}).get("message_waiting", False):
+            raise cv.Invalid(f"voip_stack.{name} requires registration.message_waiting: true")
+
+    mailbox = NS.class_("CallMailboxAction", automation.Action)
+    @automation.register_action("voip_stack.call_mailbox", mailbox, cv.Schema({
+        cv.GenerateID(): cv.use_id(parent_type),
+        cv.Optional("account_id", default=""): cv.templatable(cv.Any("", account_id)),
+        cv.Optional("target", default=""): cv.templatable(cv.string),
+    }), synchronous=True)
+    async def mailbox_to_code(conf, action_id, template_arg, args):
+        require_mwi("call_mailbox")
+        action = cg.new_Pvariable(action_id, template_arg)
+        cg.add(action.set_parent(await cg.get_variable(conf["id"])))
+        cg.add(action.set_account_id(await cg.templatable(conf["account_id"], args, cg.std_string)))
+        cg.add(action.set_target(await cg.templatable(conf["target"], args, cg.std_string)))
+        return action
+
     condition = NS.class_("HasWaitingMessagesCondition", automation.Condition)
     @automation.register_condition("voip_stack.has_waiting_messages", condition, cv.Schema({
         cv.GenerateID(): cv.use_id(parent_type),
         cv.Optional("account_id", default=""): cv.templatable(cv.Any("", "direct", account_id)),
     }))
     async def condition_to_code(conf, condition_id, template_arg, args):
-        config = (CORE.config or {}).get("voip_stack") or {}
-        if not (config.get(CONF_REGISTRATION) or {}).get("message_waiting", False):
-            raise cv.Invalid("voip_stack.has_waiting_messages requires registration.message_waiting: true")
+        require_mwi("has_waiting_messages")
         action = cg.new_Pvariable(condition_id, template_arg)
         cg.add(action.set_parent(await cg.get_variable(conf["id"])))
         cg.add(action.set_account_id(await cg.templatable(conf["account_id"], args, cg.std_string)))

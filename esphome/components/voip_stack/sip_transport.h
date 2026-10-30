@@ -6,6 +6,11 @@
 
 #include "transport.h"
 #include "rtp_audio_payloads.h"
+#ifdef USE_ESPHOME_VOIP_DTMF
+#include "rtp_dtmf.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#endif
 #include "pcm_receive_converter.h"
 #include "sip_signaling_string.h"
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
@@ -102,7 +107,7 @@ class SipTransport : public SipPhoneTransport {
   }
 #endif
 #ifdef USE_ESPHOME_VOIP_MWI
-  bool get_message_waiting(const std::string &id, MessageWaitingState *state);
+  bool get_message_waiting(const std::string &id, MessageWaitingState *state, const std::string &preferred = "");
   bool has_waiting_messages(const std::string &id);
   using MessageWaitingCallback = void (*)(void *, const MessageWaitingState &);
   void set_message_waiting_callback(MessageWaitingCallback callback) { this->message_waiting_callback_ = callback; }
@@ -111,12 +116,20 @@ class SipTransport : public SipPhoneTransport {
   using BlfCallback = void (*)(void *, const BlfStateInfo &);
   bool configure_blf(uint8_t capacity, BlfCallback callback);
   bool set_blf_watches(const std::vector<BlfWatchConfig> &watches);
-  bool get_blf_state(const std::string &id, BlfStateInfo *out);
+  bool get_blf_state(std::string_view id, BlfStatus *out);
+  bool get_blf_info(std::string_view id, BlfStateInfo *out);
 #endif
   void stop() override;
   void disconnect() override;
   bool is_connected() const override;
   void send_audio_frame(const uint8_t *pcm, size_t bytes) override;
+#ifdef USE_ESPHOME_VOIP_DTMF
+  bool can_send_dtmf() const override;
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  uint32_t dtmf_generation() const override { return this->media_proposal_epoch_.load(std::memory_order_acquire); }
+#endif
+  bool send_dtmf(char digit, uint16_t duration_ms = 160) override;
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   size_t decode_audio_payload(const uint8_t *payload, size_t payload_bytes,
                               const AudioFormat &format, uint8_t *pcm,
@@ -620,6 +633,22 @@ class SipTransport : public SipPhoneTransport {
   AudioFormat selected_rx_format_{DEFAULT_AUDIO_FORMAT};
   uint8_t rtp_tx_payload_type_{96};
   uint8_t rtp_rx_payload_type_{96};
+#ifdef USE_ESPHOME_VOIP_DTMF
+  DtmfFormat dtmf_tx_format_{}, dtmf_rx_format_{};
+  uint8_t dtmf_offered_clocks_{0};
+  struct DtmfRequest { uint32_t epoch; uint16_t duration_ms; uint8_t event; };
+  static constexpr size_t kDtmfQueueDepth = 8;
+  QueueHandle_t dtmf_queue_{nullptr};
+  StaticQueue_t dtmf_queue_storage_{};
+  uint8_t dtmf_queue_buffer_[kDtmfQueueDepth * sizeof(DtmfRequest)]{};
+  uint32_t rtp_tx_clock_ms_{0}, rtp_tx_clock_timestamp_{0};
+  void get_dtmf_config_(DtmfFormat *tx, DtmfFormat *rx, uint32_t *epoch = nullptr) const;
+  void set_dtmf_config_(const DtmfFormat &tx, const DtmfFormat &rx);
+  bool can_send_dtmf_locked_(const DtmfFormat &format, uint32_t epoch) const;
+  static void append_dtmf_sdp_(std::string *payloads, std::string *maps, uint8_t clocks);
+  bool send_dtmf_packet_(const DtmfSender::Report &report, const DtmfFormat &format,
+                         uint32_t epoch, uint32_t ssrc, uint16_t *sequence);
+#endif
   mutable portMUX_TYPE media_config_lock_ = portMUX_INITIALIZER_UNLOCKED;
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   OpusRtpCodec opus_codec_{};
@@ -774,6 +803,7 @@ class SipTransport : public SipPhoneTransport {
 #ifdef USE_ESPHOME_VOIP_BLF
   BlfCallback blf_callback_{nullptr};
   static void registration_blf_notify_(void *, const BlfStateInfo &);
+  template<typename Result> bool copy_blf_state_(std::string_view id, Result *out);
 #endif
   struct ReferDialog {
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
@@ -809,6 +839,10 @@ class SipTransport : public SipPhoneTransport {
     uint8_t audio_direction_{3};
     AudioFormat selected_tx_format_{DEFAULT_AUDIO_FORMAT}, selected_rx_format_{DEFAULT_AUDIO_FORMAT};
     uint8_t rtp_tx_payload_type_{96}, rtp_rx_payload_type_{96};
+#ifdef USE_ESPHOME_VOIP_DTMF
+    DtmfFormat dtmf_tx_format_{}, dtmf_rx_format_{};
+    uint8_t dtmf_offered_clocks_{0};
+#endif
     RtpAudioPayloads negotiated_rx_payloads_, local_offered_rx_payloads_;
     AudioFormatList local_offered_tx_formats_;
     bool remote_directional_audio_v1_{false}, local_offered_directional_audio_v1_{false};

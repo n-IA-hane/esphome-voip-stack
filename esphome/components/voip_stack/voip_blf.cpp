@@ -18,18 +18,26 @@ const char *blf_state_name(BlfState state) {
 
 void VoipStack::blf_callback_(void *context, const BlfStateInfo &state) {
   auto *self = static_cast<VoipStack *>(context);
+  if (!self->blf_notifications_requested_.load(std::memory_order_acquire)) return;
   self->defer([self, id = state.contact_id]() {
-    const auto current = self->get_contact_blf(id);
+    const auto current = self->get_contact_blf_info_(id);
     self->blf_callbacks_.call(current);
     self->blf_state_trigger_.trigger(current.contact_id, current.account_id, blf_state_name(current.state), current.available);
   });
 }
 
-BlfStateInfo VoipStack::get_contact_blf(const std::string &id) {
-  BlfStateInfo state;
-  state.contact_id = id;
+BlfStatus VoipStack::get_contact_blf(std::string_view id) {
+  BlfStatus status;
   if (this->transport_ != nullptr && this->blf_ready_)
-    static_cast<SipTransport *>(this->transport_.get())->get_blf_state(id, &state);
+    static_cast<SipTransport *>(this->transport_.get())->get_blf_state(id, &status);
+  return status;
+}
+
+BlfStateInfo VoipStack::get_contact_blf_info_(std::string_view id) {
+  BlfStateInfo state;
+  state.contact_id.assign(id.data(), id.size());
+  if (this->transport_ != nullptr && this->blf_ready_)
+    static_cast<SipTransport *>(this->transport_.get())->get_blf_info(id, &state);
   return state;
 }
 
@@ -47,7 +55,7 @@ void VoipStack::sync_blf_contacts_() {
     if (entry == nullptr || entry->kind == ContactKind::AUTOMATION) continue;
     std::string account = this->get_contact_account(entry->stable_id());
     if (account == "direct") account = this->blf_account_id_;
-    watches.push_back({entry->stable_id(), std::move(account), entry->route});
+    watches.push_back({std::string(entry->stable_id()), std::move(account), static_cast<std::string>(entry->route)});
   }
   this->set_blf_watches(watches);
 }
@@ -56,7 +64,7 @@ bool VoipStack::pickup_contact(const std::string &id) {
   if (!this->can_start_call_() || this->blf_pickup_prefix_.empty()) return false;
   const auto *entry = this->phonebook_.find_id(id);
   if (entry == nullptr) return false;
-  const auto state = this->get_contact_blf(id);
+  const auto state = this->get_contact_blf_info_(id);
   if (!state.available || state.ringing_dialogs == 0) return false;
   const std::string target = sip_prefix_target_user(entry->route, this->blf_pickup_prefix_);
   if (target.empty() || target.size() > Phonebook::MAX_ROUTE_BYTES) return false;

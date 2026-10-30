@@ -9,6 +9,10 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 #include "esphome/core/preferences.h"
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#endif
 
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
 #include "esphome/components/microphone/microphone.h"
@@ -151,6 +155,8 @@ class VoipStack : public Component {
 #ifdef USE_ESPHOME_VOIP_MWI
   MessageWaitingState get_message_waiting(const std::string &id);
   bool has_waiting_messages(const std::string &id = "");
+  bool can_call_mailbox(const std::string &account_id = "", const std::string &target = "");
+  bool call_mailbox(const std::string &account_id = "", const std::string &target = "");
   template<typename F> void add_on_message_waiting_callback(F &&callback) {
     this->message_waiting_callbacks_.add(std::forward<F>(callback));
   }
@@ -443,11 +449,19 @@ class VoipStack : public Component {
   void hangup_call_if_id(const std::string &call_id);
   void next_contact();
   void prev_contact();
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  // Directory-backed text uses borrowed views internally. These legacy action
+  // adapters return owned copies, valid after the next phonebook mutation.
+  std::string get_current_destination() const;
+  std::string get_current_destination_route() const;
+  std::string get_current_contact_ip() const;
+#else
   const std::string &get_current_destination() const;
   const std::string &get_current_destination_route() const;
+  const std::string &get_current_contact_ip() const;
+#endif
   // Endpoint of the selected SIP contact. Empty/zero makes start() fail with
   // transport_unreachable; there is no implicit default peer.
-  const std::string &get_current_contact_ip() const;
   uint16_t get_current_contact_port() const;
   uint16_t get_current_contact_rtp_port() const;
   bool get_current_contact_sip_transport_tcp() const;
@@ -456,22 +470,28 @@ class VoipStack : public Component {
   size_t get_contact_count() const { return this->phonebook_.size(); }
   // Main-loop views, valid only until the next phonebook mutation.
   const ContactEntry *get_contact(size_t index) const { return this->phonebook_.at(index); }
-  const ContactEntry *find_contact(const std::string &id) const { return this->phonebook_.find_id(id); }
+  const ContactEntry *find_contact(std::string_view id) const { return this->phonebook_.find_id(id); }
   bool call_contact(const std::string &id);
-  std::string get_contact_account(const std::string &id) const;
+  bool can_send_dtmf() const;
+  bool send_dtmf(char digit, uint16_t duration_ms = 160);
+  std::string get_contact_account(std::string_view id) const;
 #ifdef USE_ESPHOME_VOIP_BLF
   void set_blf_configuration(const std::string &account_id, uint8_t capacity,
                              const std::string &pickup_prefix, bool watch_contacts) {
     this->blf_account_id_ = account_id; this->blf_capacity_ = capacity;
     this->blf_pickup_prefix_ = pickup_prefix; this->blf_watch_contacts_ = watch_contacts;
   }
-  BlfStateInfo get_contact_blf(const std::string &id);
+  BlfStatus get_contact_blf(std::string_view id);
   bool set_blf_watches(const std::vector<BlfWatchConfig> &watches);
   bool pickup_contact(const std::string &id);
   template<typename F> void add_on_blf_state_callback(F &&callback) {
     this->blf_callbacks_.add(std::forward<F>(callback));
+    this->blf_notifications_requested_.store(true, std::memory_order_release);
   }
-  Trigger<std::string, std::string, std::string, bool> *get_blf_state_trigger() { return &this->blf_state_trigger_; }
+  Trigger<std::string, std::string, std::string, bool> *get_blf_state_trigger() {
+    this->blf_notifications_requested_.store(true, std::memory_order_release);
+    return &this->blf_state_trigger_;
+  }
 #endif
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
   void set_ha_roster_enabled(bool enabled);
@@ -506,6 +526,9 @@ class VoipStack : public Component {
   // Fires after every real phonebook mutation: HA roster push, manual
   // add/remove/set/flush, or stale-contact pruning.
   Trigger<std::string> *get_phonebook_update_trigger() { return &this->phonebook_update_trigger_; }
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  Trigger<std::string> *get_dtmf_trigger() { return &this->dtmf_trigger_; }
+#endif
 
   // Call state getter
   CallState get_call_state() const { return this->call_state_.load(std::memory_order_acquire); }
@@ -516,7 +539,9 @@ class VoipStack : public Component {
   void track_csv_(const std::string &csv);  // populate seen_in_cycle_ with CSV names
   void commit_cycle_();                      // advance counters + prune via Phonebook::commit_cycle
   std::string normalize_phonebook_for_transport_(const std::string &contacts_csv);
+#ifdef USE_VOIP_HA_LEGACY_ROSTER
   bool apply_roster_json_contacts_(const std::string &roster_json);
+#endif
   bool maybe_auto_select_ha_first_();
   void publish_phonebook_changed_();
 
@@ -1073,6 +1098,14 @@ class VoipStack : public Component {
   Trigger<std::string, std::string> call_failed_trigger_;
   Trigger<std::string> destination_changed_trigger_;
   Trigger<std::string> phonebook_update_trigger_;
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  static void transport_dtmf_callback_(void *, char, uint32_t);
+  struct DtmfEvent { uint32_t generation; char digit; };
+  Trigger<std::string> dtmf_trigger_;
+  StaticQueue_t dtmf_events_storage_{};
+  uint8_t dtmf_events_buffer_[8 * sizeof(DtmfEvent)]{};
+  QueueHandle_t dtmf_events_{nullptr};
+#endif
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
   struct DirectoryProvider { const void *owner{nullptr}; std::string account_id; };
   std::array<DirectoryProvider, 4> directory_providers_{};
@@ -1131,6 +1164,8 @@ class VoipStack : public Component {
   Trigger<std::string, bool, bool, uint32_t, uint32_t, uint32_t, uint32_t> message_waiting_trigger_;
   LazyCallbackManager<void()> message_waiting_callbacks_{};
   void publish_message_waiting_(const MessageWaitingState &state);
+  bool mailbox_target_(const std::string &account_id, const std::string &override_target,
+                        std::string *target, std::string *line);
 #endif
 
   CallbackManager<void(CallState)> state_callback_{};
@@ -1138,9 +1173,11 @@ class VoipStack : public Component {
   std::string blf_account_id_{"ha"}, blf_pickup_prefix_;
   uint8_t blf_capacity_{16};
   bool blf_ready_{false}, blf_watch_contacts_{true};
+  std::atomic<bool> blf_notifications_requested_{false};
   LazyCallbackManager<void(const BlfStateInfo &)> blf_callbacks_{};
   Trigger<std::string, std::string, std::string, bool> blf_state_trigger_;
   void sync_blf_contacts_();
+  BlfStateInfo get_contact_blf_info_(std::string_view id);
   static void blf_callback_(void *, const BlfStateInfo &);
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO

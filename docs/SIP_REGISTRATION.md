@@ -260,9 +260,10 @@ RFC 3842 `message-summary` events. The default is false; the SIP subscription
 pool and protocol handling are excluded from registration-only firmware.
 
 The managed Home Assistant account uses the same SIP MWI path under account ID
-`ha`. `ha_integration.auto_register: true` configures that account automatically
-and enables MWI unless explicitly overridden. See [mailbox examples](SIP_MWI.md)
-and [LDAP, BLF and IMAP setup](PHONE_SERVICES.md).
+`ha`. `ha_integration.auto_register: true` configures that account automatically;
+enable MWI separately with `registration.message_waiting: true`.
+See [mailbox examples](SIP_MWI.md)
+and [LDAP, BLF and mailbox access](PHONE_SERVICES.md).
 
 The subscription shares the existing SIP worker and account connections. A
 notification changes mailbox data and does not change the call FSM. The

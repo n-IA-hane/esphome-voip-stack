@@ -3,13 +3,14 @@
 #include "esphome/core/helpers.h"
 
 #include <string>
+#include <string_view>
 
 namespace esphome::voip_stack {
 
-// Persistent SIP messages are control-plane payloads, not realtime media.
+// Persistent SIP messages and subscription metadata are control-plane payloads.
 // On PSRAM builds keep their retained capacity out of scarce internal RAM.
 // The wrapper deliberately exposes only string operations used by the SIP
-// transaction store, so ownership cannot leak into parser or media code.
+// transaction stores, so ownership cannot leak into parser or media code.
 class SipSignalingString {
  public:
 #ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
@@ -35,7 +36,7 @@ class SipSignalingString {
     return *this;
   }
 
-  SipSignalingString &operator=(const std::string &value) {
+  SipSignalingString &operator=(std::string_view value) {
     this->assign(value.data(), value.size());
     return *this;
   }
@@ -44,7 +45,9 @@ class SipSignalingString {
 
   bool empty() const { return this->value_.empty(); }
   size_t size() const { return this->value_.size(); }
+  size_t capacity() const { return this->value_.capacity(); }
   const char *data() const { return this->value_.data(); }
+  const char *c_str() const { return this->value_.c_str(); }
 
   void clear() {
     Storage empty(this->value_.get_allocator());
@@ -63,10 +66,29 @@ class SipSignalingString {
 
   std::string str() const { return {this->value_.data(), this->value_.size()}; }
   operator std::string() const { return this->str(); }
+  operator std::string_view() const { return {this->data(), this->size()}; }
 
-  bool operator==(const std::string &other) const {
+  bool operator==(std::string_view other) const {
     return this->size() == other.size() &&
            std::char_traits<char>::compare(this->data(), other.data(), this->size()) == 0;
+  }
+  bool operator!=(std::string_view other) const { return !(*this == other); }
+  bool operator==(const SipSignalingString &other) const {
+    return this->size() == other.size() &&
+           std::char_traits<char>::compare(this->data(), other.data(), this->size()) == 0;
+  }
+  bool operator!=(const SipSignalingString &other) const { return !(*this == other); }
+  friend bool operator==(std::string_view left, const SipSignalingString &right) { return right == left; }
+  friend bool operator!=(std::string_view left, const SipSignalingString &right) { return !(right == left); }
+
+  // Builders materialize their temporary wire message at this explicit boundary.
+  // The retained fields continue to use their configured allocation policy.
+  friend std::string operator+(std::string left, const SipSignalingString &right) {
+    left.append(right.data(), right.size());
+    return left;
+  }
+  friend std::string operator+(const char *left, const SipSignalingString &right) {
+    return std::string(left) + right;
   }
  private:
 #ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM

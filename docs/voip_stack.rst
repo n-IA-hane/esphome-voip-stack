@@ -210,10 +210,9 @@ Optional ``ldap_directory`` imports into the existing 64-contact phonebook.
 ``registration.message_waiting`` subscribes to mailbox counts. Both SIP event
 packages share the existing SIP worker and account credentials.
 
-``imap_voicemail`` provides a paginated message catalog, public MediaSource
-playback and UID-scoped read/delete operations. These clients can share a SIP
-account or use explicit external server credentials. The display remains a YAML
-responsibility. See ``docs/PHONE_SERVICES.md`` for schemas, resource bounds,
+``voip_stack.call_mailbox`` opens the notified mailbox or an explicit PBX
+access target through an ordinary registered SIP call. The display remains a
+YAML responsibility. See ``docs/PHONE_SERVICES.md`` for schemas, resource bounds,
 protocol limits and examples.
 
 See Also

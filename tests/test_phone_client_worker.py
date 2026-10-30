@@ -3,12 +3,10 @@
 from pathlib import Path
 import subprocess
 
-from test_refer_dialog_runtime import block
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_worker_and_imap_fetch_accept_unpinned_or_explicit_core(tmp_path):
+def test_worker_accepts_unpinned_or_explicit_core(tmp_path):
     include = tmp_path / "include"
     headers = {
         "esphome/core/defines.h": "#pragma once\n",
@@ -63,8 +61,6 @@ inline void heap_caps_free(void *p) { std::free(p); }
         path = include / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
-    fetch = block((ROOT / "esphome/components/imap_voicemail/imap_voicemail.h").read_text(),
-                  "void set_fetch_task_core(")
     code = """#include <esp_heap_caps.h>
 #include "esphome/components/phone_client/worker.h"
 class Worker : public esphome::phone_client::WorkerComponent {
@@ -72,19 +68,15 @@ class Worker : public esphome::phone_client::WorkerComponent {
  ~Worker() { heap_caps_free(stack_); } // No host scheduler owns this test allocation.
  void worker_run_() override {}
 };
-struct Fetch { int fetch_core_{tskNO_AFFINITY};
-FETCH_SETTER
-};
 int main() {
  for (int core : {-1, 0, 1}) {
   const int expected = core < 0 ? 0x7fffffff : core;
   Worker worker; worker.set_task_core(core); assert(worker.start());
   assert(last_core == expected);
-  Fetch fetch; fetch.set_fetch_task_core(core); assert(fetch.fetch_core_ == expected);
  }
  Worker defaults; assert(defaults.start()); assert(last_core == 0x7fffffff);
 }
-""".replace("FETCH_SETTER", fetch)
+"""
     source = tmp_path / "worker.cpp"
     source.write_text(code)
     binary = tmp_path / "worker"

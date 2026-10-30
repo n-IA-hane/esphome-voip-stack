@@ -14,12 +14,27 @@
 namespace esphome {
 namespace voip_stack {
 
-std::string trim_copy(const std::string &s) {
+std::string trim_copy(std::string_view s) {
   size_t begin = 0;
   while (begin < s.size() && (s[begin] == ' ' || s[begin] == '\t' || s[begin] == '\r' || s[begin] == '\n')) begin++;
   size_t end = s.size();
   while (end > begin && (s[end - 1] == ' ' || s[end - 1] == '\t' || s[end - 1] == '\r' || s[end - 1] == '\n')) end--;
-  return s.substr(begin, end - begin);
+  return std::string(s.substr(begin, end - begin));
+}
+
+std::string sip_normalize_dial_target(const std::string &target, size_t max_bytes) {
+  // Preserve the call path's rejection of CR/LF, including at the edges.
+  if (target.find_first_of("\r\n") != std::string::npos) return "";
+  std::string cleaned = trim_copy(target);
+  if (cleaned.empty() || cleaned.size() > max_bytes) return "";
+  for (unsigned char ch : cleaned) if (ch < 32 || ch == 127) return "";
+  std::string scheme = cleaned.substr(0, cleaned.find(':'));
+  std::transform(scheme.begin(), scheme.end(), scheme.begin(), [](unsigned char ch) { return std::tolower(ch); });
+  if (scheme == "sip" || scheme == "sips") {
+    cleaned = sip_prefix_target_user(cleaned, "");
+    if (cleaned.empty() || cleaned.size() > max_bytes) return "";
+  } else if (cleaned.find_first_of("|,;\r\n") != std::string::npos || cleaned.find("://") != std::string::npos) return "";
+  return cleaned;
 }
 
 static bool is_sip_uri_unreserved(char ch) {
@@ -75,7 +90,7 @@ std::string sip_uri_user_decode(const std::string &raw) {
   return sip_header_token(out);
 }
 
-std::string sip_prefix_target_user(const std::string &target, const std::string &prefix) {
+std::string sip_prefix_target_user(std::string_view target, std::string_view prefix) {
   const std::string value = trim_copy(target);
   if (value.empty() || value.size() > 512 || prefix.size() > 32) return "";
   for (const unsigned char ch : value)
@@ -90,7 +105,11 @@ std::string sip_prefix_target_user(const std::string &target, const std::string 
         std::tolower(static_cast<unsigned char>(value[1])) == 'i' &&
         std::tolower(static_cast<unsigned char>(value[2])) == 'p' &&
         std::tolower(static_cast<unsigned char>(value[3])) == 's' && value[4] == ':') return "";
-    return prefix + value;
+    std::string result;
+    result.reserve(prefix.size() + value.size());
+    result.append(prefix.data(), prefix.size());
+    result += value;
+    return result;
   }
   if (value.find(' ') != std::string::npos || value.find('?') != std::string::npos) return "";
   const auto at = value.find('@', 4);
@@ -155,7 +174,11 @@ std::string sip_prefix_target_user(const std::string &target, const std::string 
     }
     position = end;
   }
-  const auto prefixed = sip_uri_user_encode(prefix + decoded_user);
+  std::string prefixed_user;
+  prefixed_user.reserve(prefix.size() + decoded_user.size());
+  prefixed_user.append(prefix.data(), prefix.size());
+  prefixed_user += decoded_user;
+  const auto prefixed = sip_uri_user_encode(prefixed_user);
   const std::string result = "sip:" + prefixed + value.substr(at);
   return result.size() <= 512 ? result : "";
 }

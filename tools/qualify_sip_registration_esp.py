@@ -181,10 +181,18 @@ class EspWitness:
         return self.values.get(("TextSensorState", entity.key), "") if entity else ""
 
     async def screenshot(self, address, output):
-        previous = self.sensor("screenshot_id", "Screenshot ID")
+        entity = next((e for e in self.entities if type(e).__name__ == "TextSensorInfo" and
+                       (e.object_id == "screenshot_id" or e.name == "Screenshot ID")), None)
+        if entity is None:
+            raise RuntimeError("Running firmware does not expose Screenshot ID")
+        state_key = ("TextSensorState", entity.key)
+        # Initial API state can arrive after subscribe_states has returned.
+        # Observe it before requesting a capture, even when its value is empty.
+        await self.wait(lambda: state_key in self.values, timeout=15)
+        previous = self.values[state_key]
         await self.service("take_screenshot")
-        await self.wait(lambda: self.sensor("screenshot_id", "Screenshot ID") not in {"", previous}, timeout=15)
-        capture_id = self.sensor("screenshot_id", "Screenshot ID")
+        await self.wait(lambda: self.values[state_key] not in {"", previous}, timeout=15)
+        capture_id = self.values[state_key]
         def fetch():
             with urlopen(f"http://{address}/esp_screenshot/screen/image.jpg?capture={capture_id}", timeout=10) as response:
                 return response.read()
@@ -830,16 +838,13 @@ def main():
     parser.add_argument("--operation", choices=["observe", "provision", "call", "remove", "asterisk", "video", "browser-video", "ha", "persist", "phone-services"], required=True)
     parser.add_argument("--home-auth", type=Path, help="Private existing HA refresh credential file")
     parser.add_argument("--mailbox-device", help="Existing native device ID; never creates a phone")
-    parser.add_argument("--mailbox-username", help="Existing managed SIP username")
-    parser.add_argument("--voicemail-audio", type=Path, help="Existing synthetic ordinary-speech WAV")
+    parser.add_argument("--speech-audio", type=Path, help="Existing synthetic ordinary-speech WAV")
     parser.add_argument("--ha-sip-host", help="HA SIP address, defaults to the existing HA URL host")
     parser.add_argument("--ha-sip-port", type=int, default=5060)
     parser.add_argument("--ha-ssh", default="hass", help="Existing SSH alias for owner-scoped standard IMAP identity lookup")
     parser.add_argument("--ha-python", default="/var/lib/hass/.venv/bin/python")
-    parser.add_argument("--phone-services-only", action="append", choices=["mailbox", "blf", "subscriptions"],
+    parser.add_argument("--phone-services-only", action="append", choices=["blf", "subscriptions", "backend-restart", "mailbox-menu"],
                         help="Select a Home HA phase; BLF requires visual JPEG confirmation over stdin before SIP pickup")
-    parser.add_argument("--phone-services-checkpoint", action="store_true",
-                        help="Pause before deleting the owned voicemail for visual review and up to two native replays")
     parser.add_argument("--contacts-row-height", type=int, default=48, help="Actual native contact row height in pixels")
     parser.add_argument("--contacts-viewport", type=int, default=96, help="Actual native contact scroll viewport height")
     parser.add_argument("--contacts-capture-offset", type=int, help="Capture a single previously inspected contact viewport")

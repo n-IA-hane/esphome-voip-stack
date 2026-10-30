@@ -334,15 +334,8 @@ bool VoipStack::select_line(const std::string& id) {
 }
 void VoipStack::start_call_on_line(const std::string& target, const std::string& line) {
   if (!this->can_start_call_()) return;
-  std::string cleaned = Phonebook::trim(target);
-  if (cleaned.empty() || cleaned.size() > Phonebook::MAX_ROUTE_BYTES) return;
-  for (unsigned char ch : cleaned) if (ch < 32 || ch == 127) return;
-  std::string scheme = cleaned.substr(0, cleaned.find(':'));
-  std::transform(scheme.begin(), scheme.end(), scheme.begin(), [](unsigned char ch) { return std::tolower(ch); });
-  if (scheme == "sip" || scheme == "sips") {
-    cleaned = sip_prefix_target_user(cleaned, "");
-    if (cleaned.empty() || cleaned.size() > Phonebook::MAX_ROUTE_BYTES) return;
-  } else if (cleaned.find_first_of("|,;\r\n") != std::string::npos || cleaned.find("://") != std::string::npos) return;
+  std::string cleaned = sip_normalize_dial_target(target, Phonebook::MAX_ROUTE_BYTES);
+  if (cleaned.empty()) return;
   if (line == "direct") {
     this->force_direct_call_ = true;
     this->call_(cleaned, {});
