@@ -5,6 +5,8 @@ import subprocess
 
 import pytest
 
+from test_refer_dialog_runtime import block
+
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "esphome/components/voip_stack"
 
@@ -16,11 +18,16 @@ def parser_binary(tmp_path_factory):
     defines.parent.mkdir(parents=True)
     defines.write_text("")
     source = folder / "parser.cpp"
-    source.write_text(r'''
+    code = r'''
 #include "sip_blf.h"
 #include <cassert>
+#include <iostream>
+#include <iterator>
 #include <string>
 using namespace esphome::voip_stack;
+'''
+    code += block((SOURCE / "voip_blf.cpp").read_text(), "const char *blf_state_name(")
+    code += r'''
 std::string doc(unsigned version,const char *state,const std::string &body) {
  return "<dialog-info xmlns='urn:ietf:params:xml:ns:dialog-info' version='"+
    std::to_string(version)+"' state='"+state+"' entity='sip:101@example.test'>"+body+"</dialog-info>";
@@ -29,7 +36,7 @@ int main(int argc,char **argv) {
  assert(argc==2);const std::string scenario=argv[1];BlfDialogCache cache;BlfStateInfo info;
  cache.snapshot(&info);assert(!info.available&&info.state==BlfState::UNKNOWN);
  if(scenario=="partial") {
-  assert(cache.apply(doc(0,"full","<dialog id='first'><state>confirmed</state></dialog><dialog id='second'><state>early</state></dialog>"))==BlfDocumentResult::APPLIED);
+  assert(cache.apply(doc(0,"full","<dialog id='first'><state>confirmed</state></dialog><dialog id='second' direction='recipient'><state>early</state></dialog>"))==BlfDocumentResult::APPLIED);
   cache.snapshot(&info);assert(info.available&&info.state==BlfState::RINGING&&info.ringing_dialogs==1&&info.active_dialogs==1);
   assert(cache.apply(doc(1,"partial","<dialog id='second'><state>terminated</state></dialog>"))==BlfDocumentResult::APPLIED);
   cache.snapshot(&info);assert(info.state==BlfState::ACTIVE&&info.active_dialogs==1&&!info.ringing_dialogs);
@@ -67,9 +74,42 @@ int main(int argc,char **argv) {
    assert(cache.apply(doc(0,"full",body))==BlfDocumentResult::INVALID);
   assert(cache.apply("<dialog-info xmlns='wrong' version='0' state='full' entity='sip:x'/>")==BlfDocumentResult::INVALID);
   assert(cache.apply("<dialog-info xmlns='urn:ietf:params:xml:ns:dialog-info' version='4294967296' state='full' entity='sip:x'/>")==BlfDocumentResult::INVALID);
+ } else if(scenario=="directions") {
+  static_assert(static_cast<unsigned>(BlfState::HELD)==4);
+  assert(cache.apply(doc(0,"full","<dialog id='out' direction='initiator'><state>trying</state></dialog>"))==BlfDocumentResult::APPLIED);
+  cache.snapshot(&info);assert(info.state==BlfState::CALLING&&info.ringing_dialogs==0);
+  assert(cache.apply(doc(1,"partial","<dialog id='out'><state>proceeding</state></dialog>"))==BlfDocumentResult::APPLIED);
+  cache.snapshot(&info);assert(info.state==BlfState::CALLING&&info.ringing_dialogs==0);
+  assert(cache.apply(doc(2,"partial","<dialog id='out'><state>early</state></dialog>"))==BlfDocumentResult::APPLIED);
+  cache.snapshot(&info);assert(info.state==BlfState::CALLING&&info.ringing_dialogs==0);
+  assert(cache.apply(doc(3,"partial","<dialog id='out' direction='recipient'/>"))==BlfDocumentResult::APPLIED);
+  cache.snapshot(&info);assert(info.state==BlfState::RINGING&&info.ringing_dialogs==1);
+  assert(cache.apply(doc(4,"partial","<dialog id='out' direction='initiator'/>"))==BlfDocumentResult::APPLIED);
+  cache.snapshot(&info);assert(info.state==BlfState::CALLING&&info.ringing_dialogs==0);
+  assert(cache.apply(doc(5,"partial","<dialog id='out'><state>confirmed</state></dialog>"))==BlfDocumentResult::APPLIED);
+  cache.snapshot(&info);assert(info.state==BlfState::ACTIVE&&info.active_dialogs==1);
+  assert(cache.apply(doc(6,"partial","<dialog id='out'><local><target><param pname='+sip.rendering' pval='no'/></target></local></dialog>"))==BlfDocumentResult::APPLIED);
+  cache.snapshot(&info);assert(info.state==BlfState::HELD&&info.held_dialogs==1);
+  assert(cache.apply(doc(7,"full","<dialog id='legacy'><state>early</state></dialog>"))==BlfDocumentResult::APPLIED);
+  cache.snapshot(&info);assert(info.state==BlfState::RINGING&&info.ringing_dialogs==0);
+  for(const auto *direction:{"bad",""}){
+   assert(cache.apply(doc(8,"full",std::string("<dialog id='bad' direction='")+direction+"'><state>early</state></dialog>"))==BlfDocumentResult::INVALID);
+   cache.snapshot(&info);assert(info.version==7&&info.state==BlfState::RINGING&&info.ringing_dialogs==0);
+  }
+  assert(cache.apply(doc(8,"full","<dialog id='out' direction='initiator'><state>early</state></dialog><dialog id='active'><state>confirmed</state></dialog>"))==BlfDocumentResult::APPLIED);
+  cache.snapshot(&info);assert(info.state==BlfState::ACTIVE&&info.active_dialogs==1&&info.ringing_dialogs==0);
+  assert(cache.apply(doc(9,"partial","<dialog id='active'><state>terminated</state></dialog>"))==BlfDocumentResult::APPLIED);
+  cache.snapshot(&info);assert(info.state==BlfState::CALLING&&info.ringing_dialogs==0);
+  assert(cache.apply(doc(10,"full","<dialog id='out' direction='initiator'><state>early</state></dialog><dialog id='in' direction='recipient'><state>early</state></dialog>"))==BlfDocumentResult::APPLIED);
+  cache.snapshot(&info);assert(info.state==BlfState::RINGING&&info.ringing_dialogs==1);
+ } else if(scenario=="stdin") {
+  const std::string body(std::istreambuf_iterator<char>(std::cin),{});
+  assert(cache.apply(body)==BlfDocumentResult::APPLIED);cache.snapshot(&info);
+  std::cout<<blf_state_name(info.state)<<" "<<unsigned(info.ringing_dialogs)<<"\n";
  } else return 2;
 }
-''')
+'''
+    source.write_text(code)
     binary = folder / "parser"
     result = subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-g",
         "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie",
@@ -79,7 +119,22 @@ int main(int argc,char **argv) {
     return binary
 
 
-@pytest.mark.parametrize("scenario", ["partial", "namespace", "unicode", "first-partial", "limits", "invalid"])
+@pytest.mark.parametrize("scenario", ["partial", "namespace", "unicode", "first-partial", "limits", "invalid", "directions"])
 def test_dialog_info_updates_are_bounded_and_transactional(parser_binary, scenario):
     result = subprocess.run([parser_binary, scenario], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("fixture,state,ringing", [
+    ("ha-caller-trying.xml", "calling", 0),
+    ("ha-caller-proceeding.xml", "calling", 0),
+    ("ha-caller-early.xml", "calling", 0),
+    ("ha-recipient-early.xml", "ringing", 1),
+])
+def test_native_ha_projection_keeps_caller_and_ringing_recipient_distinct(parser_binary, fixture, state, ringing):
+    # Golden input comes from the real HA registry's per-leg snapshot and
+    # dialog_info.document, preserving the original signaling vocabulary.
+    body = (ROOT / "tests/fixtures/blf" / fixture).read_text()
+    result = subprocess.run([parser_binary, "stdin"], input=body, capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{state} {ringing}\n"

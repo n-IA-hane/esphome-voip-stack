@@ -1,0 +1,2 @@
+<?xml version='1.0' encoding='utf-8'?>
+<dialog-info xmlns="urn:ietf:params:xml:ns:dialog-info" version="0" state="full" entity="sip:garage@example.test"><dialog id="garage-garden:1:garage-leg" direction="initiator"><state>trying</state><local><identity>sip:garage@example.test</identity></local><remote><identity display="">sip:garden@example.test</identity></remote></dialog></dialog-info>

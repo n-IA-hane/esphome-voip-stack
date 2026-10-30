@@ -69,6 +69,15 @@ int main(int argc,char **argv) {
  assert(field(sub,"From").find("sip:alice@example.test")!=std::string::npos);
  assert(field(sub,"To").find("sip:101@example.test")!=std::string::npos);
  const auto early=xml(0,"full","<dialog id='one'><state>early</state></dialog>");
+ if(scenario=="calling") {
+  h.answer(response(sub,200,"Expires: 60\r\n"),4);
+  assert(h.notification(dialog_notify(sub,1,xml(0,"full","<dialog id='one' direction='initiator'><state>trying</state></dialog>")),5).rfind("SIP/2.0 200",0)==0);
+  assert(h.client.blf_state(0)->state==BlfState::CALLING&&h.client.blf_state(0)->ringing_dialogs==0);
+  assert(h.notification(dialog_notify(sub,2,xml(1,"partial","<dialog id='one'><state>early</state></dialog>")),6).rfind("SIP/2.0 200",0)==0);
+  assert(h.client.blf_state(0)->state==BlfState::CALLING&&h.client.blf_state(0)->ringing_dialogs==0);
+  assert(h.notification(dialog_notify(sub,3,xml(2,"partial","<dialog id='one' direction='recipient'/>")),7).rfind("SIP/2.0 200",0)==0);
+  assert(h.client.blf_state(0)->state==BlfState::RINGING&&h.client.blf_state(0)->ringing_dialogs==1);return 0;
+ }
  if(scenario=="auth") {
   h.answer(response(sub,401,"WWW-Authenticate: Digest realm=\"example.test\", nonce=\"blf\", qop=\"auth\", algorithm=SHA-256\r\n"),4);
   auto authorized=h.first.receive();const auto auth=field(authorized,"Authorization");
@@ -147,7 +156,7 @@ int main(int argc,char **argv) {
     return binary
 
 
-@pytest.mark.parametrize("scenario", ["shared", "early-gap", "replace", "flow", "auth"])
+@pytest.mark.parametrize("scenario", ["shared", "early-gap", "replace", "flow", "auth", "calling"])
 @pytest.mark.parametrize("transport", ["udp", "tcp"])
 def test_shared_subscriptions_preserve_wire_and_lifecycle_ownership(blf_binary, scenario, transport):
     result = subprocess.run([blf_binary, scenario, transport], capture_output=True, text=True, timeout=8)

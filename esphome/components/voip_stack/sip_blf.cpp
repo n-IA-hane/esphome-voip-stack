@@ -222,7 +222,9 @@ template<size_t N> bool decode(std::string_view input, std::array<char, N> *outp
 struct Patch {
   std::array<char, BlfDialogCache::MAX_ID_BYTES + 1> id{};
   BlfState state{BlfState::UNKNOWN};
-  bool has_state{false}, terminated{false}, has_rendering{false}, held{false};
+  BlfDialogDirection direction{BlfDialogDirection::NONE};
+  bool terminated{false}, has_rendering{false}, held{false};
+  bool has_state() const { return this->state != BlfState::UNKNOWN || this->terminated; }
 };
 }  // namespace
 
@@ -352,25 +354,32 @@ BlfDocumentResult BlfDialogCache::apply(std::string_view xml) {
           return BlfDocumentResult::INVALID;
         for (size_t i = 0; i < count; ++i)
           if (patches[i].id == patches[count].id) return BlfDocumentResult::INVALID;
+        const auto direction = token.attr("direction");
+        if (direction.data() != nullptr) {
+          if (direction == "initiator") patches[count].direction = BlfDialogDirection::INITIATOR;
+          else if (direction == "recipient") patches[count].direction = BlfDialogDirection::RECIPIENT;
+          else return BlfDocumentResult::INVALID;
+        }
       } else {
-        if (full && !patches[count].has_state) return BlfDocumentResult::INVALID;
+        if (full && !patches[count].has_state()) return BlfDocumentResult::INVALID;
         ++count;
       }
     } else if (count < MAX_DIALOGS && patches[count].id[0] != 0 && token.ns == NS) {
       if (name == "state" && token.depth == 3) {
         if (type == XmlToken::OPEN) {
-          if (patches[count].has_state) return BlfDocumentResult::INVALID;
+          if (patches[count].has_state()) return BlfDocumentResult::INVALID;
           collecting_state = true; state_length = 0;
         } else {
           collecting_state = false;
           std::array<char, 32> decoded{};
           if (!decode(trim(std::string_view(state_text.data(), state_length)), &decoded)) return BlfDocumentResult::INVALID;
           const std::string_view value(decoded.data());
-          auto &patch = patches[count]; patch.has_state = true;
+          auto &patch = patches[count];
           if (value == "early") patch.state = BlfState::RINGING;
           else if (value == "confirmed") patch.state = BlfState::ACTIVE;
           else if (value == "terminated") patch.terminated = true;
-          else if (value != "trying" && value != "proceeding") return BlfDocumentResult::INVALID;
+          else if (value == "trying" || value == "proceeding") patch.state = BlfState::CALLING;
+          else return BlfDocumentResult::INVALID;
         }
       } else if (name == "local" && token.depth == 3) {
         local_depth = type == XmlToken::OPEN ? token.depth : 0;
@@ -387,15 +396,18 @@ BlfDocumentResult BlfDialogCache::apply(std::string_view xml) {
   auto next = full ? std::array<Dialog, MAX_DIALOGS>{} : this->dialogs_;
   for (size_t i = 0; i < count; ++i) {
     const auto &patch = patches[i];
-    auto found = std::find_if(next.begin(), next.end(), [&](const Dialog &entry) { return entry.occupied && entry.id == patch.id; });
+    auto found = std::find_if(next.begin(), next.end(), [&](const Dialog &entry) {
+      return entry.direction != BlfDialogDirection::NONE && entry.id == patch.id;
+    });
     if (patch.terminated) { if (found != next.end()) *found = {}; continue; }
     if (found == next.end()) {
-      if (!patch.has_state) return BlfDocumentResult::NEED_FULL;
-      found = std::find_if(next.begin(), next.end(), [](const Dialog &entry) { return !entry.occupied; });
+      if (!patch.has_state()) return BlfDocumentResult::NEED_FULL;
+      found = std::find_if(next.begin(), next.end(), [](const Dialog &entry) { return entry.direction == BlfDialogDirection::NONE; });
       if (found == next.end()) return BlfDocumentResult::LIMIT;
-      found->id = patch.id; found->occupied = true;
+      found->id = patch.id; found->direction = BlfDialogDirection::UNKNOWN;
     }
-    if (patch.has_state) found->state = patch.state;
+    if (patch.direction != BlfDialogDirection::NONE) found->direction = patch.direction;
+    if (patch.has_state()) found->state = patch.state;
     if (patch.has_rendering && (found->state == BlfState::ACTIVE || found->state == BlfState::HELD))
       found->state = patch.held ? BlfState::HELD : BlfState::ACTIVE;
   }
@@ -408,16 +420,24 @@ void BlfDialogCache::snapshot(BlfStatus *out) const {
   out->ringing_dialogs = out->active_dialogs = out->held_dialogs = 0;
   out->state = this->valid_ ? BlfState::IDLE : BlfState::UNKNOWN;
   if (!this->valid_) return;
-  bool unknown = false;
+  bool unknown = false, calling = false, ringing = false;
   for (const auto &entry : this->dialogs_) {
-    if (!entry.occupied) continue;
-    if (entry.state == BlfState::RINGING) ++out->ringing_dialogs;
+    if (entry.direction == BlfDialogDirection::NONE) continue;
+    if (entry.state == BlfState::RINGING) {
+      if (entry.direction == BlfDialogDirection::INITIATOR) calling = true;
+      else {
+        ringing = true;
+        // An omitted direction preserves the legacy display state, but does
+        // not establish that this phone can receive a directed pickup.
+        if (entry.direction == BlfDialogDirection::RECIPIENT) ++out->ringing_dialogs;
+      }
+    } else if (entry.state == BlfState::CALLING) calling = true;
     else if (entry.state == BlfState::ACTIVE) ++out->active_dialogs;
     else if (entry.state == BlfState::HELD) ++out->held_dialogs;
     else unknown = true;
   }
-  out->state = out->ringing_dialogs ? BlfState::RINGING : out->active_dialogs ? BlfState::ACTIVE :
-               out->held_dialogs ? BlfState::HELD : unknown ? BlfState::UNKNOWN : BlfState::IDLE;
+  out->state = ringing ? BlfState::RINGING : out->active_dialogs ? BlfState::ACTIVE :
+               out->held_dialogs ? BlfState::HELD : calling ? BlfState::CALLING : unknown ? BlfState::UNKNOWN : BlfState::IDLE;
 }
 
 }  // namespace esphome::voip_stack

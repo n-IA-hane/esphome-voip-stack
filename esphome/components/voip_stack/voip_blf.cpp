@@ -11,6 +11,7 @@ const char *blf_state_name(BlfState state) {
     case BlfState::RINGING: return "ringing";
     case BlfState::ACTIVE: return "active";
     case BlfState::HELD: return "held";
+    case BlfState::CALLING: return "calling";
     default: return "unknown";
   }
 }

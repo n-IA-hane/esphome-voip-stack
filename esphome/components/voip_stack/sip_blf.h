@@ -9,9 +9,10 @@
 
 namespace esphome::voip_stack {
 
-enum class BlfState : uint8_t { UNKNOWN, IDLE, RINGING, ACTIVE, HELD };
+enum class BlfState : uint8_t { UNKNOWN, IDLE, RINGING, ACTIVE, HELD, CALLING };
 enum class PresenceState : uint8_t { UNKNOWN, OPEN, CLOSED };
 enum class BlfDocumentResult : uint8_t { APPLIED, IGNORED, NEED_FULL, INVALID, LIMIT };
+enum class BlfDialogDirection : uint8_t { NONE, UNKNOWN, INITIATOR, RECIPIENT };
 
 struct BlfStatus {
   bool available{false};
@@ -47,7 +48,7 @@ class BlfDialogCache {
   struct Dialog {
     std::array<char, MAX_ID_BYTES + 1> id{};
     BlfState state{BlfState::UNKNOWN};
-    bool occupied{false};
+    BlfDialogDirection direction{BlfDialogDirection::NONE};
   };
   std::array<Dialog, MAX_DIALOGS> dialogs_{};
   uint32_t version_{0};
