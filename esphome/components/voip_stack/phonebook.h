@@ -74,6 +74,9 @@ struct ContactEntry {
   ContactText audio_capability;
   uint8_t missing_count{0};
   ContactKind kind{ContactKind::UNKNOWN};
+#ifdef USE_ESPHOME_VOIP_BLF
+  bool auto_blf{true};  // Uses existing padding; explicit watches remain independent.
+#endif
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
   ContactText id;
   ContactOrigin origin{ContactOrigin::MANUAL};
@@ -532,6 +535,9 @@ class Phonebook {
       existing.directional_audio_v1 = incoming.directional_audio_v1;
       existing.audio_capability = incoming.audio_capability;
       existing.kind = incoming.kind;
+#ifdef USE_ESPHOME_VOIP_BLF
+      existing.auto_blf = incoming.auto_blf;
+#endif
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
       existing.id = incoming.id;
       existing.origin = incoming.origin;
@@ -550,6 +556,9 @@ class Phonebook {
 
   static bool same_entry_(const ContactEntry &a, const ContactEntry &b) {
     return a.name == b.name && a.route == b.route && a.ip == b.ip && a.kind == b.kind &&
+#ifdef USE_ESPHOME_VOIP_BLF
+           a.auto_blf == b.auto_blf &&
+#endif
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
            a.id == b.id && a.origin == b.origin && a.provider == b.provider &&
 #endif

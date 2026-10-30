@@ -52,7 +52,7 @@ void VoipStack::sync_blf_contacts_() {
   watches.reserve(std::min<size_t>(this->phonebook_.size(), this->blf_capacity_));
   for (size_t i = 0; i < this->phonebook_.size() && watches.size() < this->blf_capacity_; ++i) {
     const auto *entry = this->phonebook_.at(i);
-    if (entry == nullptr || entry->kind == ContactKind::AUTOMATION) continue;
+    if (entry == nullptr || !entry->auto_blf || entry->kind == ContactKind::AUTOMATION) continue;
     std::string account = this->get_contact_account(entry->stable_id());
     if (account == "direct") account = this->blf_account_id_;
     watches.push_back({std::string(entry->stable_id()), std::move(account), static_cast<std::string>(entry->route)});

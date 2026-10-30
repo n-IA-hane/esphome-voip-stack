@@ -3,10 +3,13 @@
 from pathlib import Path
 import subprocess
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_directory_commit_preserves_manual_and_other_providers_atomically(tmp_path):
+@pytest.mark.parametrize("blf", [False, True], ids=["without-blf", "with-blf"])
+def test_directory_commit_preserves_manual_and_other_providers_atomically(tmp_path, blf):
     source = tmp_path / "directory.cpp"
     source.write_text(r'''
 #include "esphome/components/voip_stack/phonebook.h"
@@ -28,6 +31,22 @@ int main() {
  assert(book.current_name()=="Renamed"&&book.current_route()=="103");
  assert(book.current()->origin==ContactOrigin::LDAP&&book.current()->provider==&provider_a);
  assert(book.replace_directory(&provider_a,{remote})==DirectoryCommitResult::UNCHANGED);
+#ifdef USE_ESPHOME_VOIP_BLF
+ assert(remote.auto_blf);
+ remote.auto_blf=false;
+ assert(book.replace_directory(&provider_a,{remote})==DirectoryCommitResult::APPLIED);
+ assert(!book.current()->auto_blf);
+ assert(book.replace_directory(&provider_a,{remote})==DirectoryCommitResult::UNCHANGED);
+ remote.auto_blf=true;
+ assert(book.replace_directory(&provider_a,{remote})==DirectoryCommitResult::APPLIED);
+ assert(book.current()->auto_blf);
+ Phonebook merged;auto manual=contact("one","201","Manual copy");manual.ip="127.0.0.1";manual.port=5060;manual.endpoint_type=ContactEndpointType::SIP;
+ assert(merged.add_entry(manual)==AddResult::Added);
+ manual.auto_blf=false;
+ assert(merged.add_entry(manual)==AddResult::EndpointReplaced);
+ assert(!merged.current()->auto_blf);
+ assert(merged.add_entry(manual)==AddResult::Noop);
+#endif
  assert(book.replace_directory(&provider_b,{remote})==DirectoryCommitResult::CONFLICT);
  assert(book.current()->provider==&provider_a&&book.size()==2);
  auto other=contact("other","104","Other");
@@ -51,6 +70,7 @@ int main() {
     binary = tmp_path / "directory"
     built = subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-g",
         "-fsanitize=address,undefined", "-fno-pie", "-no-pie", "-DUSE_ESP32", "-DUSE_ESPHOME_VOIP_DIRECTORY",
+        *(["-DUSE_ESPHOME_VOIP_BLF"] if blf else []),
         "-I", str(ROOT), str(source), "-o", str(binary)], capture_output=True, text=True)
     assert built.returncode == 0, built.stderr
     result = subprocess.run([binary], capture_output=True, text=True, timeout=5)

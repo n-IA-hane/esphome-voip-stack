@@ -197,6 +197,12 @@ void LdapDirectory::worker_run_() {
       contact.ip = std::move(mapped.host); contact.port = mapped.port; contact.sip_transport_tcp = mapped.tcp;
       contact.endpoint_type = voip_stack::ContactEndpointType::SIP;
       const std::string &kind = mapped.kind;
+#ifdef USE_ESPHOME_VOIP_BLF
+      // Only HA's managed directory defines these as non-endpoint resources.
+      // An external LDAP server can use the same OU names for real SIP phones.
+      contact.auto_blf = !this->managed_by_ha_ ||
+          (kind != "contact" && kind != "group" && kind != "automation" && kind != "service");
+#endif
       contact.kind = kind == "esphome" ? voip_stack::ContactKind::ESP : kind == "sip_account" ? voip_stack::ContactKind::SIP_ACCOUNT :
           kind == "browser" ? voip_stack::ContactKind::BROWSER : kind == "automation" ? voip_stack::ContactKind::AUTOMATION :
           kind == "group" ? voip_stack::ContactKind::GROUP : voip_stack::ContactKind::CONTACT;
