@@ -80,6 +80,7 @@ int main(int argc, char **argv) {
         if (!map_contact(entry, "192.0.2.1", 5060, false, &mapped)) return false;
         auto &item = stage[count++];
         item.id = std::move(mapped.id); item.name = std::move(mapped.name);
+        item.number = std::move(mapped.number);
         item.route = mapped.uri.empty() ? std::move(mapped.user) : std::move(mapped.uri);
         item.ip = std::move(mapped.host); item.port = mapped.port;
         return true;

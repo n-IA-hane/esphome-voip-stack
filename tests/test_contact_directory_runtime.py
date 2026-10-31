@@ -31,6 +31,16 @@ int main() {
  assert(book.current_name()=="Renamed"&&book.current_route()=="103");
  assert(book.current()->origin==ContactOrigin::LDAP&&book.current()->provider==&provider_a);
  assert(book.replace_directory(&provider_a,{remote})==DirectoryCommitResult::UNCHANGED);
+ remote.number="00101";
+ assert(book.replace_directory(&provider_a,{remote})==DirectoryCommitResult::APPLIED);
+ assert(book.current()->number=="00101"&&book.current_route()=="103");
+ assert(book.replace_directory(&provider_a,{remote})==DirectoryCommitResult::UNCHANGED);
+ remote.number="+3900123456";
+ assert(book.replace_directory(&provider_a,{remote})==DirectoryCommitResult::APPLIED);
+ assert(book.current()->number=="+3900123456"&&book.current()->stable_id()=="ldap-remote");
+ remote.number.clear();
+ assert(book.replace_directory(&provider_a,{remote})==DirectoryCommitResult::APPLIED);
+ assert(book.current()->number.empty()&&book.current_route()=="103");
 #ifdef USE_ESPHOME_VOIP_BLF
  assert(remote.auto_blf);
  remote.auto_blf=false;
@@ -65,6 +75,24 @@ int main() {
  assert(book.commit_cycle({},1));
  assert(book.size()==1&&book.find_id("other")&&!book.find_id("manual"));
  assert(book.find_id("other")->missing_count==0);
+ // Display-number updates must also survive ordinary static-contact upserts.
+ Phonebook numbered;
+ auto direct=contact("static","sip:operator@example.test","Reception");
+ direct.ip="example.test";direct.port=5060;direct.endpoint_type=ContactEndpointType::SIP;
+ direct.number="00101";
+ assert(numbered.add_entry(direct)==AddResult::Added);
+ direct.number="+3900123456";
+ assert(numbered.add_entry(direct)==AddResult::EndpointReplaced);
+ assert(numbered.current()->number=="+3900123456"&&numbered.current_route()=="sip:operator@example.test");
+ assert(numbered.add_entry(direct)==AddResult::Noop);
+ direct.number=std::string(97,'1');
+ assert(numbered.add_entry(direct)==AddResult::Rejected);
+ assert(numbered.current()->number=="+3900123456");
+ // Old audio hints stay accepted and bounded, but are not display numbers.
+ Phonebook legacy;
+ assert(legacy.add_one("Legacy|192.0.2.1|5060|40000|full_duplex|old-tx|old-rx|sip_udp")==AddResult::Added);
+ assert(legacy.current()->number.empty()&&legacy.current_route()=="Legacy");
+ assert(legacy.add_one("Long|192.0.2.1|5060|40000|"+std::string(161,'x')+"|old-tx|old-rx|sip_udp")==AddResult::Rejected);
 }
 ''')
     binary = tmp_path / "directory"

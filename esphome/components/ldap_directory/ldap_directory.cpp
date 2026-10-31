@@ -193,6 +193,7 @@ void LdapDirectory::worker_run_() {
       if (!map_contact(entry, cfg.sip_host, cfg.sip_port, cfg.sip_tcp, &mapped)) return false;
       auto &contact = this->stage_[this->stage_count_];
       contact.id = std::move(mapped.id); contact.name = std::move(mapped.name);
+      contact.number = std::move(mapped.number);
       contact.route = mapped.uri.empty() ? std::move(mapped.user) : std::move(mapped.uri);
       contact.ip = std::move(mapped.host); contact.port = mapped.port; contact.sip_transport_tcp = mapped.tcp;
       contact.endpoint_type = voip_stack::ContactEndpointType::SIP;

@@ -53,6 +53,9 @@ bool map_contact(const Entry &entry, const std::string &default_host, uint16_t d
     result.id = key;
   }
   if (result.name.empty()) result.name = result.id;
+  result.number = entry.first("telephoneNumber");
+  // Optional display metadata must not invalidate an otherwise valid SIP URI.
+  if (!result.number.empty() && !clean(result.number, 96)) result.number.clear();
   result.kind = entry.first("ou");
   std::transform(result.kind.begin(), result.kind.end(), result.kind.begin(), [](unsigned char c) { return std::tolower(c); });
   result.host = default_host; result.port = default_port; result.tcp = default_tcp;

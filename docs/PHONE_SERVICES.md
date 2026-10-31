@@ -57,6 +57,12 @@ request directed pickup when offered, subject to the PBX's policy. Pickup needs
 a confirmed recipient leg; undirected legacy early-call reports keep the
 normal call action.
 
+When idle, maintained displays can show a saved contact's number or an
+account's extension on the detail line, falling back to Idle when an account
+has no extension. Assist and groups without an endpoint watch omit the
+inapplicable Unknown status. Ringing, active and held calls retain their call
+activity indication.
+
 SIP MWI updates the idle screen's envelope. Tapping it calls the notified
 `Message-Account` URI, or an explicitly configured mailbox target, through
 the regular SIP account. The PBX speaks its menu over the existing RTP audio
@@ -235,6 +241,13 @@ client to select TLS later. Plaintext services suit a trusted LAN; choose the
 server policy appropriate to your installation.
 
 ## LDAP contact ownership and mapping
+
+`telephoneNumber` is retained as the contact's optional display `number`,
+independently of the SIP user in `labeledURI`. An absent number stays empty;
+the client does not turn an account name into an extension. Updating only the
+number refreshes the existing contact without changing its identity or route.
+This reuses the record's former legacy audio-hint storage, so the bounded
+contact pool keeps the same record size.
 
 A directory update replaces its own contacts atomically in the existing
 64-contact phonebook. Manual destinations take priority. Conflicting automatic

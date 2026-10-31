@@ -4,7 +4,7 @@
 
 namespace esphome::ldap_directory {
 struct DirectoryContact {
-  std::string id, name, user, host, kind, uri;
+  std::string id, name, user, host, kind, uri, number;
   uint16_t port{5060};
   bool tcp{false};
 };

@@ -71,7 +71,9 @@ struct ContactEntry {
   uint16_t rtp_port{0};
   bool sip_transport_tcp{false};
   bool directional_audio_v1{false};
-  ContactText audio_capability;
+  // Display metadata is independent of the SIP route and its authenticated user.
+  // Reuses the former unused legacy audio-hint slot without growing each record.
+  ContactText number;
   uint8_t missing_count{0};
   ContactKind kind{ContactKind::UNKNOWN};
 #ifdef USE_ESPHOME_VOIP_BLF
@@ -533,7 +535,7 @@ class Phonebook {
       existing.rtp_port = incoming.rtp_port;
       existing.sip_transport_tcp = incoming.sip_transport_tcp;
       existing.directional_audio_v1 = incoming.directional_audio_v1;
-      existing.audio_capability = incoming.audio_capability;
+      existing.number = incoming.number;
       existing.kind = incoming.kind;
 #ifdef USE_ESPHOME_VOIP_BLF
       existing.auto_blf = incoming.auto_blf;
@@ -566,7 +568,7 @@ class Phonebook {
            a.port == b.port && a.rtp_port == b.rtp_port &&
            a.sip_transport_tcp == b.sip_transport_tcp &&
            a.directional_audio_v1 == b.directional_audio_v1 &&
-           a.audio_capability == b.audio_capability;
+           a.number == b.number;
   }
 
   template<typename Left, typename Right>
@@ -613,7 +615,9 @@ class Phonebook {
       return false;
     }
     const size_t transport_index = parts.size() == 8 ? 7 : parts.size() - 1;
-    if (parts.size() == 8) out->audio_capability = trim_(parts[4]);
+    // Retain acceptance limits for old roster rows, without caching audio
+    // hints: the active formats are negotiated by SIP/SDP.
+    if (parts.size() == 8 && !valid_text_field_(trim_(parts[4]), MAX_CAPABILITY_BYTES, true)) return false;
     const std::string transport = trim_(parts[transport_index]);
     if (transport == "sip_tcp" || transport == "SIP_TCP") {
       out->sip_transport_tcp = true;
@@ -687,7 +691,7 @@ class Phonebook {
         !valid_text_field_(entry.name, MAX_NAME_BYTES, true) ||
         !valid_text_field_(entry.route, MAX_ROUTE_BYTES, entry.route.rfind("sip:", 0) != 0) ||
         !valid_text_field_(entry.ip, MAX_ADDRESS_BYTES, true) ||
-        !valid_text_field_(entry.audio_capability, MAX_CAPABILITY_BYTES, true)) {
+        !valid_text_field_(entry.number, MAX_ROUTE_BYTES, true)) {
       return false;
     }
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
