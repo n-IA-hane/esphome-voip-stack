@@ -109,6 +109,7 @@ class EspWitness:
         self.entities = []
         self.services = {}
         self.values = {}
+        self.state_revisions = {}
         self.log = []
         self.account_states = {}
         self.renderer_stats = {"decoded": 0, "errors": 0, "presented": 0}
@@ -131,7 +132,11 @@ class EspWitness:
         # Keys are unique only inside an entity domain. A media player sharing
         # the text sensor's numeric key must not overwrite the call state.
         domain = type(state).__name__
-        self.values[(domain, state.key)] = getattr(state, "state", None)
+        key = (domain, state.key)
+        self.values[key] = getattr(state, "state", None)
+        # The public state callback runs on every update, including a repeated
+        # Error string. Value equality alone cannot identify a new capture.
+        self.state_revisions[key] = self.state_revisions.get(key, 0) + 1
         self.changed.set()
 
     def on_log(self, entry):
@@ -204,8 +209,35 @@ class EspWitness:
         # Observe it before requesting a capture, even when its value is empty.
         await self.wait(lambda: state_key in self.values, timeout=15)
         previous = self.values[state_key]
+        status_entity = next((e for e in self.entities if type(e).__name__ == "TextSensorInfo" and
+                              (e.object_id in {"screenshot_status", "capture_status"} or
+                               getattr(e, "name", "").casefold() == "screenshot status")), None)
+        status_key = ("TextSensorState", status_entity.key) if status_entity is not None else None
+        status_revision = 0
+        # Without an observed baseline, a delayed initial Error cannot be
+        # distinguished from this request's result. Status stays optional.
+        if status_key not in self.values:
+            status_key = None
+        if status_key is not None:
+            status = str(self.values[status_key]).strip()
+            if status in {"Busy", "Capturing"}:
+                raise RuntimeError(f"Screenshot capture is busy (native status: {status})")
+            status_revision = self.state_revisions.get(status_key, 0)
+
+        def completed():
+            if status_key is not None and self.state_revisions.get(status_key, 0) > status_revision:
+                status = str(self.values[status_key]).strip()
+                if status == "Error" or status.startswith("Error:"):
+                    raise RuntimeError(f"Screenshot capture failed: {status}")
+                if status == "Busy":
+                    raise RuntimeError("Screenshot capture is busy (native status: Busy)")
+            return self.values[state_key] not in {"", previous}
+
         await self.service("take_screenshot")
-        await self.wait(lambda: self.values[state_key] not in {"", previous}, timeout=15)
+        try:
+            await self.wait(completed, timeout=15)
+        except TimeoutError as error:
+            raise TimeoutError("Screenshot capture did not publish a fresh ID within 15 seconds") from error
         capture_id = self.values[state_key]
         url = f"http://{address}/esp_screenshot/screen/image.jpg?" + urlencode({"capture": capture_id})
         def fetch():
