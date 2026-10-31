@@ -180,7 +180,21 @@ class EspWitness:
                        (e.object_id == object_id or e.name == name)), None)
         return self.values.get(("TextSensorState", entity.key), "") if entity else ""
 
-    async def screenshot(self, address, output):
+    async def screenshot(self, address, output, *, expected_size=None):
+        """Keep native JPEG bytes only after HTTP identity and decoding agree.
+
+        This validates the downloaded artifact. Its page and physical panel
+        still require the caller's independent UI observation.
+        """
+        import hashlib
+        from io import BytesIO
+        from urllib.parse import urlencode
+        from PIL import Image, UnidentifiedImageError
+
+        if expected_size is not None:
+            expected_size = tuple(expected_size)
+            if len(expected_size) != 2 or any(type(value) is not int or value <= 0 for value in expected_size):
+                raise ValueError("Expected screenshot dimensions must be two positive integers")
         entity = next((e for e in self.entities if type(e).__name__ == "TextSensorInfo" and
                        (e.object_id == "screenshot_id" or e.name == "Screenshot ID")), None)
         if entity is None:
@@ -193,12 +207,34 @@ class EspWitness:
         await self.service("take_screenshot")
         await self.wait(lambda: self.values[state_key] not in {"", previous}, timeout=15)
         capture_id = self.values[state_key]
+        url = f"http://{address}/esp_screenshot/screen/image.jpg?" + urlencode({"capture": capture_id})
         def fetch():
-            with urlopen(f"http://{address}/esp_screenshot/screen/image.jpg?capture={capture_id}", timeout=10) as response:
-                return response.read()
-        payload = await asyncio.to_thread(fetch)
+            with urlopen(url, timeout=10) as response:
+                if response.status != 200 or response.geturl() != url:
+                    raise RuntimeError("Screenshot HTTP response does not match the requested capture URL")
+                mime = response.headers.get("Content-Type", "").partition(";")[0].strip().lower()
+                etag = response.headers.get("ETag")
+                if mime != "image/jpeg":
+                    raise RuntimeError("Screenshot HTTP response is not image/jpeg")
+                if etag != f'"{capture_id}"':
+                    raise RuntimeError("Screenshot ETag does not match the fresh native capture ID")
+                payload = response.read()
+            if not payload.startswith(b"\xff\xd8") or not payload.endswith(b"\xff\xd9"):
+                raise RuntimeError("Screenshot JPEG markers are absent or truncated")
+            try:
+                with Image.open(BytesIO(payload), formats=["JPEG"]) as image:
+                    size = image.size
+                    if expected_size is not None and size != expected_size:
+                        raise RuntimeError(f"Screenshot dimensions {size} differ from expected {expected_size}")
+                    # Image.open is lazy. Decode all pixels before accepting it.
+                    image.load()
+            except (UnidentifiedImageError, OSError, ValueError) as error:
+                raise RuntimeError("Screenshot JPEG cannot be fully decoded") from error
+            return payload, size, etag
+        payload, size, etag = await asyncio.to_thread(fetch)
         output.write_bytes(payload)
-        return {"capture_id": capture_id, "bytes": len(payload), "file": output.name}
+        return {"capture_id": capture_id, "etag": etag, "bytes": len(payload), "file": output.name,
+                "width": size[0], "height": size[1], "sha256": hashlib.sha256(payload).hexdigest()}
 
     async def wait_mww(self, expected, timeout=8):
         deadline = time.monotonic() + timeout
