@@ -65,6 +65,10 @@ worker affinity and stack/buffer placement using the [renderer settings](ESP_VID
 
 ## Reliability and interoperability
 
+- Large BLF and mailbox notifications can use TCP while the account keeps its
+  UDP preference. The existing control flow validates the registrar and dialog
+  and replies on the arriving connection, without new tasks or larger buffers.
+
 - BLF subscriptions receive dialog and presence updates over the registered
   account transport when mailbox waiting is disabled. BLF and MWI can be
   enabled independently over UDP or TCP.
