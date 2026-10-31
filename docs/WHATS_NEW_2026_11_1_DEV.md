@@ -29,6 +29,9 @@ as proof that a phone is reachable.
 contact IDs, names, SIP destinations and categories into the existing bounded
 phonebook. Updates preserve manual overrides and replace only their own provider.
 Call and pickup actions can address a contact by stable ID.
+The directory also retains `telephoneNumber` separately from the SIP routing
+identity, so screens can show extensions and saved numbers. This reuses an
+obsolete metadata slot and keeps each preallocated contact record the same size.
 
 **Connected identity events.** Optional `on_peer_changed` automations receive the
 connected-party name after a SIP identity update. `get_active_peer_name()` gives
