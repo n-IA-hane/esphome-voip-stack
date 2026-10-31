@@ -2750,9 +2750,12 @@ def test_sip_compact_headers_and_tcp_close_are_centralized() -> None:
     sip_cpp = read("sip_transport.cpp")
 
     header_parser = sip_cpp[sip_cpp.index("std::string header_value") : sip_cpp.index("\nstd::string message_body")]
-    assert 'canonical == "via"' in header_parser
-    assert 'canonical == "call-id"' in header_parser
-    assert 'canonical == "content-length"' in header_parser
+    assert "sip_header_name_equal(" in header_parser
+    for reader in ("sip_message.cpp", "sip_registration.cpp", "sip_mwi.cpp"):
+        assert "sip_header_name_equal(" in read(reader)
+    header_names = read("sip_header_name.h")
+    for compact, name in (("v", "Via"), ("i", "Call-ID"), ("l", "Content-Length")):
+        assert f'case \'{compact}\': return "{name}";' in header_names
 
     close = sip_cpp[
         sip_cpp.index("void SipTransport::close_tcp_flow_") :

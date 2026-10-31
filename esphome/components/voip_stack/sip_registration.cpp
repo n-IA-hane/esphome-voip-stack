@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <limits>
 
+#include "sip_header_name.h"
+
 namespace esphome::voip_stack {
 namespace {
 bool reached(uint32_t now, uint32_t deadline) { return static_cast<int32_t>(now - deadline) >= 0; }
@@ -40,7 +42,7 @@ std::string header(const std::string& message, const std::string& name) {
     const size_t next = message.find("\r\n", pos + 2);
     if (next == std::string::npos || next == pos + 2) break;
     const size_t colon = message.find(':', pos + 2);
-    if (colon < next && lower(message.substr(pos + 2, colon - pos - 2)) == lower(name))
+    if (colon < next && sip_header_name_equal(std::string_view(message).substr(pos + 2, colon - pos - 2), name))
       return trim(message.substr(colon + 1, next - colon - 1));
     pos = next;
   }
@@ -117,8 +119,7 @@ bool find_registered_contact(const std::string& message, const std::string& expe
     const size_t end = message.find("\r\n", line + 2);
     if (end == std::string::npos || end == line + 2) break;
     const size_t colon = message.find(':', line + 2);
-    const std::string name = colon < end ? lower(message.substr(line + 2, colon - line - 2)) : "";
-    if (name == "contact" || name == "m") {
+    if (colon < end && sip_header_name_equal(std::string_view(message).substr(line + 2, colon - line - 2), "Contact")) {
       const std::string values = message.substr(colon + 1, end - colon - 1);
       size_t first = 0;
       bool quoted = false, angle = false, escaped = false;

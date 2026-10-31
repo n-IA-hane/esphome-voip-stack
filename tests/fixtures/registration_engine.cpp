@@ -90,6 +90,27 @@ std::string response(const std::string& request, unsigned status, const std::str
     result += std::string(key) + ": " + field(request, key) + "\r\n";
   return result + extra + "Content-Length: 0\r\n\r\n";
 }
+std::string response_headers(std::string message, const std::string& style) {
+  for (const auto& names : {std::pair<const char*, const char*>{"Via", "v"}, {"From", "f"}, {"To", "t"},
+                            {"Call-ID", "i"}, {"Contact", "m"}, {"Content-Length", "l"}}) {
+    std::string replacement;
+    if (style == "mixed") {
+      replacement = names.second;
+      if (replacement == "f" || replacement == "i" || replacement == "m") replacement[0] -= 'a' - 'A';
+    } else if (style == "mixed-long") {
+      replacement = names.first;
+      for (size_t i = 0; i < replacement.size(); ++i)
+        if (i % 2 == 0 && replacement[i] >= 'a' && replacement[i] <= 'z') replacement[i] -= 'a' - 'A';
+    } else if (style.size() == 1 && (style[0] | 32) == names.second[0]) {
+      replacement = style;
+    }
+    if (replacement.empty()) continue;
+    const std::string original = std::string("\r\n") + names.first + ":";
+    const auto start = message.find(original);
+    if (start != std::string::npos) message.replace(start + 2, std::string(names.first).size(), replacement);
+  }
+  return message;
+}
 struct Harness {
   Peer first, second;
   SipRegistration manager;
@@ -199,7 +220,36 @@ int main(int argc, char** argv) {
   auto initial = h.first.receive();
   assert(initial.rfind("REGISTER sip:pbx.example:", 0) == 0);
   assert(field(initial, "From").find("100@example.org") != std::string::npos);
-  if (scenario == "auth") {
+  if (scenario == "headers") {
+    assert(argc == 5);
+    const std::string style = argv[3];
+    const auto check_identity = [&](const std::string& message, uint32_t now) {
+      for (const std::string& identity : {h.manager.account(0).branch, h.manager.account(0).call_id}) {
+        auto wrong = message;
+        const auto start = wrong.find(identity);
+        assert(start != std::string::npos);
+        wrong.replace(start, identity.size(), identity + "-wrong");
+        const auto sequence = h.manager.account(0).cseq;
+        h.feed(h.first, response_headers(wrong, style), now);
+        assert(!h.manager.is_registered("office") && h.manager.account(0).pending);
+        assert(h.manager.account(0).cseq == sequence);
+      }
+    };
+    if (std::string(argv[4]) == "auth") {
+      const auto challenge = response(initial, 401,
+          "WWW-Authenticate: Digest realm=\"pbx\",nonce=\"headers\",algorithm=SHA-256,qop=\"auth\"\r\n");
+      check_identity(challenge, 1);
+      h.feed(h.first, response_headers(challenge, style), 2);
+      initial = h.first.receive();
+      assert(field(initial, "Authorization").find("algorithm=SHA-256") != std::string::npos);
+      assert(field(initial, "CSeq") == "2 REGISTER");
+    }
+    const auto accepted = h.success(initial, 90);
+    check_identity(accepted, 3);
+    h.feed(h.first, response_headers(accepted, style), 4);
+    assert(h.manager.is_registered("office") && !h.manager.account(0).pending);
+    assert(h.manager.account(0).negotiated_expires == 90);
+  } else if (scenario == "auth") {
     const bool proxy = argc > 3 && std::string(argv[3]) == "proxy";
     h.feed(
         h.first,

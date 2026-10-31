@@ -34,6 +34,16 @@ def test_registration_wire_lifecycle(registration_binary, tcp, scenario):
     assert result.stdout == f"PASS {scenario} {tcp}\n"
 
 
+@pytest.mark.parametrize("tcp", ["udp", "tcp"])
+@pytest.mark.parametrize("style", ["v", "V", "i", "I", "m", "M", "mixed", "mixed-long"])
+@pytest.mark.parametrize("authentication", ["direct", "auth"])
+def test_registration_accepts_compact_response_headers(registration_binary, tcp, style, authentication):
+    result = subprocess.run([registration_binary, "headers", tcp, style, authentication],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"PASS headers {tcp}\n"
+
+
 @pytest.mark.parametrize("algorithm", ["MD5", "SHA-256", "MD5-sess", "SHA-256-sess"])
 def test_digest_against_independent_hashlib(registration_binary, algorithm):
     result = subprocess.run([registration_binary, "digest", algorithm], capture_output=True, text=True, timeout=10)

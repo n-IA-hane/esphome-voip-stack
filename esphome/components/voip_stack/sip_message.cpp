@@ -10,6 +10,7 @@
 #include <lwip/sockets.h>
 
 #include "esphome/core/hal.h"
+#include "sip_header_name.h"
 
 namespace esphome {
 namespace voip_stack {
@@ -192,38 +193,15 @@ std::string sip_target_uri(const std::string &target, const std::string &fallbac
 }
 
 std::string header_value(const std::string &msg, const char *name) {
-  std::string canonical = name;
-  for (char &ch : canonical) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-  const char *compact = nullptr;
-  if (canonical == "via") compact = "v";
-  else if (canonical == "from") compact = "f";
-  else if (canonical == "to") compact = "t";
-  else if (canonical == "call-id") compact = "i";
-  else if (canonical == "contact") compact = "m";
-  else if (canonical == "content-type") compact = "c";
-  else if (canonical == "content-length") compact = "l";
-  const std::string needle = canonical + ":";
-  const std::string compact_needle = compact == nullptr ? std::string() : std::string(compact) + ":";
   size_t pos = 0;
   while (pos < msg.size()) {
     const size_t end = msg.find("\r\n", pos);
     const size_t line_end = end == std::string::npos ? msg.size() : end;
     const std::string line = msg.substr(pos, line_end - pos);
     if (line.empty()) break;
-    auto starts_with_header = [&line](const std::string &candidate) {
-      if (candidate.empty() || line.size() < candidate.size()) return false;
-      bool match = true;
-      for (size_t i = 0; i < candidate.size(); i++) {
-        if (std::tolower(static_cast<unsigned char>(line[i])) !=
-            std::tolower(static_cast<unsigned char>(candidate[i]))) {
-          match = false;
-          break;
-        }
-      }
-      return match;
-    };
-    if (starts_with_header(needle)) return trim_copy(line.substr(needle.size()));
-    if (starts_with_header(compact_needle)) return trim_copy(line.substr(compact_needle.size()));
+    const size_t colon = line.find(':');
+    if (colon != std::string::npos && sip_header_name_equal(std::string_view(line).substr(0, colon), name))
+      return trim_copy(line.substr(colon + 1));
     if (end == std::string::npos) break;
     pos = end + 2;
   }
@@ -231,9 +209,6 @@ std::string header_value(const std::string &msg, const char *name) {
 }
 
 std::string header_values(const std::string &msg, const char *name) {
-  std::string canonical = name;
-  for (char &ch : canonical) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-  const char *compact = canonical == "via" ? "v" : nullptr;
   std::string out;
   size_t pos = 0;
   while (pos < msg.size()) {
@@ -244,8 +219,7 @@ std::string header_values(const std::string &msg, const char *name) {
     const size_t colon = line.find(':');
     if (colon != std::string::npos) {
       std::string key = trim_copy(line.substr(0, colon));
-      for (char &ch : key) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-      if (key == canonical || (compact != nullptr && key == compact)) {
+      if (sip_header_name_equal(key, name)) {
         if (!out.empty()) out += "\r\nVia: ";
         out += trim_copy(line.substr(colon + 1));
       }

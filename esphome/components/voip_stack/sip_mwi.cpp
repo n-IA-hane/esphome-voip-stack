@@ -8,6 +8,8 @@
 #include <limits>
 #include <vector>
 
+#include "sip_header_name.h"
+
 namespace esphome::voip_stack {
 namespace {
 constexpr uint32_t TRANSACTION_MS = 32000;
@@ -40,15 +42,8 @@ std::vector<std::string> headers(const std::string &message,
     } else {
       const size_t colon = message.find(':', begin);
       const std::string name =
-          colon < end ? lower(trim(message.substr(begin, colon - begin))) : "";
-      selected = name == lower(wanted) || (wanted == "Via" && name == "v") ||
-                 (wanted == "From" && name == "f") ||
-                 (wanted == "To" && name == "t") ||
-                 (wanted == "Call-ID" && name == "i") ||
-                 (wanted == "Contact" && name == "m") ||
-                 (wanted == "Content-Type" && name == "c") ||
-                 (wanted == "Content-Length" && name == "l") ||
-                 (wanted == "Event" && name == "o");
+          colon < end ? trim(message.substr(begin, colon - begin)) : "";
+      selected = sip_header_name_equal(name, wanted);
       if (selected)
         values.push_back(trim(message.substr(colon + 1, end - colon - 1)));
     }

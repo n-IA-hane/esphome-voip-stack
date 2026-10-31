@@ -630,7 +630,7 @@ bool SipTransport::registration_ingress_(const std::string& message, const socka
   if (!sip_content_length(message, &declared_length) || separator == std::string::npos ||
       declared_length != message.size() - separator - 4) return false;
   const int flow = this->registration_socket_index_(socket);
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
   const uint32_t ip = ntohl(src.sin_addr.s_addr); const uint16_t port = ntohs(src.sin_port);
   if (this->mwi_.handle_response(message, ip, port, socket >= 0, flow, millis()) ||
       this->mwi_.handle_notify(message, ip, port, socket >= 0, flow, millis())) return true;
