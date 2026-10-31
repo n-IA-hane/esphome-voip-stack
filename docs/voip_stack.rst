@@ -183,7 +183,8 @@ Video scope
 -----------
 
 An existing native ESPHome ``esp32_camera`` can transmit JPEG on ESP32-S3.
-The optional ``esp_video_renderer`` receives JPEG on S3 LVGL displays. Camera
+The optional `esp_video_renderer <https://github.com/n-IA-hane/esphome-video-renderer>`_
+receives JPEG on S3 LVGL displays from its standalone repository. Camera
 transmission and receive rendering are independent choices; their simultaneous
 FULL workload needs separate qualification. ESP32-P4 adapters support hardware
 camera transmission and remote-video decode/display.

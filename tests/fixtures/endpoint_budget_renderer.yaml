@@ -1,0 +1,50 @@
+# VoIP endpoint-budget integration fixture with the optional renderer adapter.
+esphome:
+  name: jpeg-renderer-test
+  on_boot:
+    priority: -100
+    then:
+      - esp_video_renderer.start: renderer
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  framework:
+    type: esp-idf
+psram:
+  mode: octal
+  speed: 80MHz
+logger:
+external_components:
+  - source: RENDERER_SOURCE
+    components: [esp_video_renderer]
+  - source: VOIP_SOURCE
+    components: [voip_stack]
+spi:
+  clk_pin: GPIO4
+  mosi_pin: GPIO2
+display:
+  - platform: mipi_spi
+    id: lcd
+    model: ST7789V
+    cs_pin: GPIO5
+    dc_pin: GPIO6
+    reset_pin: GPIO7
+    dimensions:
+      width: 240
+      height: 320
+    auto_clear_enabled: false
+lvgl:
+  rotation: 90
+  on_boot:
+    - lambda: id(renderer).attach_video_container(id(video_surface));
+  pages:
+    - id: video_page
+      widgets:
+        - obj:
+            id: video_surface
+            width: 320
+            height: 240
+esp_video_renderer:
+  id: renderer
+  voip:
+    id: renderer_sink

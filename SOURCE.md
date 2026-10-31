@@ -8,6 +8,11 @@ adapters. `esp_jpeg_video_source` and
 `esp_h264_video_source` bridge an external ESPHome camera to the common video
 contract, while `p4_video_renderer` owns receive decode and presentation.
 
+The optional software JPEG renderer and its `voip_adapter.h` integration are
+maintained separately in
+[`esphome-video-renderer`](https://github.com/n-IA-hane/esphome-video-renderer).
+VoIP retains the existing `EncodedVideoSink` transport contract.
+
 Native S3 camera acquisition remains owned by ESPHome's `esp32_camera`.
 P4 camera sensor and V4L2 lifecycle support remain owned by
 [`Psix-anp/esphome-esp-video-camera`](https://github.com/Psix-anp/esphome-esp-video-camera).

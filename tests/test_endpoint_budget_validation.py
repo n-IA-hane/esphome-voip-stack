@@ -10,11 +10,11 @@ import sys
 import pytest
 import yaml
 
-from test_esp_video_renderer_config import BASE
 from test_refer_dialog_runtime import block
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "esphome/components/voip_stack"
+RENDERER_REPO = Path(os.environ.get("ESP_VIDEO_RENDERER_REPO", ROOT.parent / "esphome-video-renderer"))
 BOX_NAME = "Waveshare S3 Touch LCD 1.85C V2"
 spec = importlib.util.spec_from_file_location(
     "endpoint_budget", SOURCE / "endpoint_budget.py"
@@ -61,10 +61,9 @@ def endpoint(audio=None):
 
 
 def generate(tmp_path, name=BOX_NAME, *, standalone=False, duplicate=False, auto=False):
-    text = BASE.replace("SOURCE", str(ROOT / "esphome/components"))
-    text = text.replace("COMPONENTS", ", voip_stack").replace(
-        "RENDERER", "  voip:\n    id: renderer_sink\n"
-    )
+    text = (ROOT / "tests/fixtures/endpoint_budget_renderer.yaml").read_text()
+    text = text.replace("RENDERER_SOURCE", str(RENDERER_REPO / "esphome/components"))
+    text = text.replace("VOIP_SOURCE", str(ROOT / "esphome/components"))
     config = yaml.safe_load(text)
     config["esphome"].update(
         {

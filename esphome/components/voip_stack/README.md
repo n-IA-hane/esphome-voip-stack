@@ -108,7 +108,7 @@ blob in entity state.
 
 ## Video and integration boundaries
 
-[esp_video_renderer](../../../docs/ESP_VIDEO_RENDERER.md) adds optional JPEG
+[esp_video_renderer](https://github.com/n-IA-hane/esphome-video-renderer/blob/dev/README.md) adds optional JPEG
 reception on S3 LVGL displays; camera transmission remains independently
 selectable. P4 has its own hardware-oriented renderer and separate JPEG/H.264
 profiles. A renderer owns scaling, buffers and presentation, while VoIP owns

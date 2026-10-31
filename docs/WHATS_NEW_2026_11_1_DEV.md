@@ -61,7 +61,7 @@ The coordinated 240x240 receive profile has a 10 FPS budget. Camera transmission
 and display reception have been exercised separately on S3; simultaneous camera,
 rendering and the complete FULL workload still need their own qualification.
 The P4 hardware renderer remains a separate implementation. Tune image limits,
-worker affinity and stack/buffer placement using the [renderer settings](ESP_VIDEO_RENDERER.md).
+worker affinity and stack/buffer placement using the [renderer settings](https://github.com/n-IA-hane/esphome-video-renderer/blob/dev/README.md).
 
 ## Reliability and interoperability
 

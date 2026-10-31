@@ -62,9 +62,17 @@ jobs:
           git -C .test-deps/esp-audio-libs rev-parse HEAD > test-results/audio-libs-sha.txt
           test "$(cat test-results/audio-libs-sha.txt)" = "${{ matrix.audio_sha }}"
 
+      - name: Fetch the optional standalone video renderer
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: n-IA-hane/esphome-video-renderer
+          ref: ${{ (github.base_ref == 'main' || github.ref_name == 'main' || (github.ref_type == 'tag' && !endsWith(github.ref_name, '-dev'))) && 'main' || 'dev' }}
+          path: .test-deps/esphome-video-renderer
+
       - name: Run contract tests
         env:
           ESP_AUDIO_LIBS_SOURCE: ${{ github.workspace }}/.test-deps/esp-audio-libs
+          ESP_VIDEO_RENDERER_REPO: ${{ github.workspace }}/.test-deps/esphome-video-renderer
         run: python -m pytest -q --junitxml=test-results/native.xml
 
       - name: Preserve native regression results
