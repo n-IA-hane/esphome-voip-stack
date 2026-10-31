@@ -62,6 +62,12 @@ worker affinity and stack/buffer placement using the [renderer settings](ESP_VID
 
 ## Reliability and interoperability
 
+- BLF subscriptions receive dialog and presence updates over the registered
+  account transport when mailbox waiting is disabled. BLF and MWI can be
+  enabled independently over UDP or TCP.
+- PBX registration accepts compact SIP header names consistently with the call
+  and subscription readers. Shared header-name comparisons reduce temporary
+  string copies during message parsing.
 - Contact-based pickup uses the target's friendly name during setup and applies
   the PBX's connected identity after answer. Maintained screens refresh the call
   label and keypad when that identity arrives later in the same call.
