@@ -533,22 +533,54 @@ int main(int argc, char **argv) {
     assert(field(h.first.receive(), "Call-ID") != field(sub, "Call-ID"));
   } else if (scenario == "notify-new-connection") {
     auto sub = h.active();
-    if (tcp) {
+    {
       Peer incoming(true, true);
       h.reply_peer = &incoming;
-      assert(h.client.handle_notify(incoming.deliver(notify(sub, 2)),
-                                    INADDR_LOOPBACK, incoming.port, true, -1,
-                                    10));
-      assert(incoming.receive().rfind("SIP/2.0 200", 0) == 0);
-      assert(h.client.handle_notify(incoming.deliver(notify(sub, 3)),
-                                    INADDR_LOOPBACK, incoming.port, true, 1,
-                                    11));
-      assert(incoming.receive().rfind("SIP/2.0 481", 0) == 0);
+      const auto deliver = [&](std::string message, unsigned status,
+                               uint32_t ip = INADDR_LOOPBACK, int flow = -1) {
+        const auto via = message.find("SIP/2.0/UDP");
+        if (via != std::string::npos) message.replace(via, 11, "SIP/2.0/TCP");
+        assert(h.client.handle_notify(incoming.deliver(message), ip,
+                                      incoming.port, true, flow, 10));
+        assert(incoming.receive().rfind("SIP/2.0 " + std::to_string(status), 0) == 0);
+      };
+      const auto unchanged = h.updates.size();
+      deliver(notify(sub, 2), 481, 0x7f000002);
+      deliver(notify(sub, 2), 481, INADDR_LOOPBACK, 1);
+      if (!tcp) deliver(notify(sub, 2), 481, INADDR_LOOPBACK, 0); // An owned TCP flow is not a UDP upgrade.
+      auto wrong = notify(sub, 2);
+      auto at = wrong.find(";tag=", wrong.find("\r\nTo:"));
+      wrong.insert(at + 5, "wrong");
+      deliver(wrong, 481);
+      deliver(notify(sub, 2, "Messages-Waiting: no\r\n", "active;expires=60",
+                     "application/simple-message-summary", "wrong"), 481);
+      wrong = notify(sub, 2);
+      at = wrong.find(field(sub, "Call-ID"));
+      wrong.replace(at, field(sub, "Call-ID").size(), "unsolicited");
+      deliver(wrong, 481);
+      assert(h.updates.size() == unchanged);
+      const auto next = notify(sub, 2, "Messages-Waiting: no\r\nVoice-Message: 0/6 (0/0)\r\n");
+      deliver(next, 200);
+      assert(h.updates.size() == unchanged + 1 && !h.client.state(0).waiting);
+      deliver(next, 200); // Retransmission of this TCP transaction is idempotent.
+      assert(h.updates.size() == unchanged + 1);
+      deliver(notify(sub, 1), 500);
       h.reply_peer = nullptr;
-    } else {
+    }
+    assert(h.config.tcp == tcp);
+    if (!tcp) {
       assert(
-          h.notification(notify(sub, 2), 10, INADDR_LOOPBACK, h.first.port + 1)
+          h.notification(notify(sub, 3), 11, INADDR_LOOPBACK, h.first.port + 1)
               .rfind("SIP/2.0 481", 0) == 0);
+      assert(h.notification(notify(sub, 3), 12).rfind("SIP/2.0 200", 0) == 0);
+    } else {
+      // UDP must not be accepted merely because an account is bound on TCP.
+      Peer datagram(false);
+      h.reply_peer = &datagram;
+      assert(h.client.handle_notify(datagram.deliver(notify(sub, 3)), INADDR_LOOPBACK,
+                                    h.first.port, false, -1, 12));
+      assert(datagram.receive().rfind("SIP/2.0 481", 0) == 0);
+      h.reply_peer = nullptr;
     }
   } else if (scenario == "multiple") {
     auto first = h.start();

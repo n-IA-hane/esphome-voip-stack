@@ -1026,8 +1026,11 @@ bool SipMwi::handle_notify(const std::string &message, uint32_t ip,
     return true;
   }
 #endif
+  // A notifier may upgrade a single request from UDP to a fresh TCP flow.
+  // Keep account-owned flows and UDP for TCP accounts subject to their guards.
+  const bool transport_upgrade = tcp && !a.config().tcp && flow < 0;
   if (!a.bound || (!a.supported && !a.subscribed) || ip != a.target_ip ||
-      tcp != a.config().tcp ||
+      (tcp != a.config().tcp && !transport_upgrade) ||
       (tcp ? (flow >= 0 && flow != static_cast<int>(this->owner_index_(index))) : port != a.target_port) ||
       local_tag != a.tag ||
       (!a.remote_tag.empty() && remote_tag != a.remote_tag) ||

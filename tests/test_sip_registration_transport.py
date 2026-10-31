@@ -106,9 +106,10 @@ def registration_transport_binary(tmp_path_factory):
     return build_transport(tmp_path_factory.mktemp("sip-registration-transport"))
 
 
-def test_notify_new_tcp_connection_while_direct_call_owns_main_flow(tmp_path):
+@pytest.mark.parametrize("account_transport", ["udp", "tcp"])
+def test_notify_new_tcp_connection_while_direct_call_owns_main_flow(tmp_path, account_transport):
     binary = build_transport(tmp_path, True)
-    result = subprocess.run([binary, "notify-control-flow", "tcp"], capture_output=True, text=True, timeout=10)
+    result = subprocess.run([binary, "notify-control-flow", account_transport], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
 
 

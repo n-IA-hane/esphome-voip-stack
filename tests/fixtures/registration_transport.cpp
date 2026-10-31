@@ -160,7 +160,14 @@ void notify_on_new_control_flow(SipTransport &s, Peer &pbx) {
   sockaddr_in source{}; length = sizeof(source);
   int incoming = accept(listener, reinterpret_cast<sockaddr *>(&source), &length); assert(incoming >= 0); close(listener);
   assert(fcntl(incoming, F_SETFL, O_NONBLOCK) == 0);
+  auto foreign = source; foreign.sin_addr.s_addr = htonl(0x7f000002);
+  assert(!s.park_inbound_control_(incoming, foreign));
+  assert(s.inbound_control_flow_.socket == -1);
+  s.registration_.account(0).bound = false;
+  assert(!s.park_inbound_control_(incoming, source));
+  s.registration_.account(0).bound = true;
   assert(s.park_inbound_control_(incoming, source));
+  assert(!s.park_inbound_control_(incoming, source)); // One already-budgeted control flow only.
   std::string body = "Messages-Waiting: yes\r\nVoice-Message: 2/1 (0/0)\r\n";
   const auto &sub = subscribe[0];
   std::string message = "NOTIFY " + strip_angle_uri(header_value(sub, "Contact")) + " SIP/2.0\r\n" +
@@ -176,8 +183,34 @@ void notify_on_new_control_flow(SipTransport &s, Peer &pbx) {
   assert(std::string(answer, n).rfind("SIP/2.0 200", 0) == 0);
   assert(s.mwi_.state(0).available && s.mwi_.state(0).waiting && s.mwi_.state(0).new_messages == 2);
   assert(s.call_id_ == "original" && s.tcp_flow_.socket == original_socket && s.media_active_);
-  assert(s.registration_flows_[0].socket == pbx.esp && s.inbound_control_flow_.socket == -1);
+  assert(s.registration_flows_[0].socket == (pbx.tcp ? pbx.esp : -1));
+  assert(s.inbound_control_flow_.socket == -1 && s.inbound_control_deadline_ == 0);
+  assert(s.registration_.account(0).config.tcp == pbx.tcp && s.registration_.is_registered("office"));
   close(notifier);
+  // After hangup, a connection admitted as subscription control must not be
+  // promoted into the main call flow by an unrelated initial INVITE.
+  Peer intruder(true);
+  assert(s.park_inbound_control_(intruder.esp, intruder.address));
+  const auto signals = s.delivered.size();
+  s.call_id_.clear();
+  intruder.send_to(s, request(intruder, "INVITE", 1, "", "unsolicited", "", ""));
+  const auto denied = intruder.drain();
+  assert(denied.size() == 1 && denied[0].rfind("SIP/2.0 503", 0) == 0);
+  assert(s.call_id_.empty() && s.tcp_flow_.socket == original_socket && s.media_active_);
+  assert(s.delivered.size() == signals && s.inbound_control_flow_.socket == -1);
+  s.call_id_ = "original";
+  // The existing timeout/peer-loss cleanup releases an incomplete control
+  // record without tearing down either the call or its registered account.
+  Peer incomplete(true);
+  assert(s.park_inbound_control_(incomplete.esp, incomplete.address));
+  assert(send(incomplete.fd, "NOTIFY ", 7, 0) == 7);
+  pollfd partial{incomplete.esp, POLLIN, 0}; assert(poll(&partial, 1, 1000) == 1);
+  s.handle_sip_stream_(incomplete.esp, incomplete.address);
+  assert(s.inbound_control_flow_.socket == incomplete.esp);
+  s.handle_tcp_peer_loss_(&s.inbound_control_flow_);
+  assert(s.inbound_control_flow_.socket == -1 && s.inbound_control_deadline_ == 0);
+  assert(s.call_id_ == "original" && s.tcp_flow_.socket == original_socket && s.media_active_);
+  assert(s.registration_.is_registered("office") && s.delivered.size() == signals);
 }
 #endif
 

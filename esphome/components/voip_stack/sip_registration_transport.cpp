@@ -120,7 +120,9 @@ bool SipTransport::park_inbound_control_(int socket, const sockaddr_in &source) 
     LockGuard lock(this->dialog_mutex_);
     for (size_t i = 0; i < SipRegistration::CAPACITY; ++i) {
       const auto &a = this->registration_.account(i);
-      trusted |= a.occupied && a.bound && a.config.tcp && a.binding_ip == ntohl(source.sin_addr.s_addr);
+      // A UDP registrar may upgrade one NOTIFY to TCP (RFC 3261, 18.1.1).
+      // The subscription owner still validates its dialog before accepting it.
+      trusted |= a.occupied && a.bound && a.binding_ip == ntohl(source.sin_addr.s_addr);
     }
   }
   if (!trusted) return false;

@@ -37,9 +37,9 @@ struct SipTransport {
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
  SipMwi mwi_;
 #endif
- Peer *peer=nullptr;
+ Peer *peer=nullptr,*reply_peer=nullptr;
  unsigned mwi_updates=0,blf_updates=0;
- int registration_socket_index_(int socket){return socket>=0?0:-1;}
+ int registration_socket_index_(int socket){return peer&&peer->tcp&&socket==peer->client?0:-1;}
  bool registration_ingress_(const std::string&,const sockaddr_in&,int);
 };
 '''
@@ -64,7 +64,8 @@ int main(int argc,char**argv){
   return send(peer.client,wire.data(),wire.size(),0)==ssize_t(wire.size());
  };
  hooks.reply=[](void*ctx,const std::string&wire,uint32_t,uint16_t,bool,int){
-  auto &peer=*static_cast<SipTransport*>(ctx)->peer;
+  auto &owner=*static_cast<SipTransport*>(ctx);
+  auto &peer=*(owner.reply_peer?owner.reply_peer:owner.peer);
   return send(peer.client,wire.data(),wire.size(),0)==ssize_t(wire.size());
  };
 #ifdef USE_ESPHOME_VOIP_MWI
@@ -99,6 +100,39 @@ int main(int argc,char**argv){
  assert(peer.receive().rfind("SIP/2.0 200",0)==0);
  assert(transport.mwi_.blf_state(0)->available&&transport.mwi_.blf_state(0)->state==BlfState::RINGING);
  assert(transport.blf_updates==previous_blf+1&&transport.mwi_updates==previous_mwi);
+#endif
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+ if(!peer.tcp){
+  // RFC 3261 transport upgrades are per request. REGISTER/SUBSCRIBE stay UDP,
+  // while large dialog documents arrive on a fresh TCP connection.
+  Peer incoming(true,true);transport.reply_peer=&incoming;
+  auto tcp_source=source;tcp_source.sin_port=htons(incoming.port);
+  const auto deliver=[&](std::string wire){
+   const auto via=wire.find("SIP/2.0/UDP");assert(via!=std::string::npos);
+   wire.replace(via,11,"SIP/2.0/TCP");
+   assert(transport.registration_ingress_(incoming.deliver(wire),tcp_source,incoming.client));
+   assert(incoming.receive().rfind("SIP/2.0 200",0)==0);
+  };
+#ifdef USE_ESPHOME_VOIP_MWI
+  deliver(notify(mwi,2,"Messages-Waiting: no\r\nVoice-Message: 0/4 (0/0)\r\n"));
+  assert(transport.mwi_.state(0).available&&!transport.mwi_.state(0).waiting);
+#endif
+#ifdef USE_ESPHOME_VOIP_BLF
+  const auto document=[&](unsigned version,const std::string&dialogs){
+   auto wire=notify(blf,version+1,"<dialog-info xmlns='urn:ietf:params:xml:ns:dialog-info' version='"+
+                    std::to_string(version)+"' state='full' entity='sip:101@example.test'>"+dialogs+"</dialog-info>",
+                    "active;expires=60","application/dialog-info+xml");
+   const auto event=wire.find("Event: message-summary");wire.replace(event,22,"Event: dialog");return wire;
+  };
+  const auto confirmed=document(1,"<dialog id='one'><state>confirmed</state><remote><identity>sip:"+
+                                 std::string(1200,'x')+"@example.test</identity></remote></dialog>");
+  assert(confirmed.size()>1500);deliver(confirmed);
+  assert(transport.mwi_.blf_state(0)->available&&transport.mwi_.blf_state(0)->state==BlfState::ACTIVE);
+  deliver(document(2,""));
+  assert(transport.mwi_.blf_state(0)->available&&transport.mwi_.blf_state(0)->state==BlfState::IDLE);
+#endif
+  assert(!transport.registration_.account(0).config.tcp&&peer.quiet());
+ }
 #endif
 #if !defined(USE_ESPHOME_VOIP_MWI) && !defined(USE_ESPHOME_VOIP_BLF)
  const std::string unsolicited="NOTIFY sip:phone@example.test SIP/2.0\r\nEvent: dialog\r\nCSeq: 1 NOTIFY\r\nContent-Length: 0\r\n\r\n";
