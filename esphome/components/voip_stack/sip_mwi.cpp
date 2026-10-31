@@ -565,7 +565,7 @@ void SipMwi::update_account_(size_t index, const SipAccountConfig &config, uint3
     a.supported = true;
   if (!a.occupied)
     return;
-  if (!bound) {
+  if (!bound && !a.retiring()) {
     this->unavailable_(index);
     this->reset_dialog_(index);
     return;
@@ -586,7 +586,7 @@ void SipMwi::update_account_(size_t index, const SipAccountConfig &config, uint3
 
 bool SipMwi::begin_(size_t index, uint32_t now) {
   auto &a = this->account_(index);
-  if (!a.occupied || !a.bound || this->hooks_.send == nullptr)
+  if (!a.occupied || (!a.bound && !a.retiring()) || this->hooks_.send == nullptr)
     return false;
   const std::string local =
       this->hooks_.local_ip == nullptr
@@ -1029,7 +1029,7 @@ bool SipMwi::handle_notify(const std::string &message, uint32_t ip,
   // A notifier may upgrade a single request from UDP to a fresh TCP flow.
   // Keep account-owned flows and UDP for TCP accounts subject to their guards.
   const bool transport_upgrade = tcp && !a.config().tcp && flow < 0;
-  if (!a.bound || (!a.supported && !a.subscribed) || ip != a.target_ip ||
+  if ((!a.bound && !a.retiring()) || (!a.supported && !a.subscribed) || ip != a.target_ip ||
       (tcp != a.config().tcp && !transport_upgrade) ||
       (tcp ? (flow >= 0 && flow != static_cast<int>(this->owner_index_(index))) : port != a.target_port) ||
       local_tag != a.tag ||

@@ -223,16 +223,12 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
     auto *sip = static_cast<SipTransport *>(this->transport_.get());
     sip->clear_account_line();
     if (outgoing_line != "direct") {
-      if (!sip->prepare_account_line(outgoing_line, &dial_ip, &dial_port, &dial_sip_tcp)) {
+      if (!sip->prepare_account_line(outgoing_line, &dial_ip, &dial_port, &dial_sip_tcp,
+                                     &dial_directional_audio_v1)) {
         this->pending_dialplan_target_.clear();
         this->defer([this]() { this->call_failed_trigger_.trigger("", "PBX account unavailable"); }); return;
       }
-      dial_rtp_port = 0; dial_directional_audio_v1 = false;
-#ifdef USE_VOIP_HA_AUTO_REGISTER
-      // Only the explicitly managed, coordinated HA provider supports this
-      // bilateral extension. Other PBX lines retain ordinary SDP negotiation.
-      dial_directional_audio_v1 = outgoing_line == "ha";
-#endif
+      dial_rtp_port = 0;
     }
   }
 #endif

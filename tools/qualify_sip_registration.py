@@ -2,13 +2,15 @@
 """Qualify the production REGISTER engine against an isolated native Asterisk.
 
 This checks registration bindings, not ESP media or the complete call FSM.
-The PBX binds loopback only. Its generated credentials and configuration are
+The PBX defaults to loopback. An explicit private lab bind and probe namespace
+can qualify real NAT; the tool never creates or changes a network. Credentials and configuration are
 private and removed when the process exits. No system service is changed.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -21,12 +23,23 @@ import tempfile
 import time
 
 
-def port() -> int:
+def port(bind_ip: str = "127.0.0.1") -> int:
     with socket.socket() as stream, socket.socket(type=socket.SOCK_DGRAM) as udp:
-        stream.bind(("127.0.0.1", 0))
+        stream.bind((bind_ip, 0))
         number = stream.getsockname()[1]
-        udp.bind(("127.0.0.1", number))
+        udp.bind((bind_ip, number))
         return number
+
+
+def probe_command(probe: Path, transport: str, host: str, number: int,
+                  user: str, hold: int, namespace: str | None = None) -> list[str]:
+    """Reuse the native driver in an explicitly supplied existing namespace."""
+    address = ipaddress.IPv4Address(host)
+    if namespace is not None:
+        if re.fullmatch(r"[a-zA-Z0-9_.-]{1,63}", namespace) is None or address.is_loopback:
+            raise ValueError("A probe namespace needs a valid name and a non-loopback PBX bind")
+    prefix = ["ip", "netns", "exec", namespace] if namespace else []
+    return [*prefix, str(probe), transport, str(address), str(number), user, str(address), str(hold)]
 
 
 def build_probe(output: Path) -> Path:
@@ -46,18 +59,22 @@ def build_probe(output: Path) -> Path:
     return binary
 
 
-def qualify(probe: Path, output: Path, documentation: Path, refresh: bool = False) -> None:
+def qualify(probe: Path, output: Path, documentation: Path, refresh: bool = False,
+            *, bind_ip: str = "127.0.0.1", probe_netns: str | None = None) -> None:
+    probe_command(probe, "udp", bind_ip, 1, "preflight", 1, probe_netns)
     executable = shutil.which("asterisk")
     if not executable:
         raise RuntimeError("Native Asterisk is required")
     modules = Path("/usr/lib/asterisk/modules")
     if not (modules / "res_pjsip_registrar.so").is_file():
         raise RuntimeError("Asterisk PJSIP registrar modules are required")
-    output.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    output.chmod(0o700)
     password = secrets.token_hex(24)
-    number = port()
+    number = port(bind_ip)
     results = {
-        "scope": "production REGISTER engine, independent native PBX, loopback sockets",
+        "scope": "production REGISTER engine, independent native PBX, explicit socket topology",
+        "bind_ip": bind_ip, "probe_netns": probe_netns, "nat_verified": False,
         "complete_esp_call_qualified": False,
         "asterisk": subprocess.check_output([executable, "-V"], text=True).strip(),
         "probe_sha256": hashlib.sha256(probe.read_bytes()).hexdigest(),
@@ -90,14 +107,14 @@ def qualify(probe: Path, output: Path, documentation: Path, refresh: bool = Fals
             f"load={name}.so\n" for name in needed
         ))
         transports = "".join(
-            f"[transport-{kind}]\ntype=transport\nprotocol={kind}\nbind=127.0.0.1:{number}\n"
+            f"[transport-{kind}]\ntype=transport\nprotocol={kind}\nbind={bind_ip}:{number}\n"
             for kind in ("udp", "tcp")
         )
         accounts = ""
         for user, algorithm in (("7101", "MD5"), ("7102", "SHA-256")):
             accounts += (
                 f"[{user}]\ntype=endpoint\ncontext=test\ndisallow=all\nallow=ulaw\n"
-                f"auth={user}-auth\naors={user}\n"
+                f"auth={user}-auth\naors={user}\nforce_rport=yes\nrewrite_contact=yes\n"
                 f"[{user}-auth]\ntype=auth\nauth_type=userpass\nusername={user}\n"
                 f"password={password}\nsupported_algorithms_uas={algorithm}\n"
                 f"[{user}]\ntype=aor\nmax_contacts=2\nremove_existing=yes\n"
@@ -133,8 +150,8 @@ def qualify(probe: Path, output: Path, documentation: Path, refresh: bool = Fals
                         env = {**os.environ, "REG_TEST_PASSWORD": password}
                         hold = 52 if refresh and transport == "udp" and algorithm == "MD5" else 3
                         try:
-                            child = subprocess.Popen([str(probe), transport, "127.0.0.1", str(number),
-                                                      user, "127.0.0.1", str(hold)],
+                            child = subprocess.Popen(probe_command(probe, transport, bind_ip, number,
+                                                      user, hold, probe_netns),
                                                      env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                             binding = ""
                             until = time.monotonic() + 10
@@ -195,6 +212,9 @@ def qualify(probe: Path, output: Path, documentation: Path, refresh: bool = Fals
                 results["pbx_stopped"] = process.poll() is not None
                 (output / "result.json").write_text(json.dumps(results, indent=2) + "\n")
                 (output / "asterisk.log").write_text(capture.read_text(errors="replace").replace(password, "[redacted]"))
+                for artifact in output.glob("*.log"):
+                    artifact.chmod(0o600)
+                (output / "result.json").chmod(0o600)
     print(json.dumps({"passed": results.get("passed", False), "scenarios": len(results["scenarios"]),
                       "pbx_stopped": results["pbx_stopped"]}))
 
@@ -205,6 +225,9 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--documentation", type=Path, default=Path("/var/lib/asterisk/documentation"))
     parser.add_argument("--refresh", action="store_true", help="Also wait for a real UDP/MD5 registration refresh")
+    parser.add_argument("--bind-ip", default="127.0.0.1", help="PBX SIP bind in the current namespace")
+    parser.add_argument("--probe-netns", help="Existing isolated client namespace, never created by this tool")
     args = parser.parse_args()
     probe = args.probe.resolve() if args.probe else build_probe(args.output.resolve() / "native")
-    qualify(probe, args.output.resolve(), args.documentation.resolve(), args.refresh)
+    qualify(probe, args.output.resolve(), args.documentation.resolve(), args.refresh,
+            bind_ip=args.bind_ip, probe_netns=args.probe_netns)

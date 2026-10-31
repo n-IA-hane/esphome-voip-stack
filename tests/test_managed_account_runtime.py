@@ -75,7 +75,7 @@ bool persist(void*context,const std::string&id,const SipAccountConfig*config){
 bool quiet(Peer &peer){char c;return recv(peer.peer,&c,1,MSG_DONTWAIT)<0&&(errno==EAGAIN||errno==EWOULDBLOCK);}
 int main(int argc,char**argv){
  assert(argc==3);const std::string scenario=argv[1];Harness h(std::string(argv[2])=="tcp");
- h.hooks.send=[](void*ctx,size_t,const std::string&wire,uint32_t ip,uint16_t port,bool tcp){
+ h.hooks.send=[](void*ctx,size_t,std::string_view wire,uint32_t ip,uint16_t port,bool tcp){
   assert(std::this_thread::get_id()!=main_owner);
   auto&h=*static_cast<Harness*>(ctx);auto&peer=port==h.first.port?h.first:h.second;
   assert(ip==INADDR_LOOPBACK&&port==peer.port&&tcp==peer.tcp);

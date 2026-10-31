@@ -427,15 +427,30 @@ int main(int argc, char **argv) {
       assert(h.first.quiet());
     else
       assert(h.first.receive() == sub);
-  } else if (scenario == "unsubscribe") {
+  } else if (scenario == "unsubscribe" || scenario == "unsubscribe-deregister" ||
+             scenario == "unsubscribe-deregister-first" || scenario == "unsubscribe-deregister-timeout") {
     auto sub = h.active();
     h.client.update_account(0, h.config, INADDR_LOOPBACK, h.first.port,
-                            "sip:alice@127.0.0.1:5060", true, false, 20);
+                            "sip:alice@127.0.0.1:5060", scenario != "unsubscribe-deregister-first", false, 20);
     h.client.tick(20);
     auto stop = h.first.receive();
     assert(field(stop, "Expires") == "0");
+    if (scenario != "unsubscribe")
+      h.client.update_account(0, h.config, INADDR_LOOPBACK, h.first.port,
+                              "sip:alice@127.0.0.1:5060", false, false, 21);
+    if (scenario == "unsubscribe-deregister-timeout") {
+      h.client.tick(32020);uint32_t wait=0;
+      assert(!h.client.next_deadline(32020,&wait));
+      assert(h.notification(notify(stop,2,"","terminated"),32021).rfind("SIP/2.0 481",0)==0);
+      std::cout<<"PASS "<<scenario<<" "<<(tcp?"tcp":"udp")<<"\n";return 0;
+    }
     h.answer(response(stop, 200, "Expires: 0\r\n"), 21);
     auto end = notify(stop, 2, "", "terminated;reason=timeout");
+    if (scenario != "unsubscribe") {
+      assert(h.notification(notify(stop,2,"","terminated","application/simple-message-summary","wrong"),22)
+                 .rfind("SIP/2.0 481",0)==0);
+      assert(h.notification(end,22,INADDR_LOOPBACK+1).rfind("SIP/2.0 481",0)==0);
+    }
     assert(h.notification(end, 22).rfind("SIP/2.0 200", 0) == 0);
     assert(!h.client.state(0).available);
     assert(h.notification(end, 23).rfind("SIP/2.0 200", 0) == 0);

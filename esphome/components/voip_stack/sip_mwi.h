@@ -127,6 +127,9 @@ protected:
     bool occupied{false}, desired{false}, bound{false}, pending{false},
         scheduled{false}, subscribed{false}, waiting_notify{false},
         notify_seen{false}, supported{true}, request_in_dialog{false}, refresh_after_register{false};
+    // An existing event usage can finish after its REGISTER binding ends.
+    // Its current transaction/Timer N still bounds retirement.
+    bool retiring() const { return !this->desired && !this->call_id.empty() && !this->remote_tag.empty(); }
   };
   // Only message-summary subscriptions own mailbox counts. Dialog/presence
   // rows share the transaction engine without carrying unused mailbox state.

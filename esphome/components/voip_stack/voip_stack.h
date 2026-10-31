@@ -129,6 +129,9 @@ class VoipStack : public Component {
   void configure_registration(bool accept_direct, const std::string &default_line) {
     this->registration_accept_direct_ = accept_direct; this->default_line_ = default_line;
   }
+  void set_registration_keepalive_interval(uint32_t milliseconds) {
+    this->registration_keepalive_interval_ms_ = milliseconds;
+  }
   void set_registration_accounts(const SipAccountConfigView *accounts, size_t count) {
     this->registration_cpp_baseline_.reset();
     this->registration_baseline_ = accounts;
@@ -1151,6 +1154,7 @@ class VoipStack : public Component {
   std::unique_ptr<SavedRegistration, RegistrationSavedDeleter> registration_saved_;
   nvs_handle_t registration_nvs_handle_{0};
   bool registration_accept_direct_{true}, force_direct_call_{false};
+  uint32_t registration_keepalive_interval_ms_{15000};
   std::string default_line_{"direct"}, pending_line_;
   Trigger<std::string, std::string, int> registration_state_trigger_;
   LazyCallbackManager<void(const std::string &)> account_changed_callbacks_{};

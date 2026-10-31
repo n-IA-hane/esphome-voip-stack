@@ -3,6 +3,7 @@
 #define main registration_fixture_main
 #include "registration_engine.cpp"
 #undef main
+#include "sip_sdp_features.h"
 #include <poll.h>
 
 #include <chrono>
@@ -24,6 +25,7 @@ int main(int argc, char** argv) {
     bool tcp{false};
     uint32_t ip{0};
     uint16_t port{0};
+    std::string local_ip;
   } driver;
   driver.tcp = tcp;
   driver.socket = socket(AF_INET, tcp ? SOCK_STREAM : SOCK_DGRAM, 0);
@@ -37,6 +39,9 @@ int main(int argc, char** argv) {
   sockaddr_in local{};
   socklen_t local_size = sizeof(local);
   if (getsockname(driver.socket, reinterpret_cast<sockaddr*>(&local), &local_size) != 0) return 68;
+  char local_address[INET_ADDRSTRLEN];
+  if (inet_ntop(AF_INET, &local.sin_addr, local_address, sizeof(local_address)) == nullptr) return 68;
+  driver.local_ip = local_address;
   SipRegistration::Hooks hooks;
   hooks.context = &driver;
   // Each external run is a distinct SIP UA transaction namespace. Reusing the
@@ -47,9 +52,10 @@ int main(int argc, char** argv) {
   };
   hooks.hash = hash_value;
   hooks.local_port = ntohs(local.sin_port);
+  hooks.directional_audio_supported = sip_sdp_supports_directional_audio_v1;
   hooks.resolve = [](void* context, size_t, const std::string&) { return static_cast<Driver*>(context)->ip; };
-  hooks.local_ip = [](void*, uint32_t) { return std::string("127.0.0.1"); };
-  hooks.send = [](void* context, size_t, const std::string& data, uint32_t, uint16_t, bool) {
+  hooks.local_ip = [](void* context, uint32_t) { return static_cast<Driver*>(context)->local_ip; };
+  hooks.send = [](void* context, size_t, std::string_view data, uint32_t, uint16_t, bool) {
     return send(static_cast<Driver*>(context)->socket, data.data(), data.size(), 0) ==
            static_cast<ssize_t>(data.size());
   };
@@ -58,6 +64,8 @@ int main(int argc, char** argv) {
               << "\",\"status\":" << status << "}" << std::endl;
   };
   driver.manager.set_hooks(hooks);
+  if (const char* keepalive = std::getenv("REG_TEST_KEEPALIVE_SECONDS"))
+    driver.manager.set_keepalive_interval(std::strtoul(keepalive, nullptr, 10) * 1000);
   SipAccountConfig config;
   config.id = "pbx-probe";
   config.registrar = host;
@@ -66,7 +74,8 @@ int main(int argc, char** argv) {
   config.password = password;
   config.port = port;
   config.tcp = tcp;
-  config.expires = 60;
+  const char* expires = std::getenv("REG_TEST_EXPIRES");
+  config.expires = expires == nullptr ? 60 : std::strtoul(expires, nullptr, 10);
   if (!driver.manager.set_account(config, 0)) return 69;
   const auto started = std::chrono::steady_clock::now();
   bool registered = false, unregistering = false;
@@ -108,7 +117,14 @@ int main(int argc, char** argv) {
     const int count = recv(driver.socket, bytes, sizeof(bytes), 0);
     if (count <= 0) return 72;
     if (!tcp) {
-      driver.manager.handle_response(std::string(bytes, count), driver.ip, driver.port, false, -1, now);
+      const std::string message(bytes, count);
+      if (message.rfind("OPTIONS ", 0) == 0) {
+        const std::string answer = response(message, 200);
+        if (send(driver.socket, answer.data(), answer.size(), 0) != static_cast<ssize_t>(answer.size())) return 73;
+        std::cout << "{\"incoming_options\":1}" << std::endl;
+      } else {
+        driver.manager.handle_response(message, driver.ip, driver.port, false, -1, now);
+      }
       continue;
     }
     stream.append(bytes, count);
@@ -118,7 +134,14 @@ int main(int argc, char** argv) {
       const size_t content = std::strtoul(field(stream, "Content-Length").c_str(), nullptr, 10);
       const size_t total = header_end + 4 + content;
       if (stream.size() < total) break;
-      driver.manager.handle_response(stream.substr(0, total), driver.ip, driver.port, true, 0, now);
+      const std::string message = stream.substr(0, total);
+      if (message.rfind("OPTIONS ", 0) == 0) {
+        const std::string answer = response(message, 200);
+        if (send(driver.socket, answer.data(), answer.size(), 0) != static_cast<ssize_t>(answer.size())) return 73;
+        std::cout << "{\"incoming_options\":1}" << std::endl;
+      } else {
+        driver.manager.handle_response(message, driver.ip, driver.port, true, 0, now);
+      }
       stream.erase(0, total);
     }
   }

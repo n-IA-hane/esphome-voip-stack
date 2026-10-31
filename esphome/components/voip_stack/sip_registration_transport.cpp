@@ -10,6 +10,7 @@
 
 #include "esphome/core/hal.h"
 #include "sip_message.h"
+#include "sip_sdp_features.h"
 
 namespace esphome::voip_stack {
 namespace {
@@ -81,7 +82,7 @@ void SipTransport::initialize_registration() {
   xSemaphoreGive(dns_mutex);
   SipRegistration::Hooks hooks;
   hooks.context = this;
-  hooks.send = registration_send_;
+  hooks.send = registration_send_view_;
   hooks.resolve = registration_resolve_;
   hooks.local_ip = registration_local_ip_;
   hooks.notify = registration_notify_;
@@ -91,6 +92,7 @@ void SipTransport::initialize_registration() {
   hooks.random = esp_random;
   hooks.hash = registration_hash_;
   hooks.local_port = this->sip_port_;
+  hooks.directional_audio_supported = registration_directional_audio_supported_;
   this->registration_.set_hooks(hooks);
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
   SipMwi::Hooks mwi;
@@ -359,13 +361,18 @@ void SipTransport::registration_notify_(void* ctx, const std::string& id, Regist
 
 bool SipTransport::registration_send_(void* ctx, size_t index, const std::string& message, uint32_t ip,
                                       uint16_t port, bool tcp) {
+  return registration_send_view_(ctx, index, message, ip, port, tcp);
+}
+
+bool SipTransport::registration_send_view_(void* ctx, size_t index, std::string_view message, uint32_t ip,
+                                      uint16_t port, bool tcp) {
   auto* self = static_cast<SipTransport*>(ctx);
   if (!tcp) return self->send_sip_udp_bytes_(message.data(), message.size(), ip, port);
   auto& flow = self->registration_flows_[index];
   LockGuard send_lock(self->tcp_send_mutex_);
   const int socket = flow.socket.load(std::memory_order_acquire);
   if (socket >= 0 && !flow.close_requested.load(std::memory_order_acquire))
-    return self->send_sip_tcp_record_(message, socket);
+    return self->send_sip_tcp_record_(message.data(), message.size(), socket);
   LockGuard pending_lock(self->tcp_tx_pending_mutex_);
   if (!flow.pending.empty()) return false;
   flow.pending.assign(message.data(), message.size());
@@ -603,7 +610,12 @@ bool SipTransport::get_account_snapshot(const std::string &id, SipAccountSnapsho
   out->registered = account.bound && account.desired;
   return true;
 }
-bool SipTransport::prepare_account_line(const std::string& id, std::string* host, uint16_t* port, bool* tcp) {
+bool SipTransport::registration_directional_audio_supported_(std::string_view body) {
+  return sip_sdp_supports_directional_audio_v1(body);
+}
+
+bool SipTransport::prepare_account_line(const std::string& id, std::string* host, uint16_t* port, bool* tcp,
+                                        bool* directional_audio_v1) {
   LockGuard lock(this->dialog_mutex_);
   const int i = this->registration_.find(id);
   if (i < 0 || !this->call_id_.empty() || this->terminal_transaction_pending_locked_() ||
@@ -619,6 +631,7 @@ bool SipTransport::prepare_account_line(const std::string& id, std::string* host
   *host = text;
   *port = a.target_port;
   *tcp = a.config.tcp;
+  if (directional_audio_v1 != nullptr) *directional_audio_v1 = a.peer_directional_audio_v1;
   return true;
 }
 void SipTransport::clear_account_line() {
@@ -637,7 +650,7 @@ bool SipTransport::registration_ingress_(const std::string& message, const socka
   if (this->mwi_.handle_response(message, ip, port, socket >= 0, flow, millis()) ||
       this->mwi_.handle_notify(message, ip, port, socket >= 0, flow, millis())) return true;
 #endif
-  if (message.rfind("SIP/2.0 ", 0) == 0 && cseq_method(header_value(message, "CSeq")) == "REGISTER") {
+  if (message.rfind("SIP/2.0 ", 0) == 0) {
     return this->registration_.handle_response(message, ntohl(src.sin_addr.s_addr), ntohs(src.sin_port),
                                                socket >= 0, flow, millis());
   }

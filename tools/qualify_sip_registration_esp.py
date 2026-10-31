@@ -792,6 +792,7 @@ async def persistence_matrix(witness, args, result):
 def api_parameters(config_path, address, expected_mac):
     from esphome.core import CORE
     from esphome.config import read_config
+    CORE.reset()
     CORE.config_path = Path(config_path)
     config = read_config({}, skip_external_update=True)
     if config is None or "api" not in config:

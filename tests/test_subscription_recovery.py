@@ -43,7 +43,7 @@ struct SipTransport {
  unsigned state_changes=0,wakes=0;
  explicit SipTransport(Harness&h):mwi_(h.client),wire(h){
   SipRegistration::Hooks hooks;hooks.context=this;hooks.local_port=5060;hooks.random=random_value;hooks.hash=hash_value;
-  hooks.send=[](void*ctx,size_t i,const std::string&s,uint32_t ip,uint16_t port,bool tcp){auto&self=*static_cast<SipTransport*>(ctx);return self.wire.hooks.send(&self.wire,i,s,ip,port,tcp);};
+  hooks.send=[](void*ctx,size_t i,std::string_view s,uint32_t ip,uint16_t port,bool tcp){auto&self=*static_cast<SipTransport*>(ctx);return self.wire.hooks.send(&self.wire,i,std::string(s),ip,port,tcp);};
   hooks.resolve=[](void*,size_t,const std::string&){return INADDR_LOOPBACK;};
   hooks.local_ip=[](void*,uint32_t){return std::string("127.0.0.1");};
   hooks.notify=[](void*ctx,const std::string&,RegistrationState,uint16_t){++static_cast<SipTransport*>(ctx)->state_changes;};

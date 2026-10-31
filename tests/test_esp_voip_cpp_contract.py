@@ -2166,13 +2166,8 @@ def test_sip_tcp_rx_is_bounded_and_active_dialog_accept_is_guarded() -> None:
     assert "flow.pending.clear();" in promote
     assert "send_sip_tcp_record_(pending, flow.connecting_socket)" in promote
 
-    accept = sip_cpp[
-        sip_cpp.index("int client = accept(") : sip_cpp.index(
-            "if (this->sip_socket_ >= 0", sip_cpp.index("int client = accept(")
-        )
-    ]
-    assert "this->dialog_active_()" in accept
-    assert "active_ip_v4 != accepted_ip_v4" in accept
+    accept = cpp_method(sip_cpp, r"SipTransport::accept_tcp_client_")
+    assert "active_client >= 0 || replaces_owned_transport" in accept
     assert "signaling_owned" in accept
     assert "signaling_uses_tcp" in accept
     assert "terminal_transaction_pending_locked_()" in accept

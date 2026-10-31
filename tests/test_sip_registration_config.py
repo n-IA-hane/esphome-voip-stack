@@ -37,6 +37,7 @@ def test_registration_generates_only_when_enabled(tmp_path):
     assert "#define VOIP_REGISTRATION_CAPACITY 2" in defines
     assert "#define USE_ESPHOME_VOIP_MWI" not in defines
     assert 'configure_registration(true, "direct")' in generated
+    assert 'set_registration_keepalive_interval(15000)' in generated
     assert "static const voip_stack::SipAccountConfigView phone_registration_accounts[]" in generated
     assert '.id = "office"' in generated and '.registrar = "pbx.example.org"' in generated
     assert 'set_registration_accounts(phone_registration_accounts, 1)' in generated
@@ -50,6 +51,22 @@ def test_direct_profile_has_no_registration_code(tmp_path):
     assert "USE_ESPHOME_VOIP_REGISTRATION" not in defines
     assert "VOIP_REGISTRATION_CAPACITY" not in defines
     assert "configure_registration" not in next(tmp_path.rglob("main.cpp")).read_text()
+    assert "set_registration_keepalive_interval" not in next(tmp_path.rglob("main.cpp")).read_text()
+
+
+@pytest.mark.parametrize("value,milliseconds", [("0", 0), ("0s", 0), ("2s", 2000), ("15", 15000)])
+def test_global_keepalive_interval_does_not_change_account_or_saved_credentials(tmp_path, value, milliseconds):
+    result = run_config(tmp_path, ACCOUNT.replace("    accounts:", f"    keepalive_interval: {value}\n    accounts:"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    generated = next(tmp_path.rglob("main.cpp")).read_text()
+    assert f"set_registration_keepalive_interval({milliseconds})" in generated
+    assert ".expires = 3600" in generated
+
+
+@pytest.mark.parametrize("value", ["-1s", "true", "86401s", "1ms"])
+def test_invalid_keepalive_interval_is_rejected(tmp_path, value):
+    result = run_config(tmp_path, ACCOUNT.replace("    accounts:", f"    keepalive_interval: {value}\n    accounts:"), generate=False)
+    assert result.returncode != 0
 
 
 @pytest.mark.parametrize("count", [0, 1, 2, 4])

@@ -9,7 +9,7 @@ std::string SipTransport::registration_hash_(const std::string &algorithm, const
 void bind_account(SipTransport &s, Peer &peer) {
   setup(s, peer); s.call_id_.clear(); s.media_active_ = false;
   if (peer.tcp) { s.tcp_flow_.socket = -1; s.registration_flows_[0].socket = peer.esp; }
-  SipRegistration::Hooks hooks; hooks.context = &s; hooks.send = SipTransport::registration_send_;
+  SipRegistration::Hooks hooks; hooks.context = &s; hooks.send = SipTransport::registration_send_view_;
   hooks.resolve = [](void *, size_t, const std::string &) { return uint32_t(INADDR_LOOPBACK); };
   hooks.local_ip = [](void *, uint32_t) { return std::string("127.0.0.1"); };
   hooks.random = esp_random; hooks.hash = SipTransport::registration_hash_;
@@ -216,7 +216,42 @@ void notify_on_new_control_flow(SipTransport &s, Peer &pbx) {
 
 int main(int argc, char **argv) {
   assert(argc == 3); const std::string scenario = argv[1]; const bool tcp = std::string(argv[2]) == "tcp";
-  SipTransport s; Peer pbx(tcp); bind_account(s, pbx);
+  SipTransport s;
+  if (scenario == "keepalive-with-call") s.registration_.set_keepalive_interval(2000);
+  Peer pbx(tcp); bind_account(s, pbx);
+  if (scenario == "keepalive-with-call") {
+    start_account_call(s, pbx);
+    auto invite = pick(pbx.drain(), "INVITE");
+    pbx.send_to(s, response(invite, 200));
+    assert(pick(pbx.drain(), "ACK").rfind("ACK ", 0) == 0);
+    const auto account_socket = s.registration_flows_[0].socket.load();
+    const auto dialog_id = s.call_id_;
+    const auto dialog_sequence = s.cseq_;
+    const auto signals = s.delivered.size();
+    clock_ms += 2000; s.registration_.tick(clock_ms);
+    auto keepalive = pick(pbx.drain(), "OPTIONS");
+    assert(header_value(keepalive, "Call-ID") != dialog_id);
+    auto unsupported = response(keepalive, 405);
+    unsupported.insert(unsupported.find("Content-Length:"), "Allow: REGISTER, INVITE, ACK, BYE\r\n");
+    pbx.send_to(s, unsupported);
+    assert(pbx.drain().empty());
+    assert(s.call_id_ == dialog_id && s.cseq_ == dialog_sequence && s.delivered.size() == signals);
+    assert(s.registration_.is_registered("office") && s.registration_flows_[0].socket == account_socket);
+    clock_ms += 2000; s.registration_.tick(clock_ms);
+    pick(pbx.drain(), "OPTIONS");
+    clock_ms += 32000; s.registration_.tick(clock_ms);
+    auto refresh = pick(pbx.drain(), "REGISTER");
+    auto accepted = response(refresh, 200);
+    accepted.insert(accepted.find("Content-Length:"), "Contact: " + header_value(refresh, "Contact") + "\r\n");
+    pbx.send_to(s, accepted);
+    assert(s.call_id_ == dialog_id && s.registration_.is_registered("office"));
+    assert(s.registration_flows_[0].socket == account_socket && s.delivered.size() == signals);
+    assert(s.send_bye_unlocked_(dialog_id));
+    pbx.send_to(s, response(pick(pbx.drain(), "BYE"), 200));
+    assert(s.call_id_.empty() && s.registration_.is_registered("office"));
+    for (auto &flow : s.registration_flows_) s.close_tcp_flow_(flow);
+    s.close_tcp_flow_(s.tcp_flow_); close(s.sip_socket_); return 0;
+  }
 #ifdef USE_ESPHOME_VOIP_MWI
   if (scenario == "notify-control-flow") {
     notify_on_new_control_flow(s, pbx);

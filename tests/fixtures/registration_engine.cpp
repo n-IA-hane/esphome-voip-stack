@@ -118,7 +118,7 @@ struct Harness {
   std::vector<RegistrationState> states;
   explicit Harness(bool tcp) : first(tcp), second(tcp) {
     hooks.context = this;
-    hooks.send = [](void* ctx, size_t i, const std::string& s, uint32_t ip, uint16_t port, bool tcp) {
+    hooks.send = [](void* ctx, size_t i, std::string_view s, uint32_t ip, uint16_t port, bool tcp) {
       auto& self = *static_cast<Harness*>(ctx);
       auto& peer = i == 0 ? self.first : self.second;
       assert(ip == INADDR_LOOPBACK && port == peer.port && tcp == peer.tcp);
@@ -132,6 +132,9 @@ struct Harness {
     hooks.random = random_value;
     hooks.hash = hash_value;
     manager.set_hooks(hooks);
+    // These scenarios isolate REGISTER. Dedicated keepalive cases exercise
+    // the default interval, timers, flow recovery and ordinary call coexistence.
+    manager.set_keepalive_interval(0);
   }
   SipAccountConfig config(const std::string& id = "office", unsigned i = 0) {
     SipAccountConfig c;
@@ -198,7 +201,7 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (scenario == "send-rejected") {
-    h.hooks.send = [](void*, size_t, const std::string&, uint32_t, uint16_t, bool) { return false; };
+    h.hooks.send = [](void*, size_t, std::string_view, uint32_t, uint16_t, bool) { return false; };
     h.manager.set_hooks(h.hooks);
     assert(h.manager.set_account(c, 0)); h.manager.tick(0);
     const auto& account = h.manager.account(0);
@@ -206,7 +209,7 @@ int main(int argc, char** argv) {
     assert(account.state == RegistrationState::RETRY && account.last_status == 503);
     uint32_t remaining = 0; assert(h.manager.next_deadline(0, &remaining));
     assert(remaining == 30000);
-    h.hooks.send = [](void* ctx, size_t, const std::string& message, uint32_t, uint16_t, bool) {
+    h.hooks.send = [](void* ctx, size_t, std::string_view message, uint32_t, uint16_t, bool) {
       auto& self = *static_cast<Harness*>(ctx);
       return send(self.first.esp, message.data(), message.size(), 0) == static_cast<ssize_t>(message.size());
     };

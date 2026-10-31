@@ -35,6 +35,7 @@ voip_stack:
   # Keep the board's existing microphone, speaker and audio configuration.
   registration:
     max_accounts: 2
+    keepalive_interval: 15s
     accounts:
       - account_id: office
         registrar: pbx.example.org
@@ -50,6 +51,20 @@ voip_stack:
 3600 seconds and accepts 30 through 86400 seconds. The PBX's accepted Contact
 expiration determines the actual lifetime and refresh time. Refreshes occur
 before expiry with bounded jitter, including during an ongoing call.
+
+`registration.keepalive_interval` defaults to `15s` for all configured accounts.
+While an account is registered, the existing SIP worker sends ordinary,
+bodyless OPTIONS through that account's REGISTER UDP socket or TCP connection.
+Set `keepalive_interval: 0` to disable these periodic requests. Registration
+refresh still follows the PBX's accepted expiry; the setting does not shorten
+the configured `expires` value or change saved account fields.
+
+A final OPTIONS response, including 401 or 405, confirms signaling reachability
+without changing the negotiated call media. A transport failure or transaction
+timeout uses the existing registration recovery. If the response reveals a
+changed NAT mapping, the same owner refreshes REGISTER immediately. Qualify RTP
+reachability separately on the actual network; signaling keepalive alone does
+not demonstrate bidirectional media.
 
 An optional `proxy` and `proxy_port` select the signaling next hop separately
 from the registrar and SIP domain. This version supports IPv4 addresses and DNS
@@ -233,6 +248,20 @@ This selection leaves the configured microphone, speaker and resampler
 capabilities intact. For example, a 16 kHz transmitter and a 16/48 kHz receiver
 advertise 16 kHz to an ordinary bidirectional SIP peer, while the explicitly
 directional path can negotiate 16 kHz transmit and 48 kHz receive.
+
+Every registered account can discover the peer's optional directional audio
+extension through an explicit `OPTIONS` SDP capability response. The result
+belongs to the current account binding and is discarded on expiration,
+transport loss, deregistration or account replacement. Account names and PBX
+brands do not enable the extension. An immediate call, a missing or empty
+response, or an unsupported query retains the ordinary shared-codec offer;
+`OPTIONS` never becomes a prerequisite for a call. Final formats are selected
+by the actual INVITE offer and answer. Discovery reuses the registration
+worker, flow and single pending request buffer, with no additional task.
+
+An existing MWI/BLF event dialog can complete its unsubscribe after the REGISTER
+binding ends. Its original identity and transport checks remain in force, and
+the existing final-NOTIFY deadline bounds cleanup.
 
 The coordinated HA backend resolves managed phones through their SIP binding
 and queries media capabilities with OPTIONS. Each call negotiates its final

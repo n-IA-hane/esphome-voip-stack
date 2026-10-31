@@ -161,6 +161,7 @@ voip_stack:
   id: phone
   registration:
     max_accounts: 1
+    keepalive_interval: 15s  # default; 0 disables periodic SIP OPTIONS
     accept_direct_calls: false
     default_line: office
     accounts:

@@ -4314,10 +4314,23 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
     if (flow == &this->inbound_control_flow_ && msg.rfind("INVITE ", 0) == 0) {
       LockGuard lock(this->dialog_mutex_);
       if (this->call_id_.empty()) {
-        this->dispatch_socket_ = socket;
-        this->send_stateless_response_(msg, src, 503, "Service Unavailable", "retry_new_connection", false, 1);
-        this->dispatch_socket_ = -1;
-        this->close_tcp_flow_(this->inbound_control_flow_); return;
+        bool owned = this->media_active_.load(std::memory_order_acquire) ||
+                     this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
+                     this->terminal_transaction_pending_locked_();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+        owned = owned || this->pending_video_direction_invite_.pending();
+#endif
+        if (owned || !this->should_accept_session_()) {
+          this->dispatch_socket_ = socket;
+          this->send_stateless_response_(msg, src, 503, "Service Unavailable", "retry_new_connection", false, 1);
+          this->dispatch_socket_ = -1;
+          this->close_tcp_flow_(this->inbound_control_flow_); return;
+        }
+        // The first complete INVITE claims the call slot. Preserve the other
+        // accepted stream and any unread/pending records in the existing slot.
+        this->tcp_flow_.swap(this->inbound_control_flow_);
+        this->remote_sip_tcp_.store(true, std::memory_order_release);
+        flow = &this->tcp_flow_;
       }
     }
 #endif
@@ -4404,6 +4417,63 @@ void SipTransport::handle_sip_udp_datagram_(char *buf, int n, const sockaddr_in 
   inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
   ESP_LOGI(TAG, "SIP UDP RX %d bytes from %s:%u", n, ip, (unsigned) ntohs(src.sin_port));
   this->handle_sip_datagram_(reinterpret_cast<const char *>(buf), static_cast<size_t>(n), src);
+}
+
+void SipTransport::accept_tcp_client_(int client, const sockaddr_in &src) {
+  int opt = 1;
+  setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+  int flags = fcntl(client, F_GETFL, 0);
+  fcntl(client, F_SETFL, flags | O_NONBLOCK);
+  const uint32_t accepted_ip_v4 = ntohl(src.sin_addr.s_addr);
+  const int active_client = this->tcp_flow_.socket.load(std::memory_order_acquire);
+  bool signaling_owned = false;
+  bool signaling_uses_tcp = false;
+  {
+    LockGuard lock(this->dialog_mutex_);
+    signaling_owned =
+        !this->call_id_.empty() ||
+        this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
+        this->media_active_.load(std::memory_order_acquire) ||
+        this->terminal_transaction_pending_locked_();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+    signaling_owned =
+        signaling_owned ||
+        this->pending_video_direction_invite_.pending();
+#endif
+    signaling_uses_tcp =
+        this->remote_sip_tcp_.load(std::memory_order_acquire);
+  }
+  const bool replaces_owned_transport =
+      signaling_owned &&
+      (!signaling_uses_tcp || active_client >= 0 ||
+       this->tcp_flow_.connecting_socket >= 0 ||
+       this->tcp_flow_.connect_requested.load(std::memory_order_acquire));
+  if (active_client >= 0 || replaces_owned_transport) {
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+    if (this->park_inbound_control_(client, src)) return;
+#endif
+    char ip[16];
+    inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
+    ESP_LOGW(TAG,
+             "SIP TCP accept rejected: signaling transport owned by %s",
+             ip);
+    close(client);
+    return;
+  }
+  if (!this->should_accept_session_() && active_client < 0) {
+    close(client);
+    return;
+  }
+  this->close_tcp_client_from_sip_task_();
+  this->tcp_flow_.socket.store(client, std::memory_order_release);
+  this->tcp_flow_.peer_ip.store(accepted_ip_v4, std::memory_order_release);
+  this->tcp_flow_.close_requested.store(false, std::memory_order_release);
+  this->tcp_flow_.rx_buffer.clear();
+  this->remote_sip_tcp_.store(true, std::memory_order_release);
+  char ip[16];
+  inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
+  ESP_LOGI(TAG, "SIP TCP accepted from %s:%u", ip, (unsigned) ntohs(src.sin_port));
+
 }
 
 void SipTransport::sip_task_trampoline_(void *param) {
@@ -4657,64 +4727,7 @@ void SipTransport::sip_task_() {
       struct sockaddr_in src{};
       socklen_t slen = sizeof(src);
       int client = accept(this->sip_tcp_listener_socket_, reinterpret_cast<struct sockaddr *>(&src), &slen);
-      if (client >= 0) {
-        int opt = 1;
-        setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
-        int flags = fcntl(client, F_GETFL, 0);
-        fcntl(client, F_SETFL, flags | O_NONBLOCK);
-        const uint32_t accepted_ip_v4 = ntohl(src.sin_addr.s_addr);
-        const int active_client = this->tcp_flow_.socket.load(std::memory_order_acquire);
-        const uint32_t active_ip_v4 = this->tcp_flow_.peer_ip.load(std::memory_order_acquire);
-        bool signaling_owned = false;
-        bool signaling_uses_tcp = false;
-        {
-          LockGuard lock(this->dialog_mutex_);
-          signaling_owned =
-              !this->call_id_.empty() ||
-              this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
-              this->media_active_.load(std::memory_order_acquire) ||
-              this->terminal_transaction_pending_locked_();
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-          signaling_owned =
-              signaling_owned ||
-              this->pending_video_direction_invite_.pending();
-#endif
-          signaling_uses_tcp =
-              this->remote_sip_tcp_.load(std::memory_order_acquire);
-        }
-        const bool replaces_owned_transport =
-            signaling_owned &&
-            (!signaling_uses_tcp || active_client >= 0 ||
-             this->tcp_flow_.connecting_socket >= 0 ||
-             this->tcp_flow_.connect_requested.load(std::memory_order_acquire));
-        if (replaces_owned_transport ||
-            (this->dialog_active_() && active_client >= 0 &&
-             active_ip_v4 != 0 && active_ip_v4 != accepted_ip_v4)) {
-#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
-          if (this->park_inbound_control_(client, src)) continue;
-#endif
-          char ip[16];
-          inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
-          ESP_LOGW(TAG,
-                   "SIP TCP accept rejected: signaling transport owned by %s",
-                   ip);
-          close(client);
-          continue;
-        }
-        if (!this->should_accept_session_() && active_client < 0) {
-          close(client);
-          continue;
-        }
-        this->close_tcp_client_from_sip_task_();
-        this->tcp_flow_.socket.store(client, std::memory_order_release);
-        this->tcp_flow_.peer_ip.store(accepted_ip_v4, std::memory_order_release);
-        this->tcp_flow_.close_requested.store(false, std::memory_order_release);
-        this->tcp_flow_.rx_buffer.clear();
-        this->remote_sip_tcp_.store(true, std::memory_order_release);
-        char ip[16];
-        inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
-        ESP_LOGI(TAG, "SIP TCP accepted from %s:%u", ip, (unsigned) ntohs(src.sin_port));
-      }
+      if (client >= 0) this->accept_tcp_client_(client, src);
     }
 
     if (this->sip_socket_ >= 0 && FD_ISSET(this->sip_socket_, &readfds)) {

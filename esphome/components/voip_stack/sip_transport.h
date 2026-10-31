@@ -77,6 +77,7 @@ class SipTransport : public SipPhoneTransport {
   bool start() override;
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   void initialize_registration();
+  void set_registration_keepalive_interval(uint32_t milliseconds) { this->registration_.set_keepalive_interval(milliseconds); }
   using AccountCommit = bool (*)(void *, const std::string &, const SipAccountConfig *);
   bool set_account(const SipAccountConfig &config, AccountCommit commit = nullptr, void *context = nullptr);
   bool remove_account(const std::string &id, AccountCommit commit = nullptr, void *context = nullptr,
@@ -87,7 +88,8 @@ class SipTransport : public SipPhoneTransport {
 #ifdef USE_VOIP_HA_AUTO_REGISTER
   uint16_t get_managed_retirement_status() const { return this->managed_retirement_status_.load(std::memory_order_relaxed); }
 #endif
-  bool prepare_account_line(const std::string &id, std::string *host, uint16_t *port, bool *tcp);
+  bool prepare_account_line(const std::string &id, std::string *host, uint16_t *port, bool *tcp,
+                            bool *directional_audio_v1 = nullptr);
   void clear_account_line();
   void set_accept_direct_calls(bool enabled) { this->accept_direct_calls_ = enabled; }
   using RegistrationCallback = void (*)(void *, const std::string &, RegistrationState, uint16_t);
@@ -290,6 +292,7 @@ class SipTransport : public SipPhoneTransport {
   void emit_sip_signal_(SipSignal signal);
 
   void handle_sip_datagram_(const char *data, size_t len, const sockaddr_in &src);
+  void accept_tcp_client_(int client, const sockaddr_in &src);
   void handle_sip_stream_(int socket, const sockaddr_in &src);
   bool handle_invite_(const std::string &message, const sockaddr_in &src);
   bool handle_reinvite_(const std::string &message, const sockaddr_in &src);
@@ -732,6 +735,7 @@ class SipTransport : public SipPhoneTransport {
   };
   SipTcpFlow tcp_flow_;
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
+  static bool registration_directional_audio_supported_(std::string_view body);
   SipRegistration registration_;
   std::array<SipTcpFlow, SipRegistration::CAPACITY> registration_flows_{};
   int active_account_{-1}, next_account_{-1}, dispatch_socket_{-1};
@@ -758,6 +762,7 @@ class SipTransport : public SipPhoneTransport {
   void invalidate_registration_dns_(size_t index);
   static std::string registration_hash_(const std::string &algorithm, const std::string &input);
   static bool registration_send_(void *, size_t, const std::string &, uint32_t, uint16_t, bool);
+  static bool registration_send_view_(void *, size_t, std::string_view, uint32_t, uint16_t, bool);
   static std::string registration_local_ip_(void *, uint32_t);
   static void registration_notify_(void *, const std::string &, RegistrationState, uint16_t);
 #ifdef USE_VOIP_HA_AUTO_REGISTER

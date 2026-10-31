@@ -39,6 +39,7 @@ def registration_transport_source(mwi=False):
     public = guarded_region(header, "  void initialize_registration();")
     public = public.replace("void initialize_registration();", "")
     extra = public + "\n" + members + r'''
+ bool should_accept_session_()const{return true;}
  void emit_connection_change_(bool){++connection_losses;}
  unsigned connection_losses=0;
  bool close_tcp_dialog_();
@@ -53,7 +54,7 @@ def registration_transport_source(mwi=False):
     code += "\nvoid SipTransport::invalidate_registration_dns_(size_t) {}\n"
     names = ["registration_flow_index_", "registration_socket_index_", "account_in_use_", "retire_registration_flow_", "set_account", "remove_account",
              "register_account", "is_registered", "get_account_snapshot", "prepare_account_line", "clear_account_line", "registration_ingress_",
-             "retry_authenticated_request_", "remember_registration_routes_", "registration_send_"]
+             "retry_authenticated_request_", "remember_registration_routes_", "registration_send_", "registration_send_view_"]
     if mwi:
         names += ["park_inbound_control_", "registration_mwi_reply_"]
     for name in names:
@@ -113,7 +114,7 @@ def test_notify_new_tcp_connection_while_direct_call_owns_main_flow(tmp_path, ac
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("scenario", ["authenticated-call", "foreign-flow", "atomic-change", "reset-missing", "refer-authenticated", "refer-direct-udp", "refer-direct-tcp"])
+@pytest.mark.parametrize("scenario", ["authenticated-call", "foreign-flow", "atomic-change", "reset-missing", "refer-authenticated", "refer-direct-udp", "refer-direct-tcp", "keepalive-with-call"])
 @pytest.mark.parametrize("transport", ["udp", "tcp"])
 def test_registration_dialog_contracts(registration_transport_binary, scenario, transport):
     result = subprocess.run([registration_transport_binary, scenario, transport], capture_output=True, text=True, timeout=10)

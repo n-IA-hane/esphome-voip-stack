@@ -2,7 +2,8 @@
 """Qualify the production REGISTER engine against an isolated native FreeSWITCH.
 
 Only registrar interoperability is measured, not ESP call or media behavior.
-The PBX and its control socket bind loopback. Runtime credentials stay in a
+The PBX defaults to loopback; an explicit lab bind and existing probe namespace
+allow isolated NAT qualification. Its control socket stays loopback. Credentials stay in a
 private temporary directory and the probe environment, never command arguments.
 """
 from __future__ import annotations
@@ -20,7 +21,7 @@ import tempfile
 import time
 from urllib.parse import unquote
 
-from qualify_sip_registration import build_probe, port
+from qualify_sip_registration import build_probe, port, probe_command
 
 
 class EventSocket:
@@ -79,17 +80,18 @@ class EventSocket:
         self.socket.close()
 
 
-def configuration(number_md5: int, number_sha: int, control: int, password: str) -> str:
+def configuration(number_md5: int, number_sha: int, control: int, password: str,
+                  bind_ip: str = "127.0.0.1") -> str:
     profiles = ""
     for name, number, algorithm in (("reg_md5", number_md5, "MD5"),
                                      ("reg_sha256", number_sha, "SHA-256")):
         profiles += f'''<profile name="{name}"><settings>
-<param name="sip-ip" value="127.0.0.1"/><param name="rtp-ip" value="127.0.0.1"/>
+<param name="sip-ip" value="{bind_ip}"/><param name="rtp-ip" value="{bind_ip}"/>
 <param name="sip-port" value="{number}"/><param name="dialplan" value="XML"/>
 <param name="context" value="test"/><param name="auth-calls" value="true"/>
-<param name="challenge-realm" value="127.0.0.1"/>
+<param name="challenge-realm" value="{bind_ip}"/>
 <param name="rfc8760-auth-algorithms" value="{algorithm}"/>
-<param name="force-register-domain" value="127.0.0.1"/>
+<param name="force-register-domain" value="{bind_ip}"/>
 <param name="force-register-expires" value="60"/>
 <param name="manage-presence" value="false"/><param name="tls" value="false"/>
 <param name="inbound-codec-prefs" value="PCMU"/><param name="outbound-codec-prefs" value="PCMU"/>
@@ -112,14 +114,17 @@ def configuration(number_md5: int, number_sha: int, control: int, password: str)
 </settings></configuration>
 <configuration name="sofia.conf" description="Isolated registrars"><profiles>{profiles}</profiles></configuration>
 </section>
-<section name="directory"><domain name="127.0.0.1"><groups><group name="default"><users>{users}</users></group></groups></domain></section>
+<section name="directory"><domain name="{bind_ip}"><groups><group name="default"><users>{users}</users></group></groups></domain></section>
 <section name="dialplan"><context name="test"/></section>
 </document>
 '''
 
 
-def qualify(executable: Path, probe: Path, output: Path, refresh: bool = False):
-    output.mkdir(parents=True, exist_ok=True)
+def qualify(executable: Path, probe: Path, output: Path, refresh: bool = False,
+            *, bind_ip: str = "127.0.0.1", probe_netns: str | None = None):
+    probe_command(probe, "udp", bind_ip, 1, "preflight", 1, probe_netns)
+    output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    output.chmod(0o700)
     prefix = executable.parent.parent
     library = prefix / "lib"
     module_candidates = (prefix / "mod", library / "freeswitch/mod")
@@ -128,17 +133,18 @@ def qualify(executable: Path, probe: Path, output: Path, refresh: bool = False):
         raise RuntimeError("FreeSWITCH mod_sofia is required")
     env = {**os.environ, "LD_LIBRARY_PATH": str(library)}
     version = subprocess.run([str(executable), "-version"], env=env, capture_output=True, text=True, check=True)
-    results = {"scope": "production REGISTER engine, native FreeSWITCH, loopback sockets",
+    results = {"scope": "production REGISTER engine, native FreeSWITCH, explicit socket topology",
+               "bind_ip": bind_ip, "probe_netns": probe_netns, "nat_verified": False,
                "complete_esp_call_qualified": False, "freeswitch": version.stdout.strip(),
                "probe_sha256": hashlib.sha256(probe.read_bytes()).hexdigest(), "scenarios": []}
     password = secrets.token_hex(24)
-    number_md5, number_sha, control_port = port(), port(), port()
+    number_md5, number_sha, control_port = port(bind_ip), port(bind_ip), port()
     with tempfile.TemporaryDirectory(prefix="voip-freeswitch-") as temporary:
         root = Path(temporary)
         for directory in ("conf", "run", "log", "db", "storage", "cache"):
             (root / directory).mkdir()
         config = root / "conf/freeswitch.xml"
-        config.write_text(configuration(number_md5, number_sha, control_port, password))
+        config.write_text(configuration(number_md5, number_sha, control_port, password, bind_ip))
         config.chmod(0o600)
         capture = root / "pbx.log"
         client = None
@@ -172,14 +178,14 @@ def qualify(executable: Path, probe: Path, output: Path, refresh: bool = False):
                             ("7102", "SHA-256", "reg_sha256", number_sha)):
                         before = len(client.events)
                         hold = 52 if refresh and transport == "udp" and algorithm == "MD5" else 3
-                        child = subprocess.Popen([str(probe), transport, "127.0.0.1", str(number), user,
-                            "127.0.0.1", str(hold)], env={**os.environ, "REG_TEST_PASSWORD": password},
+                        child = subprocess.Popen(probe_command(probe, transport, bind_ip, number, user,
+                            hold, probe_netns), env={**os.environ, "REG_TEST_PASSWORD": password},
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                         binding = ""
                         until = time.monotonic() + 10
                         while child.poll() is None and time.monotonic() < until:
                             status = client.api(f"sofia status profile {profile} reg")
-                            if f"{user}@127.0.0.1" in status:
+                            if f"{user}@{bind_ip}" in status:
                                 binding = status
                                 break
                             time.sleep(0.1)
@@ -190,7 +196,7 @@ def qualify(executable: Path, probe: Path, output: Path, refresh: bool = False):
                         record = {"transport": transport, "algorithm": algorithm, "hold_seconds": hold,
                                   "exit_code": child.returncode, "events": stdout.replace(password, "[redacted]"),
                                   "stderr": stderr.replace(password, "[redacted]"), "binding_observed": bool(binding),
-                                  "registration_events": renewals, "unregistered": f"{user}@127.0.0.1" not in remaining}
+                                  "registration_events": renewals, "unregistered": f"{user}@{bind_ip}" not in remaining}
                         results["scenarios"].append(record)
                         if child.returncode or not record["binding_observed"] or not record["unregistered"]:
                             raise RuntimeError(f"FreeSWITCH qualification failed for {transport}/{algorithm}")
@@ -219,6 +225,8 @@ def qualify(executable: Path, probe: Path, output: Path, refresh: bool = False):
                 results["pbx_stopped"] = process.poll() is not None
                 (output / "result.json").write_text(json.dumps(results, indent=2) + "\n")
                 (output / "freeswitch.log").write_text(capture.read_text(errors="replace").replace(password, "[redacted]"))
+                (output / "result.json").chmod(0o600)
+                (output / "freeswitch.log").chmod(0o600)
     print(json.dumps({"passed": results.get("passed", False), "scenarios": len(results["scenarios"]),
                       "pbx_stopped": results["pbx_stopped"]}))
 
@@ -230,6 +238,9 @@ if __name__ == "__main__":
     parser.add_argument("--probe", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--refresh", action="store_true")
+    parser.add_argument("--bind-ip", default="127.0.0.1", help="PBX SIP bind in the current namespace")
+    parser.add_argument("--probe-netns", help="Existing isolated client namespace, never created by this tool")
     args = parser.parse_args()
     binary = args.probe.resolve() if args.probe else build_probe(args.output.resolve() / "native")
-    qualify(args.freeswitch.resolve(), binary, args.output.resolve(), args.refresh)
+    qualify(args.freeswitch.resolve(), binary, args.output.resolve(), args.refresh,
+            bind_ip=args.bind_ip, probe_netns=args.probe_netns)

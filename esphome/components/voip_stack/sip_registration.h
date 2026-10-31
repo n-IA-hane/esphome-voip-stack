@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
 #include "sip_signaling_string.h"
 #endif
@@ -72,7 +73,7 @@ class SipRegistration {
   static_assert(CAPACITY >= 1 && CAPACITY <= 4, "Registration capacity must be between one and four");
   struct Hooks {
     void* context{nullptr};
-    bool (*send)(void*, size_t, const std::string&, uint32_t, uint16_t, bool){nullptr};
+    bool (*send)(void*, size_t, std::string_view, uint32_t, uint16_t, bool){nullptr};
     uint32_t (*resolve)(void*, size_t, const std::string&){nullptr};
     std::string (*local_ip)(void*, uint32_t){nullptr};
     void (*notify)(void*, const std::string&, RegistrationState, uint16_t){nullptr};
@@ -83,6 +84,9 @@ class SipRegistration {
 #endif
     uint32_t (*random)(){nullptr};
     SipDigest::Hash hash{nullptr};
+    // Optional SDP feature reader owned by the SIP adapter. Discovery shares
+    // the one non-INVITE request buffer and never gates registration or calls.
+    bool (*directional_audio_supported)(std::string_view){nullptr};
     uint16_t local_port{5060};
   };
   struct Account {
@@ -95,12 +99,17 @@ class SipRegistration {
     uint32_t cseq{0}, target_ip{0}, next_ms{0}, deadline_ms{0}, interval_ms{500}, negotiated_expires{0},
         requested_expires{0};
     uint32_t binding_expires_ms{0}, binding_ip{0};
+    uint32_t keepalive_next_ms{0}, registration_next_ms{0}, observed_ip{0};
     uint16_t target_port{0}, last_status{0};
+    uint16_t observed_port{0};
     uint8_t auth_attempts{0}, proxy_auth_attempts{0}, failures{0};
     bool occupied{false}, desired{false}, pending{false}, scheduled{false}, resolving{false}, bound{false};
+    bool keepalive_pending{false}, capabilities_pending{false}, capabilities_due{false};
+    bool peer_directional_audio_v1{false};
   };
 
   void set_hooks(const Hooks& hooks) { this->hooks_ = hooks; }
+  void set_keepalive_interval(uint32_t milliseconds) { this->keepalive_interval_ms_ = milliseconds; }
   int find(const std::string& id) const;
   bool set_account(const SipAccountConfig& config, uint32_t now);
   bool remove_account(const std::string& id);
@@ -121,7 +130,9 @@ class SipRegistration {
   std::array<Account, CAPACITY> accounts_{};
   uint32_t next_config_revision_{0};
   Hooks hooks_{};
+  uint32_t keepalive_interval_ms_{15000};
   bool begin_(size_t index, uint32_t now);
+  bool begin_keepalive_(size_t index, uint32_t now, bool capabilities = false);
   void retry_(size_t index, uint16_t status, uint32_t now, uint32_t delay_ms = 0);
   void state_(size_t index, RegistrationState state, uint16_t status);
   std::string token_();
