@@ -675,8 +675,9 @@ void VoipStack::rx_task_() {
       // after an established stream drains completely. In that second case we
       // still have to clock silence into the sink or I2S can stall/pop until
       // enough RTP packets arrive to satisfy the prebuffer again.
-      if (read_result == RtpJitterBuffer::ReadResult::BUFFERING &&
-          !this->first_audio_received_.load(std::memory_order_acquire)) {
+      // Receiving a packet does not mean the initial prebuffer is ready. Retry
+      // on notifications until this revision has consumed its first frame.
+      if (read_result == RtpJitterBuffer::ReadResult::BUFFERING && previous_format_packed == 0) {
         ulTaskNotifyTake(pdTRUE, frame_ticks);
         continue;
       }
