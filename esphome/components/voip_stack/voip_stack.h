@@ -888,6 +888,14 @@ class VoipStack : public Component {
   std::unique_ptr<RtpJitterBuffer> rx_jitter_buffer_;
   // A pending speaker write belongs to the receive session that supplied it.
   std::atomic<uint32_t> rx_audio_revision_{0};
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  enum class RxStartupEvent : uint8_t { SPEAKER_START_REQUEST, IN_CALL_GATE, RX_ENQUEUE, PLAY_ATTEMPT, PCM_ACCEPTED };
+  // Trace markers use the existing RX revision, with no separate call identity
+  // or timestamps retained in RAM. Older producers cannot replace newer marks.
+  std::atomic<uint32_t> audio_debug_rx_startup_logged_[5]{
+      UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+  void debug_rx_startup_event_(RxStartupEvent event, uint32_t revision);
+#endif
   TaskHandle_t rx_task_handle_{nullptr};
   StaticTask_t rx_task_tcb_{};
   StackType_t *rx_task_stack_{nullptr};

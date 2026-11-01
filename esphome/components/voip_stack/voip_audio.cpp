@@ -302,6 +302,34 @@ void VoipStack::rx_task(void *param) {
   static_cast<VoipStack *>(param)->rx_task_();
 }
 
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+void VoipStack::debug_rx_startup_event_(RxStartupEvent event, uint32_t revision) {
+  if (!this->audio_debug_ || this->rx_audio_revision_.load(std::memory_order_acquire) != revision) return;
+  auto &marker = this->audio_debug_rx_startup_logged_[static_cast<uint8_t>(event)];
+  uint32_t seen = marker.load(std::memory_order_relaxed);
+  if (seen == revision) return;
+  const int64_t at_us = esp_timer_get_time();
+  // Serial-number comparison also handles RX revision wrap. A late old writer
+  // must neither log against nor overwrite a newer revision's first event.
+  while (static_cast<int32_t>(revision - seen) > 0) {
+    if (this->rx_audio_revision_.load(std::memory_order_acquire) != revision) return;
+    if (!marker.compare_exchange_weak(seen, revision, std::memory_order_relaxed)) continue;
+    if (this->rx_audio_revision_.load(std::memory_order_acquire) != revision) return;
+    static const char *const names[]{"speaker_start_request", "in_call_gate", "rx_enqueue", "play_attempt",
+                                     "pcm_accepted"};
+    const auto jitter = this->rx_jitter_buffer_ != nullptr ? this->rx_jitter_buffer_->counters()
+                                                        : RtpJitterBuffer::Counters{};
+    ESP_LOGI(TAG,
+             "AudioStartup rev=%u event=%s us=%llu sink_running=%u state=%u jitter_depth=%u drops=%u discarded=%u",
+             (unsigned) revision, names[static_cast<uint8_t>(event)], (unsigned long long) at_us,
+             this->speaker_ != nullptr && this->speaker_->is_running() ? 1U : 0U,
+             (unsigned) this->call_state_.load(std::memory_order_acquire), (unsigned) jitter.depth,
+             (unsigned) jitter.drops, (unsigned) jitter.discarded_frames);
+    return;
+  }
+}
+#endif
+
 void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
   if (this->rx_jitter_buffer_ == nullptr || frame.pcm == nullptr || frame.bytes == 0)
     return;
@@ -312,6 +340,9 @@ void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
   if ((rx_format.codec == AudioCodec::PCM && frame.bytes != expected) ||
       frame.bytes > this->rx_jitter_frame_alloc_bytes_)
     return;
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
+#endif
   if (frame.source_changed) {
     this->rx_jitter_buffer_->reset();
   }
@@ -326,6 +357,9 @@ void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
   jitter_frame.source_changed = frame.source_changed;
   jitter_frame.format_packed = frame.format_packed;
   if (this->rx_jitter_buffer_->push(jitter_frame)) {
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+    this->debug_rx_startup_event_(RxStartupEvent::RX_ENQUEUE, revision);
+#endif
     if (this->rx_task_handle_ != nullptr) {
       xTaskNotifyGive(this->rx_task_handle_);
     }
@@ -366,8 +400,14 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
   while (offset < bytes && this->audio_devices_active_.load(std::memory_order_acquire) &&
          this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL &&
          this->rx_audio_revision_.load(std::memory_order_acquire) == revision) {
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+    this->debug_rx_startup_event_(RxStartupEvent::PLAY_ATTEMPT, revision);
+#endif
     const TickType_t started = xTaskGetTickCount();
     const size_t written = this->speaker_->play(pcm + offset, bytes - offset, ticks_to_wait);
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+    if (written > 0) this->debug_rx_startup_event_(RxStartupEvent::PCM_ACCEPTED, revision);
+#endif
     if (written == 0) {
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
       this->audio_debug_speaker_short_writes_.fetch_add(1, std::memory_order_relaxed);

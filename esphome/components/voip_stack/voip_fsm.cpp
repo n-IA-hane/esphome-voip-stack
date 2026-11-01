@@ -571,6 +571,10 @@ void VoipStack::start_speaker_for_current_rx_() {
   const AudioFormat format = this->get_current_rx_audio_format_();
   if (this->speaker_ == nullptr || !format.is_valid()) return;
   this->speaker_->set_audio_stream_info(audio_stream_info_from_format(format));
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  this->debug_rx_startup_event_(RxStartupEvent::SPEAKER_START_REQUEST,
+                                this->rx_audio_revision_.load(std::memory_order_acquire));
+#endif
   this->speaker_->start();
 #endif
 }
@@ -674,6 +678,12 @@ void VoipStack::set_call_state_(CallState new_state) {
   // old==new and returns.
   CallState old_state = this->call_state_.exchange(new_state, std::memory_order_acq_rel);
   if (old_state == new_state) return;
+#if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_SPEAKER)
+  if (new_state == CallState::IN_CALL) {
+    this->debug_rx_startup_event_(RxStartupEvent::IN_CALL_GATE,
+                                  this->rx_audio_revision_.load(std::memory_order_acquire));
+  }
+#endif
   this->media_route_.store(MediaRoute::UNKNOWN, std::memory_order_release);
   if ((old_state == CallState::IN_CALL) != (new_state == CallState::IN_CALL)) {
     this->notify_audio_tasks_();
