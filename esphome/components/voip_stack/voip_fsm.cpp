@@ -53,6 +53,9 @@ void VoipStack::set_call_identity_(const std::string &call_id,
 }
 
 void VoipStack::clear_call_identity_() {
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+  this->pending_media_start_ = ApplicationMediaStart::NONE;
+#endif
   LockGuard l(this->call_state_mutex_);
   this->incoming_setup_pending_ = false;
   this->incoming_media_answer_pending_ = false;
@@ -294,8 +297,22 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
   this->set_remote_endpoint(dial_ip, dial_port, dial_rtp_port);
   this->set_call_identity_(call_id, caller_route, this->get_caller_display_name(),
                             dest_route, dest_name, true);
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+  // Claim the receive session before any request can admit this call's RTP.
+  this->reset_rx_audio_();
+  if (this->transport_ != nullptr) {
+    const auto peer = this->transport_->snapshot();
+    this->prepared_peer_ip_ = peer.remote_ip_v4;
+    this->prepared_peer_port_ = peer.remote_sip_port;
+    this->prepared_peer_tcp_ = peer.sip_tcp;
+  }
+#endif
+  this->set_call_state_(CallState::CALLING);
+  this->calling_start_time_ = millis();
   this->publish_destination_(false);
-  if (this->get_current_call_id_() != call_id || (!via_ha && this->call_state_.load(std::memory_order_acquire) != CallState::IDLE)) return;
+  if (this->get_current_call_id_() != call_id ||
+      this->call_state_.load(std::memory_order_acquire) != CallState::CALLING)
+    return;
   this->clear_terminal_response_();
 
   const std::string remote_uri = "sip:" + dest_route + "@" + dial_ip + ":" + std::to_string(dial_port);
@@ -311,30 +328,20 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
   this->set_current_media_formats_(this->tx_audio_format_, this->rx_audio_format_, this->tx_audio_format_,
                                    this->rx_audio_format_);
   this->set_audio_devices_active_(true);
-  this->set_call_state_(CallState::CALLING);
-  this->calling_start_time_ = millis();
   this->ha_media_fallback_pending_ = false;
 
+#ifndef USE_ESPHOME_VOIP_STACK_SPEAKER
+  // Without an asynchronous sink there is no yield or retained preparation.
   if (this->transport_ == nullptr || !this->transport_->originate(dial_ip, dial_port)) {
-    ESP_LOGE(TAG, "%s: SIP originate to %s:%u failed",
-             this->device_name_.c_str(), dial_ip.c_str(), (unsigned) dial_port);
+    ESP_LOGE(TAG, "%s: SIP originate to %s:%u failed", this->device_name_.c_str(), dial_ip.c_str(),
+             (unsigned) dial_port);
     this->pending_dialplan_target_.clear();
     this->request_call_termination_(
-        {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
-         SipTerminationAction::NONE, false});
+        {CallEndReason::TRANSPORT_UNREACHABLE, nullptr, SipTerminationAction::NONE, false});
     return;
   }
-
-  if (!this->send_sip_invite_(call_id, caller_route, this->get_caller_display_name(),
-                              dest_route, dest_name)) {
-    ESP_LOGE(TAG, "SIP INVITE send failed");
-    this->pending_dialplan_target_.clear();
-    this->request_call_termination_(
-        {CallEndReason::PROTOCOL_ERROR, nullptr, SipTerminationAction::NONE,
-         false});
-    return;
-  }
-  this->pending_dialplan_target_.clear();
+#endif
+  this->begin_application_media_start_(ApplicationMediaStart::ORIGINATE);
 }
 
 void VoipStack::stop() {
@@ -378,44 +385,24 @@ void VoipStack::answer_call() {
 
 void VoipStack::complete_incoming_answer_(bool send_answer) {
   const std::string call_id = this->get_current_call_id_();
-  // A delayed-offer UAS cannot prepare a converter, claim devices or start
-  // playout using the provisional INVITE formats. The transport emits the
-  // final answer only after validating the matching ACK's SDP.
+  // A delayed-offer 200 carries our offer; the final RX geometry arrives in
+  // its matching ACK. Do not claim devices/converters for provisional formats.
   const bool waiting = send_answer && this->incoming_media_answer_pending_;
-  if (!waiting && this->transport_ && !this->transport_->prepare_media_path()) {
-    ESP_LOGE(TAG, "%s: RTP prepare failed while answering call",
-             this->device_name_.c_str());
-    this->request_call_termination_(
-        {CallEndReason::TRANSPORT_UNREACHABLE, kReasonMediaSetupFailed,
-         send_answer ? SipTerminationAction::FINAL_RESPONSE : SipTerminationAction::BYE,
-         send_answer});
-    return;
-  }
-  this->incoming_setup_pending_ = false;
   this->set_call_state_(CallState::CONNECTING);
-  if (send_answer && this->transport_ && !call_id.empty()) {
+  if (waiting) {
+    this->incoming_setup_pending_ = false;
     if (!this->send_sip_answer_(call_id)) {
-      ESP_LOGE(TAG, "%s: failed to send SIP answer", this->device_name_.c_str());
-      this->transport_->abort_media_path();
-      this->request_call_termination_(
-          {CallEndReason::PROTOCOL_ERROR, nullptr,
-           SipTerminationAction::NONE, false});
+      if (this->transport_) this->transport_->abort_media_path();
+      this->request_call_termination_({CallEndReason::PROTOCOL_ERROR, nullptr, SipTerminationAction::NONE, false});
       return;
     }
     this->incoming_answer_accepted_ = true;
-  }
-  if (waiting) return;
-  this->set_audio_devices_active_(true);
-  if (this->transport_ && !this->transport_->commit_media_path()) {
-    ESP_LOGE(TAG, "%s: RTP commit failed after SIP answer",
-             this->device_name_.c_str());
-    this->transport_->abort_media_path();
-    this->request_call_termination_(
-        {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
-         SipTerminationAction::BYE, false});
     return;
   }
-  this->set_in_call_(true);  // also publishes IN_CALL state
+  this->incoming_setup_pending_ = true;
+  this->calling_start_time_ = millis();
+  this->set_audio_devices_active_(true);
+  this->begin_application_media_start_(send_answer ? ApplicationMediaStart::ANSWER : ApplicationMediaStart::CONFIRM);
 }
 
 void VoipStack::decline_call(const std::string &reason) {
@@ -579,6 +566,117 @@ void VoipStack::start_speaker_for_current_rx_() {
 #endif
 }
 
+bool VoipStack::prepare_speaker_for_current_rx_() {
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+  const AudioFormat format = this->get_current_rx_audio_format_();
+  if (this->speaker_ == nullptr || !format.is_valid()) return true;
+  const auto& current = this->speaker_->get_audio_stream_info();
+  const bool matches = current.get_sample_rate() == format.sample_rate && current.get_channels() == format.channels &&
+                       current.get_bits_per_sample() == audio_format_bits_per_sample(format);
+  if (!matches && !this->speaker_->is_stopped()) {
+    this->speaker_->stop();
+    return false;
+  }
+  if (matches && this->speaker_->is_running()) return true;
+  if (this->speaker_->is_stopped()) this->start_speaker_for_current_rx_();
+  return this->speaker_->is_running();
+#else
+  return true;
+#endif
+}
+
+void VoipStack::begin_application_media_start_(ApplicationMediaStart action) {
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+  this->pending_media_start_ = action;
+  this->enable_loop_soon_any_context();
+  this->pump_application_media_start_();
+#else
+  this->finish_application_media_start_(action);
+#endif
+}
+
+void VoipStack::pump_application_media_start_() {
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+  const ApplicationMediaStart action = this->pending_media_start_;
+  if (action == ApplicationMediaStart::NONE) return;
+  const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
+  const CallState expected = action == ApplicationMediaStart::ORIGINATE ? CallState::CALLING : CallState::CONNECTING;
+  if (this->call_state_.load(std::memory_order_acquire) != expected) {
+    this->pending_media_start_ = ApplicationMediaStart::NONE;
+    return;
+  }
+  if (millis() - this->calling_start_time_ >= INVITE_NO_RESPONSE_TIMEOUT_MS) {
+    const SipTerminationAction disposition = action == ApplicationMediaStart::ORIGINATE ? SipTerminationAction::NONE
+                                             : action == ApplicationMediaStart::ANSWER
+                                                 ? SipTerminationAction::FINAL_RESPONSE
+                                                 : SipTerminationAction::BYE;
+    this->request_call_termination_({CallEndReason::TIMEOUT, kReasonMediaSetupFailed, disposition, true});
+    return;
+  }
+  if (!this->prepare_speaker_for_current_rx_() || this->pending_media_start_ != action ||
+      this->rx_audio_revision_.load(std::memory_order_acquire) != revision)
+    return;
+  this->pending_media_start_ = ApplicationMediaStart::NONE;
+  this->finish_application_media_start_(action);
+#endif
+}
+
+void VoipStack::finish_application_media_start_(ApplicationMediaStart action) {
+  if (action == ApplicationMediaStart::NONE) return;
+  const CallState expected = action == ApplicationMediaStart::ORIGINATE ? CallState::CALLING : CallState::CONNECTING;
+  if (this->call_state_.load(std::memory_order_acquire) != expected) return;
+  if (action == ApplicationMediaStart::ORIGINATE) {
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+    // Public next-call setters may run while this sink starts. Restore only
+    // the fixed peer selected for this attempt, never a changed contact/line.
+    in_addr address{};
+    address.s_addr = htonl(this->prepared_peer_ip_);
+    char peer[16];
+    inet_ntoa_r(address, peer, sizeof(peer));
+    if (this->transport_ != nullptr) this->transport_->set_sip_signaling_transport(this->prepared_peer_tcp_);
+    if (this->prepared_peer_ip_ == 0 || this->prepared_peer_port_ == 0 || this->transport_ == nullptr ||
+        !this->transport_->originate(peer, this->prepared_peer_port_)) {
+      this->request_call_termination_(
+          {CallEndReason::TRANSPORT_UNREACHABLE, nullptr, SipTerminationAction::NONE, false});
+      return;
+    }
+#endif
+    const CallSnapshot call = this->snapshot_call_identity_();
+    if (call.call_id.empty()) return;
+    if (!this->send_sip_invite_(call.call_id, call.caller_route, call.caller_name, call.dest_route, call.dest_name)) {
+      ESP_LOGE(TAG, "SIP INVITE send failed");
+      this->request_call_termination_({CallEndReason::PROTOCOL_ERROR, nullptr, SipTerminationAction::NONE, false});
+    }
+    this->pending_dialplan_target_.clear();
+    return;
+  }
+  const std::string call_id = this->get_current_call_id_();
+  if (call_id.empty()) return;
+  const bool send_answer = action == ApplicationMediaStart::ANSWER;
+  if (this->transport_ && !this->transport_->prepare_media_path()) {
+    ESP_LOGE(TAG, "%s: RTP prepare failed while starting media", this->device_name_.c_str());
+    this->request_call_termination_({CallEndReason::TRANSPORT_UNREACHABLE, kReasonMediaSetupFailed,
+                                     send_answer ? SipTerminationAction::FINAL_RESPONSE : SipTerminationAction::BYE,
+                                     send_answer});
+    return;
+  }
+  if (send_answer) {
+    if (!this->send_sip_answer_(call_id)) {
+      if (this->transport_) this->transport_->abort_media_path();
+      this->request_call_termination_({CallEndReason::PROTOCOL_ERROR, nullptr, SipTerminationAction::NONE, false});
+      return;
+    }
+    this->incoming_answer_accepted_ = true;
+  }
+  if (this->transport_ && !this->transport_->commit_media_path()) {
+    this->transport_->abort_media_path();
+    this->request_call_termination_({CallEndReason::TRANSPORT_UNREACHABLE, nullptr, SipTerminationAction::BYE, false});
+    return;
+  }
+  this->incoming_setup_pending_ = false;
+  this->set_in_call_(true);
+}
+
 void VoipStack::reset_peer_audio_watchdog_(bool seed_from_transport) {
   uint32_t baseline_rx_packets = 0;
   if (seed_from_transport && this->transport_ != nullptr) {
@@ -626,7 +724,8 @@ void VoipStack::set_in_call_(bool on) {
 #endif
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
-    this->reset_rx_audio_();
+    // This call's receive session was claimed before signaling/media start.
+    // Keep any current-call prebuffer already admitted by the RTP worker.
     this->start_speaker_for_current_rx_();
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
@@ -648,7 +747,7 @@ void VoipStack::set_in_call_(bool on) {
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
     this->reset_rx_audio_();
-    if (this->speaker_ != nullptr && this->speaker_->is_running()) {
+    if (this->speaker_ != nullptr) {
       this->speaker_->stop();
     }
 #endif
@@ -757,6 +856,12 @@ void VoipStack::set_call_state_(CallState new_state) {
 }
 
 void VoipStack::request_call_termination_(const TerminationIntent &intent) {
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+  this->pending_media_start_ = ApplicationMediaStart::NONE;
+#endif
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->transport_ != nullptr) static_cast<SipTransport *>(this->transport_.get())->clear_account_line();
+#endif
   const CallState state = this->call_state_.load(std::memory_order_acquire);
   if (call_state_is_terminating(state)) {
     // A late final response or transport callback may complete the winning
@@ -775,11 +880,12 @@ void VoipStack::request_call_termination_(const TerminationIntent &intent) {
   };
   TerminationIntent disposition = intent;
   if (disposition.sip_action == SipTerminationAction::AUTO &&
-      state == CallState::CONNECTING && this->incoming_answer_accepted_) {
-    // CONNECTING normally denotes an outgoing INVITE. This incoming 2xx is
-    // already accepted and CANCEL cannot undo it. The transport retains BYE
-    // until its matching ACK, using the same terminal transaction owner.
-    disposition.sip_action = SipTerminationAction::BYE;
+      state == CallState::CONNECTING) {
+    // Preparation before an incoming answer still owns a final response.
+    // After a 2xx/ACK, CANCEL cannot undo the confirmed dialog; the existing
+    // transport retains BYE until its matching ACK when necessary.
+    disposition.sip_action = this->incoming_setup_pending_ && !this->incoming_answer_accepted_
+                                ? SipTerminationAction::FINAL_RESPONSE : SipTerminationAction::BYE;
   }
   dispatch_call_termination(
       snapshot, disposition,
@@ -1042,6 +1148,9 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
       const std::string dest_name = in_dest_name.empty() ? this->device_name_ : in_dest_name;
       this->set_call_identity_(incoming_cid, in_caller_route, in_caller_name,
                                 dest_route, dest_name);
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+      this->reset_rx_audio_();
+#endif
       this->incoming_setup_pending_ = true;
       this->incoming_media_answer_pending_ = msg.media_answer_pending;
       this->incoming_answer_accepted_ = false;
@@ -1194,18 +1303,19 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
         }
         this->set_current_media_formats_(msg.selected_tx_format, msg.selected_rx_format, msg.selected_tx_format,
                                          msg.selected_rx_format);
-        if (this->transport_ && !this->transport_->start_audio_path()) {
-          ESP_LOGE(TAG, "%s: RTP start failed after SIP answer", this->device_name_.c_str());
+        if (this->transport_ && !this->transport_->prepare_media_path()) {
+          ESP_LOGE(TAG, "%s: RTP prepare failed after SIP answer", this->device_name_.c_str());
           this->request_call_termination_(
               {CallEndReason::TRANSPORT_UNREACHABLE, nullptr,
                SipTerminationAction::BYE, false});
           break;
         }
-        ESP_LOGI(TAG, "%s: destination answered, in_call (call_id=%s)",
+        ESP_LOGI(TAG, "%s: destination answered, preparing media (call_id=%s)",
                  this->device_name_.c_str(),
                  in_call_id.c_str());
         this->set_call_state_(CallState::CONNECTING);
-        this->set_in_call_(true);
+        this->calling_start_time_ = millis();
+        this->begin_application_media_start_(ApplicationMediaStart::CONFIRM);
       } else if (state == CallState::RINGING) {
         ESP_LOGI(TAG, "%s: answered remotely (by HA)", this->device_name_.c_str());
         this->answer_call();
@@ -1319,11 +1429,11 @@ void VoipStack::on_connection_change_(bool connected) {
 
 bool VoipStack::can_accept_session_() const {
   if (this->ha_media_fallback_pending_) return false;
-  // This is only the coarse application-state gate. SipTransport separately
-  // freezes the selected signaling transport while it owns an INVITE/dialog
-  // or terminal transaction, so CALLING can never replace that session.
+  // CALLING already owns an application attempt while asynchronous speaker
+  // preparation may still precede its first wire INVITE. Existing dialogs
+  // authorize their own in-dialog traffic/retransmissions in SipTransport.
   CallState cs = this->call_state_.load(std::memory_order_acquire);
-  return cs == CallState::IDLE || cs == CallState::CALLING;
+  return cs == CallState::IDLE;
 }
 
 }  // namespace voip_stack

@@ -2898,6 +2898,12 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   if (!this->call_id_.empty()) {
     return this->send_stateless_response_(message, src, 486, "Busy Here", "busy");
   }
+  // The application may own an outgoing attempt before its INVITE reaches
+  // the wire. Apply the same new-dialog admission to UDP and TCP, after
+  // authorization/replay and before claiming any incoming dialog metadata.
+  if (!this->should_accept_session_()) {
+    return this->send_stateless_response_(message, src, 486, "Busy Here", "busy");
+  }
   {
     LockGuard media_lock(this->media_lifecycle_mutex_);
     const MediaLifecyclePhase phase =

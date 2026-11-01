@@ -3,6 +3,7 @@
 #include "esphome/components/voip_stack/sip_types.h"
 #include "esphome/components/voip_stack/voip_fsm.h"
 #include <atomic>
+#include <arpa/inet.h>
 #include <cassert>
 #include <cstdio>
 #include <functional>
@@ -16,12 +17,14 @@ using namespace esphome::voip_stack;
 uint32_t millis(){return 100;}
 struct Trigger {template<class... T>void trigger(T...) {}};
 struct Transport {
- unsigned prepares=0,disconnects=0,aborts=0; bool prepare_ok=true,commit_ok=true,ringing_ok=true,final_ok=true;
+ unsigned prepares=0,disconnects=0,aborts=0;
+ unsigned invites=0; bool prepare_ok=true,commit_ok=true,ringing_ok=true,final_ok=true;
  struct Snapshot {bool terminal_transaction_pending=false;unsigned media_lifecycle_phase=0;};
  Snapshot snapshot()const{return {};}
  bool prepare_media_path(){++prepares;return prepare_ok;}
  bool commit_media_path(){return commit_ok;}
  bool start_audio_path(){return true;}
+ bool originate(const std::string&,uint16_t){return true;}void set_sip_signaling_transport(bool){}
  void abort_media_path(){++aborts;}
  void set_connected_identity(const std::string&,const std::string&){}
  void disconnect(){++disconnects;}
@@ -29,6 +32,7 @@ struct Transport {
  bool send_final_response(const std::string&,uint16_t status,const std::string&);
 };
 struct VoipStack {
+ static const char*inet_ntoa_r(in_addr a,char*out,size_t n){return inet_ntop(AF_INET,&a,out,n);}
  std::atomic<CallState>call_state_{CallState::IDLE};
  Transport t;Transport*transport_=&t;
  bool do_not_disturb_=false,auto_answer_=true,incoming_setup_pending_=false;
@@ -46,7 +50,17 @@ struct VoipStack {
  void start_call_attempt_(bool){assert(false);}
  bool ha_media_fallback_pending_=false,ha_media_fallback_attempted_=false;
  std::atomic<bool>first_audio_received_{false};
- uint32_t ringing_start_time_=0;
+ std::atomic<uint32_t>rx_audio_revision_{0};
+ uint32_t ringing_start_time_=0,calling_start_time_=0;
+ static constexpr uint32_t INVITE_NO_RESPONSE_TIMEOUT_MS=5000;
+ enum class ApplicationMediaStart:uint8_t{NONE,ORIGINATE,ANSWER,CONFIRM};
+ uint32_t prepared_peer_ip_=0x7f000001;uint16_t prepared_peer_port_=5060;bool prepared_peer_tcp_=false;
+ ApplicationMediaStart pending_media_start_=ApplicationMediaStart::NONE;
+ void enable_loop_soon_any_context(){}
+ bool prepare_speaker_for_current_rx_(){return true;}
+ void begin_application_media_start_(ApplicationMediaStart);
+ void finish_application_media_start_(ApplicationMediaStart);
+ void pump_application_media_start_();
  static constexpr uint32_t TERMINAL_RESPONSE_REPLAY_MS=32000;
  std::string device_name_="esp",device_route_id_="esp",ha_peer_name_;
  AudioFormatList tx_audio_formats_,rx_audio_formats_;
@@ -77,13 +91,14 @@ struct VoipStack {
  void set_audio_devices_active_(bool on){if(!on)++media_stops;}
  void set_call_state_(CallState s){call_state_=s;}
  bool send_sip_answer_(const std::string&){return true;}
+ bool send_sip_invite_(const std::string&,const std::string&,const std::string&,const std::string&,const std::string&){++t.invites;return true;}
  bool send_sip_ringing_(const std::string&){return t.ringing_ok;}
  void set_in_call_(bool on){if(on)call_state_=CallState::IN_CALL;}
  bool ignore_if_idle_or_stale_(const char*,const std::string&)const{return false;}
  void finish_call_termination_();
  void clear_call_identity_();
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
- void reset_rx_audio_(){++rx_resets;}
+ void reset_rx_audio_(){++rx_resets;++rx_audio_revision_;}
 #endif
  void reset_peer_audio_watchdog_(bool){++watchdog_resets;}
  CallSnapshot snapshot_call_identity_()const{return identity;}

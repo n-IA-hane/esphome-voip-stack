@@ -578,6 +578,7 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
 }
 
 void VoipStack::loop() {
+  this->pump_application_media_start_();
 #ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
   DtmfEvent event;
   while (this->dtmf_events_ != nullptr && xQueueReceive(this->dtmf_events_, &event, 0) == pdTRUE)

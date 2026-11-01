@@ -355,7 +355,11 @@ void VoipStack::start_call_on_line_(const std::string& target, const std::string
   this->pending_line_ = line;
   this->pending_dialplan_target_ = cleaned;
   this->start_with_id_(call_id, display_name);
-  if (this->transport_ != nullptr)
+  if (this->transport_ != nullptr
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+      && this->pending_media_start_ == ApplicationMediaStart::NONE
+#endif
+  )
     static_cast<SipTransport *>(this->transport_.get())->clear_account_line();
   this->pending_line_.clear();
   this->pending_dialplan_target_.clear();

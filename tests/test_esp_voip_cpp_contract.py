@@ -1618,11 +1618,14 @@ def test_incoming_answer_prepares_before_200_and_commits_after_send() -> None:
     manual = cpp_method(fsm, r"VoipStack::answer_call")
     assert "this->complete_incoming_answer_(true)" in manual
     incoming = cpp_method(fsm, r"VoipStack::complete_incoming_answer_")
-    assert incoming.index("!waiting") < incoming.index("prepare_media_path()")
-    assert incoming.index("prepare_media_path()") < incoming.index("send_sip_answer_")
-    assert incoming.index("send_sip_answer_") < incoming.index("if (waiting) return;")
-    assert incoming.index("if (waiting) return;") < incoming.index("set_audio_devices_active_(true)") < incoming.index("commit_media_path()")
-    assert incoming.count("abort_media_path()") == 2
+    waiting = incoming[incoming.index("if (waiting)"):incoming.index("this->incoming_setup_pending_ = true;")]
+    assert "send_sip_answer_" in waiting and "return;" in waiting
+    assert "prepare_media_path()" not in waiting and "set_audio_devices_active_" not in waiting
+    prepared = cpp_method(fsm, r"VoipStack::finish_application_media_start_")
+    assert prepared.index("prepare_media_path()") < prepared.index("send_sip_answer_")
+    assert prepared.index("send_sip_answer_") < prepared.index("commit_media_path()")
+    assert incoming.index("set_audio_devices_active_(true)") < incoming.index("begin_application_media_start_")
+    assert incoming.count("abort_media_path()") + prepared.count("abort_media_path()") == 3
 
     auto_start = fsm.index("      if (this->auto_answer_)")
     auto_end = fsm.index("      } else {", auto_start)
@@ -1635,7 +1638,9 @@ def test_incoming_answer_prepares_before_200_and_commits_after_send() -> None:
         fsm.index("case SipSignalType::STATUS_200_OK") :
         fsm.index("case SipSignalType::CANCEL")
     ]
-    assert "this->transport_->start_audio_path()" in outbound
+    assert outbound.index("prepare_media_path()") < outbound.index("begin_application_media_start_")
+    assert "ApplicationMediaStart::CONFIRM" in outbound
+    assert "commit_media_path()" in prepared
 
 
 def test_video_workers_share_one_bounded_stop_deadline_without_forced_delete() -> None:
@@ -2346,7 +2351,10 @@ def test_rtp_receive_hot_path_uses_atomic_state_not_call_id_strings() -> None:
     assert "set_in_call_" not in receive
 
     ok_response = fsm[fsm.index("case SipSignalType::STATUS_200_OK") : fsm.index("case SipSignalType::CANCEL")]
-    assert ok_response.index("set_call_state_(CallState::CONNECTING)") < ok_response.index("set_in_call_(true)")
+    assert ok_response.index("set_call_state_(CallState::CONNECTING)") < ok_response.index("begin_application_media_start_")
+    assert "ApplicationMediaStart::CONFIRM" in ok_response
+    finish = cpp_method(fsm, r"VoipStack::finish_application_media_start_")
+    assert finish.index("commit_media_path()") < finish.index("set_in_call_(true)")
 
 
 def test_rx_gap_playout_has_only_one_blocking_frame_budget() -> None:

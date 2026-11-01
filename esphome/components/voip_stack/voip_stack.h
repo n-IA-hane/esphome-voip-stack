@@ -664,6 +664,11 @@ class VoipStack : public Component {
   void set_audio_devices_active_(bool on);
   void set_in_call_(bool on);
   void start_speaker_for_current_rx_();
+  bool prepare_speaker_for_current_rx_();
+  enum class ApplicationMediaStart : uint8_t { NONE, ORIGINATE, ANSWER, CONFIRM };
+  void begin_application_media_start_(ApplicationMediaStart action);
+  void finish_application_media_start_(ApplicationMediaStart action);
+  void pump_application_media_start_();
   void reset_peer_audio_watchdog_(bool seed_from_transport);
   void notify_audio_tasks_();
 
@@ -888,6 +893,13 @@ class VoipStack : public Component {
   std::unique_ptr<RtpJitterBuffer> rx_jitter_buffer_;
   // A pending speaker write belongs to the receive session that supplied it.
   std::atomic<uint32_t> rx_audio_revision_{0};
+  // One fixed continuation and resolved peer, with no heap/identity copies.
+  // Pack the IPv4/port/transport/action into eight bytes; RX revision already
+  // guards reentrant changes while preparing the sink.
+  uint32_t prepared_peer_ip_{0};
+  uint16_t prepared_peer_port_{0};
+  bool prepared_peer_tcp_{false};
+  ApplicationMediaStart pending_media_start_{ApplicationMediaStart::NONE};
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
   enum class RxStartupEvent : uint8_t {
     SPEAKER_START_REQUEST, IN_CALL_GATE, RX_ENQUEUE, PLAY_ATTEMPT, PCM_ACCEPTED,

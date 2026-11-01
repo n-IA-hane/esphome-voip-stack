@@ -12,10 +12,21 @@ COMPONENT = ROOT / 'esphome/components/voip_stack'
 def correlated_fixture_source():
     fsm = (COMPONENT / 'voip_fsm.cpp').read_text()
     settings = (COMPONENT / 'voip_settings.cpp').read_text()
+    owner_cpp = (COMPONENT / 'voip_stack.cpp').read_text()
     methods = fsm[fsm.index('bool VoipStack::can_start_call_()'):fsm.index('void VoipStack::stop()')]
+    begin = fsm.index('void VoipStack::begin_application_media_start_(')
+    methods += fsm[begin:fsm.index('\n}\n', begin) + 2]
+    for marker in ('void VoipStack::set_remote_endpoint(', 'void VoipStack::set_remote_sip_transport_tcp('):
+        begin = owner_cpp.index(marker)
+        methods += owner_cpp[begin:owner_cpp.index('\n}\n', begin) + 2]
+    begin = fsm.index('void VoipStack::finish_application_media_start_(')
+    methods += fsm[begin:fsm.index('\n}\n', begin) + 2]
+    begin = fsm.index('void VoipStack::pump_application_media_start_(')
+    methods += fsm[begin:fsm.index('\n}\n', begin) + 2]
     methods += settings[settings.index('void VoipStack::call(const std::string &value)'):settings.index('void VoipStack::next_contact()')]
     return r'''
 #include <atomic>
+#include <arpa/inet.h>
 #include <cassert>
 #include <cstdint>
 #include <map>
@@ -27,6 +38,7 @@ def correlated_fixture_source():
 #define ESP_LOGE(...)
 uint32_t millis(){return 100;}
 uint32_t esp_random(){return 42;}
+const char *inet_ntoa_r(in_addr a,char*out,size_t n){return inet_ntop(AF_INET,&a,out,n);}
 namespace esphome::voip_stack {
 struct Contact {std::string ip;uint16_t port=5060;uint16_t rtp_port=40000;bool sip_transport_tcp=false;bool directional_audio_v1=true;};
 struct Phonebook {
@@ -45,10 +57,14 @@ struct Transport {
   int prepare_calls=0;
   mutable int snapshots=0;
   std::string ip;
-  struct Snapshot {bool terminal_transaction_pending;};
-  Snapshot snapshot() const {++snapshots;return {terminating};}
+  uint32_t selected_ip=0;uint16_t selected_port=0;bool selected_tcp=false;
+  struct Snapshot {bool terminal_transaction_pending;uint32_t remote_ip_v4;uint16_t remote_sip_port;bool sip_tcp;};
+  Snapshot snapshot() const {++snapshots;return {terminating,selected_ip,selected_port,selected_tcp};}
   void set_peer_directional_audio_v1(bool){}
-  bool originate(const std::string &value,uint16_t){ip=value;return originate_ok;}
+  void set_remote(const std::string&value,uint16_t port,uint16_t){ip=value;selected_ip=ntohl(inet_addr(value.c_str()));selected_port=port;}
+  void set_sip_signaling_transport(bool tcp){selected_tcp=tcp;}
+  bool originate(const std::string &value,uint16_t port){set_remote(value,port,0);return originate_ok;}
+  bool prepare_media_path(){return true;}bool commit_media_path(){return true;}void abort_media_path(){}
   void clear_account_line(){account_line.clear();}
   bool prepare_account_line(const std::string &line,std::string *host,uint16_t *port,bool *tcp,bool *d1){
     ++prepare_calls;last_prepared=line;
@@ -63,6 +79,7 @@ struct TransportHandle {
   Transport *get(){return value;} Transport *operator->()const{return value;}
   bool operator!=(std::nullptr_t)const{return value!=nullptr;}
   bool operator==(std::nullptr_t)const{return value==nullptr;}
+  explicit operator bool()const{return value!=nullptr;}
 };
 struct Trigger {unsigned hits=0;template<typename... Args> void trigger(Args...) {++hits;}};
 // URI parsing has separate production tests. These controlled labels exercise
@@ -85,10 +102,25 @@ public:
   bool can_start_call_() const;
   void start();void start_with_id_(const std::string &,const std::string & = {});
   void start_call_attempt_(bool,const std::string & = {},const std::string & = {});
+  enum class ApplicationMediaStart:uint8_t{NONE,ORIGINATE,ANSWER,CONFIRM};
+  void begin_application_media_start_(ApplicationMediaStart);
+  void finish_application_media_start_(ApplicationMediaStart);
+  void pump_application_media_start_();
+  uint32_t prepared_peer_ip_=0;uint16_t prepared_peer_port_=0;bool prepared_peer_tcp_=false;
+  ApplicationMediaStart pending_media_start_=ApplicationMediaStart::NONE;
+  std::atomic<uint32_t> rx_audio_revision_{0};
+  void reset_rx_audio_(){++rx_audio_revision_;}
+  bool sink_ready=true;
+  bool incoming_setup_pending_=false,incoming_answer_accepted_=false;
+  static constexpr unsigned INVITE_NO_RESPONSE_TIMEOUT_MS=5000;
+  bool prepare_speaker_for_current_rx_(){return sink_ready;}
+  void enable_loop_soon_any_context(){}
   void call(const std::string &);void call_(const std::string &,const std::string &);
   void call_via_ha(const std::string &,const std::string &);void hangup_call_if_id(const std::string &);
   void start_call_on_line(const std::string &,const std::string &,const std::string & = {});
   void start_call_on_line_(const std::string &,const std::string &,const std::string &,const std::string &);
+  bool send_sip_answer_(const std::string&){return true;}
+  void set_in_call_(bool on){if(on)call_state_=CallState::IN_CALL;}
   bool is_registered(const std::string &line){return line=="ha"?transport.ha_ready:line=="office"&&transport.office_ready;}
   const char *get_call_state_str() const{return "state";}
   const std::string &get_caller_display_name() const{return device_name_;}
@@ -104,7 +136,8 @@ public:
   void clear_terminal_call_snapshot_(){} void clear_terminal_response_(){}
   void set_call_identity_(const std::string &id,const std::string &cr,const std::string &cn,const std::string &dr,const std::string &dn,bool=false){identity={id,cr,cn,dr,dn};}
   void set_current_media_formats_(int,int,int,int){} void set_call_state_(CallState s){call_state_=s;}
-  void set_remote_sip_transport_tcp(bool){} void set_remote_endpoint(const std::string &,uint16_t,uint16_t){}
+  void set_remote_sip_transport_tcp(bool);
+  void set_remote_endpoint(const std::string&,uint16_t,uint16_t=0);
   void set_audio_devices_active_(bool){} void publish_destination_(bool=true){if(on_publish)on_publish();}
   template<typename T> void defer(T f){f();}
   void request_call_termination_(TerminationIntent){call_state_=CallState::IDLE;identity={};}
@@ -150,6 +183,69 @@ int main(){
     binary = tmp_path / 'correlated_call'
     subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', str(COMPONENT), str(source), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
+
+
+def test_async_registered_preparation_keeps_reserved_line_and_original_route(tmp_path):
+    registration = (COMPONENT / 'voip_registration.cpp').read_text()
+    begin = registration.index('void VoipStack::start_call_on_line(')
+    end = registration.index('void VoipStack::registration_state_callback_', begin)
+    code = correlated_fixture_source() + '\nnamespace esphome::voip_stack {\n' + registration[begin:end] + r'''
+}
+int main(){
+ VoipStack phone;phone.ha_peer_name_.clear();phone.default_line_="office";phone.sink_ready=false;
+ phone.call_via_ha("410","reserved-before-ready@controller");
+ assert(!phone.invites&&phone.call_state_==CallState::CALLING&&phone.pending_media_start_!=VoipStack::ApplicationMediaStart::NONE);
+ assert(phone.transport.account_line=="ha"&&"The wrapper must retain the original account reservation");
+ assert(phone.pending_line_.empty()&&phone.pending_dialplan_target_.empty());
+ phone.default_line_="direct";phone.phonebook_.selected="Desk";
+ phone.set_remote_endpoint("192.0.2.99",5099);phone.set_remote_sip_transport_tcp(false);
+ phone.call("Desk");assert(!phone.invites&&phone.identity.dest_route=="410");
+ phone.sink_ready=true;phone.pump_application_media_start_();
+ assert(phone.invites==1&&phone.transport.active_line=="ha"&&phone.transport.ip=="192.0.2.30");
+ assert(phone.transport.selected_port==5070&&phone.transport.selected_tcp);
+ assert(phone.identity.call_id=="reserved-before-ready@controller"&&phone.identity.dest_route=="410");
+ assert(phone.transport.account_line.empty()&&phone.pending_media_start_==VoipStack::ApplicationMediaStart::NONE);
+}
+'''
+    source = tmp_path / 'reserved.cpp'
+    source.write_text(code)
+    binary = tmp_path / 'reserved'
+    built = subprocess.run(['g++', '-std=c++17', '-DUSE_ESPHOME_VOIP_STACK_SPEAKER',
+                            '-DUSE_ESPHOME_VOIP_REGISTRATION', '-DUSE_VOIP_HA_AUTO_REGISTER',
+                            '-I', str(COMPONENT), str(source), '-o', str(binary)], capture_output=True, text=True)
+    assert built.returncode == 0, built.stderr
+    run = subprocess.run(['bash', '-c', 'ulimit -c 0; exec "$1"', 'bash', str(binary)], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+
+
+@pytest.mark.parametrize('speaker', [False, True])
+def test_publish_reentrant_actual_stop_cancels_the_claimed_attempt(tmp_path, speaker):
+    from test_refer_dialog_runtime import block
+
+    fsm = (COMPONENT / 'voip_fsm.cpp').read_text()
+    header = (COMPONENT / 'voip_stack.h').read_text()
+    start = header.index('  bool is_active() const {')
+    active = header[start:header.index('\n  }', start) + 4]
+    code = correlated_fixture_source().replace(
+        'void stop(){++stops;call_state_=CallState::IDLE;identity={};}',
+        'void stop();std::atomic<bool>audio_devices_active_{false};\n' + active,
+    )
+    code += '\nnamespace esphome::voip_stack {\n' + block(fsm, 'void VoipStack::stop()') + '\n}\n'
+    code += r'''
+int main(){
+ VoipStack phone;phone.on_publish=[&](){phone.stop();};phone.call("Desk");
+ assert(!phone.invites&&phone.identity.call_id.empty());
+}
+'''
+    cpp = tmp_path / 'publish_stop.cpp'
+    cpp.write_text(code)
+    binary = tmp_path / 'publish_stop'
+    flags = ['-DUSE_ESPHOME_VOIP_STACK_SPEAKER'] if speaker else []
+    built = subprocess.run(['g++', '-std=c++17', *flags, '-I', str(COMPONENT), str(cpp), '-o', str(binary)],
+                           capture_output=True, text=True)
+    assert built.returncode == 0, built.stderr
+    run = subprocess.run(['bash', '-c', 'ulimit -c 0; exec "$1"', 'bash', str(binary)], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
 
 
 @pytest.fixture(scope='module')
