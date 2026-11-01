@@ -608,7 +608,8 @@ def test_rtp_jpeg_dimension_limit_matches_rfc2435_encoding(monkeypatch) -> None:
     ] == 103
 
 
-def test_rtp_frame_cadence_host_behavioral_contract(tmp_path: Path) -> None:
+@pytest.mark.parametrize("backend", ["JPEG", "H264"])
+def test_rtp_frame_cadence_host_behavioral_contract(tmp_path: Path, backend: str) -> None:
     """Exercise fractional ratios, reset and uint32 RTP wrap in real C++."""
 
     stub = tmp_path / "esphome" / "core"
@@ -657,11 +658,34 @@ def test_rtp_frame_cadence_host_behavioral_contract(tmp_path: Path) -> None:
               if (!cadence.accept(1234U) || cadence.accept(2234U) ||
                   !cadence.accept(4234U)) return 4;
 
-                  cadence.reset(10);
-                  if (!cadence.accept(0U) || cadence.accept(5000U) ||
-                      !cadence.accept(10000U) || !cadence.accept(70000U) ||
-                      cadence.accept(74000U) || cadence.accept(78000U) ||
-                      !cadence.accept(79000U)) return 5;
+              cadence.reset(10);
+              if (!cadence.accept(0U) || cadence.accept(5000U) ||
+                  !cadence.accept(10000U) || !cadence.accept(70000U) ||
+                  cadence.accept(74000U) || cadence.accept(78000U) ||
+                  !cadence.accept(79000U)) return 5;
+
+              // A source below the limit must not bank an unbounded burst.
+              cadence.reset(10);
+              uint32_t timestamp = 0;
+              if (!cadence.accept(timestamp)) return 6;
+              for (int i = 0; i < 100; ++i) {
+                timestamp += 17000U;
+                if (!cadence.accept(timestamp)) return 7;
+              }
+              int fast = 0;
+              for (int i = 0; i < 100; ++i) {
+                timestamp += 3000U;
+                fast += cadence.accept(timestamp) ? 1 : 0;
+              }
+              // 100 samples at30fps span3.333s: limit10 plus one spare frame.
+              if (fast < 33 || fast > 35) return 8;
+
+              cadence.reset(10);
+              for (int i = 0; i < 100; ++i)
+                if (!cadence.accept(static_cast<uint32_t>(i) * 9000U)) return 9;
+              cadence.reset(10);
+              const std::array<uint32_t, 7> jitter{0U, 5000U, 10000U, 18000U, 23000U, 27000U, 36000U};
+              if (count(cadence, jitter) != 5) return 10;
               return 0;
             }
             """
@@ -677,7 +701,7 @@ def test_rtp_frame_cadence_host_behavioral_contract(tmp_path: Path) -> None:
             "-Wextra",
             "-Werror",
             "-DUSE_ESPHOME_VOIP_STACK_VIDEO",
-            "-DUSE_ESPHOME_VOIP_STACK_VIDEO_JPEG",
+            f"-DUSE_ESPHOME_VOIP_STACK_VIDEO_{backend}",
             f"-I{tmp_path}",
             f"-I{ROOT}",
             str(probe),

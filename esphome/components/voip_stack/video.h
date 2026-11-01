@@ -92,7 +92,9 @@ class RtpFrameCadence90k {
     if (elapsed >= interval * 2U) {
       credit = interval;
     } else {
-      credit = elapsed >= UINT32_MAX - credit ? UINT32_MAX : credit + elapsed;
+      // interval <= 90000; stored credit + elapsed stays below 270000 ticks.
+      credit += elapsed;
+      if (credit > 2U * interval) credit = 2U * interval;
     }
     if (credit < interval) {
       this->credit_.store(credit, std::memory_order_relaxed);
