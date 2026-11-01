@@ -29,50 +29,43 @@ def guarded_region(source, marker):
     raise AssertionError("Unbalanced production compile gate")
 
 
-def registration_transport_source(mwi=False):
-    source = (SOURCE / "sip_transport.cpp").read_text()
+def registration_transport_source(mwi=False, blf=False):
     header = (SOURCE / "sip_transport.h").read_text()
     adapter = (SOURCE / "sip_registration_transport.cpp").read_text()
-    code = wire_source()
+    code = wire_source(full_invite=True)
     # Enable the new code after standard fixture includes have been declared.
     members = guarded_region(header, "  SipRegistration registration_;")
     public = guarded_region(header, "  void initialize_registration();")
     public = public.replace("void initialize_registration();", "")
     extra = public + "\n" + members + r'''
- bool should_accept_session_()const{return true;}
- void emit_connection_change_(bool){++connection_losses;}
- unsigned connection_losses=0;
- bool close_tcp_dialog_();
- void handle_tcp_peer_loss_(SipTcpFlow*);
  bool send_sip_tcp_record_(const std::string&s,int fd){return send_sip_tcp_record_(s.data(),s.size(),fd);}
 '''
+    if mwi or blf:
+        extra += guarded_region(header, "  SipMwi mwi_;")
     if mwi:
         extra += guarded_region(header, "  bool get_message_waiting(")
-        extra += guarded_region(header, "  SipMwi mwi_;")
         extra += guarded_region(header, "  MessageWaitingCallback message_waiting_callback_")
     code = code.replace("void handle_tcp_peer_loss_(SipTcpFlow*f){close_tcp_flow_(*f);}", "")
     code += "\nvoid SipTransport::invalidate_registration_dns_(size_t) {}\n"
     names = ["registration_flow_index_", "registration_socket_index_", "account_in_use_", "retire_registration_flow_", "set_account", "remove_account",
              "register_account", "is_registered", "get_account_snapshot", "prepare_account_line", "clear_account_line", "registration_ingress_",
              "retry_authenticated_request_", "remember_registration_routes_", "registration_send_", "registration_send_view_"]
-    if mwi:
-        names += ["park_inbound_control_", "registration_mwi_reply_"]
+    if mwi or blf:
+        names += ["registration_mwi_reply_"]
     for name in names:
         marker = next(line for line in adapter.splitlines() if "SipTransport::" + name + "(" in line)
         code += "\n" + block(adapter, marker)
-    for marker in ["void SipTransport::handle_tcp_peer_loss_(", "bool SipTransport::close_tcp_dialog_("]:
-        code += "\n" + block(source, marker)
     code = code.replace("using SipTcpFlow=::SipTcpFlow;", "using SipTcpFlow=::SipTcpFlow;\n" + extra)
     code = code.replace("struct SipTransport: SipPhoneTransport {", "struct SipTransport: SipPhoneTransport {\n")
     prefix = '''#include "sip_registration.h"
 #include "sip_account_view.h"
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
 #include "sip_mwi.h"
 #endif
 #include <openssl/evp.h>
 using esphome::voip_stack::SipRegistration;
 using esphome::voip_stack::SipAccountSnapshot;
-#ifdef USE_ESPHOME_VOIP_MWI
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
 using esphome::voip_stack::SipMwi;
 using esphome::voip_stack::MessageWaitingState;
 #endif

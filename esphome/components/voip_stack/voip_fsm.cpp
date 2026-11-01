@@ -217,7 +217,7 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
       this->get_current_contact_directional_audio_v1();
 
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
-  const std::string outgoing_line = via_ha || !requested_call_id.empty() || this->force_direct_call_ ? "direct" :
+  const std::string outgoing_line = via_ha || this->force_direct_call_ ? "direct" :
       (this->pending_line_.empty() ? this->default_line_ : this->pending_line_);
   if (this->transport_ != nullptr) {
     auto *sip = static_cast<SipTransport *>(this->transport_.get());
@@ -242,7 +242,15 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
     dial_directional_audio_v1 = ha != nullptr && ha->directional_audio_v1;
   }
   const std::string selected_dest = this->get_current_destination();
-  const bool route_via_ha = via_ha || (!this->ha_peer_name_.empty() && selected_dest == this->ha_peer_name_);
+  const bool route_via_ha = via_ha ||
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+      outgoing_line == "ha" ||
+#endif
+      (
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+          outgoing_line == "direct" &&
+#endif
+          !this->ha_peer_name_.empty() && selected_dest == this->ha_peer_name_);
   const std::string dest_name = via_ha ? previous.dest_name : !display_name.empty() ? display_name : !this->pending_dialplan_target_.empty()
       ? this->pending_dialplan_target_
       : selected_dest.empty()

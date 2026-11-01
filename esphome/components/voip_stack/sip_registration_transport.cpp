@@ -115,26 +115,6 @@ void SipTransport::registration_binding_accepted_(void *context, size_t index, u
   self->mwi_.on_registration_accepted(index, self->registration_.account(index), now);
 }
 
-bool SipTransport::park_inbound_control_(int socket, const sockaddr_in &source) {
-  if (this->inbound_control_flow_.socket.load(std::memory_order_acquire) >= 0) return false;
-  bool trusted = false;
-  {
-    LockGuard lock(this->dialog_mutex_);
-    for (size_t i = 0; i < SipRegistration::CAPACITY; ++i) {
-      const auto &a = this->registration_.account(i);
-      // A UDP registrar may upgrade one NOTIFY to TCP (RFC 3261, 18.1.1).
-      // The subscription owner still validates its dialog before accepting it.
-      trusted |= a.occupied && a.bound && a.binding_ip == ntohl(source.sin_addr.s_addr);
-    }
-  }
-  if (!trusted) return false;
-  this->inbound_control_flow_.socket.store(socket, std::memory_order_release);
-  this->inbound_control_flow_.peer_ip.store(ntohl(source.sin_addr.s_addr), std::memory_order_release);
-  this->inbound_control_flow_.rx_buffer.clear();
-  this->inbound_control_deadline_ = millis() + SIP_TRANSACTION_TIMEOUT_MS;
-  return true;
-}
-
 void SipTransport::pump_registration_mwi_(uint32_t now) {
   for (size_t i = 0; i < SipRegistration::CAPACITY; ++i) {
     const auto &account = this->registration_.account(i);

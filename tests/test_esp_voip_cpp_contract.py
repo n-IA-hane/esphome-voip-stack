@@ -2023,9 +2023,8 @@ def test_completed_sip_server_transactions_are_bounded_and_replayed() -> None:
     invite = cpp_method(sip_cpp, r"SipTransport::handle_invite_")
     assert 'this->replay_completed_response_(message, src, "INVITE",' in invite
     # Account flows can coexist with a different active call transport. Cache
-    # replay uses the actual ingress; direct-only builds retain their old gate.
-    assert "this->dispatch_socket_ < 0" in invite
-    assert "!this->remote_sip_tcp_.load(std::memory_order_acquire)" in invite
+    # replay uses the actual ingress for both registered and direct builds.
+    assert "this->dispatch_is_udp_()" in invite
 
 
 def test_retransmitted_invite_final_replays_the_cached_ack() -> None:
@@ -2639,17 +2638,13 @@ def test_udp_listener_cannot_flip_an_active_tcp_dialog() -> None:
     assert "this->handle_sip_udp_datagram_(buf, n, src);" in sip_cpp
     assert "replay_completed_response_(message, src, method, true)" in udp_receive
 
-    active_guard = udp_receive.index("if (tcp_session_active && !refer_udp)")
-    udp_mode_store = udp_receive.index("this->remote_sip_tcp_.store(false")
-    assert active_guard < udp_mode_store
-    assert "tcp_flow_.socket" in udp_receive
-    assert "tcp_flow_.connecting_socket >= 0" in udp_receive
-    assert 'header_value(std::string(buf, static_cast<size_t>(n)), "Call-ID") == this->refer_wire_id_' in udp_receive
-    assert "tcp_flow_.connect_requested" in udp_receive
-    assert "bool tcp_call_active" in udp_receive
-    assert "!this->call_id_.empty()" in udp_receive
-    assert "terminal_transaction_pending_locked_()" in udp_receive
-    assert "close_tcp_client_from_sip_task_" in udp_receive
+    assert "this->handle_sip_datagram_(" in udp_receive
+    assert "remote_sip_tcp_.store" not in udp_receive
+    assert "close_tcp_client_from_sip_task_" not in udp_receive
+    invite = cpp_method(sip_cpp, r"SipTransport::handle_invite_")
+    # Only the validated/authorized initial INVITE can commit its transport.
+    assert invite.index("registration_.match_incoming") < invite.index("this->remote_sip_tcp_.store(false")
+    assert invite.index("this->claim_inbound_tcp_(") < invite.index("this->remote_ip_v4_.store")
 
 
 def test_tcp_invite_can_be_cancelled_atomically_before_connect_flush() -> None:

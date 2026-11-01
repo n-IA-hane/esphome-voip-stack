@@ -293,6 +293,9 @@ class SipTransport : public SipPhoneTransport {
 
   void handle_sip_datagram_(const char *data, size_t len, const sockaddr_in &src);
   void accept_tcp_client_(int client, const sockaddr_in &src);
+  bool park_inbound_tcp_(int socket, const sockaddr_in &source);
+  bool claim_inbound_tcp_(int socket);
+  bool reclaim_idle_inbound_tcp_(SipTcpFlow &flow);
   void handle_sip_stream_(int socket, const sockaddr_in &src);
   bool handle_invite_(const std::string &message, const sockaddr_in &src);
   bool handle_reinvite_(const std::string &message, const sockaddr_in &src);
@@ -352,7 +355,7 @@ class SipTransport : public SipPhoneTransport {
   void close_media_session_();
   void request_tcp_client_close_();
   void close_tcp_client_from_sip_task_();
-  void handle_tcp_peer_loss_(SipTcpFlow *flow = nullptr);
+  void handle_tcp_peer_loss_(SipTcpFlow *flow = nullptr, uint32_t expired_deadline = 0);
   bool close_tcp_dialog_();
   void close_tcp_flow_(SipTcpFlow &flow);
   void prepare_tcp_flow_(SipTcpFlow &flow);
@@ -711,7 +714,9 @@ class SipTransport : public SipPhoneTransport {
     SipSignalingString rx_buffer, pending;
     int connecting_socket{-1};
     uint32_t connect_deadline{0}, connecting_ip{0};
+    std::atomic<uint32_t> ingress_deadline{0};
     uint16_t connecting_port{0};
+    bool received_record{false};
 
     void swap(SipTcpFlow &other) {
       auto exchange = [](auto &left, auto &right) {
@@ -731,14 +736,25 @@ class SipTransport : public SipPhoneTransport {
       swap(connect_deadline, other.connect_deadline);
       swap(connecting_ip, other.connecting_ip);
       swap(connecting_port, other.connecting_port);
+      exchange(ingress_deadline, other.ingress_deadline);
+      swap(received_record, other.received_record);
     }
   };
   SipTcpFlow tcp_flow_;
+  // Two accepted streams at most. Empty flows allocate no receive buffer.
+  // This spare also carries subscription control when those features exist.
+  SipTcpFlow inbound_tcp_flow_;
+  // -2 outside request dispatch, -1 for UDP, otherwise the received TCP flow.
+  int dispatch_socket_{-2};
+  bool dispatch_is_udp_() const {
+    return this->dispatch_socket_ == -1 ||
+           (this->dispatch_socket_ == -2 && !this->remote_sip_tcp_.load(std::memory_order_acquire));
+  }
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   static bool registration_directional_audio_supported_(std::string_view body);
   SipRegistration registration_;
   std::array<SipTcpFlow, SipRegistration::CAPACITY> registration_flows_{};
-  int active_account_{-1}, next_account_{-1}, dispatch_socket_{-1};
+  int active_account_{-1}, next_account_{-1};
   bool accept_direct_calls_{true};
   SipDigest dialog_digest_, dialog_proxy_digest_;
   uint8_t dialog_auth_attempts_{0}, dialog_proxy_auth_attempts_{0};
@@ -794,9 +810,6 @@ class SipTransport : public SipPhoneTransport {
 #endif
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
   SipMwi mwi_;
-  SipTcpFlow inbound_control_flow_;
-  uint32_t inbound_control_deadline_{0};
-  bool park_inbound_control_(int socket, const sockaddr_in &source);
   static void registration_binding_accepted_(void *, size_t, uint32_t);
   static bool registration_mwi_reply_(void *, const std::string &, uint32_t, uint16_t, bool, int);
   void pump_registration_mwi_(uint32_t now);

@@ -69,12 +69,17 @@ class SipTransport {
  std::vector<std::string> received;
  bool swap_on_receive=false;
  void handle_sip_stream_(int,const sockaddr_in&);
- void handle_sip_datagram_(const char*data,size_t n,const sockaddr_in&){
+ void handle_sip_datagram_unlocked_(const char*data,size_t n,const sockaddr_in&){
   received.emplace_back(data,n);
   if(swap_on_receive&&received.size()==1)tcp_flow_.swap(refer_dialog_->tcp_flow_);
  }
  Mutex dialog_mutex_,tcp_tx_pending_mutex_,tcp_send_mutex_;
- SipTcpFlow tcp_flow_;std::unique_ptr<ReferState> refer_dialog_;
+ SipTcpFlow tcp_flow_,inbound_tcp_flow_;std::unique_ptr<ReferState> refer_dialog_;
+ int dispatch_socket_=-2;
+ bool should_accept_session_()const{return true;}
+ struct PendingVideo{bool pending()const{return false;}}pending_video_direction_invite_;
+ bool send_stateless_response_(const std::string&,const sockaddr_in&,uint16_t,const char*,
+                               const std::string&="",bool=false,int=-1){assert(false);return false;}
  std::string call_id_;bool refer_context_active_=false;
  std::atomic<bool> remote_sip_tcp_{true},outgoing_invite_pending_{false},media_active_{false};
  std::atomic<bool> refer_media_waiting_{false};
@@ -97,12 +102,12 @@ class SipTransport {
  bool send_sip_tcp_record_(const std::string&m,int fd){return send(fd,m.data(),m.size(),MSG_NOSIGNAL)==static_cast<ssize_t>(m.size());}
  void request_tcp_client_close_();void close_tcp_client_from_sip_task_();
  bool close_tcp_dialog_();void close_tcp_flow_(SipTcpFlow&);
- void handle_tcp_peer_loss_(SipTcpFlow* = nullptr);
+ void handle_tcp_peer_loss_(SipTcpFlow* = nullptr,uint32_t=0);
  SipTcpFlow*tcp_flow_for_socket_(int);
  void release_refer_dialog_();
  void fail_tcp_flow_(SipTcpFlow&,int);void promote_tcp_flow_(SipTcpFlow&);void prepare_tcp_flow_(SipTcpFlow&);
 };
-'''
+'''.replace('std::string&=""', 'std::string & = ""')
     for marker in (
         "void SipTransport::handle_sip_stream_(",
         "void SipTransport::request_tcp_client_close_()",

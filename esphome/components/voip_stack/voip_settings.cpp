@@ -820,7 +820,13 @@ void VoipStack::call_via_ha(const std::string &value, const std::string &call_id
     if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
           (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' || ch == '@')) return;
   }
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  this->start_call_on_line_(value, "ha", call_id, {});
+#elif defined(USE_ESPHOME_VOIP_REGISTRATION)
+  this->start_call_on_line_(value, "direct", call_id, {});
+#else
   this->call_(value, call_id);
+#endif
 }
 
 void VoipStack::hangup_call_if_id(const std::string &call_id) {
@@ -843,7 +849,7 @@ void VoipStack::call_(const std::string &value, const std::string &call_id) {
   }
 
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
-  if (call_id.empty() && !this->force_direct_call_ && this->default_line_ != "direct") {
+  if (!this->force_direct_call_ && this->default_line_ != "direct") {
     this->start_call_on_line(target, this->default_line_); return;
   }
 #endif

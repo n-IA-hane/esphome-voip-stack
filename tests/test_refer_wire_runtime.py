@@ -10,7 +10,7 @@ import pytest
 from test_refer_dialog_runtime import ROOT, SOURCE, block, refer_fixture_source
 
 
-def wire_source():
+def wire_source(*, full_invite=False):
     header = (SOURCE / 'sip_transport.h').read_text()
     source = (SOURCE / 'sip_transport.cpp').read_text()
     requests = (SOURCE / 'sip_request_response.cpp').read_text()
@@ -68,6 +68,9 @@ template<class T>void reset_string(T&s){s.clear();}
         'bool SipTransport::send_sip_tcp_record_(const char', 'void SipTransport::close_tcp_flow_(',
         'SipTransport::SipTcpFlow *SipTransport::tcp_flow_for_socket_(',
         'void SipTransport::handle_sip_stream_(',
+        'bool SipTransport::park_inbound_tcp_(',
+        'bool SipTransport::claim_inbound_tcp_(',
+        'bool SipTransport::reclaim_idle_inbound_tcp_(',
     ]
     # New common ingress/replay helpers are compiled when present. Baseline
     # ingress is extracted verbatim from the original task loop below.
@@ -97,6 +100,9 @@ template<class T>void reset_string(T&s){s.clear();}
     code = code.replace('void mark_sip_event_(SipEvent){}','void mark_sip_event_(SipEvent,uint16_t=0){}')
     code = code.replace('Mutex tcp_send_mutex_,tcp_tx_pending_mutex_;','Mutex tcp_send_mutex_,tcp_tx_pending_mutex_,dialog_mutex_,media_lifecycle_mutex_;')
     code = code.replace(' uint16_t sip_port_=5060;', 'using SipTcpFlow=::SipTcpFlow;\n'+declarations_extra + r'''
+ SipTcpFlow inbound_tcp_flow_;
+ int dispatch_socket_=-2;
+ bool should_accept_session_()const{return true;}
  uint16_t sip_port_=5060;int sip_socket_=-1;
  void stop_audio_path(){media_active_=false;}
  bool send_request_(const std::string&m){SipRequestOptions o;return send_request_(m,"",o);}
@@ -121,9 +127,53 @@ template<class T>void reset_string(T&s){s.clear();}
     marker = 'bool remote_audio_expected() const override'
     expected = (block(header, marker).replace(' override', '') if marker in header
                 else 'bool remote_audio_expected() const { return true; }')
+    expected += '\n' + block(header, 'bool dispatch_is_udp_() const {')
     code = code.replace('struct SipTransport: SipPhoneTransport {',
                         block(header, 'struct DeferredUdpResponse {') + ';\n' +
                         'struct SipTransport: SipPhoneTransport {\n' + expected + '\n')
+    return complete_invite_owner(code) if full_invite else code
+
+
+def complete_invite_owner(code):
+    source = (SOURCE / "sip_transport.cpp").read_text()
+    requests = (SOURCE / "sip_request_response.cpp").read_text()
+    parser = (SOURCE / "sip_message.cpp").read_text()
+    code = '#include <netinet/tcp.h>\n' + code
+    code = code.replace(
+        "struct SipTransport: SipPhoneTransport {",
+        "struct SipTransport: SipPhoneTransport {\n"
+        "void accept_tcp_client_(int,const sockaddr_in&);\n"
+        "AudioFormatList offer_tx_formats_,offer_rx_formats_;\n"
+        "void handle_tcp_peer_loss_(SipTcpFlow*,uint32_t=0);bool close_tcp_dialog_();\n"
+        "unsigned connection_losses=0;void emit_connection_change_(bool){++connection_losses;}\n"
+        "bool handle_reinvite_(const std::string&,const sockaddr_in&){assert(false);return false;}\n",
+        1,
+    )
+    code = code.replace("enum class MediaLifecyclePhase {IDLE}",
+                        "enum class MediaLifecyclePhase {IDLE,CLEANING,SHUTTING_DOWN}")
+    code = code.replace(
+        "bool handle_invite_(const std::string&,const sockaddr_in&){assert(false);return false;}",
+        "bool handle_invite_(const std::string&,const sockaddr_in&);",
+    )
+    code = code.replace(
+        "bool send_response_(uint16_t,const char*){assert(false);return false;}",
+        'bool send_response_(uint16_t,const char*,const std::string & = "",const std::string & = "");\n'
+        "void defer_udp_provisional_response_(const std::string&,uint32_t,uint16_t){assert(false);}\n"
+        'std::string build_sdp_answer_()const{return "v=0\\r\\n";}',
+    )
+    # Only the hardware/media adapter is controlled. SIP validation, account
+    # matching, request dispatch, responses and teardown use production code.
+    code = code.replace("struct SipPhoneTransport {",
+                        block(parser, "std::string sip_request_uri(") + "\nstruct SipPhoneTransport {", 1)
+    code = code.replace("learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool)",
+                        "learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false)")
+    code = code.replace("const RtpAudioPayloads*p)", "const RtpAudioPayloads*p=nullptr)")
+    code = code.replace("negotiated_rx_payloads_=*p;", "if(p)negotiated_rx_payloads_=*p;")
+    code += "\n" + block(source, "bool SipTransport::handle_invite_(")
+    code += "\n" + block(requests, "bool SipTransport::send_response_(")
+    code = code.replace("void handle_tcp_peer_loss_(SipTcpFlow*f){close_tcp_flow_(*f);}", "")
+    code += "\n" + block(source, "void SipTransport::handle_tcp_peer_loss_(")
+    code += "\n" + block(source, "bool SipTransport::close_tcp_dialog_(")
     return code
 
 

@@ -14,7 +14,9 @@ COMPONENT = ROOT / "esphome/components/voip_stack"
 @pytest.fixture(scope="module")
 def replay_binary(tmp_path_factory):
     path = tmp_path_factory.mktemp("incoming-replay")
-    code = wire_source()
+    code = '#include <netinet/tcp.h>\n' + wire_source()
+    code = code.replace("struct SipTransport: SipPhoneTransport {",
+                        "struct SipTransport: SipPhoneTransport {\nvoid accept_tcp_client_(int,const sockaddr_in&);", 1)
     requests = (COMPONENT / "sip_request_response.cpp").read_text()
     source = (COMPONENT / "sip_transport.cpp").read_text()
     old = "bool send_response_(uint16_t,const char*){assert(false);return false;}"
@@ -42,6 +44,7 @@ def replay_binary(tmp_path_factory):
         "bool handle_invite_(const std::string&,const sockaddr_in&);",
     )
     code += "\n" + invite
+    code += "\n" + block(source, "void SipTransport::accept_tcp_client_(")
     helpers = (ROOT / "tests/fixtures/refer_wire_main.cpp").read_text()
     helpers = helpers[: helpers.index("void auth_case(")]
     main = r"""
@@ -60,6 +63,10 @@ int main(int argc,char **argv){
  assert(s.delivered.empty()&&"a retransmission must not create a new phone operation");
  auto ack=invite;ack.replace(0,6,"ACK");
  auto cseq=ack.find("CSeq: 1 INVITE");assert(cseq!=std::string::npos);ack.replace(cseq,14,"CSeq: 1 ACK");
+ Peer other_transport(!original.tcp);if(other_transport.tcp)s.accept_tcp_client_(other_transport.esp,other_transport.address);
+ auto invalid=ack;const auto via_protocol=invalid.find(original.tcp?"SIP/2.0/TCP":"SIP/2.0/UDP");
+ assert(via_protocol!=std::string::npos);invalid.replace(via_protocol,11,original.tcp?"SIP/2.0/UDP":"SIP/2.0/TCP");
+ other_transport.send_to(s,invalid);assert(s.completed_invite_.awaiting_ack);
  original.send_to(s,ack);assert(!s.completed_invite_.awaiting_ack);
  assert(!s.terminal_transaction_pending_locked_()&&s.call_id_.empty());
  auto next=request(original,"INVITE",2,"","second");

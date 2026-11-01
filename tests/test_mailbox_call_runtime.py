@@ -46,6 +46,7 @@ struct TestMwi:SipMwi {
  void publish(size_t i,MessageWaitingState state){this->publish_(i,std::move(state));}
 };
 struct SipTransport {
+ void clear_account_line(){}
  int dialog_mutex_=0;SipRegistration registration_;TestMwi mwi_;
  bool get_message_waiting(const std::string&,MessageWaitingState*,const std::string&);
 };
@@ -59,6 +60,9 @@ struct VoipStack {
  void call_(const std::string&t,const std::string&){++calls;dialed=t;line="direct";}
  void start_with_id_(const std::string&,const std::string& = {}){++calls;dialed=pending_dialplan_target_;line=pending_line_;}
  void start_call_on_line(const std::string&,const std::string&,const std::string& = {});
+ void start_call_on_line_(const std::string&,const std::string&,const std::string&,const std::string&);
+ struct Failure{void trigger(const std::string&,const std::string&){}}call_failed_trigger_;
+ template<class F>void defer(F f){f();}
  MessageWaitingState get_message_waiting(const std::string&);
  bool mailbox_target_(const std::string&,const std::string&,std::string*,std::string*);
  bool can_call_mailbox(const std::string&="",const std::string&="");
@@ -67,6 +71,7 @@ struct VoipStack {
 '''.replace('std::string&=""', 'std::string & = ""')
     code += block(transport, "bool SipTransport::get_message_waiting(") + "\n"
     code += block(registration, "void VoipStack::start_call_on_line(") + "\n"
+    code += block(registration, "void VoipStack::start_call_on_line_(") + "\n"
     for signature in ["MessageWaitingState VoipStack::get_message_waiting(", "bool VoipStack::mailbox_target_(",
                       "bool VoipStack::can_call_mailbox(", "bool VoipStack::call_mailbox("]:
         code += block(waiting, signature) + "\n"

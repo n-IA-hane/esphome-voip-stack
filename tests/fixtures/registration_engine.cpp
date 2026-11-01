@@ -292,6 +292,25 @@ int main(int argc, char** argv) {
     assert(h.manager.is_registered("office"));
     assert(h.manager.match_incoming("esphome-office", INADDR_LOOPBACK, tcp, tcp ? 0 : -1) == 0);
     assert(h.manager.match_incoming("101", INADDR_LOOPBACK, tcp, tcp ? 0 : -1) < 0);
+  } else if (scenario == "incoming-transport") {
+    h.feed(h.first, h.success(initial), 1);
+    assert(h.manager.is_registered("office"));
+    assert(h.manager.match_incoming("esphome-office", INADDR_LOOPBACK, !tcp, -1) == 0);
+    assert(h.manager.match_incoming("esphome-office", 0x7f000002, !tcp, -1) < 0);
+    assert(h.manager.match_incoming("101", INADDR_LOOPBACK, !tcp, -1) < 0);
+    assert(h.manager.match_incoming("esphome-office", INADDR_LOOPBACK, true, 1) < 0);
+    const auto revision = h.manager.account(0).config_revision;
+    auto replacement = c;
+    replacement.password = "new-fixture-value";
+    assert(h.manager.set_account(replacement, 2));
+    assert(h.manager.account(0).config_revision != revision);
+    assert(h.manager.match_incoming("esphome-office", INADDR_LOOPBACK, !tcp, -1) < 0);
+    h.manager.tick(2);
+    auto request = h.first.receive();
+    h.feed(h.first, h.success(request), 3);
+    assert(h.manager.match_incoming("esphome-office", INADDR_LOOPBACK, !tcp, -1) == 0);
+    assert(h.manager.request_registration("office", false, 4));
+    assert(h.manager.match_incoming("esphome-office", INADDR_LOOPBACK, !tcp, -1) < 0);
   } else if (scenario == "minimum") {
     h.feed(h.first, response(initial, 423, "Min-Expires: 7200\r\n"));
     auto next = h.first.receive();

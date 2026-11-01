@@ -334,20 +334,31 @@ bool VoipStack::select_line(const std::string& id) {
   return true;
 }
 void VoipStack::start_call_on_line(const std::string& target, const std::string& line, const std::string& display_name) {
+  this->start_call_on_line_(target, line, {}, display_name);
+}
+
+void VoipStack::start_call_on_line_(const std::string& target, const std::string& line,
+                                   const std::string& call_id, const std::string& display_name) {
   if (!this->can_start_call_()) return;
   std::string cleaned = sip_normalize_dial_target(target, Phonebook::MAX_ROUTE_BYTES);
   if (cleaned.empty()) return;
   if (line == "direct") {
     this->force_direct_call_ = true;
-    this->call_(cleaned, {});
+    this->call_(cleaned, call_id);
     this->force_direct_call_ = false;
     return;
   }
-  if (!this->is_registered(line)) return;
+  if (!this->is_registered(line)) {
+    this->defer([this]() { this->call_failed_trigger_.trigger("", "PBX account unavailable"); });
+    return;
+  }
   this->pending_line_ = line;
   this->pending_dialplan_target_ = cleaned;
-  this->start_with_id_({}, display_name);
+  this->start_with_id_(call_id, display_name);
+  if (this->transport_ != nullptr)
+    static_cast<SipTransport *>(this->transport_.get())->clear_account_line();
   this->pending_line_.clear();
+  this->pending_dialplan_target_.clear();
 }
 void VoipStack::registration_state_callback_(void* ctx, const std::string& id, RegistrationState state,
                                              uint16_t status) {

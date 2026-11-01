@@ -381,9 +381,7 @@ bool SipTransport::send_stateless_response_(
       retry_after_seconds);
 
   bool response_owned = false;
-#ifdef USE_ESPHOME_VOIP_REGISTRATION
   cache_transaction = cache_transaction && (this->call_id_.empty() || this->call_id_ == call_id);
-#endif
   if (cache_transaction && status >= 200) {
     this->remember_completed_response_(request, ip, port, method, msg);
     const CompletedServerTransaction &completed =
@@ -391,15 +389,7 @@ bool SipTransport::send_stateless_response_(
                            : this->completed_control_;
     response_owned = completed.udp && completed.response == msg;
   }
-#ifdef USE_ESPHOME_VOIP_REGISTRATION
-  bool sent;
-  if (this->dispatch_socket_ >= 0) {
-    LockGuard send_lock(this->tcp_send_mutex_);
-    sent = this->send_sip_tcp_record_(msg, this->dispatch_socket_);
-  } else sent = this->send_sip_udp_bytes_(msg.data(), msg.size(), ip, port);
-#else
   const bool sent = this->send_sip_(msg, ip, port);
-#endif
   if (!sent && !response_owned) return false;
   this->mark_sip_event_(SipEvent::RESPONSE, status);
   return true;

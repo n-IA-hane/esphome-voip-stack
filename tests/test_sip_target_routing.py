@@ -25,7 +25,9 @@ using namespace esphome::voip_stack;
                    "std::string sip_normalize_dial_target("]:
         code += block(parser, marker) + "\n"
     code += r'''
+struct SipTransport{void clear_account_line(){}};
 struct VoipStack {
+ std::unique_ptr<SipTransport>transport_=std::make_unique<SipTransport>();
  Phonebook phonebook_;std::string blf_pickup_prefix_,dialed,line,display;
  std::string pending_line_,pending_dialplan_target_;bool force_direct_call_=false;
  bool can_start_call_(){return true;}
@@ -34,11 +36,15 @@ struct VoipStack {
  void call_(const std::string&target,const std::string&){dialed=target;line=force_direct_call_?"direct":"wrong";}
  void start_with_id_(const std::string&,const std::string&name={}){dialed=pending_dialplan_target_;line=pending_line_;display=name;}
  void start_call_on_line(const std::string&,const std::string&,const std::string& = {});
+ void start_call_on_line_(const std::string&,const std::string&,const std::string&,const std::string&);
+ struct Failure{void trigger(const std::string&,const std::string&){}}call_failed_trigger_;
+ template<class F>void defer(F f){f();}
  bool pickup_contact(const std::string&);
 };
 '''
     registration = (SOURCE / "voip_registration.cpp").read_text()
     code += block(registration, "void VoipStack::start_call_on_line(") + "\n"
+    code += block(registration, "void VoipStack::start_call_on_line_(") + "\n"
     code += block(owner, "bool VoipStack::pickup_contact(") + r'''
 int main(){
  assert(sip_target_uri("sip:camera@pbx.example.test:5070;transport=tcp","ignored.example.test")=="sip:camera@pbx.example.test:5070;transport=tcp");

@@ -774,10 +774,12 @@ void SipRegistration::resolution_complete(size_t i, uint32_t ip, uint32_t now, b
   a.next_ms = now;
 }
 int SipRegistration::match_incoming(const std::string& user, uint32_t ip, bool tcp, int flow_index) const {
+  // A current Contact binding identifies the account, not the transport of
+  // one request. A dedicated account flow must still belong to that account.
   for (size_t i = 0; i < CAPACITY; ++i) {
     const auto& a = this->accounts_[i];
     if (a.occupied && a.desired && a.bound && ("esphome-" + a.config.id) == user && a.binding_ip == ip &&
-        a.config.tcp == tcp && (!tcp || flow_index < 0 || flow_index == static_cast<int>(i)))
+        (!tcp || flow_index < 0 || flow_index == static_cast<int>(i)))
       return i;
   }
   return -1;

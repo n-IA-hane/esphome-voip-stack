@@ -27,7 +27,7 @@ def registration_binary(tmp_path_factory):
 
 
 @pytest.mark.parametrize("tcp", ["udp", "tcp"])
-@pytest.mark.parametrize("scenario", ["auth", "identity", "minimum", "retry", "timeout", "multiple", "intent", "unauthorized", "invalid", "async", "deadline", "dual-auth", "refresh-binding", "contacts", "same-user", "send-rejected"])
+@pytest.mark.parametrize("scenario", ["auth", "identity", "incoming-transport", "minimum", "retry", "timeout", "multiple", "intent", "unauthorized", "invalid", "async", "deadline", "dual-auth", "refresh-binding", "contacts", "same-user", "send-rejected"])
 def test_registration_wire_lifecycle(registration_binary, tcp, scenario):
     result = subprocess.run([registration_binary, scenario, tcp], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr

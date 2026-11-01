@@ -1156,6 +1156,8 @@ class VoipStack : public Component {
   bool registration_accept_direct_{true}, force_direct_call_{false};
   uint32_t registration_keepalive_interval_ms_{15000};
   std::string default_line_{"direct"}, pending_line_;
+  void start_call_on_line_(const std::string &target, const std::string &line,
+                           const std::string &call_id, const std::string &display_name);
   Trigger<std::string, std::string, int> registration_state_trigger_;
   LazyCallbackManager<void(const std::string &)> account_changed_callbacks_{};
   void publish_account_changed_(const std::string &id);
