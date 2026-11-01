@@ -183,6 +183,9 @@ class VoipStack : public Component {
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   void set_speaker(speaker::Speaker *spk) { this->speaker_ = spk; }
+  // Completion callbacks stay on the selected source; this non-owning leaf
+  // pointer supplies only the provider's public error status.
+  void set_speaker_output_feedback(Component *provider) { this->speaker_feedback_source_ = provider; }
 #endif
 
   void set_dc_offset_removal(bool enabled) { this->dc_offset_removal_ = enabled; }
@@ -654,18 +657,25 @@ class VoipStack : public Component {
     NONE,
     NETWORK_GAP,
     MUTED_SINK,
+    PREROLL,
   };
   void play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason silence_reason, TickType_t ticks_to_wait,
                       uint32_t revision);
   void play_silence_frame_(SilenceReason reason, TickType_t ticks_to_wait, uint32_t revision);
-  void reset_rx_audio_();
+  void reset_rx_audio_(bool preserve_playout = false);
+  enum class RxPlayoutPhase : uint8_t { STOPPED, PREPARING, WAITING_OUTPUT, READY, ACTIVE };
+  RxPlayoutPhase rx_playout_phase_(uint32_t revision) const;
+  bool prepare_rx_playout_();
+  bool activate_rx_playout_();
+  void speaker_output_progress_(uint32_t frames, int64_t timestamp);
+  bool play_rx_preroll_(uint32_t revision, TickType_t frame_ticks);
 #endif
 
   void set_audio_devices_active_(bool on);
   void set_in_call_(bool on);
   void start_speaker_for_current_rx_();
   bool prepare_speaker_for_current_rx_();
-  enum class ApplicationMediaStart : uint8_t { NONE, ORIGINATE, ANSWER, CONFIRM };
+  enum class ApplicationMediaStart : uint8_t { NONE, ORIGINATE, ANSWER, CONFIRM, OFFER };
   void begin_application_media_start_(ApplicationMediaStart action);
   void finish_application_media_start_(ApplicationMediaStart action);
   void pump_application_media_start_();
@@ -893,6 +903,10 @@ class VoipStack : public Component {
   std::unique_ptr<RtpJitterBuffer> rx_jitter_buffer_;
   // A pending speaker write belongs to the receive session that supplied it.
   std::atomic<uint32_t> rx_audio_revision_{0};
+  // One RX owner phase, tagged by the existing revision (not another epoch).
+  std::atomic<uint32_t> rx_playout_state_{0};
+  std::atomic<uint32_t> rx_prepare_started_us_{0};
+  Component *speaker_feedback_source_{nullptr};
   // One fixed continuation and resolved peer, with no heap/identity copies.
   // Pack the IPv4/port/transport/action into eight bytes; RX revision already
   // guards reentrant changes while preparing the sink.
@@ -910,6 +924,8 @@ class VoipStack : public Component {
   std::atomic<uint32_t> audio_debug_rx_startup_logged_[8]{
       UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
   void debug_rx_startup_event_(RxStartupEvent event, uint32_t revision);
+  std::atomic<uint32_t> debug_output_first_us_{0}, debug_output_last_us_{0};
+  uint32_t debug_zero_output_us_{0}, debug_drop_output_us_{0};
 #endif
   TaskHandle_t rx_task_handle_{nullptr};
   StaticTask_t rx_task_tcb_{};

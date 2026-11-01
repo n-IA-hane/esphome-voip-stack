@@ -302,6 +302,108 @@ void VoipStack::rx_task(void *param) {
   static_cast<VoipStack *>(param)->rx_task_();
 }
 
+VoipStack::RxPlayoutPhase VoipStack::rx_playout_phase_(uint32_t revision) const {
+  const uint32_t state = this->rx_playout_state_.load(std::memory_order_acquire);
+  return (state >> 3U) == (revision & 0x1fffffffU) ? static_cast<RxPlayoutPhase>(state & 7U) : RxPlayoutPhase::STOPPED;
+}
+
+bool VoipStack::prepare_rx_playout_() {
+  if (this->speaker_ == nullptr || !this->get_current_rx_audio_format_().is_valid()) return true;
+  if (this->speaker_feedback_source_ != nullptr &&
+      (this->speaker_feedback_source_->is_failed() || this->speaker_feedback_source_->status_has_error()))
+    return false;
+  const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
+  const RxPlayoutPhase phase = this->rx_playout_phase_(revision);
+  if (phase == RxPlayoutPhase::READY || phase == RxPlayoutPhase::ACTIVE) return true;
+  if (phase == RxPlayoutPhase::STOPPED) {
+    this->rx_prepare_started_us_.store(static_cast<uint32_t>(esp_timer_get_time()), std::memory_order_release);
+    // Unrecognized legacy providers retain input-admission readiness. They
+    // never wait for an output callback their public implementation omits.
+    const auto next = this->speaker_feedback_source_ == nullptr ? RxPlayoutPhase::READY : RxPlayoutPhase::PREPARING;
+    this->rx_playout_state_.store((revision << 3U) | static_cast<uint8_t>(next), std::memory_order_release);
+    if (this->rx_task_handle_ != nullptr) xTaskNotifyGive(this->rx_task_handle_);
+  }
+  return this->rx_playout_phase_(revision) == RxPlayoutPhase::READY;
+}
+
+bool VoipStack::activate_rx_playout_() {
+  if (this->speaker_ == nullptr || !this->get_current_rx_audio_format_().is_valid()) return true;
+  const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
+  uint32_t expected = (revision << 3U) | static_cast<uint8_t>(RxPlayoutPhase::READY);
+  if (!this->rx_playout_state_.compare_exchange_strong(
+          expected, (revision << 3U) | static_cast<uint8_t>(RxPlayoutPhase::ACTIVE), std::memory_order_acq_rel))
+    return false;
+  if (this->rx_task_handle_ != nullptr) xTaskNotifyGive(this->rx_task_handle_);
+  return true;
+}
+
+void VoipStack::speaker_output_progress_(uint32_t frames, int64_t timestamp) {
+  const uint32_t state = this->rx_playout_state_.load(std::memory_order_acquire);
+  if ((state & 7U) != static_cast<uint8_t>(RxPlayoutPhase::WAITING_OUTPUT)) {
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+    if (this->audio_debug_ && ((state & 7U) == static_cast<uint8_t>(RxPlayoutPhase::READY) ||
+                               (state & 7U) == static_cast<uint8_t>(RxPlayoutPhase::ACTIVE)))
+      this->debug_output_last_us_.store(static_cast<uint32_t>(timestamp), std::memory_order_relaxed);
+#endif
+    return;
+  }
+  const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
+  if (frames == 0 || this->speaker_ == nullptr || !this->speaker_->is_running() ||
+      this->rx_playout_phase_(revision) == RxPlayoutPhase::STOPPED ||
+      static_cast<int32_t>(static_cast<uint32_t>(timestamp) -
+                           this->rx_prepare_started_us_.load(std::memory_order_acquire)) < 0)
+    return;
+  uint32_t expected = (revision << 3U) | static_cast<uint8_t>(RxPlayoutPhase::WAITING_OUTPUT);
+  const bool prepared = this->rx_playout_state_.compare_exchange_strong(
+      expected, (revision << 3U) | static_cast<uint8_t>(RxPlayoutPhase::READY), std::memory_order_release);
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  if (this->audio_debug_) {
+    this->debug_output_last_us_.store(static_cast<uint32_t>(timestamp), std::memory_order_relaxed);
+    if (prepared) {
+      uint32_t first = 0;
+      this->debug_output_first_us_.compare_exchange_strong(first, static_cast<uint32_t>(timestamp),
+                                                           std::memory_order_relaxed);
+    }
+  }
+#else
+  (void)prepared;
+#endif
+}
+
+bool VoipStack::play_rx_preroll_(uint32_t revision, TickType_t frame_ticks) {
+  const RxPlayoutPhase phase = this->rx_playout_phase_(revision);
+  if (this->speaker_feedback_source_ == nullptr && phase == RxPlayoutPhase::ACTIVE) return false;
+  const bool awaiting_first =
+      phase == RxPlayoutPhase::ACTIVE && !this->first_audio_received_.load(std::memory_order_acquire);
+  if (!awaiting_first && phase != RxPlayoutPhase::PREPARING && phase != RxPlayoutPhase::WAITING_OUTPUT &&
+      phase != RxPlayoutPhase::READY)
+    return false;
+  if (!awaiting_first && this->speaker_feedback_source_ == nullptr) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    return true;
+  }
+  // The ordinary receive clock owns the frame deadline, including wakeups.
+  const TickType_t started = xTaskGetTickCount();
+  TickType_t remaining = frame_ticks;
+  while (remaining > 0 && this->rx_audio_revision_.load(std::memory_order_acquire) == revision) {
+    ulTaskNotifyTake(pdTRUE, remaining);
+    const auto current = this->rx_playout_phase_(revision);
+    if (current == RxPlayoutPhase::STOPPED || (!awaiting_first && current == RxPlayoutPhase::ACTIVE) ||
+        (awaiting_first &&
+         (current != RxPlayoutPhase::ACTIVE || this->first_audio_received_.load(std::memory_order_acquire))))
+      return true;
+    const TickType_t elapsed = xTaskGetTickCount() - started;
+    if (elapsed >= frame_ticks) break;
+    remaining = frame_ticks - elapsed;
+  }
+  if (this->rx_audio_revision_.load(std::memory_order_acquire) == revision &&
+      this->rx_playout_phase_(revision) != RxPlayoutPhase::STOPPED &&
+      (awaiting_first || this->rx_playout_phase_(revision) != RxPlayoutPhase::ACTIVE)) {
+    this->play_silence_frame_(SilenceReason::PREROLL, 0, revision);
+  }
+  return true;
+}
+
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
 void VoipStack::debug_rx_startup_event_(RxStartupEvent event, uint32_t revision) {
   if (!this->audio_debug_ || this->rx_audio_revision_.load(std::memory_order_acquire) != revision) return;
@@ -313,6 +415,8 @@ void VoipStack::debug_rx_startup_event_(RxStartupEvent event, uint32_t revision)
   // must neither log against nor overwrite a newer revision's first event.
   while (static_cast<int32_t>(revision - seen) > 0) {
     if (this->rx_audio_revision_.load(std::memory_order_acquire) != revision) return;
+    if (event == RxStartupEvent::FIRST_ZERO_WRITE) this->debug_zero_output_us_ = this->debug_output_last_us_.load(std::memory_order_relaxed);
+    if (event == RxStartupEvent::FIRST_JITTER_DROP) this->debug_drop_output_us_ = this->debug_output_last_us_.load(std::memory_order_relaxed);
     if (!marker.compare_exchange_weak(seen, revision, std::memory_order_relaxed)) continue;
     if (this->rx_audio_revision_.load(std::memory_order_acquire) != revision) return;
     static const char *const names[]{"speaker_start_request", "in_call_gate", "rx_enqueue", "play_attempt",
@@ -405,14 +509,20 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
   }
 
   size_t offset = 0;
-  while (offset < bytes && this->audio_devices_active_.load(std::memory_order_acquire) &&
-         this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL &&
+  while (offset < bytes && (this->audio_devices_active_.load(std::memory_order_acquire) ||
+                           this->rx_playout_phase_(revision) != RxPlayoutPhase::ACTIVE) &&
+         this->rx_playout_phase_(revision) != RxPlayoutPhase::STOPPED &&
          this->rx_audio_revision_.load(std::memory_order_acquire) == revision) {
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
     if (trace_pcm) this->debug_rx_startup_event_(RxStartupEvent::PLAY_ATTEMPT, revision);
 #endif
     const TickType_t started = xTaskGetTickCount();
     const size_t written = this->speaker_->play(pcm + offset, bytes - offset, ticks_to_wait);
+    if (written > 0 && silence_reason == SilenceReason::PREROLL) {
+      uint32_t expected = (revision << 3U) | static_cast<uint8_t>(RxPlayoutPhase::PREPARING);
+      this->rx_playout_state_.compare_exchange_strong(
+          expected, (revision << 3U) | static_cast<uint8_t>(RxPlayoutPhase::WAITING_OUTPUT), std::memory_order_release);
+    }
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
     if (trace_pcm) {
       if (written == 0) {
@@ -469,13 +579,14 @@ void VoipStack::rx_task_() {
   uint32_t previous_revision = UINT32_MAX;
 
   while (true) {
-    if (!this->audio_devices_active_.load(std::memory_order_acquire) ||
-        this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL) {
+    const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
+    if (this->rx_playout_phase_(revision) == RxPlayoutPhase::STOPPED ||
+        (!this->audio_devices_active_.load(std::memory_order_acquire) &&
+         this->rx_playout_phase_(revision) == RxPlayoutPhase::ACTIVE)) {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
       continue;
     }
 
-    const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
     if (revision != previous_revision) {
       previous_format_packed = 0;
       previous_revision = revision;
@@ -489,6 +600,7 @@ void VoipStack::rx_task_() {
         static_cast<uint64_t>(rx_format.frame_ms) * configTICK_RATE_HZ;
     const TickType_t frame_ticks = static_cast<TickType_t>(
         std::max<uint64_t>(1, (frame_tick_numerator + 999) / 1000));
+    if (this->play_rx_preroll_(revision, frame_ticks)) continue;
     // A sink may go idle before the first RTP packet arrives. Deliver media
     // through play(), whose speaker contract starts it again as needed; waiting
     // for is_running() here would prevent that restart indefinitely.
@@ -563,7 +675,7 @@ void VoipStack::rx_task_() {
       while (remaining > 0) {
         ulTaskNotifyTake(pdTRUE, remaining);
         if (!this->audio_devices_active_.load(std::memory_order_acquire) ||
-            this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL ||
+            this->rx_playout_phase_(revision) != RxPlayoutPhase::ACTIVE ||
             this->rx_audio_revision_.load(std::memory_order_acquire) != revision) {
           break;
         }
@@ -572,7 +684,7 @@ void VoipStack::rx_task_() {
         remaining = frame_ticks - elapsed;
       }
       if (!this->audio_devices_active_.load(std::memory_order_acquire) ||
-          this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL ||
+          this->rx_playout_phase_(revision) != RxPlayoutPhase::ACTIVE ||
           this->rx_audio_revision_.load(std::memory_order_acquire) != revision) {
         continue;
       }
@@ -585,7 +697,7 @@ void VoipStack::rx_task_() {
       if (now - underrun_start >= VoipStack::kRxSilenceAfterMs &&
           this->first_audio_received_.load(std::memory_order_acquire) &&
           this->audio_devices_active_.load(std::memory_order_acquire) &&
-          this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL) {
+          this->rx_playout_phase_(revision) == RxPlayoutPhase::ACTIVE) {
         // The notification wait above already owns this frame's cadence.
         // Do not add a second blocking budget in the speaker sink.
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
@@ -607,8 +719,13 @@ void VoipStack::rx_task_() {
   }
 }
 
-void VoipStack::reset_rx_audio_() {
-  this->rx_audio_revision_.fetch_add(1, std::memory_order_acq_rel);
+void VoipStack::reset_rx_audio_(bool preserve_playout) {
+  const uint32_t old_revision = this->rx_audio_revision_.load(std::memory_order_acquire);
+  const bool active = preserve_playout && this->rx_playout_phase_(old_revision) == RxPlayoutPhase::ACTIVE;
+  const uint32_t revision = this->rx_audio_revision_.fetch_add(1, std::memory_order_acq_rel) + 1;
+  this->rx_playout_state_.store(
+      (revision << 3U) | static_cast<uint8_t>(active ? RxPlayoutPhase::ACTIVE : RxPlayoutPhase::STOPPED),
+      std::memory_order_release);
   if (this->rx_jitter_buffer_ != nullptr) {
     this->rx_jitter_buffer_->reset();
   }

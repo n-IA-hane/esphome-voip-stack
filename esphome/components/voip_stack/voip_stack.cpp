@@ -245,6 +245,13 @@ bool VoipStack::allocate_setup_buffers_() {
 }
 
 bool VoipStack::setup_audio_helpers_() {
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+  if (this->speaker_ != nullptr && this->speaker_feedback_source_ != nullptr) {
+    this->speaker_->add_audio_output_callback([this](uint32_t frames, int64_t timestamp) {
+      this->speaker_output_progress_(frames, timestamp);
+    });
+  }
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
   if (this->microphone_ != nullptr) {
     this->microphone_->add_data_callback([this](const std::vector<uint8_t> &data) {
@@ -310,6 +317,9 @@ bool VoipStack::setup_transport_() {
 #endif
 
   // Wire callbacks before start() so the transport task never fires into null.
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  this->transport_->configure_startup_trace(this->audio_debug_, this->buffers_in_psram_);
+#endif
   this->transport_->set_audio_callback(VoipStack::transport_audio_callback_, this);
   this->transport_->set_sip_signal_callback(VoipStack::transport_sip_signal_callback_, this);
   this->transport_->set_connection_callback(VoipStack::transport_connection_callback_, this);

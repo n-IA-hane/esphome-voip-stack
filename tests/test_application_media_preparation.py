@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import os
+import re
 import subprocess
 
 import pytest
@@ -13,6 +14,33 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "esphome/components/voip_stack"
 
 
+def test_running_input_without_output_progress_cannot_answer(tmp_path):
+    code = incoming_source()
+    code = code.replace("unsigned prepares=0,disconnects=0,aborts=0;",
+                        "unsigned prepares=0,disconnects=0,aborts=0,answers=0;")
+    code = code.replace("bool send_sip_answer_(const std::string&){return true;}",
+                        "bool send_sip_answer_(const std::string&){++t.answers;return true;}")
+    code += r'''
+int main(){
+ VoipStack phone;phone.rx_clock_ready=false;SipSignal invite;invite.type=SipSignalType::INVITE;
+ invite.call_id="running-without-output";invite.caller_name="caller";invite.caller_route="100";
+ invite.dest_name="esp";invite.dest_route="esp";
+ audio_format_list_default(&invite.caller_tx_formats);audio_format_list_default(&invite.caller_rx_formats);
+ phone.on_sip_signal_received_(invite);
+ assert(phone.t.answers==0&&"Input RUNNING without current source output progress is not prepared");
+}
+'''
+    cpp = tmp_path / "no_output.cpp"
+    cpp.write_text(code)
+    executable = tmp_path / "no_output"
+    built = subprocess.run(["g++", "-std=c++17", "-DUSE_ESPHOME_VOIP_STACK_SPEAKER", "-I", str(ROOT),
+                            str(cpp), "-o", str(executable)], capture_output=True, text=True)
+    assert built.returncode == 0, built.stderr
+    run = subprocess.run(["bash", "-c", 'ulimit -c 0; exec "$1"', "bash", str(executable)],
+                         capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+
+
 @pytest.mark.parametrize("speaker", [False, True])
 def test_actual_preparation_yields_preserves_prebuffer_and_cancels(tmp_path, speaker):
     fsm = (COMPONENT / "voip_fsm.cpp").read_text()
@@ -21,14 +49,17 @@ def test_actual_preparation_yields_preserves_prebuffer_and_cancels(tmp_path, spe
     header = (COMPONENT / "voip_stack.h").read_text()
     start = header.index("  enum class ApplicationMediaStart")
     enum = header[start:header.index(";", start) + 1].strip()
-    source = source.replace("enum class ApplicationMediaStart:uint8_t{NONE,ORIGINATE,ANSWER,CONFIRM};", enum)
+    source = source.replace("enum class ApplicationMediaStart:uint8_t{NONE,ORIGINATE,ANSWER,CONFIRM,OFFER};", enum)
     for marker in ("void VoipStack::start_speaker_for_current_rx_(",
                    "bool VoipStack::prepare_speaker_for_current_rx_(",
                    "void VoipStack::begin_application_media_start_(",
                    "void VoipStack::finish_application_media_start_(",
                    "void VoipStack::pump_application_media_start_(", "void VoipStack::set_in_call_("):
         source += "\n" + block(fsm, marker)
-    for marker in ("void VoipStack::reset_rx_audio_(", "void VoipStack::play_rx_frame_("):
+    for marker in ("void VoipStack::reset_rx_audio_(", "void VoipStack::play_rx_frame_(",
+                   "void VoipStack::play_silence_frame_(", "VoipStack::RxPlayoutPhase VoipStack::rx_playout_phase_(",
+                   "bool VoipStack::prepare_rx_playout_(", "bool VoipStack::activate_rx_playout_(",
+                   "void VoipStack::speaker_output_progress_(", "bool VoipStack::play_rx_preroll_("):
         source += "\n" + block(audio, marker)
     source += r'''
 int main(){
@@ -49,7 +80,7 @@ int main(){
  // Current-call packets can reach CONNECTING before the public IN_CALL gate.
  phone.call_state_=CallState::CONNECTING;
  for(unsigned n=0;n<4;++n)assert(jitter.push({pcm,960,uint16_t(n),n*480,true,false}));
- phone.set_in_call_(true);
+ phone.activate_rx_playout_();phone.set_in_call_(true);
  assert(phone.rx_audio_revision_==claimed&&jitter.depth()==4&&!jitter.counters().drops);
  assert(jitter.read(out,960)==RtpJitterBuffer::ReadResult::FRAME);
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
@@ -240,6 +271,7 @@ def test_preparation_continuation_has_no_heap_or_extra_call_identity():
                    "void VoipStack::pump_application_media_start_(",
                    "void VoipStack::finish_application_media_start_("):
         body = block(fsm, marker)
+        body = re.sub(r"//[^\n]*", "", body)
         assert "std::function" not in body and "[this" not in body
         assert "new " not in body and "defer(" not in body
     header = (COMPONENT / "voip_stack.h").read_text()

@@ -49,7 +49,7 @@ int main() {
   connected.call_id="incoming"; connected.media_source_changed=true;
   connected.connected_name="transfer target";
   phone.on_sip_signal_received_(connected);
-  assert(phone.watchdog_resets==1);
+  assert(phone.watchdog_resets==2); // Media activation, then the new source.
   assert(phone.rx_resets==
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
     2

@@ -31,6 +31,7 @@ def media_failure_source():
 #include <sys/socket.h>
 #include <unistd.h>
 #define ESP_LOGE(...) ((void)0)
+#define VOIP_STARTUP_EVENT(...) ((void)0)
 using namespace esphome::voip_stack;
 constexpr unsigned kRtpSocketRxBufferBytes=65536;
 uint32_t esp_random(){return 42;}

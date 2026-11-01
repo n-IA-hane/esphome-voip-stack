@@ -1618,13 +1618,15 @@ def test_incoming_answer_prepares_before_200_and_commits_after_send() -> None:
     manual = cpp_method(fsm, r"VoipStack::answer_call")
     assert "this->complete_incoming_answer_(true)" in manual
     incoming = cpp_method(fsm, r"VoipStack::complete_incoming_answer_")
-    waiting = incoming[incoming.index("if (waiting)"):incoming.index("this->incoming_setup_pending_ = true;")]
-    assert "send_sip_answer_" in waiting and "return;" in waiting
+    waiting_start = incoming.index("if (waiting)")
+    waiting = incoming[waiting_start:incoming.index("\n  }", waiting_start)]
+    assert "ApplicationMediaStart::OFFER" in waiting and "return;" in waiting
     assert "prepare_media_path()" not in waiting and "set_audio_devices_active_" not in waiting
     prepared = cpp_method(fsm, r"VoipStack::finish_application_media_start_")
-    assert prepared.index("prepare_media_path()") < prepared.index("send_sip_answer_")
-    assert prepared.index("send_sip_answer_") < prepared.index("commit_media_path()")
-    assert incoming.index("set_audio_devices_active_(true)") < incoming.index("begin_application_media_start_")
+    normal = prepared[prepared.index("const bool send_answer"):]
+    assert normal.index("prepare_media_path()") < normal.index("send_sip_answer_")
+    assert normal.index("send_sip_answer_") < normal.index("activate_rx_playout_") < normal.index("commit_media_path()")
+    assert incoming.index("set_audio_devices_active_(true)") < incoming.rindex("begin_application_media_start_")
     assert incoming.count("abort_media_path()") + prepared.count("abort_media_path()") == 3
 
     auto_start = fsm.index("      if (this->auto_answer_)")
@@ -1837,7 +1839,12 @@ def test_audio_path_uses_event_driven_tx_pacing_and_sink_backpressure() -> None:
 
     combined = "\n".join([audio, stack, header])
     assert "vTaskDelayUntil" not in combined
-    assert "add_audio_output_callback" not in combined
+    setup = cpp_method(stack, r"VoipStack::setup_audio_helpers_")
+    assert setup.count("add_audio_output_callback") == 1
+    tx = cpp_method(audio, r"VoipStack::tx_task_")
+    assert "speaker_output_progress_" not in tx and "add_audio_output_callback" not in tx
+    progress = cpp_method(audio, r"VoipStack::speaker_output_progress_")
+    assert "send_audio_frame" not in progress and "->play(" not in progress
     assert "handle_speaker_output_" not in combined
     assert "kTxPrebufferFrames" not in combined
     assert "kTxQueuedFrames" not in combined
@@ -2351,16 +2358,17 @@ def test_rtp_receive_hot_path_uses_atomic_state_not_call_id_strings() -> None:
     assert "set_in_call_" not in receive
 
     ok_response = fsm[fsm.index("case SipSignalType::STATUS_200_OK") : fsm.index("case SipSignalType::CANCEL")]
-    assert ok_response.index("set_call_state_(CallState::CONNECTING)") < ok_response.index("begin_application_media_start_")
+    assert "set_call_state_(CallState::CONNECTING)" not in ok_response
     assert "ApplicationMediaStart::CONFIRM" in ok_response
     finish = cpp_method(fsm, r"VoipStack::finish_application_media_start_")
-    assert finish.index("commit_media_path()") < finish.index("set_in_call_(true)")
+    assert finish.index("activate_rx_playout_") < finish.index("commit_media_path()")
+    assert finish.index("commit_media_path()") < finish.index("set_call_state_(CallState::CONNECTING)") < finish.index("set_in_call_(true)")
 
 
 def test_rx_gap_playout_has_only_one_blocking_frame_budget() -> None:
     audio = read("voip_audio.cpp")
 
-    rx_task = audio[audio.index("void VoipStack::rx_task_()") : audio.index("\nvoid VoipStack::reset_rx_audio_()")]
+    rx_task = audio[audio.index("void VoipStack::rx_task_()") : audio.index("\nvoid VoipStack::reset_rx_audio_(")]
     assert "ulTaskNotifyTake(pdTRUE, frame_ticks);" in rx_task
     assert "play_silence_frame_(SilenceReason::NETWORK_GAP, 0, revision);" in rx_task
     assert "play_silence_frame_(SilenceReason::NETWORK_GAP, frame_ticks, revision);" not in rx_task

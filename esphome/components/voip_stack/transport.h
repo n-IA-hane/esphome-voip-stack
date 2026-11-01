@@ -199,6 +199,10 @@ class SipPhoneTransport {
   virtual void abort_media_path() { this->stop_audio_path(); }
   /// Compatibility one-shot used by the already-confirmed outgoing call path.
   virtual bool start_audio_path() { return true; }
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  virtual void configure_startup_trace(bool enabled, bool prefer_psram) { (void) enabled; (void) prefer_psram; }
+  virtual void dump_startup_trace() {}
+#endif
   virtual void stop_audio_path() {}
 
   virtual SipTransportSnapshot snapshot() const { return {}; }

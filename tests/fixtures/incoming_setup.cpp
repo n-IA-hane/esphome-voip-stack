@@ -50,14 +50,16 @@ struct VoipStack {
  void start_call_attempt_(bool){assert(false);}
  bool ha_media_fallback_pending_=false,ha_media_fallback_attempted_=false;
  std::atomic<bool>first_audio_received_{false};
- std::atomic<uint32_t>rx_audio_revision_{0};
+ std::atomic<uint32_t>rx_audio_revision_{0},rx_playout_state_{0};
+ void*rx_task_handle_=nullptr;static void xTaskNotifyGive(void*){}
  uint32_t ringing_start_time_=0,calling_start_time_=0;
  static constexpr uint32_t INVITE_NO_RESPONSE_TIMEOUT_MS=5000;
- enum class ApplicationMediaStart:uint8_t{NONE,ORIGINATE,ANSWER,CONFIRM};
+ enum class ApplicationMediaStart:uint8_t{NONE,ORIGINATE,ANSWER,CONFIRM,OFFER};
  uint32_t prepared_peer_ip_=0x7f000001;uint16_t prepared_peer_port_=5060;bool prepared_peer_tcp_=false;
  ApplicationMediaStart pending_media_start_=ApplicationMediaStart::NONE;
  void enable_loop_soon_any_context(){}
  bool prepare_speaker_for_current_rx_(){return true;}
+ bool rx_clock_ready=true;bool prepare_rx_playout_(){return rx_clock_ready;}bool activate_rx_playout_(){return rx_clock_ready;}
  void begin_application_media_start_(ApplicationMediaStart);
  void finish_application_media_start_(ApplicationMediaStart);
  void pump_application_media_start_();
@@ -98,7 +100,7 @@ struct VoipStack {
  void finish_call_termination_();
  void clear_call_identity_();
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
- void reset_rx_audio_(){++rx_resets;++rx_audio_revision_;}
+ void reset_rx_audio_(bool=false){++rx_resets;++rx_audio_revision_;}
 #endif
  void reset_peer_audio_watchdog_(bool){++watchdog_resets;}
  CallSnapshot snapshot_call_identity_()const{return identity;}

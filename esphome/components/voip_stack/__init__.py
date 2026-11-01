@@ -405,6 +405,52 @@ def _declared_config_for_id(id_value):
     return fconf.get_config_for_path(path)
 
 
+def _speaker_output_feedback_provider(speaker_id):
+    """Resolve output-credit support at validation time, never a runtime graph."""
+    fconf = fv.full_config.get()
+
+    def references(value, target):
+        if isinstance(value, dict):
+            return sum(references(item, target) for key, item in value.items()
+                       if not str(key).startswith("_speaker_output_feedback"))
+        if isinstance(value, (list, tuple)):
+            return sum(references(item, target) for item in value)
+        return int(getattr(value, "id", None) == getattr(target, "id", None)
+                   and not getattr(value, "is_declaration", True))
+
+    current = speaker_id
+    scoped = False
+    seen = set()
+    try:
+        for _ in range(8):
+            if str(current) in seen:
+                return None
+            seen.add(str(current))
+            if not scoped and references(fconf, current) > 1:
+                return None
+            path = fconf.get_path_for_id(current)[:-1]
+            node = fconf.get_config_for_path(path)
+            if "source_speakers" in path:
+                parent = fconf.get_config_for_path(path[:path.index("source_speakers")])
+                if parent.get("platform") != "mixer":
+                    return None
+                scoped = True  # SourceSpeaker accounts only its own frames.
+                current = parent["output_speaker"]
+            elif node.get("platform") == "resampler":
+                current = node["output_speaker"]
+            else:
+                if node.get("platform") == "esp_audio_stack" and not scoped:
+                    parent_id = getattr(node.get("esp_audio_stack_id"), "id", None)
+                    for other in fconf.get(CONF_SPEAKER, []):
+                        if other is not node and other.get("platform") == "esp_audio_stack" and parent_id is not None:
+                            if getattr(other.get("esp_audio_stack_id"), "id", None) == parent_id:
+                                return None  # Direct callbacks would include another wrapper's frames.
+                return current if node.get("platform") in ("esp_audio_stack", "i2s_audio") else None
+    except (KeyError, ValueError, AttributeError, TypeError):
+        return None  # Custom providers keep their existing admission contract.
+    return None
+
+
 def _single_stream_value(declaration: dict, key: str, min_key: str, max_key: str):
     if key in declaration:
         return declaration[key]
@@ -938,6 +984,7 @@ def _final_validate(config):
         )(config[CONF_MICROPHONE_SOURCE])
 
     if CONF_SPEAKER in config:
+        config["_speaker_output_feedback"] = _speaker_output_feedback_provider(config[CONF_SPEAKER])
         try:
             audio.final_validate_audio_schema(
                 "voip_stack",
@@ -996,6 +1043,9 @@ async def _add_core_settings(var, config):
         cg.add_define("USE_ESPHOME_VOIP_STACK_SPEAKER")
         spk = await cg.get_variable(config[CONF_SPEAKER])
         cg.add(var.set_speaker(spk))
+        if config.get("_speaker_output_feedback", False):
+            provider = await cg.get_variable(config["_speaker_output_feedback"])
+            cg.add(var.set_speaker_output_feedback(provider))
 
     cg.add(var.set_dc_offset_removal(config[CONF_DC_OFFSET_REMOVAL]))
     cg.add(var.set_task_stacks_in_psram(config[CONF_TASK_STACKS_IN_PSRAM]))

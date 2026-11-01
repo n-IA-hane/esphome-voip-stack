@@ -161,6 +161,10 @@ class SipTransport : public SipPhoneTransport {
   bool commit_media_path() override;
   void abort_media_path() override;
   bool start_audio_path() override;
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  void configure_startup_trace(bool enabled, bool prefer_psram) override;
+  void dump_startup_trace() override;
+#endif
   void stop_audio_path() override;
   bool originate(const std::string &host, uint16_t port) override;
   void set_remote(const std::string &ip, uint16_t port, uint16_t rtp_port = 0) override;
@@ -274,6 +278,20 @@ class SipTransport : public SipPhoneTransport {
       RAMAllocator<T>().deallocate(value, 1);
     }
   };
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  enum class StartupEvent : uint8_t { BIND, PREPARE, PREPARED, COMMIT, NOTIFY, VIDEO_BEGIN, VIDEO_END,
+                                     COMMITTED, WAKE, RECV, INVITE, ACK, VIDEO_PREPARE, VIDEO_PREPARED, COUNT };
+  struct StartupTrace {
+    struct Packet { uint32_t us, done_us, timestamp, ssrc; uint16_t sequence; uint8_t pt, phase; };
+    std::atomic<uint32_t> events[static_cast<uint8_t>(StartupEvent::COUNT)]{};
+    Packet packets[64]{};
+    uint8_t count{0};
+  };
+  std::unique_ptr<StartupTrace, ReferDeleter> startup_trace_;
+  void reset_startup_trace_();
+  void record_startup_(StartupEvent event);
+  uint8_t record_startup_packet_(const uint8_t *data, size_t bytes);
+#endif
   class ReferScope;
   bool send_invite_unlocked_(const std::string &call_id, const std::string &caller_route,
                              const std::string &caller_name, const std::string &dest_route,

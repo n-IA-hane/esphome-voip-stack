@@ -12,13 +12,17 @@ const char *inet_ntoa_r(in_addr a,char*out,size_t n){return inet_ntop(AF_INET,&a
 #define ESP_LOGI(...) ((void)0)
 #define ESP_LOGD(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
+#define ESP_LOGW(...) ((void)0)
 #define pdTRUE 1
+#define portMAX_DELAY 0xffffffffU
 using TickType_t=uint32_t;
+#define configTICK_RATE_HZ 1000
+struct Paused{};bool yield_on_wait=false,skip_wait=false;std::function<void()>on_wait;
 uint32_t clock_ms=0;
 uint32_t millis(){return clock_ms;}
 uint32_t xTaskGetTickCount(){return clock_ms;}
-void ulTaskNotifyTake(int,uint32_t duration){clock_ms+=duration;}
-enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP};
+void ulTaskNotifyTake(int,uint32_t duration){if(on_wait){auto callback=on_wait;callback();}if(skip_wait){skip_wait=false;return;}if(yield_on_wait||duration==portMAX_DELAY)throw Paused{};clock_ms+=duration;}
+enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP,PREROLL};
 namespace audio {
 struct AudioStreamInfo {
  uint8_t bits,channels;uint32_t rate;
@@ -28,6 +32,9 @@ struct AudioStreamInfo {
 };
 }
 audio::AudioStreamInfo audio_stream_info_from_format(const AudioFormat&f){return {16,f.channels,f.sample_rate};}
+struct Component{bool failed=false,error=false;bool is_failed()const{return failed;}bool status_has_error()const{return error;}};
+void xTaskNotifyGive(void*){}
+int64_t esp_timer_get_time(){return clock_ms*1000;}
 struct Speaker {
  enum State{STOPPED,STARTING,RUNNING,STOPPING};State state=STOPPED;
  audio::AudioStreamInfo info{16,1,48000};
@@ -48,19 +55,22 @@ struct Speaker {
  size_t play(const uint8_t*,size_t bytes,uint32_t){if(!is_running())return 0;accepted+=bytes;return bytes;}
 };
 struct Transport{
+ void reset_audio_decoder(){}size_t convert_received_pcm(const AudioFormat&,const uint8_t*,size_t,uint8_t*,size_t){return 0;}
  unsigned stops=0,answers=0;void stop_audio_path(){++stops;}
  bool originate(const std::string&,uint16_t){return true;}void set_sip_signaling_transport(bool){}
  bool prepare_media_path(){return true;}bool commit_media_path(){return true;}void abort_media_path(){}
 };
+struct TransportAudioFrame {const uint8_t*pcm;size_t bytes;uint16_t sequence;uint32_t timestamp;bool has_rtp_metadata,source_changed;uint32_t format_packed;};
 struct VoipStack {
  Speaker *speaker_=nullptr;Transport transport;Transport *transport_=&transport;
  std::atomic<CallState>call_state_{CallState::CALLING};
- std::atomic<bool>audio_devices_active_{true};
+ std::atomic<bool>audio_devices_active_{true},first_audio_received_{false};
  std::atomic<float>volume_{1};
- std::atomic<uint32_t>rx_audio_revision_{0},media_rx_queue_depth_{0},media_rx_queue_drops_{0},rx_underrun_start_ms_{0};
+ std::atomic<uint32_t>last_peer_audio_ms_{0},rx_audio_revision_{0},media_rx_queue_depth_{0},media_rx_queue_drops_{0},rx_underrun_start_ms_{0};
  RtpJitterBuffer *rx_jitter_buffer_=nullptr;
- uint8_t *rx_audio_chunk_=nullptr;size_t rx_audio_chunk_alloc_bytes_=0;
- enum class ApplicationMediaStart:uint8_t{NONE,ORIGINATE,ANSWER,CONFIRM};
+ uint8_t *rx_audio_chunk_=nullptr,*rx_network_chunk_=nullptr;size_t rx_audio_chunk_alloc_bytes_=0,rx_jitter_frame_alloc_bytes_=960;
+ static constexpr unsigned kRxSilenceAfterMs=60;void rx_task_();
+ enum class ApplicationMediaStart:uint8_t{NONE,ORIGINATE,ANSWER,CONFIRM,OFFER};
  uint32_t prepared_peer_ip_=0xc0000201;uint16_t prepared_peer_port_=5060;bool prepared_peer_tcp_=false;
  ApplicationMediaStart pending_media_start_=ApplicationMediaStart::NONE;
  AudioFormat format{48000,PcmFormat::S16LE,1,10,AudioCodec::PCM};
@@ -94,6 +104,13 @@ struct VoipStack {
  void start_speaker_for_current_rx_();bool prepare_speaker_for_current_rx_();
  void begin_application_media_start_(ApplicationMediaStart);void pump_application_media_start_();
  void finish_application_media_start_(ApplicationMediaStart);
- void set_in_call_(bool);void reset_rx_audio_();
+ void set_in_call_(bool);void reset_rx_audio_(bool=false);
+ enum class RxPlayoutPhase:uint8_t{STOPPED,PREPARING,WAITING_OUTPUT,READY,ACTIVE};
+ std::atomic<uint32_t>rx_playout_state_{0},rx_prepare_started_us_{0};
+ uint32_t rx_prepared_format_packed_=0;Component*speaker_feedback_source_=nullptr;void*rx_task_handle_=this;
+ RxPlayoutPhase rx_playout_phase_(uint32_t)const;bool prepare_rx_playout_();bool activate_rx_playout_();
+ void speaker_output_progress_(uint32_t,int64_t);bool play_rx_preroll_(uint32_t,TickType_t);
+ void play_silence_frame_(SilenceReason,TickType_t,uint32_t);
+ void enqueue_rx_frame_(const TransportAudioFrame&);void on_audio_received_(const TransportAudioFrame&);
  void play_rx_frame_(const uint8_t*,size_t,SilenceReason,TickType_t,uint32_t);
 };

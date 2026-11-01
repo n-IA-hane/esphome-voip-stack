@@ -41,7 +41,7 @@ void deliver(const TransportAudioFrame&);
 // TRANSPORT_FIELDS
 
 enum class CallState{IN_CALL,IDLE,CONNECTING};
-enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP};
+enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP,PREROLL};
 struct Speaker {
  std::vector<std::vector<int16_t>> frames;
  size_t play(const uint8_t *data,size_t bytes,unsigned){
@@ -64,6 +64,10 @@ struct VoipStack {
  AudioFormat get_current_rx_audio_format_(){return transport_->rx;}
  void on_audio_received_(const TransportAudioFrame&);
  void enqueue_rx_frame_(const TransportAudioFrame&);
+ enum class RxPlayoutPhase:uint8_t{STOPPED,PREPARING,WAITING_OUTPUT,READY,ACTIVE};
+ std::atomic<uint32_t>rx_playout_state_{4};
+ RxPlayoutPhase rx_playout_phase_(uint32_t)const{return RxPlayoutPhase::ACTIVE;}
+ bool play_rx_preroll_(uint32_t,unsigned){return false;}
  void play_rx_frame_(const uint8_t*,size_t,SilenceReason,unsigned,uint32_t);
  void play_silence_frame_(SilenceReason,unsigned,uint32_t);
  void rx_task_();
@@ -71,6 +75,7 @@ struct VoipStack {
 VoipStack *phone=nullptr;
 void deliver(const TransportAudioFrame&frame){phone->on_audio_received_(frame);}
 
+#define VOIP_STARTUP_EVENT(...) ((void)0)
 // PRODUCTION_METHODS
 
 AudioFormat fmt(unsigned rate,unsigned frame,AudioCodec codec){AudioFormat f;f.sample_rate=rate;f.frame_ms=frame;f.codec=codec;return f;}

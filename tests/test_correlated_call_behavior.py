@@ -102,18 +102,19 @@ public:
   bool can_start_call_() const;
   void start();void start_with_id_(const std::string &,const std::string & = {});
   void start_call_attempt_(bool,const std::string & = {},const std::string & = {});
-  enum class ApplicationMediaStart:uint8_t{NONE,ORIGINATE,ANSWER,CONFIRM};
+  enum class ApplicationMediaStart:uint8_t{NONE,ORIGINATE,ANSWER,CONFIRM,OFFER};
   void begin_application_media_start_(ApplicationMediaStart);
   void finish_application_media_start_(ApplicationMediaStart);
   void pump_application_media_start_();
   uint32_t prepared_peer_ip_=0;uint16_t prepared_peer_port_=0;bool prepared_peer_tcp_=false;
   ApplicationMediaStart pending_media_start_=ApplicationMediaStart::NONE;
   std::atomic<uint32_t> rx_audio_revision_{0};
-  void reset_rx_audio_(){++rx_audio_revision_;}
+  void reset_rx_audio_(bool=false){++rx_audio_revision_;}
   bool sink_ready=true;
   bool incoming_setup_pending_=false,incoming_answer_accepted_=false;
   static constexpr unsigned INVITE_NO_RESPONSE_TIMEOUT_MS=5000;
   bool prepare_speaker_for_current_rx_(){return sink_ready;}
+  bool prepare_rx_playout_(){return true;}bool activate_rx_playout_(){return true;}
   void enable_loop_soon_any_context(){}
   void call(const std::string &);void call_(const std::string &,const std::string &);
   void call_via_ha(const std::string &,const std::string &);void hangup_call_if_id(const std::string &);
@@ -121,6 +122,7 @@ public:
   void start_call_on_line_(const std::string &,const std::string &,const std::string &,const std::string &);
   bool send_sip_answer_(const std::string&){return true;}
   void set_in_call_(bool on){if(on)call_state_=CallState::IN_CALL;}
+  void reset_peer_audio_watchdog_(bool){}
   bool is_registered(const std::string &line){return line=="ha"?transport.ha_ready:line=="office"&&transport.office_ready;}
   const char *get_call_state_str() const{return "state";}
   const std::string &get_caller_display_name() const{return device_name_;}

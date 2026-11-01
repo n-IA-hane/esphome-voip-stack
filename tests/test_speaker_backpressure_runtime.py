@@ -24,7 +24,7 @@ std::function<void()> on_wait;
 uint32_t xTaskGetTickCount(){return tick;}
 void ulTaskNotifyTake(int,uint32_t duration){assert(duration>0);tick+=duration;waits++;if(on_wait)on_wait();}
 enum class CallState{IN_CALL,IDLE};
-enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP};
+enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP,PREROLL};
 struct Speaker {
  unsigned attempts=0,blocked=0;bool consumes_wait=false;size_t chunk=3;
  std::vector<uint8_t> accepted;
@@ -39,6 +39,10 @@ struct VoipStack {
  std::atomic<bool> audio_devices_active_{true};
  std::atomic<CallState> call_state_{CallState::IN_CALL};
  std::atomic<uint32_t> rx_audio_revision_{0};
+ enum class RxPlayoutPhase:uint8_t{STOPPED,PREPARING,WAITING_OUTPUT,READY,ACTIVE};
+ std::atomic<uint32_t>rx_playout_state_{4},rx_prepare_started_us_{0};uint32_t rx_prepared_format_packed_=0;
+ RxPlayoutPhase rx_playout_phase_(uint32_t revision)const{return revision==rx_audio_revision_.load()&&call_state_==CallState::IN_CALL?RxPlayoutPhase::ACTIVE:RxPlayoutPhase::STOPPED;}
+ bool play_rx_preroll_(uint32_t,TickType_t){return false;}
  void play_rx_frame_(const uint8_t*,size_t,SilenceReason,TickType_t,uint32_t);
 };
 '''

@@ -35,7 +35,7 @@ uint32_t millis(){return tick;}
 uint32_t xTaskGetTickCount(){return tick;}
 void ulTaskNotifyTake(int,uint32_t duration){tick+=duration;if(++waits>100)throw Done{};}
 enum class CallState{IN_CALL,IDLE};
-enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP};
+enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP,PREROLL};
 struct Transport{void reset_audio_decoder(){} size_t convert_received_pcm(const AudioFormat&,const uint8_t*,size_t,uint8_t*,size_t){return 0;}};
 struct Speaker {
  bool running=false;unsigned played=0,restarts=0;
@@ -60,6 +60,10 @@ struct VoipStack {
  size_t rx_audio_chunk_alloc_bytes_=320,rx_jitter_frame_alloc_bytes_=320;
  static constexpr unsigned kRxSilenceAfterMs=100;
  AudioFormat get_current_rx_audio_format_(){AudioFormat f;f.frame_ms=10;return f;}
+ enum class RxPlayoutPhase:uint8_t{STOPPED,PREPARING,WAITING_OUTPUT,READY,ACTIVE};
+ std::atomic<uint32_t>rx_playout_state_{4},rx_prepare_started_us_{0};uint32_t rx_prepared_format_packed_=0;
+ RxPlayoutPhase rx_playout_phase_(uint32_t revision)const{return revision==rx_audio_revision_.load()&&call_state_==CallState::IN_CALL?RxPlayoutPhase::ACTIVE:RxPlayoutPhase::STOPPED;}
+ bool play_rx_preroll_(uint32_t,TickType_t){return false;}
  void play_rx_frame_(const uint8_t*,size_t,SilenceReason,TickType_t,uint32_t);
  void play_silence_frame_(SilenceReason,TickType_t,uint32_t);
  void rx_task_();

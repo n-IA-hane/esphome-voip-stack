@@ -23,7 +23,7 @@ def test_startup_trace_is_optional_and_bound_to_receive_revision(tmp_path, enabl
     trace = method(audio, "void VoipStack::debug_rx_startup_event_(")
     play = method(audio, "void VoipStack::play_rx_frame_(")
     enqueue = method(audio, "void VoipStack::enqueue_rx_frame_(")
-    reset = method(audio, "void VoipStack::reset_rx_audio_()")
+    reset = method(audio, "void VoipStack::reset_rx_audio_(")
     start_speaker = method(
         (COMPONENT / "voip_fsm.cpp").read_text(),
         "void VoipStack::start_speaker_for_current_rx_()",
@@ -70,7 +70,7 @@ void log_line(const char *,const char *format,...){
 #define ESP_LOGI(...) log_line(__VA_ARGS__)
 constexpr const char *TAG="audio";
 enum class CallState{IDLE,IN_CALL};
-enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP};
+enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP,PREROLL};
 enum class AudioCodec{PCM};
 struct AudioFormat{
  AudioCodec codec=AudioCodec::PCM;bool is_valid()const{return true;}
@@ -103,8 +103,12 @@ struct VoipStack {
  uint8_t *rx_audio_chunk_=nullptr;size_t rx_audio_chunk_alloc_bytes_=0;
  size_t rx_jitter_frame_alloc_bytes_=4;void *rx_task_handle_=nullptr;
  AudioFormat get_current_rx_audio_format_(){return {};}
+ enum class RxPlayoutPhase:uint8_t{STOPPED,PREPARING,WAITING_OUTPUT,READY,ACTIVE};
+ std::atomic<uint32_t>rx_playout_state_{4},rx_prepare_started_us_{0};uint32_t rx_prepared_format_packed_=0;
+ RxPlayoutPhase rx_playout_phase_(uint32_t revision)const{return revision==rx_audio_revision_.load()&&call_state_==CallState::IN_CALL?RxPlayoutPhase::ACTIVE:RxPlayoutPhase::STOPPED;}
+ bool play_rx_preroll_(uint32_t,TickType_t){return false;}
  void play_rx_frame_(const uint8_t*,size_t,SilenceReason,TickType_t,uint32_t);
- void reset_rx_audio_();void start_speaker_for_current_rx_();
+ void reset_rx_audio_(bool=false);void start_speaker_for_current_rx_();
  void enqueue_rx_frame_(const TransportAudioFrame&);
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
  std::atomic<uint32_t> media_tx_queue_drop_bytes_{0};
