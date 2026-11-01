@@ -421,6 +421,18 @@ void VoipStack::set_contacts(const std::string &contacts_csv) {
   const std::string trimmed = Phonebook::trim(contacts_csv);
   if (!trimmed.empty() && (trimmed[0] == '{' || trimmed[0] == '[')) {
     const bool changed = this->apply_roster_json_contacts_(trimmed);
+    // JSON already replaces its source atomically. Keep the committed (or
+    // last-known-good) source rows through the surrounding incremental cycle.
+    if (this->cycle_active_) {
+      for (size_t i = 0; i < this->phonebook_.size(); ++i) {
+        const auto *entry = this->phonebook_.at(i);
+        if (entry->origin != ContactOrigin::HA) continue;
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+        if (entry->provider != this) continue;
+#endif
+        this->seen_in_cycle_.insert(entry->name);
+      }
+    }
     const bool selected = this->maybe_auto_select_ha_first_();
     if (changed || selected) {
       ESP_LOGI(TAG, "JSON contacts applied: %zu total", this->phonebook_.size());
@@ -442,7 +454,7 @@ void VoipStack::set_contacts(const std::string &contacts_csv) {
   // no-op - pruning only applies to the official update_contacts() flow.
   if (this->cycle_active_) this->track_csv_(normalized_csv);
   // Just add_one per entry; for a clean slate call flush_contacts() first.
-  const bool changed = this->phonebook_.add_batch(normalized_csv);
+  const bool changed = this->phonebook_.add_batch(normalized_csv, ContactOrigin::HA, this);
   const bool selected = this->maybe_auto_select_ha_first_();
   if (changed || selected) {
     ESP_LOGI(TAG, "Contacts batch applied: %zu total", this->phonebook_.size());
@@ -533,18 +545,9 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
     // clears stale contacts. A non-empty but wholly malformed payload leaves
     // the last known-good phonebook untouched.
     if (roster_size == 0 || saw_valid_slot) {
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
       return this->phonebook_.replace_provider(ContactOrigin::HA, this, {}) == DirectoryCommitResult::APPLIED;
-#else
-      return this->phonebook_.replace_all({});
-#endif
     }
     return false;
-  }
-
-  if (has_ha && this->ha_peer_name_ != ha_slot.name) {
-    this->ha_peer_name_ = ha_slot.name;
-    ESP_LOGI(TAG, "HA peer name learned from roster JSON: %s", this->ha_peer_name_.c_str());
   }
 
   const ContactEndpointType local_endpoint_type = ContactEndpointType::SIP;
@@ -595,17 +598,17 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
 
     entry.directional_audio_v1 = slot.directional_audio_v1;
 
-    if (this->cycle_active_) this->seen_in_cycle_.insert(entry.name);
     entries.push_back(std::move(entry));
   }
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
   const auto committed = this->phonebook_.replace_provider(ContactOrigin::HA, this, std::move(entries));
   if (committed == DirectoryCommitResult::CONFLICT || committed == DirectoryCommitResult::CAPACITY)
     ESP_LOGW(TAG, "HA roster conflicts with a directory or exceeds contact capacity; keeping current contacts");
+  if ((committed == DirectoryCommitResult::APPLIED || committed == DirectoryCommitResult::UNCHANGED) &&
+      has_ha && this->ha_peer_name_ != ha_slot.name) {
+    this->ha_peer_name_ = ha_slot.name;
+    ESP_LOGI(TAG, "HA peer name learned from roster JSON: %s", this->ha_peer_name_.c_str());
+  }
   return committed == DirectoryCommitResult::APPLIED;
-#else
-  return this->phonebook_.replace_all(std::move(entries));
-#endif
 }
 #endif
 

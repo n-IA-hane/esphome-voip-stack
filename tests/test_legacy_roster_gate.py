@@ -23,6 +23,7 @@ using namespace esphome::voip_stack;
 #define ESP_LOGW(...)
 struct VoipStack {
  Phonebook phonebook_;std::string device_name_="Self";bool cycle_active_=false;
+ std::unordered_set<std::string> seen_in_cycle_;
  unsigned updates=0,json_calls=0;
  void set_contacts(const std::string&);
  std::string normalize_phonebook_for_transport_(const std::string&s){return s;}

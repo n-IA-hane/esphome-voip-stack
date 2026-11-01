@@ -72,8 +72,11 @@ int main() {
  assert(book.at(book.size())==nullptr);
  // The legacy push roster cycle owns only its records. An independently
  // authoritative LDAP snapshot survives an empty or incomplete push cycle.
+ assert(!book.commit_cycle({},1));
+ assert(book.size()==2&&book.find_id("other")&&book.find_id("manual"));
+ assert(book.add_one("Old HA|192.0.2.1|5060|40000|sip_udp",ContactOrigin::HA)==AddResult::Added);
  assert(book.commit_cycle({},1));
- assert(book.size()==1&&book.find_id("other")&&!book.find_id("manual"));
+ assert(book.size()==2&&!book.find("Old HA")&&book.find_id("manual"));
  assert(book.find_id("other")->missing_count==0);
  // Display-number updates must also survive ordinary static-contact upserts.
  Phonebook numbered;
