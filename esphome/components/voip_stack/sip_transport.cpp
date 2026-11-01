@@ -4537,7 +4537,6 @@ void SipTransport::accept_tcp_client_(int client, const sockaddr_in &src) {
   const uint32_t accepted_ip_v4 = ntohl(src.sin_addr.s_addr);
   const int active_client = this->tcp_flow_.socket.load(std::memory_order_acquire);
   bool signaling_owned = false;
-  bool signaling_uses_tcp = false;
   {
     signaling_owned =
         !this->call_id_.empty() ||
@@ -4549,15 +4548,10 @@ void SipTransport::accept_tcp_client_(int client, const sockaddr_in &src) {
         signaling_owned ||
         this->pending_video_direction_invite_.pending();
 #endif
-    signaling_uses_tcp =
-        this->remote_sip_tcp_.load(std::memory_order_acquire);
   }
-  const bool replaces_owned_transport =
-      signaling_owned &&
-      (!signaling_uses_tcp || active_client >= 0 ||
-       this->tcp_flow_.connecting_socket >= 0 ||
-       this->tcp_flow_.connect_requested.load(std::memory_order_acquire));
-  if (active_client >= 0 || replaces_owned_transport) {
+  // A registered dialog can own its account flow while the primary slot is
+  // empty. Admit control traffic to the same bounded spare in either case.
+  if (active_client >= 0 || signaling_owned) {
     if (this->park_inbound_tcp_(client, src)) return;
     if (this->reclaim_idle_inbound_tcp_(this->inbound_tcp_flow_) && this->park_inbound_tcp_(client, src)) return;
     if (this->reclaim_idle_inbound_tcp_(this->tcp_flow_)) {
@@ -4572,10 +4566,8 @@ void SipTransport::accept_tcp_client_(int client, const sockaddr_in &src) {
     close(client);
     return;
   }
-  if (!this->should_accept_session_() && active_client < 0) {
-    close(client);
-    return;
-  }
+  // A connection is not a new dialog. The framed INVITE handler applies the
+  // application admission gate; OPTIONS and subscriptions keep their owners.
   this->close_tcp_client_from_sip_task_();
   this->tcp_flow_.socket.store(client, std::memory_order_release);
   this->tcp_flow_.peer_ip.store(accepted_ip_v4, std::memory_order_release);

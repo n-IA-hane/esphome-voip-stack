@@ -2208,11 +2208,10 @@ def test_sip_tcp_rx_is_bounded_and_active_dialog_accept_is_guarded() -> None:
     assert "send_sip_tcp_record_(pending, flow.connecting_socket)" in promote
 
     accept = cpp_method(sip_cpp, r"SipTransport::accept_tcp_client_")
-    assert "active_client >= 0 || replaces_owned_transport" in accept
+    assert "active_client >= 0 || signaling_owned" in accept
     assert "signaling_owned" in accept
-    assert "signaling_uses_tcp" in accept
     assert "terminal_transaction_pending_locked_()" in accept
-    assert "replaces_owned_transport" in accept
+    assert "should_accept_session_()" not in accept
     assert "SIP TCP accept rejected: signaling transport owned" in accept
 
     peer_loss = cpp_method(sip_cpp, r"SipTransport::close_tcp_dialog_")
