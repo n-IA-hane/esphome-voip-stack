@@ -347,7 +347,7 @@ std::string SipTransport::build_sdp_offer_() {
   return sdp;
 }
 
-std::string SipTransport::build_sdp_answer_() const {
+std::string SipTransport::build_sdp_answer_(const AudioMediaCandidate *candidate) const {
   const uint32_t remote_ip = this->remote_ip_v4_.load(std::memory_order_acquire);
   std::string local_ip = "0.0.0.0";
   this->local_ip_for_peer_(remote_ip, &local_ip);
@@ -356,8 +356,17 @@ std::string SipTransport::build_sdp_answer_() const {
   uint8_t tx_payload_type = 96;
   uint8_t rx_payload_type = 96;
   RtpAudioPayloads rx_payloads;
-  this->get_media_config_(&selected_tx, &selected_rx, &tx_payload_type, &rx_payload_type, &rx_payloads);
-  const uint8_t direction = this->get_audio_direction_();
+  if (candidate != nullptr) {
+    selected_tx = candidate->tx;
+    selected_rx = candidate->rx;
+    tx_payload_type = candidate->tx_payload_type;
+    rx_payload_type = candidate->rx_payload_type;
+    rx_payloads = candidate->receive_payloads;
+  } else {
+    this->get_media_config_(&selected_tx, &selected_rx, &tx_payload_type, &rx_payload_type, &rx_payloads);
+  }
+  const uint8_t direction = candidate != nullptr ? candidate->direction : this->get_audio_direction_();
+  const bool directional = candidate != nullptr ? candidate->directional_audio : this->remote_directional_audio_v1_;
   const bool send = selected_tx.is_valid() && (direction & 1U) != 0;
   const bool receive = selected_rx.is_valid() && (direction & 2U) != 0;
   const bool inactive = !send && !receive;
@@ -376,7 +385,7 @@ std::string SipTransport::build_sdp_answer_() const {
     if (format.codec == AudioCodec::OPUS)
       maps += "a=fmtp:" + std::to_string(pt) +
           " stereo=0;sprop-stereo=0;maxaveragebitrate=28000\r\n";
-    if (this->remote_directional_audio_v1_)
+    if (directional)
       flows += "a=x-voip-stack-flow:" + std::to_string(pt) + " " + flow + "\r\n";
     return true;
   };
@@ -391,7 +400,8 @@ std::string SipTransport::build_sdp_answer_() const {
       !append(tx_payload_type, selected_tx, "send")) return "";
 #ifdef USE_ESPHOME_VOIP_DTMF
   DtmfFormat dtmf;
-  this->get_dtmf_config_(nullptr, &dtmf);
+  if (candidate != nullptr) dtmf = candidate->dtmf_rx;
+  else this->get_dtmf_config_(nullptr, &dtmf);
   if (dtmf.valid()) {
     const auto pt = std::to_string(dtmf.payload_type);
     payloads += " " + pt;
@@ -446,8 +456,10 @@ std::string SipTransport::build_sdp_answer_() const {
 
 bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
                                               uint32_t default_ip,
-                                              bool remote_is_answer, bool direction_only) {
-  this->remote_directional_audio_v1_ =
+                                              bool remote_is_answer, bool direction_only,
+                                              AudioMediaCandidate *staged_audio) {
+  if (staged_audio != nullptr) *staged_audio = {};
+  const bool directional_audio =
       sdp.find("a=x-voip-stack-flow:") != std::string::npos &&
       (!remote_is_answer || this->local_offered_directional_audio_v1_);
   this->capture_remote_media_shape_(sdp);
@@ -569,7 +581,7 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
         seen_mapping[pt] = packed_mapping;
         AudioFormat local_rx;
         AudioFormat local_tx;
-        const uint8_t flow = !this->remote_directional_audio_v1_ || payload_flow[pt] == 0
+        const uint8_t flow = !directional_audio || payload_flow[pt] == 0
                                  ? media_flow : (payload_flow[pt] & media_flow);
         const bool peer_can_send = (flow & 0x01) != 0;
         const bool peer_can_recv = (flow & 0x02) != 0;
@@ -601,14 +613,14 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
         alternate_pcm = local_rx.codec == AudioCodec::PCM && local_rx.pcm_format == PcmFormat::S16LE;
 #endif
         const bool unidirectional = this->offer_tx_formats_.count == 0 || this->offer_rx_formats_.count == 0;
-        const bool eligible = unidirectional || this->remote_directional_audio_v1_ || media_flow != 0x03 ||
+        const bool eligible = unidirectional || directional_audio || media_flow != 0x03 ||
                               (tx_ok && rx_ok);
         // RFC 3264 allows independent send preferences. Keep every accepted
         // receive mapping; prefer the highest available S16 sink rate so all
         // accepted lower rates can use the existing audio-library resampler.
         if (rx_ok && eligible && !received_payloads.add(receive_pt, local_rx)) return false;
         if (rx_ok && eligible && (!selected_rx ||
-            (!this->remote_directional_audio_v1_ && alternate_pcm && local_rx.codec == AudioCodec::PCM &&
+            (!directional_audio && alternate_pcm && local_rx.codec == AudioCodec::PCM &&
              local_rx.pcm_format == PcmFormat::S16LE &&
              selected_rx_format.pcm_format == PcmFormat::S16LE &&
              local_rx.channels == selected_rx_format.channels &&
@@ -623,7 +635,7 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
                    (unsigned) audio_format_rtp_channels(selected_rx_format),
                    (unsigned) selected_rx_format.frame_ms);
         }
-        if (tx_ok && eligible && (unidirectional || this->remote_directional_audio_v1_ || media_flow != 0x03 || rx_ok) &&
+        if (tx_ok && eligible && (unidirectional || directional_audio || media_flow != 0x03 || rx_ok) &&
             (!selected_tx || payload_rank[pt] < selected_tx_rank)) {
           selected_tx_format = local_tx;
           selected_tx_payload_type = pt;
@@ -653,7 +665,7 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
       : this->offer_rx_formats_.count != 0 && (media_flow & 0x01) != 0;
   if (media_port == 0 || media_ip == 0 || (!want_tx && !want_rx) ||
       (want_tx && !selected_tx) || (want_rx && !selected_rx) ||
-      (want_tx && want_rx && !this->remote_directional_audio_v1_ && media_flow == 0x03 && !shared_format)) {
+      (want_tx && want_rx && !directional_audio && media_flow == 0x03 && !shared_format)) {
     ESP_LOGW(TAG,
              "SIP SDP rejected: body_len=%u media_port=%u media_ip=%08x "
              "selected_tx=%s selected_rx=%s",
@@ -662,7 +674,7 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
     return false;
   }
 #if defined(USE_ESPHOME_VOIP_STACK_SPEAKER) && !defined(USE_ESPHOME_VOIP_STACK_OPUS)
-  if (selected_tx && selected_rx && !this->remote_directional_audio_v1_ && media_flow == 0x03) {
+  if (selected_tx && selected_rx && !directional_audio && media_flow == 0x03) {
     // Do not promise channel/bit-depth conversion. Start from the shared wire
     // format, then prefer higher S16 rates in that same channel layout.
     for (uint8_t i = 0; i < received_payloads.count; ++i) {
@@ -694,17 +706,15 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
     const auto &entry = received_payloads.entries[i];
     bool usable = entry.format == selected_rx_format;
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
-    usable |= !this->remote_directional_audio_v1_ &&
+    usable |= !directional_audio &&
               pcm_receive_conversion_supported(entry.format, selected_rx_format);
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
-    usable |= !this->remote_directional_audio_v1_ &&
+    usable |= !directional_audio &&
               same_decoded_audio_geometry(entry.format, selected_rx_format);
 #endif
     if (usable && !accepted_rx.add(entry.payload_type, entry.format)) return false;
   }
-  this->set_media_config_(selected_tx_format, selected_rx_format,
-                          selected_tx_payload_type, selected_rx_payload_type, &accepted_rx);
 #ifdef USE_ESPHOME_VOIP_DTMF
   const auto next_media = sdp.find("\r\nm=", selected_audio_line);
   const std::string_view media(sdp.data() + selected_audio_line,
@@ -717,15 +727,37 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
       (selected_tx && selected_tx_payload_type == dtmf.payload_type))) dtmf = {};
   auto dtmf_rx = dtmf;
   if (remote_is_answer && dtmf.valid()) dtmf_rx.payload_type = 120 + dtmf_clock_index(dtmf.clock);
-  this->set_dtmf_config_(dtmf, dtmf_rx);
 #endif
-
-  if (direction_only)
-    this->set_audio_direction_((selected_tx_allowed ? 1U : 0U) | (selected_rx_allowed ? 2U : 0U));
-  // Signaling can traverse a PBX/proxy while RTP terminates on a separate
-  // media address from SDP. Never overwrite the SIP peer with the media peer.
-  this->remote_rtp_ip_v4_.store(media_ip, std::memory_order_release);
-  this->remote_rtp_port_.store(media_port, std::memory_order_release);
+  const uint8_t direction = direction_only
+      ? (selected_tx_allowed ? 1U : 0U) | (selected_rx_allowed ? 2U : 0U)
+      : (selected_tx_format.is_valid() ? 1U : 0U) | (selected_rx_format.is_valid() ? 2U : 0U);
+  if (staged_audio != nullptr) {
+    staged_audio->tx = selected_tx_format;
+    staged_audio->rx = selected_rx_format;
+    staged_audio->tx_payload_type = selected_tx_payload_type;
+    staged_audio->rx_payload_type = selected_rx_payload_type;
+    staged_audio->receive_payloads = accepted_rx;
+    staged_audio->direction = direction;
+    staged_audio->directional_audio = directional_audio;
+    staged_audio->remote_ip = media_ip;
+    staged_audio->remote_port = media_port;
+#ifdef USE_ESPHOME_VOIP_DTMF
+    staged_audio->dtmf_tx = dtmf;
+    staged_audio->dtmf_rx = dtmf_rx;
+#endif
+  } else {
+    this->set_media_config_(selected_tx_format, selected_rx_format,
+                            selected_tx_payload_type, selected_rx_payload_type, &accepted_rx);
+    this->set_audio_direction_(direction);
+    this->remote_directional_audio_v1_ = directional_audio;
+#ifdef USE_ESPHOME_VOIP_DTMF
+    this->set_dtmf_config_(dtmf, dtmf_rx);
+#endif
+    // Signaling can traverse a PBX/proxy while RTP terminates on a separate
+    // media address from SDP. Never overwrite the SIP peer with the media peer.
+    this->remote_rtp_ip_v4_.store(media_ip, std::memory_order_release);
+    this->remote_rtp_port_.store(media_port, std::memory_order_release);
+  }
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   if (!this->refer_context_active_ && !this->learn_remote_video_from_sdp_(sdp, default_ip,
                                           remote_is_answer)) {

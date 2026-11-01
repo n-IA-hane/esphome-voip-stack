@@ -137,7 +137,7 @@ def directional_wire_binary(tmp_path_factory):
     sdp = (base / 'sip_sdp.cpp').read_text()
     transport = (base / 'sip_transport.cpp').read_text()
     code = wire_source()
-    extra = ''
+    extra = block((base / 'sip_transport.h').read_text(), 'struct AudioMediaCandidate {') + ';\n'
     for marker in ['bool parse_decimal_u32(', 'bool parse_rtpmap_format(', 'bool parse_audio_media_line(']:
         if marker not in code:
             extra += block(parser, marker) + '\n'
@@ -155,6 +155,8 @@ def directional_wire_binary(tmp_path_factory):
         declaration = body[:body.index('{')].replace('SipTransport::', '').strip()
         if 'learn_remote' in new_marker:
             declaration = declaration.replace('bool remote_is_answer, bool direction_only)', 'bool remote_is_answer = false, bool direction_only = false)')
+            declaration = declaration.replace('bool remote_is_answer, bool direction_only,', 'bool remote_is_answer = false, bool direction_only = false,')
+            declaration = declaration.replace('AudioMediaCandidate *staged_audio)', 'AudioMediaCandidate *staged_audio = nullptr)')
         if 'set_media_config' in new_marker:
             declaration = declaration.replace('const RtpAudioPayloads *rx_payloads)', 'const RtpAudioPayloads *rx_payloads = nullptr)')
         code = code.replace(block(code, old_marker), declaration + ';', 1)

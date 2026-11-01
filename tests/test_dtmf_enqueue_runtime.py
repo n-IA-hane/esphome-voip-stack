@@ -1,7 +1,85 @@
 """Actual command admission and socket wake publish a bounded generation tag."""
 import subprocess
 
+import pytest
+
 from test_refer_dialog_runtime import SOURCE, block
+
+
+def dtmf_epoch_source(source=SOURCE):
+    implementation = (source / 'sip_dtmf.cpp').read_text()
+    return r'''
+#include "rtp_dtmf.h"
+#include <atomic>
+#include <cassert>
+#include <mutex>
+#include <string>
+using namespace esphome::voip_stack;
+#define portENTER_CRITICAL(p) (p)->lock()
+#define portEXIT_CRITICAL(p) (p)->unlock()
+struct SipTransport {
+ mutable std::mutex media_config_lock_;
+ DtmfFormat dtmf_tx_format_{},dtmf_rx_format_{};
+ std::atomic<uint32_t> media_proposal_epoch_{0};
+ void get_dtmf_config_(DtmfFormat*,DtmfFormat*,uint32_t*)const;
+ void set_dtmf_config_(const DtmfFormat&,const DtmfFormat&);
+};
+''' + '\n'.join(block(implementation, name) for name in (
+        'void SipTransport::get_dtmf_config_(',
+        'void SipTransport::set_dtmf_config_(',
+    )) + r'''
+int main(int argc,char **argv){
+ const std::string scenario=argv[1];SipTransport transport;
+ if(scenario=="identical-disabled"){
+  transport.set_dtmf_config_({},{});assert(transport.media_proposal_epoch_==0);return 0;
+ }
+ DtmfFormat tx{8000,0xffff,101},rx=tx;
+ transport.set_dtmf_config_(tx,rx);const auto epoch=transport.media_proposal_epoch_.load();
+ DtmfSender sender;assert(sender.start(1,160,tx,1000,epoch,0));
+ // The queued request and in-flight sender still belong to the live epoch.
+ const auto queued_epoch=epoch;
+ if(scenario=="identical-active"){
+  transport.set_dtmf_config_(tx,rx);
+  assert(transport.media_proposal_epoch_==queued_epoch&&sender.epoch==queued_epoch&&sender.active());
+  DtmfSender::Report packet;assert(sender.poll(20,&packet)&&packet.marker&&!packet.end);return 0;
+ }
+ if(scenario=="clock")tx.clock=16000;
+ else if(scenario=="payload")tx.payload_type=110;
+ else if(scenario=="events")tx.events=0x03ff;
+ else if(scenario=="receive")rx.payload_type=111;
+ else if(scenario=="disable")tx=rx={};
+ else assert(false);
+ transport.set_dtmf_config_(tx,rx);
+ assert(transport.media_proposal_epoch_==epoch+2&&transport.media_proposal_epoch_!=queued_epoch);
+ DtmfFormat observed_tx,observed_rx;uint32_t observed_epoch=0;
+ transport.get_dtmf_config_(&observed_tx,&observed_rx,&observed_epoch);
+ assert(observed_epoch==epoch+2&&observed_tx.clock==tx.clock&&observed_tx.events==tx.events&&observed_tx.payload_type==tx.payload_type);
+ assert(observed_rx.clock==rx.clock&&observed_rx.events==rx.events&&observed_rx.payload_type==rx.payload_type);
+}
+'''
+
+
+@pytest.fixture(scope='module')
+def dtmf_epoch_binary(tmp_path_factory):
+    folder = tmp_path_factory.mktemp('dtmf-epoch')
+    cpp = folder / 'epoch.cpp'
+    cpp.write_text(dtmf_epoch_source())
+    binary = folder / 'epoch'
+    result = subprocess.run([
+        'g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
+        '-fsanitize=address,undefined', '-fno-pie', '-no-pie', '-I', str(SOURCE),
+        str(cpp), '-o', str(binary),
+    ], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return binary
+
+
+@pytest.mark.parametrize('scenario', [
+    'identical-disabled', 'identical-active', 'clock', 'payload', 'events', 'receive', 'disable',
+])
+def test_only_real_dtmf_changes_invalidate_queued_and_inflight_generations(dtmf_epoch_binary, scenario):
+    result = subprocess.run([dtmf_epoch_binary, scenario], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_fifo_backpressure_and_failed_wake_never_publish_a_digit(tmp_path):

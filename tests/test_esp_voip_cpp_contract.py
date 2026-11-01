@@ -1051,7 +1051,7 @@ def test_final_reinvite_response_is_owned_before_initial_send() -> None:
     failure = reinvite[
         reinvite.index('if (!this->send_response_(200, "OK", answer))') :
         reinvite.index(
-            "\n  this->set_audio_direction_",
+            "\n  this->commit_audio_reoffer_controls_",
             reinvite.index('if (!this->send_response_(200, "OK", answer))'),
         )
     ]
@@ -3053,8 +3053,17 @@ def test_reinvite_proposal_cannot_leak_temporary_audio_format_to_rtp() -> None:
         sip_cpp, r"SipTransport::apply_video_direction_answer_"
     )
     reinvite = cpp_method(sip_cpp, r"SipTransport::handle_reinvite_")
-    assert "ScopedMediaProposal proposal_scope" in apply_answer
-    assert "ScopedMediaProposal proposal_scope" in reinvite
+    for proposal in (apply_answer, reinvite):
+        assert "AudioMediaCandidate candidate;" in proposal
+        assert "ScopedMediaProposal proposal_scope" not in proposal
+        assert "this->set_media_config_(" not in proposal
+        assert "this->commit_audio_reoffer_controls_(candidate)" in proposal
+    commit = cpp_method(sip_cpp, r"SipTransport::commit_audio_reoffer_controls_")
+    assert "old_direction != candidate.direction || dtmf_changed" in commit
+    assert "ScopedMediaProposal commit_scope" in commit
+    assert reinvite.index('this->send_response_(200, "OK", answer)') < reinvite.index(
+        "this->commit_audio_reoffer_controls_(candidate)"
+    )
     assert '"audio_renegotiation_unsupported"' in reinvite
 
 

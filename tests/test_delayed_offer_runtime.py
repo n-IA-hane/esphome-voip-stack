@@ -19,7 +19,7 @@ def delayed_source():
     sdp = (COMPONENT / "sip_sdp.cpp").read_text()
     transport = (COMPONENT / "sip_transport.cpp").read_text()
     responses = (COMPONENT / "sip_request_response.cpp").read_text()
-    extra = ""
+    extra = block((COMPONENT / "sip_transport.h").read_text(), "struct AudioMediaCandidate {") + ";\n"
     for marker in ("std::string sip_request_uri(", "bool parse_rtpmap_format(", "bool parse_audio_media_line("):
         extra += block(parser, marker) + "\n"
     code = code.replace("struct SipPhoneTransport {", extra + "\nstruct SipPhoneTransport {")
@@ -34,6 +34,8 @@ def delayed_source():
         body = block(source, marker)
         declaration = body[:body.index("{")].replace("SipTransport::", "").strip()
         declaration = declaration.replace("bool remote_is_answer, bool direction_only)", "bool remote_is_answer = false, bool direction_only = false)")
+        declaration = declaration.replace("bool remote_is_answer, bool direction_only,", "bool remote_is_answer = false, bool direction_only = false,")
+        declaration = declaration.replace("AudioMediaCandidate *staged_audio)", "AudioMediaCandidate *staged_audio = nullptr)")
         declaration = declaration.replace("const RtpAudioPayloads *rx_payloads)", "const RtpAudioPayloads *rx_payloads = nullptr)")
         if "send_response_" in marker:
             declaration = 'bool send_response_(uint16_t,const char*,const std::string & = "",const std::string & = "")'
@@ -47,7 +49,9 @@ def delayed_source():
         ("bool SipTransport::send_answer(", transport),
     ):
         body = block(source, marker)
-        declarations += body[:body.index("{")].replace("SipTransport::", "").strip() + ";\n"
+        declaration = body[:body.index("{")].replace("SipTransport::", "").strip()
+        declaration = declaration.replace("const AudioMediaCandidate *candidate) const", "const AudioMediaCandidate *candidate = nullptr) const")
+        declarations += declaration + ";\n"
         code += "\n" + body
     declarations = declarations.replace("const char *direction) const;", 'const char *direction = "sendrecv") const;')
     code = code.replace(" uint16_t sip_port_=5060;", declarations + r'''

@@ -13,6 +13,10 @@ void SipTransport::get_dtmf_config_(DtmfFormat *tx, DtmfFormat *rx, uint32_t *ep
 }
 void SipTransport::set_dtmf_config_(const DtmfFormat &tx, const DtmfFormat &rx) {
   portENTER_CRITICAL(&this->media_config_lock_);
+  if (this->dtmf_tx_format_ == tx && this->dtmf_rx_format_ == rx) {
+    portEXIT_CRITICAL(&this->media_config_lock_);
+    return;
+  }
   this->dtmf_tx_format_ = tx; this->dtmf_rx_format_ = rx;
   this->media_proposal_epoch_.fetch_add(2, std::memory_order_release);
   portEXIT_CRITICAL(&this->media_config_lock_);

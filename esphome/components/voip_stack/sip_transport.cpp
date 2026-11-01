@@ -199,6 +199,30 @@ void SipTransport::get_media_config_(AudioFormat *tx, AudioFormat *rx,
   portEXIT_CRITICAL(&this->media_config_lock_);
 }
 
+void SipTransport::commit_audio_reoffer_controls_(const AudioMediaCandidate &candidate) {
+  const uint8_t old_direction = this->get_audio_direction_();
+  bool dtmf_changed = false;
+#ifdef USE_ESPHOME_VOIP_DTMF
+  DtmfFormat old_dtmf_tx, old_dtmf_rx;
+  this->get_dtmf_config_(&old_dtmf_tx, &old_dtmf_rx);
+  dtmf_changed = !(old_dtmf_tx == candidate.dtmf_tx) || !(old_dtmf_rx == candidate.dtmf_rx);
+#endif
+  if (old_direction != candidate.direction || dtmf_changed) {
+    // Guard only a real committed control change, never SDP parsing or a
+    // video-only proposal. Existing queued DTMF belongs to this same epoch.
+    ScopedMediaProposal commit_scope(this->media_proposal_epoch_);
+    if ((candidate.direction & 2U) != 0 && (old_direction & 2U) == 0)
+      this->audio_rx_discontinuity_.store(true, std::memory_order_release);
+    this->set_audio_direction_(candidate.direction);
+#ifdef USE_ESPHOME_VOIP_DTMF
+    this->set_dtmf_config_(candidate.dtmf_tx, candidate.dtmf_rx);
+#endif
+    if (old_direction != candidate.direction)
+      this->reset_rtp_latch_();
+  }
+  this->remote_directional_audio_v1_ = candidate.directional_audio;
+}
+
 bool SipTransport::received_audio_format_(uint8_t pt, AudioFormat *format) const {
   portENTER_CRITICAL(&this->media_config_lock_);
   const bool found = (this->get_audio_direction_() & 2U) != 0 &&
@@ -2057,7 +2081,6 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
   AudioFormat old_rx;
   uint8_t old_tx_pt = 0;
   uint8_t old_rx_pt = 0;
-  const bool old_directional_audio = this->remote_directional_audio_v1_;
   const uint8_t old_audio_direction = this->get_audio_direction_();
   RtpAudioPayloads old_rx_payloads;
   this->get_media_config_(&old_tx, &old_rx, &old_tx_pt, &old_rx_pt, &old_rx_payloads);
@@ -2080,20 +2103,17 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
   const VideoCapability old_capability =
       this->negotiated_video_capability_;
 
-  ScopedMediaProposal proposal_scope(this->media_proposal_epoch_);
+  AudioMediaCandidate candidate;
   const bool parsed =
-      this->learn_remote_rtp_from_sdp_(sdp, default_ip, true, true);
-  AudioFormat new_tx;
-  AudioFormat new_rx;
-  uint8_t new_tx_pt = 0;
-  uint8_t new_rx_pt = 0;
-  RtpAudioPayloads new_rx_payloads;
-  this->get_media_config_(&new_tx, &new_rx, &new_tx_pt, &new_rx_pt, &new_rx_payloads);
-  const uint8_t new_audio_direction = this->get_audio_direction_();
-  const uint32_t new_audio_ip =
-      this->remote_rtp_ip_v4_.load(std::memory_order_acquire);
-  const uint16_t new_audio_port =
-      this->remote_rtp_port_.load(std::memory_order_acquire);
+      this->learn_remote_rtp_from_sdp_(sdp, default_ip, true, true, &candidate);
+  const auto &new_tx = candidate.tx;
+  const auto &new_rx = candidate.rx;
+  const uint8_t new_tx_pt = candidate.tx_payload_type;
+  const uint8_t new_rx_pt = candidate.rx_payload_type;
+  const auto &new_rx_payloads = candidate.receive_payloads;
+  const uint8_t new_audio_direction = candidate.direction;
+  const uint32_t new_audio_ip = candidate.remote_ip;
+  const uint16_t new_audio_port = candidate.remote_port;
   const bool new_video_negotiated = this->video_negotiated_;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   const uint8_t new_imageattr_state = this->video_imageattr_state_;
@@ -2107,11 +2127,6 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
   const VideoCapability new_capability =
       this->negotiated_video_capability_;
 
-  this->set_media_config_(old_tx, old_rx, old_tx_pt, old_rx_pt, &old_rx_payloads);
-  this->set_audio_direction_(old_audio_direction);
-  this->remote_directional_audio_v1_ = old_directional_audio;
-  this->remote_rtp_ip_v4_.store(old_audio_ip, std::memory_order_release);
-  this->remote_rtp_port_.store(old_audio_port, std::memory_order_release);
   this->remote_media_shape_ = old_media_shape;
   this->video_offered_ = old_video_offered;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
@@ -2125,7 +2140,6 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
   this->remote_video_rtcp_ip_v4_ = old_video_rtcp_ip;
   this->remote_video_rtcp_port_ = old_video_rtcp_port;
   this->negotiated_video_capability_ = old_capability;
-  proposal_scope.finish();
 
   const bool same_audio =
       parsed && new_audio_direction == old_audio_direction &&
@@ -2160,6 +2174,7 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
        !this->video_session_->request_send_direction(new_video_send))) {
     return false;
   }
+  this->commit_audio_reoffer_controls_(candidate);
   this->video_send_enabled_ = new_video_send;
   this->video_send_requested_.store(new_video_send,
                                     std::memory_order_release);
@@ -3212,8 +3227,6 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   AudioFormat old_rx;
   uint8_t old_tx_pt = 0;
   uint8_t old_rx_pt = 0;
-  const bool old_directional_audio = this->remote_directional_audio_v1_;
-  const uint8_t old_audio_direction = this->get_audio_direction_();
   RtpAudioPayloads old_rx_payloads;
   this->get_media_config_(&old_tx, &old_rx, &old_tx_pt, &old_rx_pt, &old_rx_payloads);
   const uint32_t old_audio_ip =
@@ -3252,11 +3265,6 @@ bool SipTransport::handle_reinvite_(const std::string &message,
 #endif
 
   const auto restore_old_media = [&]() {
-    this->set_media_config_(old_tx, old_rx, old_tx_pt, old_rx_pt, &old_rx_payloads);
-    this->set_audio_direction_(old_audio_direction);
-  this->remote_directional_audio_v1_ = old_directional_audio;
-    this->remote_rtp_ip_v4_.store(old_audio_ip, std::memory_order_release);
-    this->remote_rtp_port_.store(old_audio_port, std::memory_order_release);
     this->remote_media_shape_ = old_media_shape;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
     this->video_offered_ = old_video_offered;
@@ -3286,8 +3294,8 @@ bool SipTransport::handle_reinvite_(const std::string &message,
     this->remote_target_uri_ = old_remote_target_uri;
   };
 
-  ScopedMediaProposal proposal_scope(this->media_proposal_epoch_);
-  if (!this->learn_remote_rtp_from_sdp_(message_body(message), src_ip, false, true)) {
+  AudioMediaCandidate candidate;
+  if (!this->learn_remote_rtp_from_sdp_(message_body(message), src_ip, false, true, &candidate)) {
     restore_old_media();
     return this->send_stateless_response_(
         message, src, 488, "Not Acceptable Here", "media_incompatible",
@@ -3298,7 +3306,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   const uint32_t proposed_sdp_version = this->sdp_session_version_ + 1;
   this->sdp_session_version_ = proposed_sdp_version;
 #endif
-  const std::string answer = this->build_sdp_answer_();
+  const std::string answer = this->build_sdp_answer_(&candidate);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->sdp_session_version_ = proposed_sdp_version - 1;
 #endif
@@ -3309,20 +3317,15 @@ bool SipTransport::handle_reinvite_(const std::string &message,
         true);
   }
 
-  // SDP parsing writes into the transport's live media fields. Capture the
-  // proposal and restore the established session before replying so neither
-  // the audio task nor the video child can observe a half-committed re-INVITE.
-  AudioFormat new_tx;
-  AudioFormat new_rx;
-  uint8_t new_tx_pt = 0;
-  uint8_t new_rx_pt = 0;
-  RtpAudioPayloads new_rx_payloads;
-  this->get_media_config_(&new_tx, &new_rx, &new_tx_pt, &new_rx_pt, &new_rx_payloads);
-  const uint8_t new_audio_direction = this->get_audio_direction_();
-  const uint32_t new_audio_ip =
-      this->remote_rtp_ip_v4_.load(std::memory_order_acquire);
-  const uint16_t new_audio_port =
-      this->remote_rtp_port_.load(std::memory_order_acquire);
+  // Audio parsing is stack-owned. Only SIP/video proposal fields need
+  // restoration before admission; the established RTP contract stays live.
+  const auto &new_tx = candidate.tx;
+  const auto &new_rx = candidate.rx;
+  const uint8_t new_tx_pt = candidate.tx_payload_type;
+  const uint8_t new_rx_pt = candidate.rx_payload_type;
+  const auto &new_rx_payloads = candidate.receive_payloads;
+  const uint32_t new_audio_ip = candidate.remote_ip;
+  const uint16_t new_audio_port = candidate.remote_port;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   const bool new_video_offered = this->video_offered_;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
@@ -3339,7 +3342,6 @@ bool SipTransport::handle_reinvite_(const std::string &message,
       this->negotiated_video_capability_;
 #endif
   restore_old_media();
-  proposal_scope.finish();
 
   const bool same_audio =
       new_tx == old_tx && new_rx == old_rx &&
@@ -3516,12 +3518,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
 
   // Admission proved the prepared codec/PT contract is unchanged. Commit only
   // direction, leaving the existing buffers, converters and descriptors intact.
-  if ((new_audio_direction & 2U) != 0 && (old_audio_direction & 2U) == 0)
-    this->audio_rx_discontinuity_.store(true, std::memory_order_release);
-  this->set_audio_direction_(new_audio_direction);
-  this->remote_rtp_ip_v4_.store(new_audio_ip, std::memory_order_release);
-  this->remote_rtp_port_.store(new_audio_port, std::memory_order_release);
-  this->reset_rtp_latch_();
+  this->commit_audio_reoffer_controls_(candidate);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->video_offered_ = new_video_offered;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG

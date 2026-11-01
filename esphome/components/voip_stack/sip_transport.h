@@ -320,15 +320,34 @@ class SipTransport : public SipPhoneTransport {
   bool handle_update_(const std::string &message, const sockaddr_in &src);
   bool handle_response_(const std::string &message, const sockaddr_in &src);
   bool send_connected_identity_update_();
+  // Stack-owned SDP result. It never replaces the active RTP configuration
+  // until the established dialog owner commits an accepted offer/answer.
+  struct AudioMediaCandidate {
+    AudioFormat tx{disabled_audio_format()};
+    AudioFormat rx{disabled_audio_format()};
+    RtpAudioPayloads receive_payloads{};
+    uint32_t remote_ip{0};
+    uint16_t remote_port{0};
+    uint8_t tx_payload_type{0};
+    uint8_t rx_payload_type{0};
+    uint8_t direction{0};
+    bool directional_audio{false};
+#ifdef USE_ESPHOME_VOIP_DTMF
+    DtmfFormat dtmf_tx{};
+    DtmfFormat dtmf_rx{};
+#endif
+  };
+  void commit_audio_reoffer_controls_(const AudioMediaCandidate &candidate);
   std::string build_sdp_offer_();
   std::string build_sdp_capabilities_(uint32_t peer_ip) const;
-  std::string build_sdp_answer_() const;
+  std::string build_sdp_answer_(const AudioMediaCandidate *candidate = nullptr) const;
   std::string wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
                                  const std::string &maps, const std::string &flows,
                                  uint8_t ptime, const char *direction = "sendrecv") const;
   bool learn_remote_rtp_from_sdp_(const std::string &sdp,
                                   uint32_t default_ip,
-                                  bool remote_is_answer = false, bool direction_only = false);
+                                  bool remote_is_answer = false, bool direction_only = false,
+                                  AudioMediaCandidate *staged_audio = nullptr);
   void capture_remote_media_shape_(const std::string &sdp);
   std::string rejected_media_answer_(const std::string &media_line) const;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO

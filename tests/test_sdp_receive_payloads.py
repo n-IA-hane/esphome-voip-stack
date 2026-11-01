@@ -36,6 +36,7 @@ using namespace esphome::voip_stack;
     header = (base / "sip_transport.h").read_text()
     source += "using SipSignalingString = std::string;\nconstexpr size_t kMaxSdpMediaLines = 8;\n"
     source += block(header, "struct RemoteMediaShape {") + ";\n"
+    source += block(header, "struct AudioMediaCandidate {") + ";\n"
     source += r'''
 struct RetainedCall { AudioFormat selected_tx_format_; };
 struct SipTransport {
@@ -61,8 +62,8 @@ struct SipTransport {
  std::string wrap_sdp_envelope_(const std::string&,const std::string&,const std::string&,const std::string&,uint8_t,const char * = "sendrecv") const;
  std::string build_sdp_offer_();
  std::string build_sdp_capabilities_(uint32_t) const;
- std::string build_sdp_answer_() const;
- bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false,bool=false);
+ std::string build_sdp_answer_(const AudioMediaCandidate* = nullptr) const;
+ bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false,bool=false,AudioMediaCandidate* = nullptr);
 };
 '''
     for signature in ["std::string SipTransport::wrap_sdp_envelope_(",

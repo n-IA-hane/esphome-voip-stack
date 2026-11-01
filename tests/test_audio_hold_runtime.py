@@ -13,7 +13,8 @@ def hold_source():
     sdp = (SOURCE / "sip_sdp.cpp").read_text()
     transport = (SOURCE / "sip_transport.cpp").read_text()
     response = (SOURCE / "sip_request_response.cpp").read_text()
-    extra = ""
+    header = (SOURCE / "sip_transport.h").read_text()
+    extra = block(header, "struct AudioMediaCandidate {") + ";\n"
     for marker in ("bool parse_rtpmap_format(", "bool parse_audio_media_line("):
         extra += block(parser, marker) + "\n"
     extra += block(transport, "class ScopedMediaProposal {") + ";\n"
@@ -29,6 +30,8 @@ def hold_source():
         body = block(source, marker)
         declaration = body[:body.index("{")].replace("SipTransport::", "").strip()
         declaration = declaration.replace("bool remote_is_answer, bool direction_only)", "bool remote_is_answer = false, bool direction_only = false)")
+        declaration = declaration.replace("bool remote_is_answer, bool direction_only,", "bool remote_is_answer = false, bool direction_only = false,")
+        declaration = declaration.replace("AudioMediaCandidate *staged_audio)", "AudioMediaCandidate *staged_audio = nullptr)")
         if "send_response_" in marker:
             declaration = 'bool send_response_(uint16_t,const char*,const std::string & = "",const std::string & = "")'
         code = code.replace(block(code, old), declaration + ";", 1) + "\n" + body
@@ -39,12 +42,14 @@ def hold_source():
         ("std::string SipTransport::build_sdp_answer_(", sdp),
         ("bool SipTransport::handle_reinvite_(", transport),
         ("bool SipTransport::received_audio_format_(", transport),
+        ("void SipTransport::commit_audio_reoffer_controls_(", transport),
         ("void SipTransport::send_audio_frame(", transport),
     ):
         body = block(source, marker)
         declarations += body[:body.index("{")].replace("SipTransport::", "").strip() + ";\n"
         code += "\n" + body
     declarations = declarations.replace("const char *direction) const;", 'const char *direction = "sendrecv") const;')
+    declarations = declarations.replace("const AudioMediaCandidate *candidate) const;", "const AudioMediaCandidate *candidate = nullptr) const;")
     code = code.replace(" uint16_t sip_port_=5060;", declarations + r'''
  AudioFormatList offer_tx_formats_,offer_rx_formats_;int media_config_lock_=0;
  struct PreparedConverter {unsigned prepares=0;bool prepare_additional(const RtpAudioPayloads&,const AudioFormat&){++prepares;return true;}}pcm_receive_converter_;

@@ -26,6 +26,7 @@ struct Selector {
  uint8_t selected_rx_payload_type=0,selected_tx_payload_type=0;
  bool run(std::vector<AudioFormat> offer) {
   bool selected_rx=false,selected_tx=false,shared_format=false,remote_is_answer=false,direction_only=false;
+  const bool directional_audio=remote_directional_audio_v1_;
   [[maybe_unused]] bool selected_tx_allowed=false,selected_rx_allowed=false;
   AudioFormat prepared_tx,prepared_rx;
   RtpAudioPayloads received_payloads;

@@ -9,6 +9,9 @@ struct DtmfFormat {
   uint32_t clock{0};
   uint16_t events{0};
   uint8_t payload_type{0};
+  bool operator==(const DtmfFormat &other) const {
+    return this->clock == other.clock && this->events == other.events && this->payload_type == other.payload_type;
+  }
   bool valid() const { return this->clock != 0 && this->events != 0 && this->payload_type >= 96 && this->payload_type <= 127; }
 };
 inline constexpr uint32_t DTMF_CLOCKS[]{8000, 12000, 16000, 24000, 32000, 44100, 48000};
