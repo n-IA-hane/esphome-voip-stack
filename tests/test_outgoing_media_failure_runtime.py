@@ -50,7 +50,7 @@ def outgoing_wire_binary(tmp_path_factory):
     from test_incoming_media_failure_runtime import media_failure_source
     from test_refer_wire_runtime import wire_source
     code = wire_source()
-    code = code.replace(' uint16_t sip_port_=5060;', ' struct Converter {bool prepare_additional(const RtpAudioPayloads&,const AudioFormat&){assert(false);return false;}}pcm_receive_converter_;\n uint16_t sip_port_=5060;')
+    code = code.replace(' uint16_t sip_port_=5060;', ' AudioFormatList offer_rx_formats_;\n struct Converter {bool prepare_additional(const RtpAudioPayloads&,const AudioFormat&){assert(false);return false;}}pcm_receive_converter_;\n uint16_t sip_port_=5060;')
     media = media_failure_source().replace('uint32_t esp_random(){return 42;}', '').replace('struct RtpAudioPayloads {};', '')
     app = incoming_source().replace('uint32_t millis(){return 100;}', '')
     app = app.replace('struct Transport {', 'struct AppTransport {').replace('Transport t;Transport*transport_', 'AppTransport t;AppTransport*transport_')
