@@ -54,8 +54,8 @@ def hold_source():
  AudioFormatList offer_tx_formats_,offer_rx_formats_;int media_config_lock_=0;
  struct PreparedConverter {unsigned prepares=0;bool prepare_additional(const RtpAudioPayloads&,const AudioFormat&){++prepares;return true;}}pcm_receive_converter_;
  void defer_udp_provisional_response_(const std::string&,uint32_t,uint16_t){assert(false);}
- uint16_t rtp_port_=40000;size_t udp_max_payload_=1200;
- std::atomic<bool>rtp_running_{true};int rtp_socket_=-1;Mutex rtp_socket_mutex_;
+ size_t udp_max_payload_=1200;
+ std::atomic<bool>rtp_running_{true};Mutex rtp_socket_mutex_;
  std::atomic<uint16_t>rtp_sequence_{0};std::atomic<uint32_t>rtp_timestamp_{0},rtp_tx_packets_{0},rtp_tx_bytes_{0};uint32_t rtp_ssrc_=42;
  uint16_t sip_port_=5060;''', 1)
     code = code.replace("enum class MediaLifecyclePhase {IDLE}", "enum class MediaLifecyclePhase {IDLE,ACTIVE,CLEANING,SHUTTING_DOWN}")
