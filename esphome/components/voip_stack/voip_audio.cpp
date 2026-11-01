@@ -316,7 +316,7 @@ void VoipStack::debug_rx_startup_event_(RxStartupEvent event, uint32_t revision)
     if (!marker.compare_exchange_weak(seen, revision, std::memory_order_relaxed)) continue;
     if (this->rx_audio_revision_.load(std::memory_order_acquire) != revision) return;
     static const char *const names[]{"speaker_start_request", "in_call_gate", "rx_enqueue", "play_attempt",
-                                     "pcm_accepted"};
+                                     "pcm_accepted", "first_zero_write", "resumed", "first_jitter_drop"};
     const auto jitter = this->rx_jitter_buffer_ != nullptr ? this->rx_jitter_buffer_->counters()
                                                         : RtpJitterBuffer::Counters{};
     ESP_LOGI(TAG,
@@ -368,6 +368,9 @@ void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
   this->media_rx_queue_depth_.store(after.depth, std::memory_order_relaxed);
   if (after.drops > before.drops) {
     this->media_rx_queue_drops_.fetch_add(after.drops - before.drops, std::memory_order_relaxed);
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+    this->debug_rx_startup_event_(RxStartupEvent::FIRST_JITTER_DROP, revision);
+#endif
   }
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
   if (after.late > before.late) {
@@ -386,6 +389,11 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
                              uint32_t revision) {
   if (this->speaker_ == nullptr || pcm == nullptr || bytes == 0)
     return;
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  // Trace the NONE PCM path before local muting, excluding generated silence.
+  // The existing Opus PLC path also uses NONE; this does not prove RTP origin.
+  const bool trace_pcm = silence_reason == SilenceReason::NONE;
+#endif
   if (silence_reason == SilenceReason::NONE && this->rx_audio_chunk_ != nullptr &&
       bytes <= this->rx_audio_chunk_alloc_bytes_ &&
       this->volume_.load(std::memory_order_relaxed) <= 0.001f) {
@@ -401,12 +409,22 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
          this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL &&
          this->rx_audio_revision_.load(std::memory_order_acquire) == revision) {
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
-    this->debug_rx_startup_event_(RxStartupEvent::PLAY_ATTEMPT, revision);
+    if (trace_pcm) this->debug_rx_startup_event_(RxStartupEvent::PLAY_ATTEMPT, revision);
 #endif
     const TickType_t started = xTaskGetTickCount();
     const size_t written = this->speaker_->play(pcm + offset, bytes - offset, ticks_to_wait);
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
-    if (written > 0) this->debug_rx_startup_event_(RxStartupEvent::PCM_ACCEPTED, revision);
+    if (trace_pcm) {
+      if (written == 0) {
+        this->debug_rx_startup_event_(RxStartupEvent::FIRST_ZERO_WRITE, revision);
+      } else {
+        this->debug_rx_startup_event_(RxStartupEvent::PCM_ACCEPTED, revision);
+        if (this->audio_debug_rx_startup_logged_[static_cast<uint8_t>(RxStartupEvent::FIRST_ZERO_WRITE)]
+                .load(std::memory_order_relaxed) == revision) {
+          this->debug_rx_startup_event_(RxStartupEvent::RESUMED, revision);
+        }
+      }
+    }
 #endif
     if (written == 0) {
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
