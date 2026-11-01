@@ -142,7 +142,7 @@ class EspWitness:
     def on_log(self, entry):
         value = entry.message.decode(errors="replace") if isinstance(entry.message, bytes) else str(entry.message)
         value = re.sub(r"\x1b\[[0-9;]*m", "", value)
-        if any(tag in value for tag in ("registration.hil", "phone.hil", "voip_stack", "esp_screenshot", "esp_video_renderer", "runtime_controller")):
+        if any(tag in value for tag in ("registration.hil", "phone.hil", "ui.hil", "voip_stack", "esp_screenshot", "esp_video_renderer", "runtime_controller")):
             self.log.append({"time": time.monotonic(), "message": value})
             self.changed.set()
         renderer = re.search(r"decoded/errors/LVGL: (\d+)/(\d+)/(\d+)", value)
