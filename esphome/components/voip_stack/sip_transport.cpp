@@ -1129,7 +1129,8 @@ bool SipTransport::prepare_media_path_locked_() {
   this->audio_tx_max_send_us_ = 0;
   this->audio_tx_last_debug_log_ms_ = millis();
 #endif
-  if (!this->bind_udp_(&this->rtp_socket_, this->rtp_port_, "RTP")) return false;
+  if (this->rtp_socket_ < 0 &&
+      !this->bind_udp_(&this->rtp_socket_, this->rtp_port_, "RTP")) return false;
   xSemaphoreTake(this->rtp_cleanup_done_, 0);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   if (this->video_negotiated_) {
@@ -1268,7 +1269,7 @@ void SipTransport::request_audio_path_stop_locked_() {
   constexpr bool video_was_running = false;
 #endif
   if (phase == MediaLifecyclePhase::IDLE && !audio_was_running &&
-      !video_was_running) {
+      !video_was_running && this->rtp_socket_ < 0) {
     return;
   }
   this->media_lifecycle_phase_.store(MediaLifecyclePhase::CLEANING,
@@ -2240,7 +2241,7 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
   if (!this->refer_context_active_) {
     LockGuard media_lock(this->media_lifecycle_mutex_);
     if (this->media_lifecycle_phase_.load(std::memory_order_acquire) !=
-        MediaLifecyclePhase::IDLE) {
+        MediaLifecyclePhase::IDLE || this->rtp_socket_ >= 0) {
       ESP_LOGW(TAG, "SIP INVITE deferred: prior media lifecycle not idle");
       return false;
     }
@@ -2319,6 +2320,12 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
   {
     LockGuard media_lock(this->media_lifecycle_mutex_);
     sdp = this->build_sdp_offer_();
+    // The advertised port must already receive while the answer selects its
+    // codec. Keep this same socket through final media preparation.
+    if (!sdp.empty() && !this->refer_context_active_ && this->rtp_socket_ < 0 &&
+        !this->bind_udp_(&this->rtp_socket_, this->rtp_port_, "RTP")) {
+      sdp.clear();
+    }
   }
   if (sdp.empty()) {
     this->reset_dialog_();

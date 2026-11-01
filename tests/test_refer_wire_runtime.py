@@ -108,10 +108,14 @@ template<class T>void reset_string(T&s){s.clear();}
  bool send_request_(const std::string&m){SipRequestOptions o;return send_request_(m,"",o);}
  std::array<char,8192> sip_rx_scratch_{};
  std::atomic<bool> running_{true},transport_stopping_{false};
+ // Socket/media adapters are controlled here; reservation tests substitute
+ // the actual binder and deferred cleanup against real kernel sockets.
+ int rtp_socket_=-1;uint16_t rtp_port_=40000;
+ bool bind_udp_(int*fd,uint16_t,const char*){*fd=0;return true;}
  enum class MediaLifecyclePhase {IDLE};std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::IDLE};
  std::atomic<uint16_t>last_sip_status_code_{0};
  DeferredUdpResponse pending_provisional_response_;
- void request_audio_path_stop_locked_(){media_active_=false;}
+ void request_audio_path_stop_locked_(){media_active_=false;rtp_socket_=-1;}
  void close_tcp_client_from_sip_task_(){close_tcp_flow_(tcp_flow_);}
  void handle_tcp_peer_loss_(SipTcpFlow*f){close_tcp_flow_(*f);}
  static bool sip_method_known_(const std::string&){return false;}
