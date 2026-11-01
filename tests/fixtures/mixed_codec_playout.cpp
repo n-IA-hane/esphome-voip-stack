@@ -113,9 +113,12 @@ int main(int argc,char**argv){
   if(bad_size)--bytes;
   assert(sendto(sender,packet.data(),12+bytes,0,reinterpret_cast<sockaddr*>(&destination),sizeof(destination))==ssize_t(12+bytes));
  };
+ assert(sendto(sender,"x",1,0,reinterpret_cast<sockaddr*>(&destination),sizeof(destination))==1);
+ assert(sendto(sender,"",0,0,reinterpret_cast<sockaddr*>(&destination),sizeof(destination))==0);
  send_packet(20,99,false);send_packet(21,pcm_pt,false,true);
  for(unsigned seq:{1U,2U,4U,5U,7U,8U})send_packet(seq,(seq==4||seq==5)?opus_pt:pcm_pt,seq==4||seq==5);
  try{s.rtp_task_();assert(false);}catch(const EndRtp&){}
+ assert(s.rtp_rx_datagrams_==9&&"Raw ingress includes malformed/unsupported packets, excludes zero-length UDP");
  assert(s.rtp_rx_packets_==6&&jitter.depth()==6);
  try{app.rx_task_();assert(false);}catch(const EndPlayout&){}
  assert(speaker.frames.size()==8&&s.decodes==3&&s.plc==1&&"Opus decode/PLC follows each packet's codec, not the preferred codec");

@@ -958,6 +958,7 @@ class SipTransport : public SipPhoneTransport {
   std::atomic<bool> remote_sip_tcp_{false};
   std::atomic<uint32_t> rtp_tx_packets_{0};
   std::atomic<uint32_t> rtp_rx_packets_{0};
+  std::atomic<uint32_t> rtp_rx_datagrams_{0};
   std::atomic<uint32_t> rtp_tx_bytes_{0};
   std::atomic<uint32_t> rtp_rx_bytes_{0};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG

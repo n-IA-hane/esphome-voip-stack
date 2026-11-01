@@ -88,10 +88,11 @@ void VoipStack::emit_diagnostic_section_() {
       } else { ESP_LOGI(TAG, "transport: not available"); }
       break;
     case 4:
-      ESP_LOGI(TAG, "rtp: running=%s remote_sip_port=%u remote_rtp_port=%u tx_packets=%u rx_packets=%u tx_bytes=%u rx_bytes=%u",
+      ESP_LOGI(TAG, "rtp: running=%s remote_sip_port=%u remote_rtp_port=%u tx_packets=%u rx_packets=%u tx_bytes=%u rx_bytes=%u udp_datagrams=%u",
                YESNO(transport.rtp_running), transport.remote_sip_port, transport.remote_rtp_port,
                (unsigned) transport.rtp_tx_packets, (unsigned) transport.rtp_rx_packets,
-               (unsigned) transport.rtp_tx_bytes, (unsigned) transport.rtp_rx_bytes);
+               (unsigned) transport.rtp_tx_bytes, (unsigned) transport.rtp_rx_bytes,
+               (unsigned) transport.rtp_rx_datagrams);
       break;
     case 5:
       if (!dump.changed && transport.call_active) {

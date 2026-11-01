@@ -66,6 +66,7 @@ struct SipTransportSnapshot {
   AudioFormat selected_rx_format{DEFAULT_AUDIO_FORMAT};
   uint32_t rtp_tx_packets{0};
   uint32_t rtp_rx_packets{0};
+  uint32_t rtp_rx_datagrams{0};
   uint32_t rtp_tx_bytes{0};
   uint32_t rtp_rx_bytes{0};
   uint16_t last_sip_status_code{0};

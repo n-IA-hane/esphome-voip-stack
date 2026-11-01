@@ -154,6 +154,7 @@ SipTransportSnapshot SipTransport::snapshot() const {
   this->get_media_config_(&out.selected_tx_format, &out.selected_rx_format, nullptr, nullptr);
   out.rtp_tx_packets = this->rtp_tx_packets_.load(std::memory_order_acquire);
   out.rtp_rx_packets = this->rtp_rx_packets_.load(std::memory_order_acquire);
+  out.rtp_rx_datagrams = this->rtp_rx_datagrams_.load(std::memory_order_relaxed);
   out.rtp_tx_bytes = this->rtp_tx_bytes_.load(std::memory_order_acquire);
   out.rtp_rx_bytes = this->rtp_rx_bytes_.load(std::memory_order_acquire);
   out.last_sip_status_code = this->last_sip_status_code_.load(std::memory_order_acquire);
@@ -4864,6 +4865,8 @@ void SipTransport::rtp_task_() {
       socklen_t slen = sizeof(src);
       int n = recvfrom(socket, buf, sizeof(buf), 0,
                        reinterpret_cast<struct sockaddr *>(&src), &slen);
+      // Count socket deliveries before RTP admission, including invalid input.
+      if (n > 0) this->rtp_rx_datagrams_.fetch_add(1, std::memory_order_relaxed);
       if (n <= 12 || (buf[0] & 0xC0) != 0x80) {
         continue;
       }
