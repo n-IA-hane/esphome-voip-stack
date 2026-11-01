@@ -1098,7 +1098,8 @@ bool SipTransport::prepare_media_path_locked_() {
   RtpAudioPayloads rx_payloads;
   this->get_media_config_(nullptr, &sink_format, nullptr, nullptr, &rx_payloads);
   if (sink_format.is_valid() &&
-      !this->pcm_receive_converter_.prepare(rx_payloads.pcm_only(), decoded_pcm_format(sink_format))) {
+      !this->pcm_receive_converter_.prepare(
+          rx_payloads.pcm_only(), decoded_pcm_format(pcm_playout_format(sink_format, this->offer_rx_formats_)))) {
     ESP_LOGE(TAG, "Unable to prepare negotiated PCM receive formats");
     return false;
   }

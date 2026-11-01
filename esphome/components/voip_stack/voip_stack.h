@@ -39,6 +39,7 @@
 #endif
 
 #include "phonebook.h"
+#include "rtp_audio_payloads.h"
 #include "rtp_jitter_buffer.h"
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 #include "video.h"
@@ -1016,6 +1017,7 @@ class VoipStack : public Component {
     return unpack_audio_format(this->current_tx_audio_format_packed_.load(std::memory_order_acquire));
   }
   AudioFormat get_current_rx_audio_format_() const {
+    // Local playout geometry; CurrentMediaFormats keeps the wire contract.
     return unpack_audio_format(this->current_rx_audio_format_packed_.load(std::memory_order_acquire));
   }
   void set_current_media_formats_(const AudioFormat &caller_to_dest, const AudioFormat &dest_to_caller,
@@ -1023,7 +1025,8 @@ class VoipStack : public Component {
     LockGuard lock(this->media_format_mutex_);
     this->current_media_formats_ = CurrentMediaFormats{caller_to_dest, dest_to_caller, tx, rx};
     this->current_tx_audio_format_packed_.store(pack_audio_format(tx), std::memory_order_release);
-    this->current_rx_audio_format_packed_.store(pack_audio_format(rx), std::memory_order_release);
+    this->current_rx_audio_format_packed_.store(pack_audio_format(pcm_playout_format(rx, this->rx_audio_formats_)),
+                                               std::memory_order_release);
     this->current_tx_audio_frame_bytes_.store(tx.nominal_frame_bytes(), std::memory_order_release);
   }
   void set_current_tx_audio_format_(const AudioFormat &format) {
@@ -1035,7 +1038,8 @@ class VoipStack : public Component {
   void set_current_rx_audio_format_(const AudioFormat &format) {
     LockGuard lock(this->media_format_mutex_);
     this->current_media_formats_.rx = format;
-    this->current_rx_audio_format_packed_.store(pack_audio_format(format), std::memory_order_release);
+    this->current_rx_audio_format_packed_.store(pack_audio_format(pcm_playout_format(format, this->rx_audio_formats_)),
+                                               std::memory_order_release);
   }
   std::atomic<size_t> current_tx_audio_frame_bytes_{DEFAULT_AUDIO_FORMAT.nominal_frame_bytes()};
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG

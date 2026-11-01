@@ -25,6 +25,7 @@ def reservation_binary(tmp_path_factory):
     code = code.replace(stop, "void request_audio_path_stop_locked_();")
     additions = r'''
  static constexpr unsigned kRtpSocketRxBufferBytes=65536;
+ AudioFormatList offer_rx_formats_;
  std::atomic<bool>rtp_running_{false},rtp_task_terminate_{false},rtp_task_quiesced_{true};
  std::atomic<uint16_t>rtp_sequence_{0};std::atomic<uint32_t>rtp_timestamp_{0};uint32_t rtp_ssrc_=0;
  void *rtp_task_handle_=this,*rtp_cleanup_done_=this;
@@ -137,18 +138,21 @@ int main(int argc,char **argv){
   if(scenario=="early-data"){
    // Model the application's offered 48 kHz preference before its final
    // receive geometry is selected. This must not prepare a decoder yet.
-   s.selected_rx_format_.sample_rate=48000;
+   s.offer_rx_formats_.count=2;
+   s.offer_rx_formats_.formats[0]={48000,PcmFormat::S16LE,1,10,AudioCodec::PCM};
+   s.offer_rx_formats_.formats[1]={16000,PcmFormat::S16LE,1,10,AudioCodec::PCM};
+   s.selected_rx_format_=s.offer_rx_formats_.formats[0];
    int sender=socket(AF_INET,SOCK_DGRAM,0);assert(sender>=0);sockaddr_in dst{};dst.sin_family=AF_INET;dst.sin_addr.s_addr=htonl(INADDR_LOOPBACK);dst.sin_port=htons(s.rtp_port_);
    for(uint16_t seq=60506;seq<=60510;++seq){std::array<uint8_t,332>packet{};packet[0]=0x80;packet[1]=97;packet[2]=seq>>8;packet[3]=seq;
     const uint32_t stamp=(seq-60506)*160;packet[4]=stamp>>24;packet[5]=stamp>>16;packet[6]=stamp>>8;packet[7]=stamp;
     packet[8]=0x12;packet[9]=0x34;packet[10]=0x56;packet[11]=0x78;
     assert(sendto(sender,packet.data(),packet.size(),0,reinterpret_cast<sockaddr*>(&dst),sizeof(dst))==ssize_t(packet.size()));}
-   // The speaker's preferred 48 kHz format can change to the selected 16 kHz
-   // without recreating or draining the transport's reserved UDP socket.
+   // The selected wire format can change to 16 kHz while the prepared sink
+   // stays at 48 kHz, without recreating or draining the reserved UDP socket.
    assert(s.pcm_receive_converter_.prepares==0);s.selected_rx_format_.sample_rate=16000;
    s.selected_tx_format_.sample_rate=16000;s.negotiated_rx_payloads_.add(97,s.selected_rx_format_);
    assert(s.prepare_media_path_locked_());assert(s.rtp_socket_==original&&socket_port(original)==s.rtp_port_);
-   assert(s.pcm_receive_converter_.prepares==1&&s.pcm_receive_converter_.last_rate==16000);
+   assert(s.pcm_receive_converter_.prepares==1&&s.pcm_receive_converter_.last_rate==48000);
    for(uint16_t seq=60506;seq<=60510;++seq){std::array<uint8_t,512>packet{};assert(recv(original,packet.data(),packet.size(),MSG_DONTWAIT)==332);assert((unsigned(packet[2])<<8|packet[3])==seq);}
    close(sender);
   }else assert(scenario=="abort"||scenario=="repeat"||scenario=="active-close");
