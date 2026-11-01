@@ -11,7 +11,9 @@ from test_refer_dialog_runtime import SOURCE, block
 @pytest.fixture(scope="module")
 def admission_binary(tmp_path_factory):
     folder=tmp_path_factory.mktemp("tcp-admission")
-    defines=folder/"esphome/core/defines.h";defines.parent.mkdir(parents=True);defines.write_text("")
+    defines=folder/"esphome/core/defines.h"
+    defines.parent.mkdir(parents=True)
+    defines.write_text("")
     code=registration_transport_source(True)
     code=code.replace('struct SipTransport: SipPhoneTransport {', '''struct SipTransport: SipPhoneTransport {
  void accept_tcp_client_(int,const sockaddr_in&);
@@ -53,7 +55,9 @@ int main(int argc,char**argv){assert(argc==3);const bool control_first=std::stri
  s.close_tcp_flow_(s.tcp_flow_);s.close_tcp_flow_(s.inbound_control_flow_);
 }
 '''
-    cpp=folder/'admission.cpp';cpp.write_text(code);binary=folder/'admission'
+    cpp=folder/'admission.cpp'
+    cpp.write_text(code)
+    binary=folder/'admission'
     result=subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-g','-fsanitize=address,undefined',
         '-fno-pie','-no-pie','-DUSE_ESPHOME_VOIP_REGISTRATION','-DUSE_ESPHOME_VOIP_MWI',
         '-I',str(folder),'-I',str(SOURCE.parents[2]),'-I',str(SOURCE),str(cpp),str(SOURCE/'sip_registration.cpp'),str(SOURCE/'sip_mwi.cpp'),'-lcrypto','-o',str(binary)],capture_output=True,text=True)
