@@ -58,7 +58,7 @@ int main(int argc,char**argv){
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
  SipMwi::Hooks hooks;hooks.context=&transport;hooks.random=random_value;hooks.hash=hash_value;
  hooks.local_ip=[](void*,uint32_t){return std::string("127.0.0.1");};
- hooks.send=[](void*ctx,size_t,const std::string&wire,uint32_t ip,uint16_t port,bool tcp){
+ hooks.send=[](void*ctx,size_t,std::string_view wire,uint32_t ip,uint16_t port,bool tcp){
   auto &owner=*static_cast<SipTransport*>(ctx);auto &peer=*owner.peer;
   assert(ip==INADDR_LOOPBACK&&port==peer.port&&tcp==peer.tcp);
   return send(peer.client,wire.data(),wire.size(),0)==ssize_t(wire.size());
