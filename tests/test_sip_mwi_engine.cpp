@@ -160,7 +160,7 @@ struct Harness {
     hooks.random = random_value;
     hooks.hash = hash_value;
     hooks.local_ip = [](void *, uint32_t) { return std::string("127.0.0.1"); };
-    hooks.send = [](void *ctx, size_t index, const std::string &msg,
+    hooks.send = [](void *ctx, size_t index, std::string_view msg,
                     uint32_t ip, uint16_t port, bool stream) {
       auto &h = *static_cast<Harness *>(ctx);
       auto &p = index == 0 ? h.first : h.second;

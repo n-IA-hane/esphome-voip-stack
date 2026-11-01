@@ -32,7 +32,8 @@ public:
 #endif
   struct Hooks {
     void *context{nullptr};
-    bool (*send)(void *, size_t, const std::string &, uint32_t, uint16_t,
+    // Consume or copy the transaction bytes before returning; never retain the view.
+    bool (*send)(void *, size_t, std::string_view, uint32_t, uint16_t,
                  bool){nullptr};
     // Reply on the received transport/flow, never a new connection.
     bool (*reply)(void *, const std::string &, uint32_t, uint16_t, bool,

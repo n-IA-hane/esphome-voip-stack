@@ -96,7 +96,7 @@ void SipTransport::initialize_registration() {
   this->registration_.set_hooks(hooks);
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
   SipMwi::Hooks mwi;
-  mwi.context = this; mwi.send = registration_send_; mwi.reply = registration_mwi_reply_;
+  mwi.context = this; mwi.send = registration_send_view_; mwi.reply = registration_mwi_reply_;
   mwi.local_ip = registration_local_ip_;
 #ifdef USE_ESPHOME_VOIP_MWI
   mwi.notify = registration_mwi_notify_;

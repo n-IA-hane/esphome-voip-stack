@@ -141,7 +141,7 @@ void account_refer_direct_case(SipTransport &s, Peer &pbx, bool target_tcp, bool
 #ifdef USE_ESPHOME_VOIP_MWI
 void notify_on_new_control_flow(SipTransport &s, Peer &pbx) {
   SipMwi::Hooks hooks;
-  hooks.context = &s; hooks.send = SipTransport::registration_send_; hooks.reply = SipTransport::registration_mwi_reply_;
+  hooks.context = &s; hooks.send = SipTransport::registration_send_view_; hooks.reply = SipTransport::registration_mwi_reply_;
   hooks.local_ip = [](void *, uint32_t) { return std::string("127.0.0.1"); };
   hooks.random = esp_random; hooks.hash = SipTransport::registration_hash_; hooks.local_port = s.sip_port_;
   s.mwi_.set_hooks(hooks);
@@ -214,6 +214,26 @@ int main(int argc, char **argv) {
   SipTransport s;
   if (scenario == "keepalive-with-call") s.registration_.set_keepalive_interval(2000);
   Peer pbx(tcp); bind_account(s, pbx);
+  if (scenario == "queued-view-lifetime") {
+    assert(tcp);
+    auto &flow = s.registration_flows_[0];
+    // Make the actual adapter queue a record while its connection is absent.
+    s.close_tcp_flow_(flow);
+    const std::string expected = "SUBSCRIBE sip:mailbox@example.test SIP/2.0\r\nContent-Length: 0\r\n\r\n";
+    {
+      std::string transient = expected;
+      assert(SipTransport::registration_send_view_(&s, 0, transient, INADDR_LOOPBACK, ntohs(pbx.address.sin_port), true));
+      assert(flow.pending == expected);
+      transient.assign(4096, 'x');
+    }
+    assert(flow.pending == expected && flow.connect_requested);
+    // An occupied queue rejects another view without corrupting its owner.
+    assert(!SipTransport::registration_send_view_(&s, 0, "replacement", INADDR_LOOPBACK, ntohs(pbx.address.sin_port), true));
+    assert(flow.pending == expected);
+    s.retire_registration_flow_(0);
+    assert(flow.pending.empty() && !flow.connect_requested);
+    close(s.sip_socket_); return 0;
+  }
   if (scenario == "keepalive-with-call") {
     start_account_call(s, pbx);
     auto invite = pick(pbx.drain(), "INVITE");

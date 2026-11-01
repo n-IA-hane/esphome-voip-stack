@@ -638,35 +638,43 @@ bool SipMwi::begin_(size_t index, uint32_t now) {
       target = first;
     }
   }
-  std::string message =
-      "SUBSCRIBE " + target + " SIP/2.0\r\nVia: SIP/2.0/" +
-      (a.config().tcp ? "TCP " : "UDP ") + local + ':' +
-      std::to_string(this->hooks_.local_port) + ";branch=" + a.branch +
-      ";rport\r\nMax-Forwards: 70\r\nFrom: <" + aor + ">;tag=" + a.tag +
-      "\r\nTo: <" + observed + '>' +
-      (a.remote_tag.empty() ? "" : ";tag=" + a.remote_tag) +
-      "\r\nCall-ID: " + a.call_id + "\r\nCSeq: " + std::to_string(a.cseq) +
-      " SUBSCRIBE\r\nContact: <" + a.contact +
-      ">\r\nEvent: " + event_name + "\r\nAccept: " + content_type + "\r\nExpires: ";
   a.requested_expires = a.desired ? a.expires : 0;
-  message += std::to_string(a.requested_expires) + "\r\n";
-  if (!routes.empty())
-    message += "Route: " + routes + "\r\n";
+  std::array<std::string, 2> auth;
+  size_t auth_index = 0;
   for (SipDigest *digest : {&a.digest, &a.proxy_digest}) {
     if (!digest->empty()) {
-      const std::string auth = digest->authorization(
+      auth[auth_index] = digest->authorization(
           a.config(), "SUBSCRIBE", target, this->token_(), this->hooks_.hash);
-      if (auth.empty()) {
+      if (auth[auth_index].empty()) {
         this->retry_(index, now);
         return false;
       }
-      message += auth;
     }
+    ++auth_index;
   }
-  message += "Content-Length: 0\r\n\r\n";
+  const std::string port = std::to_string(this->hooks_.local_port);
+  const std::string sequence = std::to_string(a.cseq);
+  const std::string expires = std::to_string(a.requested_expires);
+  const std::string_view parts[]{
+      "SUBSCRIBE ", target, " SIP/2.0\r\nVia: SIP/2.0/", a.config().tcp ? "TCP " : "UDP ",
+      local, ":", port, ";branch=", a.branch, ";rport\r\nMax-Forwards: 70\r\nFrom: <", aor,
+      ">;tag=", a.tag, "\r\nTo: <", observed, ">", a.remote_tag.empty() ? "" : ";tag=", a.remote_tag,
+      "\r\nCall-ID: ", a.call_id, "\r\nCSeq: ", sequence, " SUBSCRIBE\r\nContact: <", a.contact,
+      ">\r\nEvent: ", event_name, "\r\nAccept: ", content_type, "\r\nExpires: ", expires, "\r\n",
+      routes.empty() ? "" : "Route: ", routes, routes.empty() ? "" : "\r\n", auth[0], auth[1],
+      "Content-Length: 0\r\n\r\n"};
+  size_t bytes = 0;
+  for (const auto part : parts)
+    bytes += part.size();
+  // Build in the transaction's signaling store, without an internal wire copy.
+  // Existing completion/error paths release this store after the transaction.
+  auto &message = a.request;
+  message.erase(0, message.size());
+  message.reserve(bytes);
+  for (const auto part : parts)
+    message.append(part.data(), part.size());
   a.request_in_dialog = !a.remote_tag.empty();
   a.refresh_after_register = false;
-  a.request = message;
   a.pending = true;
   a.scheduled = false;
   a.interval_ms = 500;

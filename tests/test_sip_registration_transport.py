@@ -107,6 +107,14 @@ def test_notify_new_tcp_connection_while_direct_call_owns_main_flow(tmp_path, ac
     assert result.returncode == 0, result.stderr
 
 
+def test_queued_subscription_view_is_copied_before_return(registration_transport_binary):
+    result = subprocess.run(
+        [registration_transport_binary, "queued-view-lifetime", "tcp"],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize("scenario", ["authenticated-call", "foreign-flow", "atomic-change", "reset-missing", "refer-authenticated", "refer-direct-udp", "refer-direct-tcp", "keepalive-with-call"])
 @pytest.mark.parametrize("transport", ["udp", "tcp"])
 def test_registration_dialog_contracts(registration_transport_binary, scenario, transport):

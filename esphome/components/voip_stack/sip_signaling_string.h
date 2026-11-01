@@ -54,6 +54,8 @@ class SipSignalingString {
     this->value_.swap(empty);
   }
 
+  void reserve(size_t size) { this->value_.reserve(size); }
+
   void append(const char *data, size_t size) { this->value_.append(data, size); }
   size_t find(const char *needle) const { return this->value_.find(needle); }
   size_t rfind(const char *needle, size_t offset) const {
