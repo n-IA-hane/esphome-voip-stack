@@ -9,6 +9,10 @@
 #include "esphome/components/voip_stack/video.h"
 #include "esphome/core/automation.h"
 #include "esphome/core/component.h"
+#if defined(USE_MIPI_DSI_RGB565_OWNED_TRANSFORM) &&                            \
+    defined(USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY)
+#include "esphome/components/mipi_dsi/mipi_dsi.h"
+#endif
 
 #ifdef USE_P4_VIDEO_RENDERER_JPEG
 #include "driver/jpeg_decode.h"
@@ -62,7 +66,16 @@ public:
 #ifdef USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY
   void set_direct_display(display::Display *value) {
     this->direct_display_ = value;
+#ifdef USE_MIPI_DSI_RGB565_OWNED_TRANSFORM
+    this->owned_display_ = nullptr;
+#endif
   }
+#ifdef USE_MIPI_DSI_RGB565_OWNED_TRANSFORM
+  void set_direct_display(mipi_dsi::MipiDsi *value) {
+    this->direct_display_ = value;
+    this->owned_display_ = value;
+  }
+#endif
   void set_display_rotation(uint16_t value) {
     this->display_rotation_ = value;
   }
@@ -124,6 +137,8 @@ protected:
 #ifdef USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY
   bool present_surface_direct_(int index);
   bool commit_direct_surface_(int index);
+  bool present_native_rgb565_(int x, int y, int width, int height,
+                              const uint8_t *pixels, size_t bytes);
 #endif
 #if defined(USE_P4_VIDEO_RENDERER_JPEG) &&                                  \
     defined(USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY)
@@ -217,6 +232,9 @@ protected:
 #endif
 #ifdef USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY
   display::Display *direct_display_{nullptr};
+#ifdef USE_MIPI_DSI_RGB565_OWNED_TRANSFORM
+  mipi_dsi::MipiDsi *owned_display_{nullptr};
+#endif
   uint16_t display_rotation_{0};
 #ifdef USE_P4_VIDEO_RENDERER_H264
   std::atomic<uint64_t> direct_layout_area_{0};
@@ -246,6 +264,7 @@ protected:
 #endif
   uint8_t *surfaces_[2]{nullptr, nullptr};
   size_t surface_capacity_bytes_{0};
+  size_t surface_count_{2};
   size_t surface_data_size_[2]{0, 0};
   uint16_t surface_stride_bytes_[2]{0, 0};
   uint16_t surface_content_width_[2]{0, 0};
@@ -301,6 +320,11 @@ protected:
   lv_img_dsc_t image_descriptor_{};
   std::atomic<int> front_surface_{0};
   std::atomic<int> pending_surface_{-1};
+#if defined(USE_P4_VIDEO_RENDERER_JPEG) &&                                     \
+    defined(USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY)
+  // Published with pending_surface_, independent of reusable AU slot metadata.
+  std::atomic<uint32_t> pending_surface_generation_{0};
+#endif
   // pending_surface_ owns the backing store until LVGL completes its flush, or
   // until the direct-display PPA has copied it into the rotated front buffer.
   // No timer or main-loop polling is involved.
