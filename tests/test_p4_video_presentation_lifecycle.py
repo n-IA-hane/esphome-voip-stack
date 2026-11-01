@@ -71,7 +71,7 @@ int main() {
   renderer.remote_frame_visible_ = true;
   assert(!renderer.has_remote_frame());
 }
-'''.replace("QUERY", query).replace("BODY", deactivate)
+'''.replace("QUERY", query + "\n").replace("BODY", deactivate)
     cpp = tmp_path / "renderer_lifecycle.cpp"
     cpp.write_text(harness)
     binary = tmp_path / "renderer_lifecycle"

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esphome/core/defines.h"
+#include "video.h"
 
 #if defined(USE_ESPHOME_VOIP_STACK_VIDEO) && \
     defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG)
@@ -73,7 +74,8 @@ class RtpJpegDepacketizer {
 
   RtpJpegPushResult push(const uint8_t *payload, size_t payload_size,
                          bool marker, uint32_t timestamp, uint8_t *output,
-                         size_t output_capacity, size_t *output_size);
+                         size_t output_capacity, size_t *output_size,
+                         JpegFrameInfo *frame_info = nullptr);
   /// Drop only the access unit currently being assembled.
   void reset();
   /// Start a new RTP session. RFC 2435 dynamic Q mappings are session-local.

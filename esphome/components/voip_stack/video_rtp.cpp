@@ -1910,9 +1910,10 @@ bool VideoRtpSession::handle_jpeg_payload_(const uint8_t *payload,
     this->reassembly_damaged_ = false;
   }
   size_t access_unit_size = 0;
+  JpegFrameInfo frame_info{};
   const RtpJpegPushResult result = this->jpeg_depacketizer_.push(
       payload, payload_size, marker, timestamp, this->reassembly_,
-      this->receive_access_unit_capacity_, &access_unit_size);
+      this->receive_access_unit_capacity_, &access_unit_size, &frame_info);
   if (result == RtpJpegPushResult::DROPPED) {
     this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
     this->reassembly_damaged_ = false;
@@ -1926,7 +1927,8 @@ bool VideoRtpSession::handle_jpeg_payload_(const uint8_t *payload,
   }
   if (this->sink_ != nullptr) {
     const EncodedVideoAccessUnit access_unit{
-        this->reassembly_, access_unit_size, timestamp, true};
+        this->reassembly_, access_unit_size, timestamp, true,
+        nullptr,           nullptr,          frame_info};
     if (!this->sink_->consume_video_access_unit(access_unit)) {
       this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
     } else {

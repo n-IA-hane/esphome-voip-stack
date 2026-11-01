@@ -72,8 +72,8 @@ struct OwnedDisplay:display::Display {
   auto c=in;std::vector<uint16_t>rotated(w*h);c.out.buffer=rotated.data();ppa_do_scale_rotate_mirror(this,&c);blit(x,y,w,h,reinterpret_cast<const uint8_t*>(rotated.data()));return admit(ctx);
  }
 };
-namespace voip_stack {struct VideoCapability {uint8_t max_fps=10;bool valid()const{return true;}bool is_jpeg()const{return true;}};
-struct EncodedVideoAccessUnit{const uint8_t*data;size_t size;uint32_t timestamp_90khz=0;bool key_frame=true;};}
+namespace voip_stack {struct JpegFrameInfo{};struct VideoCapability {uint8_t max_fps=10;bool valid()const{return true;}bool is_jpeg()const{return true;}};
+struct EncodedVideoAccessUnit{const uint8_t*data;size_t size;uint32_t timestamp_90khz=0;bool key_frame=true;JpegFrameInfo jpeg_info{};};}
 bool xSemaphoreTake(std::mutex*m,int wait){assert(wait==0);return m->try_lock();}void xSemaphoreGive(std::mutex*m){m->unlock();}void xTaskNotifyGive(void*){}
 struct SlotState {
  std::atomic<uint8_t>value{0};std::function<void()>before_exchange;
@@ -92,6 +92,7 @@ struct P4VideoRenderer {
  std::atomic<uint32_t>rx_admitted_frames_{0},rx_rendered_frames_{0},rx_presented_frames_{0},rx_refresh_completed_{0};
  std::mutex presentation;std::mutex*presentation_mutex_=&presentation;void*rx_task_handle_=nullptr;
  voip_stack::VideoCapability rx_capability_;uint8_t framerate_=10;struct{void reset(uint8_t){}bool accept(uint32_t){return true;}}cadence_;
+ voip_stack::JpegFrameInfo rx_au_jpeg_info_{};
  uint8_t au[128]{};uint8_t*rx_au_=au;size_t rx_au_capacity_=128,rx_au_size_=0;uint32_t rx_timestamp_=0;bool rx_key_frame_=false;SlotState rx_slot_state_;
  explicit P4VideoRenderer(OwnedDisplay&d):direct_display_(&d),owned_display_(&d){for(int b=0;b<2;b++){surfaces_[b]=reinterpret_cast<uint8_t*>(storage[b].data());for(size_t i=0;i<storage[b].size();i++)storage[b][i]=100+i;}}
  bool is_failed(){return false;}void enable_loop_soon_any_context(){}
@@ -123,6 +124,15 @@ int main(){
 #endif
  }
 #if defined(OWNED) && defined(USE_P4_VIDEO_RENDERER_JPEG)
+ // Published pitch/capacity must describe an exact rectangular source.
+ for(int invalid=0;invalid<4;invalid++){
+  OwnedDisplay driver;P4VideoRenderer broken(driver);broken.surface_count_=1;
+  if(invalid==0)broken.surface_stride_bytes_[0]=15;
+  if(invalid==1)broken.surface_data_size_[0]=95;
+  if(invalid==2)broken.surface_data_size_[0]=broken.surface_capacity_bytes_+1;
+  if(invalid==3)broken.surface_content_width_[0]=9;
+  assert(!broken.present_surface_direct_(0)&&driver.transforms==0&&driver.native_blits==0&&driver.generic_blits==0);
+ }
  // A consume may pass pending<0, then win the AU slot only after the decoder
  // publishes its old surface and releases that slot. Stop/redial before the
  // presentation admission must not relabel that surface with reused AU data.

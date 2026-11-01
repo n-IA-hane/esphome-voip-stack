@@ -498,11 +498,15 @@ bool RtpJpegDepacketizer::cache_or_validate_quantizers_(
   return true;
 }
 
-RtpJpegPushResult RtpJpegDepacketizer::push(
-    const uint8_t *payload, size_t payload_size, bool marker,
-    uint32_t timestamp, uint8_t *output, size_t output_capacity,
-    size_t *output_size) {
+RtpJpegPushResult RtpJpegDepacketizer::push(const uint8_t *payload,
+                                            size_t payload_size, bool marker,
+                                            uint32_t timestamp, uint8_t *output,
+                                            size_t output_capacity,
+                                            size_t *output_size,
+                                            JpegFrameInfo *frame_info) {
   if (output_size != nullptr) *output_size = 0;
+  if (frame_info != nullptr)
+    *frame_info = {};
   if (payload == nullptr || payload_size < 8 || output == nullptr ||
       output_size == nullptr) {
     this->reset();
@@ -629,6 +633,12 @@ RtpJpegPushResult RtpJpegDepacketizer::push(
   output[this->header_size_ + this->scan_size_] = 0xFF;
   output[this->header_size_ + this->scan_size_ + 1] = 0xD9;
   *output_size = this->header_size_ + this->scan_size_ + 2;
+  if (frame_info != nullptr) {
+    frame_info->width = static_cast<uint16_t>(this->width_blocks_) * 8U;
+    frame_info->height = static_cast<uint16_t>(this->height_blocks_) * 8U;
+    frame_info->sampling =
+        (this->type_ & 1U) != 0 ? JpegSampling::YUV420 : JpegSampling::YUV422;
+  }
   this->reset();
   return RtpJpegPushResult::COMPLETE;
 }

@@ -416,7 +416,13 @@ def test_p4_h264_renderer_uses_compact_surfaces_and_supported_display_copy() -> 
     source = read("../p4_video_renderer/p4_video_renderer.cpp")
 
     assert "display::Display *value" in header
-    assert 'components/mipi_dsi/mipi_dsi.h' not in header
+    assert header.count('#include "esphome/components/mipi_dsi/mipi_dsi.h"') == 1
+    assert re.search(
+        r"#if defined\(USE_MIPI_DSI_RGB565_OWNED_TRANSFORM\)\s*&&\s*\\?\s*"
+        r'defined\(USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY\)\s*'
+        r'#include "esphome/components/mipi_dsi/mipi_dsi.h"\s*#endif',
+        header,
+    )
     assert "cv.use_id(mipi_dsi_display.MipiDsi)" in codegen
     assert "prepare_direct_frame_buffers" not in source
     assert "present_direct_frame_buffer" not in source

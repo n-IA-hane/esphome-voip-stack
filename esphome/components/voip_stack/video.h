@@ -22,6 +22,24 @@ enum class VideoCodec : uint8_t {
   H264,
 };
 
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+enum class JpegSampling : uint8_t { UNKNOWN = 0, YUV444, YUV422, YUV420, GRAY };
+
+/// Optional geometry validated against this exact complete JPEG bitstream.
+/// RTP reassembly supplies it while constructing the interchange header.
+/// Generic producers leave it empty and the decoder reads their JPEG header.
+struct JpegFrameInfo {
+  uint16_t width{0};
+  uint16_t height{0};
+  JpegSampling sampling{JpegSampling::UNKNOWN};
+
+  bool is_set() const {
+    return this->width != 0 || this->height != 0 ||
+           this->sampling != JpegSampling::UNKNOWN;
+  }
+};
+#endif
+
 /// One complete encoded video access unit.
 ///
 /// A producer may transfer a bounded lease by setting release_callback. The
@@ -36,6 +54,9 @@ struct EncodedVideoAccessUnit {
   bool key_frame{false};
   ReleaseCallback release_callback{nullptr};
   void *release_ctx{nullptr};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  JpegFrameInfo jpeg_info{};
+#endif
 
   void release() const {
     if (this->release_callback != nullptr) {
