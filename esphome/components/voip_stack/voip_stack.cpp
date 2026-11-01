@@ -589,6 +589,9 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
 
 void VoipStack::loop() {
   this->pump_application_media_start_();
+#if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_MIC)
+  this->emit_audio_debug_pending_();
+#endif
 #ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
   DtmfEvent event;
   while (this->dtmf_events_ != nullptr && xQueueReceive(this->dtmf_events_, &event, 0) == pdTRUE)
@@ -644,6 +647,11 @@ void VoipStack::loop() {
     this->publish_sip_snapshot_();
   }
   bool keep_loop = this->cycle_active_ || state != CallState::IDLE;
+#if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_MIC)
+  keep_loop = keep_loop || (this->audio_debug_ &&
+      (this->audio_debug_pcm_.pending.load(std::memory_order_acquire) ||
+       this->audio_debug_mic_.pending.load(std::memory_order_acquire)));
+#endif
   keep_loop = keep_loop || this->endpoint_publish_requested_.load(std::memory_order_acquire);
   if (!keep_loop) {
     this->disable_loop();

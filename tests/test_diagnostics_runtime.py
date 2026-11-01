@@ -3,11 +3,14 @@
 from pathlib import Path
 import subprocess
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "esphome/components/voip_stack"
 
 
-def test_dump_is_paced_private_and_releases_its_snapshot(tmp_path):
+@pytest.mark.parametrize("audio_debug", [False, True])
+def test_dump_is_paced_private_and_releases_its_snapshot(tmp_path, audio_debug):
     source = (COMPONENT / "voip_diagnostics.cpp").read_text()
     source = "\n".join(
         line for line in source.splitlines() if not line.startswith("#include")
@@ -16,6 +19,8 @@ def test_dump_is_paced_private_and_releases_its_snapshot(tmp_path):
     start = header.index("  struct DiagnosticDump")
     end = header.index("  void cleanup_partial_setup_", start)
     fields = header[start:end]
+    start = header.index("  enum class RxStartupEvent")
+    startup = header[start:header.index("\n#endif", start)]
     transport = (COMPONENT / "transport.h").read_text()
     start = transport.index("struct SipTransportSnapshot")
     end = transport.index("\n};", start) + 3
@@ -63,21 +68,41 @@ struct VoipStack{
  const char*configured_sip_transport_name(){return "udp";}const char*audio_capability_(){return "full_duplex";}const char*get_media_route_str(){return "direct";}
  std::function<void()>pending;
  void defer(const char*,std::function<void()>f){assert(!pending);pending=std::move(f);}
- void finish(){while(pending){auto f=std::move(pending);pending={};const auto n=lines.size();f();assert(lines.size()-n<=2);}}
+ void once(){assert(pending);auto f=std::move(pending);pending={};const auto n=lines.size();f();assert(lines.size()-n<=2);}
+ void finish(){unsigned bound=80;while(pending&&bound--)once();assert(!pending);}
  void dump_diagnostics();uint32_t last_diagnostics_ms_=0;
 """
         + fields
+        + "\n#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG\n bool audio_debug_=true;\n" + startup + "\n#endif\n"
         + "};\n}\n"
         + source
         + r"""
 int main(){
  using namespace esphome::voip_stack;VoipStack s;
  s.transport_->value.call_active=true;s.transport_->value.running=true;s.transport_->value.rtp_tx_packets=123;
+
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+ auto &event=s.audio_debug_rx_startup_[0];event.revision=5;event.present=true;event.data.us=123456;event.data.flags=0;
+#endif
  s.dump_diagnostics();assert(s.diagnostic_dump_);assert(lines.size()==1);
  s.dump_diagnostics();assert(lines.size()==1);
  // A hangup during output must not rewrite the already captured report.
  s.current_call_id_.clear();s.call_state_=CallState::IDLE;s.transport_->value.rtp_tx_packets=999;s.last_reason_="different";
+
+ s.audio_devices_active_=false;
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+ while(s.diagnostic_dump_->step<11)s.once();
+ auto &held=s.audio_debug_rx_startup_[0];assert(!held.busy.test_and_set());
+ const auto before=lines.size();s.once();assert(s.pending&&s.diagnostic_dump_->step==11&&lines.size()==before);
+ held.busy.clear();
+#endif
  s.finish();assert(!s.diagnostic_dump_&&!s.pending);
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+ bool startup=false,quality=false;
+ for(auto&line:lines){startup|=line.find("AudioStartup rev=5 event=speaker_start_request us=123456")!=std::string::npos;
+ quality|=line.find("complete=YES quality=2 deferred_read=YES")!=std::string::npos;}
+ assert(startup&&quality);
+#endif
  bool captured=false,reason=false,discarded=false;
  for(auto &l:lines){assert(l.find("private-caller-token")==std::string::npos);assert(l.find("memory:")==std::string::npos);discarded|=l.find("discarded_frames=7")!=std::string::npos;captured|=l.find("tx_packets=123")!=std::string::npos;reason|=l.find("last_termination=local_hangup")!=std::string::npos;}
  assert(captured&&reason&&discarded);const auto n=lines.size();s.dump_diagnostics();assert(lines.size()==n);
@@ -94,6 +119,7 @@ int main(){
             "-Wextra",
             "-Werror",
             "-fsanitize=address,undefined",
+            *(["-DUSE_ESPHOME_VOIP_STACK_AUDIO_DEBUG"] if audio_debug else []),
             "-I",
             str(COMPONENT),
             str(cpp),

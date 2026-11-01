@@ -591,6 +591,10 @@ class VoipStack : public Component {
 #endif
     CallState state{CallState::IDLE};
     uint8_t step{0};
+#if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_SPEAKER)
+    uint32_t startup_revision{0};
+    bool startup_present{false};
+#endif
     bool has_transport{false}, has_jitter{false}, changed{false}, audio_active{false};
     char last_reason[48]{};
     const char *route{""};
@@ -621,9 +625,35 @@ class VoipStack : public Component {
   void process_tx_chunk_(const uint8_t *audio_chunk);
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
-  void debug_log_pcm_level_(const char *label, const uint8_t *pcm, size_t bytes,
-                            const AudioFormat &format,
-                            uint32_t &last_log_ms, uint32_t &frame_count);
+  void record_tx_debug_(const uint8_t *pcm, size_t bytes, const AudioFormat &format);
+#ifdef USE_ESPHOME_VOIP_STACK_MIC
+  struct PcmDebugData {
+    uint32_t producer_ms{0}, frames{0}, bytes{0}, samples{0}, peak{0}, format{0};
+    float peak_dbfs{0}, rms_dbfs{0}, volume{0};
+    uint8_t state{0}, status{0};
+  };
+  struct MicDebugData {
+    uint32_t producer_ms{0}, callbacks{0}, bytes{0}, delta_ms{0}, frame_bytes{0}, available{0};
+    uint32_t depth{0}, drops{0}, drop_bytes{0}, format{0};
+    uint8_t state{0};
+  };
+  struct PcmDebugRecord {
+    std::atomic_flag busy = ATOMIC_FLAG_INIT;
+    std::atomic<bool> pending{false};
+    PcmDebugData data{};
+  };
+  struct MicDebugRecord {
+    std::atomic_flag busy = ATOMIC_FLAG_INIT;
+    std::atomic<bool> pending{false};
+    MicDebugData data{};
+  };
+  static_assert(sizeof(PcmDebugRecord) == 44 && sizeof(MicDebugRecord) == 48);
+  PcmDebugRecord audio_debug_pcm_{};
+  MicDebugRecord audio_debug_mic_{};
+  // Writer contention and latest-stat replacement remain observable.
+  std::atomic<uint32_t> audio_debug_stats_quality_{0};
+  void emit_audio_debug_pending_();
+#endif
 #endif
 
   // Transport callbacks (registered in setup()).
@@ -919,13 +949,27 @@ class VoipStack : public Component {
     SPEAKER_START_REQUEST, IN_CALL_GATE, RX_ENQUEUE, PLAY_ATTEMPT, PCM_ACCEPTED,
     FIRST_ZERO_WRITE, RESUMED, FIRST_JITTER_DROP
   };
-  // Trace markers use the existing RX revision, with no separate call identity
-  // or timestamps retained in RAM. Older producers cannot replace newer marks.
-  std::atomic<uint32_t> audio_debug_rx_startup_logged_[8]{
-      UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
-  void debug_rx_startup_event_(RxStartupEvent event, uint32_t revision);
+  struct RxStartupData {
+    uint64_t us{0};
+    uint32_t output_us{0}, drops{0}, discarded{0};
+    uint16_t depth{0};
+    uint8_t state{0}, flags{0};  // sink running, present, exact jitter snapshot
+  };
+  struct RxStartupRecord {
+    std::atomic<uint32_t> revision{UINT32_MAX};
+    std::atomic_flag busy = ATOMIC_FLAG_INIT;
+    std::atomic<bool> present{false};
+    RxStartupData data{};
+  };
+  static_assert(sizeof(RxStartupRecord) == 32);
+  RxStartupRecord audio_debug_rx_startup_[8]{};
+  // Sticky diagnostic quality: writer loss, deferred reader, changed revision.
+  std::atomic<uint32_t> audio_debug_rx_startup_quality_{0};
+  void debug_rx_startup_event_(RxStartupEvent event, uint32_t revision,
+                              const RtpJitterBuffer::Counters *jitter = nullptr);
+  bool debug_rx_startup_snapshot_(RxStartupEvent event, uint32_t &revision, RxStartupData &data);
   std::atomic<uint32_t> debug_output_first_us_{0}, debug_output_last_us_{0};
-  uint32_t debug_zero_output_us_{0}, debug_drop_output_us_{0};
+  std::atomic<uint32_t> debug_zero_output_us_{0}, debug_drop_output_us_{0};
 #endif
   TaskHandle_t rx_task_handle_{nullptr};
   StaticTask_t rx_task_tcb_{};
