@@ -94,8 +94,11 @@ voip_stack:
 
 For a PBX endpoint that should reject unrelated direct incoming calls, add
 `accept_direct_calls: false` inside `registration`. The SIP listener remains
-available to receive PBX calls. New calls must match a configured account and
-its trusted PBX address or connection. Existing dialog requests still use the
+available to receive PBX calls. New calls must match the current registered
+Contact user and authorized PBX address. Their signaling transport can differ
+from the REGISTER transport, such as a TCP INVITE following UDP registration.
+Requests arriving on an account's existing connection must still belong to
+that account. Existing dialog requests still use the
 normal Call-ID, tag and transaction checks. With exactly one static account,
 this policy also selects that account as the default outgoing line unless
 `default_line` is explicitly supplied.
@@ -160,7 +163,12 @@ the firmware exposes these ESPHome actions to Home Assistant:
 | `start_call_on_line` | `dest`, `line` | Place one call on an explicit line |
 
 The existing `start_call_via_ha` remains pinned to the HA route. Its behavior is
-independent of `default_line`.
+independent of `default_line`. When automatic HA registration configures the
+managed `ha` line, this action uses that account and preserves the supplied
+`call_id` exactly. An unavailable managed account does not fall back to a direct
+call. Without automatic HA registration, the action retains the legacy direct
+HA-peer route. A manually configured PBX account named `ha` does not enable the
+managed behavior, and Call-ID contents never select an account.
 
 YAML `voip_stack.start_call_on_line` uses `target` and `line`; the native HA
 action uses `dest` and `line`. A line supplied for one call takes priority over

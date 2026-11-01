@@ -65,6 +65,24 @@ worker affinity and stack/buffer placement using the [renderer settings](https:/
 
 ## Reliability and interoperability
 
+- Calls through the managed HA line preserve a supplied Call-ID and the
+  registered account identity. An unavailable managed account fails on that
+  route; legacy direct HA routing remains available when automatic registration
+  is not configured.
+- Direct TCP calls use the same bounded ingress with or without registration,
+  BLF or MWI. Two accepted connection slots allow idle OPTIONS traffic alongside
+  a new INVITE, while retaining unread and partial requests. UDP control traffic
+  does not replace an owned TCP dialog.
+- A registered PBX can deliver an INVITE over TCP after registering over UDP.
+  Admission still requires the current Contact identity and authorized PBX
+  address. Dialog and transaction checks remain in force.
+- Static contacts and manual JSON rosters retain their source ownership during
+  refresh and pruning, including firmware without directory or BLF services.
+- Call setup prepares the configured speaker before its outgoing INVITE or
+  answer with known media formats. Current-call receive buffering survives the
+  transition into the call. Optional audio diagnostics record startup timing,
+  backpressure and jitter-buffer trimming.
+
 - Large BLF and mailbox notifications can use TCP while the account keeps its
   UDP preference. The existing control flow validates the registrar and dialog
   and replies on the arriving connection, without new tasks or larger buffers.
@@ -102,6 +120,10 @@ worker affinity and stack/buffer placement using the [renderer settings](https:/
 - Standard hold/resume updates media direction while retaining prepared audio.
 - Subscription refresh, transport loss, partial BLF resynchronization and account
   replacement keep state scoped to their actual account and dialog generation.
+
+Physical audio startup remains under investigation on composed P4
+resampler/mixer paths. A speaker's running state or accepted buffer write does
+not prove uninterrupted playback through the complete hardware pipeline.
 
 ## Migration
 
