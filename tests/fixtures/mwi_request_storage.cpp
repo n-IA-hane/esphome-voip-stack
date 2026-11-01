@@ -76,6 +76,7 @@ struct Capture {
   size_t size = 0;
   unsigned sends = 0;
   bool fail = false;
+  bool retransmit = false;
 };
 struct Client : SipMwi {
   using SipMwi::begin_;
@@ -88,7 +89,7 @@ std::string field(std::string_view data, std::string_view name) {
   p += key.size();
   return std::string(data.substr(p, data.find("\r\n", p) - p));
 }
-std::string response(std::string_view req) {
+std::string response(std::string_view req, unsigned expires = 3600) {
   std::string s = "SIP/2.0 200 OK\r\n";
   for (const char *name : {"Via", "From", "To", "Call-ID", "CSeq"}) {
     auto v = field(req, name);
@@ -96,7 +97,7 @@ std::string response(std::string_view req) {
       v += ";tag=server";
     s += std::string(name) + ": " + v + "\r\n";
   }
-  return s + "Expires: 3600\r\nContent-Length: 0\r\n\r\n";
+  return s + "Expires: " + std::to_string(expires) + "\r\nContent-Length: 0\r\n\r\n";
 }
 uint64_t hash_wire(const Capture &c) {
   uint64_t h = 1469598103934665603ULL;
@@ -137,9 +138,8 @@ void run(unsigned auth, bool refresh, bool fail) {
                   bool) {
     auto &s = *static_cast<Capture *>(ctx);
     assert(msg.size() == s.owner->row().request.size());
-    if (s.sends == 0)
-      assert(msg.data() == s.owner->row().request.data());
-    else
+    assert(msg.data() == s.owner->row().request.data());
+    if (s.retransmit)
       assert(std::memcmp(s.data, msg.data(), msg.size()) == 0);
     assert(msg.size() < sizeof(s.data));
     s.size = msg.size();
@@ -178,14 +178,34 @@ void run(unsigned auth, bool refresh, bool fail) {
                pe = allocation_probe::peak_e - allocation_probe::base_e,
                ai = allocation_probe::alloc_i, ae = allocation_probe::alloc_e,
                cap = row.request.capacity();
+  const size_t initial_wire_bytes = sent.size;
+  const uint64_t initial_wire_hash = hash_wire(sent);
   if (ok) {
-    // The existing retransmit path materializes a synchronous temporary.
-    // Its bytes remain identical and the transaction store remains owned.
+    // Both initial sends and retries borrow the transaction's owned storage.
     const char *owned = row.request.data();
+    sent.retransmit = true;
+    allocation_probe::start();
     c.tick(1500);
+    allocation_probe::active = false;
+    assert(allocation_probe::alloc_i == 0 && allocation_probe::alloc_e == 0);
     assert(sent.sends == 2 && row.request.data() == owned);
+    sent.fail = true;
+    allocation_probe::start();
+    c.tick(2500);
+    allocation_probe::active = false;
+    assert(allocation_probe::alloc_i == 0 && allocation_probe::alloc_e == 0);
+    assert(sent.sends == 3 && row.request.data() == owned);
+    sent.fail = false;
     auto r = response(std::string_view(sent.data, sent.size));
-    assert(c.handle_response(r, owner.target_ip, 5060, false, -1, 1501));
+    assert(c.handle_response(r, owner.target_ip, 5060, false, -1, 2501));
+    assert(row.request.empty() && row.request.capacity() == empty_capacity);
+
+    sent.retransmit = false;
+    row.desired = false;
+    assert(c.begin_(0, 3000));
+    assert(field(std::string_view(sent.data, sent.size), "Expires") == "0");
+    r = response(std::string_view(sent.data, sent.size), 0);
+    assert(c.handle_response(r, owner.target_ip, 5060, false, -1, 3001));
   }
   assert(row.request.empty() && row.request.capacity() == empty_capacity);
   c.invalidate_account(0);
@@ -196,8 +216,8 @@ void run(unsigned auth, bool refresh, bool fail) {
       "external_cpp_bytes_above_entry\":%zu,\"internal_cpp_allocations\":%zu,"
       "\"external_cpp_allocations\":%zu,\"pending_request_capacity\":%zu,"
       "\"capacity_after_completion\":%zu,\"empty_capacity\":%zu}\n",
-      auth, refresh ? "true" : "false", fail ? "true" : "false", sent.size,
-      static_cast<unsigned long long>(hash_wire(sent)), pi, pe, ai, ae, cap,
+      auth, refresh ? "true" : "false", fail ? "true" : "false", initial_wire_bytes,
+      static_cast<unsigned long long>(initial_wire_hash), pi, pe, ai, ae, cap,
       row.request.capacity(), empty_capacity);
 }
 int main() {

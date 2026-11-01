@@ -755,7 +755,7 @@ void SipMwi::tick(uint32_t now) {
       }
       if (!a.config().tcp && reached(now, a.next_ms)) {
         this->hooks_.send(this->hooks_.context, this->owner_index_(i),
-                          static_cast<std::string>(a.request), a.target_ip,
+                          static_cast<std::string_view>(a.request), a.target_ip,
                           a.target_port, false);
         a.interval_ms = std::min<uint32_t>(a.interval_ms * 2, 4000);
         a.next_ms = now + a.interval_ms;
