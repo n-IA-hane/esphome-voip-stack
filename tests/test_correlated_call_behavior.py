@@ -74,7 +74,7 @@ public:
   std::string get_current_destination() const{return phonebook_.selected;}
   std::string get_current_destination_route() const{return phonebook_.selected;}
   void clear_terminal_call_snapshot_(){} void clear_terminal_response_(){}
-  void set_call_identity_(const std::string &id,const std::string &cr,const std::string &cn,const std::string &dr,const std::string &dn){identity={id,cr,cn,dr,dn};}
+  void set_call_identity_(const std::string &id,const std::string &cr,const std::string &cn,const std::string &dr,const std::string &dn,bool originated=false){assert(originated);identity={id,cr,cn,dr,dn};}
   void set_current_media_formats_(int,int,int,int){} void set_call_state_(CallState s){call_state_=s;}
   void set_remote_sip_transport_tcp(bool){} void set_remote_endpoint(const std::string &,uint16_t,uint16_t){}
   void set_audio_devices_active_(bool){} void publish_destination_(){if(on_publish)on_publish();}

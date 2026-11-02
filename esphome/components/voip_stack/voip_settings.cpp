@@ -971,11 +971,10 @@ void VoipStack::publish_destination_() {
   std::string current = this->get_current_destination();
   const CallState state = this->call_state_.load(std::memory_order_acquire);
   const CallSnapshot call = this->snapshot_call_identity_();
-  if (!this->pending_dialplan_target_.empty()) {
-    current = this->pending_dialplan_target_;
-  } else if (state != CallState::IDLE && !call.dest_name.empty() &&
-             call.caller_name == this->device_name_) {
+  if (!call.call_id.empty() && !call.dialed_dest_name.empty() && !call.dest_name.empty()) {
     current = call.dest_name;
+  } else if (!this->pending_dialplan_target_.empty()) {
+    current = this->pending_dialplan_target_;
   } else if (state == CallState::IDLE && !this->last_reason_.empty() &&
              this->last_terminal_direction_ == "outgoing" &&
              !this->last_terminal_dest_name_.empty()) {
