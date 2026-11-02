@@ -836,7 +836,7 @@ void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
   this->last_terminal_rx_audio_format_ = formats.rx;
   if (!call.dialed_dest_name.empty()) {
     this->last_terminal_direction_ = "outgoing";
-  } else if (!call.dest_name.empty() && call.dest_name == this->device_name_) {
+  } else if (!call.call_id.empty()) {
     this->last_terminal_direction_ = "incoming";
   } else {
     this->last_terminal_direction_.clear();
