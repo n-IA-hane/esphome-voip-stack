@@ -5,6 +5,9 @@
 
 #include <algorithm>
 #include <cstring>
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+#include "sdp_imageattr.h"
+#endif
 
 #include <lwip/sockets.h>
 
@@ -77,8 +80,8 @@ std::string SipTransport::rejected_media_answer_(
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 std::string SipTransport::append_video_sdp_(const std::string &sdp,
                                             const std::string &local_ip,
-                                            bool answer) const {
-  if (this->refer_context_active_ || (this->video_source_ == nullptr && this->video_sink_ == nullptr)) {
+                                            bool answer, bool capabilities) const {
+  if ((!capabilities && this->refer_context_active_) || (this->video_source_ == nullptr && this->video_sink_ == nullptr)) {
     return sdp;
   }
   if (answer && this->video_offered_ && !this->video_negotiated_) {
@@ -90,7 +93,7 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
   const VideoCapability local_receive =
       this->local_video_receive_capability_();
   const bool offer_send =
-      this->video_send_requested_.load(std::memory_order_acquire) &&
+      (capabilities || this->video_send_requested_.load(std::memory_order_acquire)) &&
       this->video_source_ != nullptr && local_send.valid();
   const bool offer_receive =
       this->video_sink_ != nullptr && local_receive.valid();
@@ -118,14 +121,14 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
       send && receive ? "sendrecv"
                       : send ? "sendonly" : receive ? "recvonly" : "inactive";
   std::string out = sdp;
-  out += "m=video " + std::to_string(this->video_rtp_port_) +
+  out += "m=video " + std::to_string(capabilities ? 0 : this->video_rtp_port_) +
          " RTP/AVP " + std::to_string(capability.payload_type) + "\r\n";
   out += "c=IN IP4 " + local_ip + "\r\n";
   if (capability.max_bitrate_bps != 0) {
     out += "b=TIAS:" + std::to_string(capability.max_bitrate_bps) + "\r\n";
   }
   out += "a=rtcp:" +
-         std::to_string(static_cast<uint16_t>(this->video_rtp_port_ + 1)) +
+         std::to_string(capabilities ? 0 : static_cast<uint16_t>(this->video_rtp_port_ + 1)) +
          " IN IP4 " + local_ip + "\r\n";
   out += "a=rtpmap:" + std::to_string(capability.payload_type) +
          " " + capability.encoding + "/90000\r\n";
@@ -149,7 +152,27 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
 #endif
   // RFC 8866 media-level recommendation. A software video sink can advertise
   // a lower receive budget than the hardware encoder without a private fmtp.
-  out += "a=framerate:" + std::to_string(capability.max_fps) + "\r\n";
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  if (capability.is_jpeg() && (send || receive) &&
+      (capabilities || !(this->video_imageattr_state_ & IMAGEATTR_DISABLED)) &&
+      (!answer || (this->video_imageattr_state_ & IMAGEATTR_PEER))) {
+    out += "a=imageattr:26";
+    if (send) {
+      // A fixed camera promises only its actual output, never arbitrary sizes.
+      out += " send [x=" + std::to_string(local_send.width) + ",y=" +
+             std::to_string(local_send.height) + ",sar=1.0]";
+    }
+    if (receive) {
+      out += " recv [x=[8:8:" + std::to_string(local_receive.width) +
+             "],y=[8:8:" + std::to_string(local_receive.height) + "],sar=1.0,q=1.0]";
+    }
+    out += "\r\n";
+  }
+#endif
+  // The peer's encoding recommendation must describe our receive budget,
+  // independently of the rate our own camera can transmit.
+  const uint8_t advertised_fps = receive ? local_receive.max_fps : capability.max_fps;
+  out += "a=framerate:" + std::to_string(advertised_fps) + "\r\n";
   out += std::string("a=") + direction + "\r\n";
   return out;
 }
@@ -234,6 +257,9 @@ std::string SipTransport::build_sdp_capabilities_(uint32_t peer_ip) const {
     result.replace(start + 8, end - start - 8, "0");
   }
 
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  result = this->append_video_sdp_(result, local_ip, false, true);
+#endif
   return result;
 }
 
@@ -329,6 +355,12 @@ std::string SipTransport::build_sdp_offer_() {
           audio_direction_attribute(this->offer_tx_formats_.count != 0, this->offer_rx_formats_.count != 0));
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   sdp = this->append_video_sdp_(sdp, local_ip, false);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  if (sdp.find("\r\na=imageattr:26 ") != std::string::npos)
+    this->video_imageattr_state_ |= IMAGEATTR_OFFERED;
+  else
+    this->video_imageattr_state_ &= ~IMAGEATTR_OFFERED;
+#endif
 #endif
   return sdp;
 }
@@ -726,6 +758,11 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
                                                 uint32_t default_ip,
                                                 bool remote_is_answer) {
   this->reset_video_negotiation_();
+  const VideoCapability local_send = this->local_video_send_capability_();
+  const VideoCapability local_receive = this->local_video_receive_capability_();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  ImageAttributeMatch imageattr_specific, imageattr_wildcard;
+#endif
   bool offered_payloads[128]{};
   uint8_t offered_payload_order[128]{};
   size_t offered_payload_count = 0;
@@ -893,6 +930,26 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
           parsed_bitrate > 0) {
         media_max_bitrate_bps = parsed_bitrate;
       }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+    } else if (in_video && line.rfind("a=imageattr:", 0) == 0) {
+      const auto parsed = ImageAttributeParser::parse(std::string_view(line).substr(12),
+          local_receive.width, local_receive.height, local_send.width, local_send.height);
+      if (parsed.valid) {
+        // RFC6236 permits send/recv on separate attribute lines. Merge each
+        // direction independently; payload-specific entries override wildcard
+        // entries only for the direction they actually declare.
+        auto &target = parsed.explicit_payload ? imageattr_specific : imageattr_wildcard;
+        target.valid = true;
+        if (parsed.send_present) {
+          target.send_compatible = (!target.send_present || target.send_compatible) && parsed.send_compatible;
+          target.send_present = true;
+        }
+        if (parsed.recv_present) {
+          target.recv_compatible = (!target.recv_present || target.recv_compatible) && parsed.recv_compatible;
+          target.recv_present = true;
+        }
+      }
+#endif
     } else if (in_video && line.rfind("a=framerate:", 0) == 0) {
       uint32_t parsed_fps = 0;
       if (parse_decimal_u32(trim_copy(line.substr(12)), UINT8_MAX,
@@ -921,9 +978,6 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
     jpeg_payloads[26] = true;
 #endif
 
-  const VideoCapability local_send = this->local_video_send_capability_();
-  const VideoCapability local_receive =
-      this->local_video_receive_capability_();
   for (size_t payload_index = 0; payload_index < offered_payload_count;
        payload_index++) {
     const uint8_t pt = offered_payload_order[payload_index];
@@ -990,9 +1044,10 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
     // whether or not that direction is active in the current offer.
     VideoCapability negotiated =
         receive_compatible ? local_receive : local_send;
+    // Keep the peer's recommendation on our encoder direction. The decoder
+    // retains its own budget in local_video_direction_capability_().
+    negotiated.max_fps = send_compatible ? local_send.max_fps : local_receive.max_fps;
     if (send_compatible && receive_compatible) {
-      negotiated.max_fps =
-          std::min(local_send.max_fps, local_receive.max_fps);
       if (local_send.max_bitrate_bps != 0 &&
           (negotiated.max_bitrate_bps == 0 ||
            local_send.max_bitrate_bps < negotiated.max_bitrate_bps)) {
@@ -1022,6 +1077,23 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
       // Lowering a decoder advertisement is safe; lowering the encoder SPS is
       // not. Preserve our profile_idc/profile_iop and select the common level.
       negotiated.profile_level_id.replace(4, 2, peer_profile.substr(4, 2));
+    }
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+    this->video_imageattr_state_ &= ~IMAGEATTR_PEER;
+    if (imageattr_specific.valid || imageattr_wildcard.valid) {
+      const auto &send_attr = imageattr_specific.send_present ? imageattr_specific : imageattr_wildcard;
+      const auto &recv_attr = imageattr_specific.recv_present ? imageattr_specific : imageattr_wildcard;
+      const bool compatible = (!local_receives || !send_attr.send_present || send_attr.send_compatible) &&
+                              (!local_sends || !recv_attr.recv_present || recv_attr.recv_compatible);
+      if (compatible) {
+        this->video_imageattr_state_ |= IMAGEATTR_PEER;
+      } else if (remote_is_answer && (this->video_imageattr_state_ & IMAGEATTR_OFFERED) &&
+                 !(this->video_imageattr_state_ & IMAGEATTR_DISABLED)) {
+        // RFC6236: do not silently accept an unusable answer. Preserve media
+        // and let the existing SIP transaction owner offer once without it.
+        this->video_imageattr_state_ |= IMAGEATTR_DISABLED | IMAGEATTR_FALLBACK;
+      }
     }
 #endif
     this->negotiated_video_capability_ = negotiated;
