@@ -22,6 +22,24 @@ enum class VideoCodec : uint8_t {
   H264,
 };
 
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+enum class JpegSampling : uint8_t { UNKNOWN = 0, YUV444, YUV422, YUV420, GRAY };
+
+/// Optional geometry validated against this exact complete JPEG bitstream.
+/// RTP reassembly supplies it while constructing the interchange header.
+/// Generic producers leave it empty and the decoder reads their JPEG header.
+struct JpegFrameInfo {
+  uint16_t width{0};
+  uint16_t height{0};
+  JpegSampling sampling{JpegSampling::UNKNOWN};
+
+  bool is_set() const {
+    return this->width != 0 || this->height != 0 ||
+           this->sampling != JpegSampling::UNKNOWN;
+  }
+};
+#endif
+
 /// One complete encoded video access unit.
 ///
 /// A producer may transfer a bounded lease by setting release_callback. The
@@ -36,6 +54,9 @@ struct EncodedVideoAccessUnit {
   bool key_frame{false};
   ReleaseCallback release_callback{nullptr};
   void *release_ctx{nullptr};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  JpegFrameInfo jpeg_info{};
+#endif
 
   void release() const {
     if (this->release_callback != nullptr) {
@@ -138,6 +159,8 @@ class EncodedVideoSource {
  public:
   virtual ~EncodedVideoSource() = default;
   virtual VideoCapability get_video_capability() const = 0;
+  /// True only when every published access unit carries a release callback.
+  virtual bool uses_access_unit_leases() const { return false; }
   /// Validate and reserve any source-side state needed by the negotiated
   /// format without producing media. Offer/answer can therefore admit a
   /// stream before its final response without leaking RTP before commit.
@@ -158,6 +181,8 @@ class EncodedVideoSink {
   /// Local decoder contract advertised in SDP. This is intentionally
   /// independent from the encoder SPS used by EncodedVideoSource.
   virtual VideoCapability get_receive_video_capability() const = 0;
+  /// Zero preserves the transport default for existing sinks.
+  virtual size_t max_encoded_access_unit_bytes() const { return 0; }
   /// Allocate/start dormant decoder resources. This must not make a stale
   /// frame visible before the SDP transaction commits.
   virtual bool start_video(const VideoCapability &capability) = 0;

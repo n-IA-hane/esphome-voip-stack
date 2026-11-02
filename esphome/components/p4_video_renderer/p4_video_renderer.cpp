@@ -72,7 +72,14 @@ void P4VideoRenderer::setup() {
     return;
   }
 #ifdef USE_P4_VIDEO_RENDERER_JPEG
-  if (!this->init_direct_display_ppa_()) {
+#ifdef USE_MIPI_DSI_RGB565_OWNED_TRANSFORM
+  this->surface_count_ =
+      this->owned_display_ != nullptr &&
+              this->owned_display_->supports_rgb565_transform()
+          ? 1
+          : 2;
+#endif
+  if (this->surface_count_ != 1 && !this->init_direct_display_ppa_()) {
     ESP_LOGE(TAG, "P4 direct JPEG display PPA setup failed");
     this->mark_failed();
     return;
@@ -94,7 +101,7 @@ void P4VideoRenderer::setup() {
     return;
   }
 #endif
-  // Reserve the large codec and double-buffer surfaces before calls can be
+  // Reserve the large codec and presentation surfaces before calls can be
   // offered. This keeps PSRAM heap walks and multi-megabyte allocations out
   // of INVITE/re-INVITE handling and fails deterministically at boot if no
   // suitable contiguous extent remains.
@@ -169,18 +176,44 @@ void P4VideoRenderer::loop() {
     return;
   }
   const int pending = this->pending_surface_.load(std::memory_order_acquire);
+#if defined(USE_P4_VIDEO_RENDERER_JPEG) &&                                     \
+    defined(USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY)
+  const uint32_t pending_generation =
+      this->pending_surface_generation_.load(std::memory_order_relaxed);
+  const bool pending_current =
+      pending_generation != 0 &&
+      pending_generation ==
+          this->rx_session_generation_.load(std::memory_order_acquire);
+  if (pending >= 0 && !pending_current) {
+    int expected = pending;
+    this->pending_surface_.compare_exchange_strong(expected, -1,
+                                                   std::memory_order_acq_rel);
+  }
+#endif
   if (this->rx_running_.load(std::memory_order_acquire) &&
       this->rx_active_.load(std::memory_order_acquire) &&
       !this->presentation_in_flight_.load(std::memory_order_acquire) &&
-      pending >= 0 && pending <= 1 &&
-      this->surfaces_[pending] != nullptr) {
+#if defined(USE_P4_VIDEO_RENDERER_JPEG) &&                                     \
+    defined(USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY)
+      pending_current &&
+#endif
+      pending >= 0 && pending <= 1 && this->surfaces_[pending] != nullptr) {
 #ifdef USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY
     if (this->video_container_ != nullptr) {
       // The first decoded surface is what opens the video page. Presentation
       // itself is gated on that page already being active, so delaying this
       // edge until after draw_pixels_at() would create a circular dependency.
+#ifdef USE_P4_VIDEO_RENDERER_JPEG
+      // Keep the published frame's identity through visibility admission.
+      // A concurrent stop/start cannot turn this late write into a frame of
+      // the new call, even when its page is hidden and no draw is attempted.
+      first_frame = this->remote_frame_visible_.exchange(
+                        pending_generation, std::memory_order_acq_rel) !=
+                    pending_generation;
+#else
       first_frame = !this->remote_frame_visible_.exchange(
           true, std::memory_order_acq_rel);
+#endif
       const bool page_active =
           lv_obj_get_screen(this->video_container_) ==
           lv_disp_get_scr_act(nullptr);
@@ -271,6 +304,14 @@ void P4VideoRenderer::dump_config() {
 #else
   ESP_LOGCONFIG(TAG, "  Decode admission: <= %ux%u", this->max_decode_width_,
                 this->max_decode_height_);
+  size_t allocated_surfaces = 0;
+  for (const auto *surface : this->surfaces_)
+    allocated_surfaces += surface != nullptr;
+  ESP_LOGCONFIG(TAG,
+                "  Reserved RX buffers: surfaces=%u x %u bytes, AU=%u bytes",
+                static_cast<unsigned>(allocated_surfaces),
+                static_cast<unsigned>(this->surface_capacity_bytes_),
+                static_cast<unsigned>(this->rx_au_capacity_));
 #endif
 #ifdef USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY
   ESP_LOGCONFIG(TAG, "  Presentation: direct display, rotation %u degrees",
@@ -455,6 +496,23 @@ bool P4VideoRenderer::init_direct_display_ppa_() {
 #endif
 
 #ifdef USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY
+bool P4VideoRenderer::present_native_rgb565_(int x, int y, int width,
+                                             int height, const uint8_t *pixels,
+                                             size_t bytes) {
+#ifdef USE_MIPI_DSI_RGB565_OWNED_TRANSFORM
+  if (this->owned_display_ != nullptr &&
+      this->owned_display_->supports_native_rgb565())
+    return this->owned_display_->draw_native_rgb565(x, y, width, height, pixels,
+                                                    bytes);
+#endif
+  (void)bytes;
+  // Older and other display providers retain their existing native blit.
+  this->direct_display_->draw_pixels_at(x, y, width, height, pixels,
+                                        display::COLOR_ORDER_RGB,
+                                        display::COLOR_BITNESS_565, false);
+  return true;
+}
+
 bool P4VideoRenderer::present_surface_direct_(int index) {
 #ifdef USE_P4_VIDEO_RENDERER_H264
   if (index < 0 || index > 1 || this->direct_display_ == nullptr ||
@@ -498,34 +556,41 @@ bool P4VideoRenderer::present_surface_direct_(int index) {
     return false;
   }
   this->front_surface_.store(index, std::memory_order_release);
-  this->direct_display_->draw_pixels_at(
-      native_x, native_y, output_width, output_height, this->surfaces_[index],
-      display::COLOR_ORDER_RGB, display::COLOR_BITNESS_565, false);
-  return true;
+  return this->present_native_rgb565_(native_x, native_y, output_width,
+                                      output_height, this->surfaces_[index],
+                                      this->surface_data_size_[index]);
 #else
   if (index < 0 || index > 1 || this->direct_display_ == nullptr ||
-      this->direct_display_ppa_ == nullptr ||
+      (this->surface_count_ != 1 && this->direct_display_ppa_ == nullptr) ||
       this->video_container_ == nullptr || this->surfaces_[index] == nullptr ||
       this->surface_content_width_[index] == 0 ||
       this->surface_content_height_[index] == 0 ||
-      this->decoded_storage_width_ == 0 ||
-      this->decoded_storage_height_ == 0) {
+      this->surface_stride_bytes_[index] == 0 ||
+      (this->surface_stride_bytes_[index] % sizeof(uint16_t)) != 0 ||
+      this->surface_data_size_[index] == 0 ||
+      this->surface_data_size_[index] > this->surface_capacity_bytes_ ||
+      this->surface_data_size_[index] % this->surface_stride_bytes_[index] !=
+          0) {
     return false;
   }
 
-  const int scratch = 1 - index;
+  const int scratch = this->surface_count_ == 1 ? index : 1 - index;
   if (this->surfaces_[scratch] == nullptr)
     return false;
+  const uint32_t generation =
+      this->pending_surface_generation_.load(std::memory_order_relaxed);
 
   lv_area_t container_area{};
   lv_obj_get_coords(this->video_container_, &container_area);
   const int content_width = this->surface_content_width_[index];
   const int content_height = this->surface_content_height_[index];
-  const int input_width = this->decoded_storage_width_;
-  const int input_height = this->decoded_storage_height_;
+  const int input_width = this->surface_stride_bytes_[index] / sizeof(uint16_t);
+  const int input_height =
+      this->surface_data_size_[index] / this->surface_stride_bytes_[index];
   const int container_width = lv_area_get_width(&container_area);
   const int container_height = lv_area_get_height(&container_area);
-  if (container_width <= 0 || container_height <= 0)
+  if (container_width <= 0 || container_height <= 0 ||
+      content_width > input_width || content_height > input_height)
     return false;
 
   // Fill as much of the LVGL-owned rectangle as the decoded-surface storage
@@ -539,9 +604,8 @@ bool P4VideoRenderer::present_surface_direct_(int index) {
   if (scale_units < 1)
     return false;
 
-  // Both decode buffers alternate as the PPA target. Fit within their existing
-  // capacity and the video container, preserving aspect ratio without another
-  // framebuffer. Geometry selection uses integers; scaling remains in PPA.
+  // Keep the same admitted geometry for the owned framebuffer and legacy
+  // scratch target. Geometry selection uses integers; scaling remains in PPA.
   const auto output_fits = [&](int units) {
     const size_t width =
         static_cast<size_t>(content_width) * units / kPpaScaleUnits;
@@ -625,11 +689,13 @@ bool P4VideoRenderer::present_surface_direct_(int index) {
   config.in.block_w = content_width;
   config.in.block_h = content_height;
   config.in.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
-  config.out.buffer = this->surfaces_[scratch];
-  config.out.buffer_size = this->surface_capacity_bytes_;
-  config.out.pic_w = output_width;
-  config.out.pic_h = output_height;
-  config.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
+  if (this->surface_count_ != 1) {
+    config.out.buffer = this->surfaces_[scratch];
+    config.out.buffer_size = this->surface_capacity_bytes_;
+    config.out.pic_w = output_width;
+    config.out.pic_h = output_height;
+    config.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
+  }
   config.rotation_angle = angle;
   config.scale_x = scale;
   config.scale_y = scale;
@@ -637,8 +703,34 @@ bool P4VideoRenderer::present_surface_direct_(int index) {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   const uint32_t ppa_started_us = micros();
 #endif
-  const esp_err_t error =
-      ppa_do_scale_rotate_mirror(this->direct_display_ppa_, &config);
+  esp_err_t error;
+#ifdef USE_MIPI_DSI_RGB565_OWNED_TRANSFORM
+  struct Admission {
+    P4VideoRenderer *renderer;
+    uint32_t generation;
+    int index;
+  } admission{this, generation, index};
+  const auto still_current = [](void *context) -> bool {
+    const auto &token = *static_cast<const Admission *>(context);
+    return token.renderer->rx_active_.load(std::memory_order_acquire) &&
+           token.renderer->rx_session_prepared_.load(
+               std::memory_order_acquire) &&
+           token.renderer->rx_session_generation_.load(
+               std::memory_order_acquire) == token.generation &&
+           token.renderer->pending_surface_.load(std::memory_order_acquire) ==
+               token.index;
+  };
+  if (this->surface_count_ == 1) {
+    error = this->owned_display_->draw_rgb565_transformed(
+                config, this->surface_data_size_[index], native_x, native_y,
+                output_width, output_height, still_current, &admission)
+                ? ESP_OK
+                : ESP_FAIL;
+    if (!still_current(&admission))
+      return false;
+  } else
+#endif
+    error = ppa_do_scale_rotate_mirror(this->direct_display_ppa_, &config);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   update_max(this->rx_present_ppa_max_us_, micros() - ppa_started_us);
 #endif
@@ -647,21 +739,25 @@ bool P4VideoRenderer::present_surface_direct_(int index) {
              esp_err_to_name(error));
     return false;
   }
+  if (!this->rx_active_.load(std::memory_order_acquire) ||
+      !this->rx_session_prepared_.load(std::memory_order_acquire) ||
+      generation !=
+          this->rx_session_generation_.load(std::memory_order_acquire))
+    return false;
 
-  // PPA has finished reading `index`. Publish the rotated scratch buffer as
-  // the display-owned front and release `index` before the blocking DSI
-  // transfer. The decoder can now prepare the next frame in parallel with the
-  // current panel transfer, using the same two buffers and no polling.
+  // The owned transaction has finished PPA and panel submission. The legacy
+  // scratch path can release `index` before its blocking DSI copy, while the
+  // other surface remains protected by front_surface_.
   this->front_surface_.store(scratch, std::memory_order_release);
   int expected = index;
   if (!this->pending_surface_.compare_exchange_strong(
           expected, -1, std::memory_order_acq_rel)) {
     return false;
   }
-  this->direct_display_->draw_pixels_at(
-      native_x, native_y, output_width, output_height,
-      this->surfaces_[scratch], display::COLOR_ORDER_RGB,
-      display::COLOR_BITNESS_565, false);
+  if (this->surface_count_ != 1)
+    return this->present_native_rgb565_(native_x, native_y, output_width,
+                                        output_height, this->surfaces_[scratch],
+                                        this->surface_capacity_bytes_);
   return true;
 #endif
 }
@@ -699,33 +795,52 @@ uint16_t P4VideoRenderer::jpeg_storage_height_(
                                ~(alignment - 1U));
 }
 
-bool P4VideoRenderer::update_jpeg_picture_info_(const uint8_t *data,
-                                                size_t size) {
-  jpeg_decode_picture_info_t picture{};
-  if (data == nullptr || size == 0 || size > UINT32_MAX ||
-      jpeg_decoder_get_info(data, static_cast<uint32_t>(size), &picture) !=
-          ESP_OK ||
-      picture.sample_method == JPEG_DOWN_SAMPLING_GRAY ||
-      picture.width == 0 || picture.height == 0 ||
-      picture.width > this->max_decode_width_ ||
-      picture.height > this->max_decode_height_) {
-    this->jpeg_picture_info_valid_ = false;
+bool P4VideoRenderer::read_jpeg_picture_info_(
+    const uint8_t *data, size_t size,
+    const voip_stack::JpegFrameInfo &frame_info,
+    jpeg_decode_picture_info_t *picture) const {
+  if (data == nullptr || size == 0 || size > UINT32_MAX || picture == nullptr)
+    return false;
+  *picture = {};
+  if (frame_info.is_set()) {
+    // The depacketizer validated these fields against the interchange header
+    // it built for this exact AU. No additional parse/allocation is needed.
+    picture->width = frame_info.width;
+    picture->height = frame_info.height;
+    switch (frame_info.sampling) {
+    case voip_stack::JpegSampling::YUV444:
+      picture->sample_method = JPEG_DOWN_SAMPLING_YUV444;
+      break;
+    case voip_stack::JpegSampling::YUV422:
+      picture->sample_method = JPEG_DOWN_SAMPLING_YUV422;
+      break;
+    case voip_stack::JpegSampling::YUV420:
+      picture->sample_method = JPEG_DOWN_SAMPLING_YUV420;
+      break;
+    default:
+      return false;
+    }
+  } else if (jpeg_decoder_get_info(data, static_cast<uint32_t>(size),
+                                   picture) != ESP_OK) {
+    // Generic producers may omit metadata; their actual header is
+    // authoritative.
     return false;
   }
-  const uint16_t storage_width = jpeg_storage_width_(picture);
-  const uint16_t storage_height = jpeg_storage_height_(picture);
+  if (picture->sample_method == JPEG_DOWN_SAMPLING_GRAY ||
+      picture->width == 0 || picture->height == 0 ||
+      picture->width > this->max_decode_width_ ||
+      picture->height > this->max_decode_height_)
+    return false;
+  const uint16_t storage_width = jpeg_storage_width_(*picture);
+  const uint16_t storage_height = jpeg_storage_height_(*picture);
   const size_t required =
       static_cast<size_t>(storage_width) * storage_height * 2U;
   if (storage_width == 0 || storage_height == 0 ||
-      this->surfaces_[0] == nullptr || this->surfaces_[1] == nullptr ||
+      this->surfaces_[0] == nullptr ||
+      (this->surface_count_ != 1 && this->surfaces_[1] == nullptr) ||
       required > this->surface_capacity_bytes_) {
-    this->jpeg_picture_info_valid_ = false;
     return false;
   }
-  this->jpeg_picture_info_ = picture;
-  this->decoded_storage_width_ = storage_width;
-  this->decoded_storage_height_ = storage_height;
-  this->jpeg_picture_info_valid_ = true;
   return true;
 }
 #endif
@@ -786,7 +901,10 @@ bool P4VideoRenderer::allocate_session_resources_() {
 #endif
 
   this->surface_capacity_bytes_ = surface_bytes;
-  const size_t surface_count = 2;
+  // A display-owned transform writes directly into its existing framebuffer.
+  // Only the decoder's source surface is needed; other providers retain the
+  // original decode/presentation pair and its DMA lifetime.
+  const size_t surface_count = this->surface_count_;
   for (size_t index = 0; index < surface_count; index++) {
     if (this->surfaces_[index] != nullptr)
       continue;
@@ -1134,6 +1252,7 @@ bool P4VideoRenderer::consume_video_access_unit(
   this->rx_au_generation_ =
       this->rx_session_generation_.load(std::memory_order_acquire);
   this->rx_key_frame_ = access_unit.key_frame;
+  this->rx_au_jpeg_info_ = access_unit.jpeg_info;
   this->rx_admitted_frames_.fetch_add(1, std::memory_order_relaxed);
   this->rx_slot_state_.store(1, std::memory_order_release);
   if (this->rx_task_handle_ != nullptr)
@@ -1152,7 +1271,13 @@ bool P4VideoRenderer::start_rx_task_() {
   return voip_audio_core::start_managed_pinned_task(
       P4VideoRenderer::rx_task_trampoline_, "p4_video_rx", kTaskStackBytes,
       this, kTaskPriority, 1, kTaskStackInPsram, TAG,
-      &this->rx_task_handle_, &this->rx_task_tcb_, &this->rx_task_stack_,
+      &this->rx_task_handle_,
+#ifdef USE_ESP_IDF
+          nullptr,
+#else
+          &this->rx_task_tcb_,
+#endif
+          &this->rx_task_stack_,
       &this->rx_task_with_caps_);
 }
 
@@ -1310,8 +1435,8 @@ void P4VideoRenderer::rx_task_() {
         continue;
       auto &slot = this->h264_au_slots_[slot_index];
       uint8_t expected = 1;
-      if (!slot.state.compare_exchange_strong(
-              expected, 2, std::memory_order_acq_rel)) {
+      if (!slot.state.compare_exchange_strong(expected, 2,
+                                              std::memory_order_acq_rel)) {
         continue;
       }
       const bool current =
@@ -1325,8 +1450,7 @@ void P4VideoRenderer::rx_task_() {
       bool decoded = false;
       if (current) {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
-        update_max(this->rx_queue_wait_max_us_,
-                   micros() - slot.queued_at_us);
+        update_max(this->rx_queue_wait_max_us_, micros() - slot.queued_at_us);
 #endif
         rendered = this->decode_h264_access_unit_(
             slot.access_unit.data, slot.access_unit.size,
@@ -1365,69 +1489,61 @@ void P4VideoRenderer::rx_task_() {
     const uint32_t au_started_us = micros();
 #endif
     bool rendered = false;
-    bool picture_info_current =
-        this->jpeg_picture_info_valid_ &&
-        this->jpeg_picture_info_generation_ == session_generation;
-    if (!picture_info_current &&
-        this->update_jpeg_picture_info_(this->rx_au_, this->rx_au_size_)) {
-      this->jpeg_picture_info_generation_ = session_generation;
-      picture_info_current = true;
-    }
     if (this->pending_surface_.load(std::memory_order_acquire) < 0 &&
-        this->jpeg_decoder_ != nullptr && picture_info_current) {
-      const int output_index =
-          1 - this->front_surface_.load(std::memory_order_acquire);
-      size_t expected_size =
-          static_cast<size_t>(this->decoded_storage_width_) *
-          this->decoded_storage_height_ * 2U;
-      uint32_t decoded_size = 0;
+        this->jpeg_decoder_ != nullptr) {
+      jpeg_decode_picture_info_t picture{};
+      if (this->read_jpeg_picture_info_(this->rx_au_, this->rx_au_size_,
+                                        this->rx_au_jpeg_info_, &picture)) {
+        const uint16_t storage_width = jpeg_storage_width_(picture);
+        const uint16_t storage_height = jpeg_storage_height_(picture);
+        const int output_index =
+            this->surface_count_ == 1
+                ? 0
+                : 1 - this->front_surface_.load(std::memory_order_acquire);
+        const size_t expected_size =
+            static_cast<size_t>(storage_width) * storage_height * 2U;
+        uint32_t decoded_size = 0;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
-      const uint32_t decode_started_us = micros();
+        const uint32_t decode_started_us = micros();
 #endif
-      esp_err_t decode_error = ESP_ERR_INVALID_SIZE;
-      if (output_index >= 0 && output_index <= 1 &&
-          this->surfaces_[output_index] != nullptr &&
-          expected_size <= this->surface_capacity_bytes_ &&
-          expected_size <= UINT32_MAX) {
-        // ESP-IDF synchronizes exactly outbuf_size bytes before and after the
-        // DMA transaction. Pass the padded size of this JPEG, not the maximum
-        // 800x800 surface capacity, so a small remote frame does not evict an
-        // unrelated megabyte of PSRAM cache while AFE is producing audio.
-        decode_error = jpeg_decoder_process(
-            this->jpeg_decoder_, &this->jpeg_decode_config_, this->rx_au_,
-            static_cast<uint32_t>(this->rx_au_size_),
-            this->surfaces_[output_index],
-            static_cast<uint32_t>(expected_size),
-            &decoded_size);
-      }
+        esp_err_t decode_error = ESP_ERR_INVALID_SIZE;
+        if (output_index >= 0 && output_index <= 1 &&
+            this->surfaces_[output_index] != nullptr &&
+            expected_size <= this->surface_capacity_bytes_ &&
+            expected_size <= UINT32_MAX) {
+          // ESP-IDF synchronizes exactly outbuf_size bytes before and after the
+          // DMA transaction. Pass the padded size of this JPEG, not the maximum
+          // 800x800 surface capacity, so a small remote frame does not evict an
+          // unrelated megabyte of PSRAM cache while AFE is producing audio.
+          decode_error = jpeg_decoder_process(
+              this->jpeg_decoder_, &this->jpeg_decode_config_, this->rx_au_,
+              static_cast<uint32_t>(this->rx_au_size_),
+              this->surfaces_[output_index],
+              static_cast<uint32_t>(expected_size), &decoded_size);
+        }
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
-      update_max(this->rx_jpeg_decode_max_us_, micros() - decode_started_us);
+        update_max(this->rx_jpeg_decode_max_us_, micros() - decode_started_us);
 #endif
-      // The SIP source normally keeps one resolution for the whole session.
-      // Reparse only on the first frame or if the hardware reports a changed
-      // output size, avoiding a calloc/free pair in every hot-path frame.
-      if (decode_error == ESP_OK && decoded_size != expected_size &&
-          this->update_jpeg_picture_info_(this->rx_au_, this->rx_au_size_)) {
-        this->jpeg_picture_info_generation_ = session_generation;
-        expected_size = static_cast<size_t>(this->decoded_storage_width_) *
-                        this->decoded_storage_height_ * 2U;
-      }
-      if (decode_error == ESP_OK && decoded_size == expected_size &&
-          this->rx_active_.load(std::memory_order_acquire) &&
-          this->rx_session_prepared_.load(std::memory_order_acquire) &&
-          session_generation ==
-              this->rx_session_generation_.load(std::memory_order_acquire)) {
-        this->surface_data_size_[output_index] = decoded_size;
-        this->surface_stride_bytes_[output_index] =
-            this->decoded_storage_width_ * sizeof(uint16_t);
-        this->surface_content_width_[output_index] =
-            static_cast<uint16_t>(this->jpeg_picture_info_.width);
-        this->surface_content_height_[output_index] =
-            static_cast<uint16_t>(this->jpeg_picture_info_.height);
-        this->pending_surface_.store(output_index,
-                                     std::memory_order_release);
-        this->enable_loop_soon_any_context();
-        rendered = true;
+        if (decode_error == ESP_OK && decoded_size == expected_size &&
+            this->rx_active_.load(std::memory_order_acquire) &&
+            this->rx_session_prepared_.load(std::memory_order_acquire) &&
+            session_generation ==
+                this->rx_session_generation_.load(std::memory_order_acquire)) {
+          this->surface_data_size_[output_index] = decoded_size;
+          this->surface_stride_bytes_[output_index] =
+              storage_width * sizeof(uint16_t);
+          this->surface_content_width_[output_index] =
+              static_cast<uint16_t>(picture.width);
+          this->surface_content_height_[output_index] =
+              static_cast<uint16_t>(picture.height);
+#ifdef USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY
+          this->pending_surface_generation_.store(session_generation,
+                                                  std::memory_order_relaxed);
+#endif
+          this->pending_surface_.store(output_index, std::memory_order_release);
+          this->enable_loop_soon_any_context();
+          rendered = true;
+        }
       }
     }
     if (rendered)
@@ -1821,11 +1937,7 @@ void P4VideoRenderer::free_codec_resources_() {
 #endif
 #ifdef USE_P4_VIDEO_RENDERER_JPEG
   this->jpeg_decoder_ = nullptr;
-  this->jpeg_picture_info_ = {};
-  this->jpeg_picture_info_valid_ = false;
-  this->jpeg_picture_info_generation_ = 0;
-  this->decoded_storage_width_ = 0;
-  this->decoded_storage_height_ = 0;
+  this->rx_au_jpeg_info_ = {};
 #endif
 #if defined(USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY) &&                       \
     defined(USE_P4_VIDEO_RENDERER_JPEG)

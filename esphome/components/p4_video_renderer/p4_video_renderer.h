@@ -9,6 +9,10 @@
 #include "esphome/components/voip_stack/video.h"
 #include "esphome/core/automation.h"
 #include "esphome/core/component.h"
+#if defined(USE_MIPI_DSI_RGB565_OWNED_TRANSFORM) &&                            \
+    defined(USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY)
+#include "esphome/components/mipi_dsi/mipi_dsi.h"
+#endif
 
 #ifdef USE_P4_VIDEO_RENDERER_JPEG
 #include "driver/jpeg_decode.h"
@@ -62,7 +66,16 @@ public:
 #ifdef USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY
   void set_direct_display(display::Display *value) {
     this->direct_display_ = value;
+#ifdef USE_MIPI_DSI_RGB565_OWNED_TRANSFORM
+    this->owned_display_ = nullptr;
+#endif
   }
+#ifdef USE_MIPI_DSI_RGB565_OWNED_TRANSFORM
+  void set_direct_display(mipi_dsi::MipiDsi *value) {
+    this->direct_display_ = value;
+    this->owned_display_ = value;
+  }
+#endif
   void set_display_rotation(uint16_t value) {
     this->display_rotation_ = value;
   }
@@ -71,8 +84,18 @@ public:
   /// Called from lvgl.on_boot after the YAML container exists.
   void attach_video_container(lv_obj_t *container);
   bool has_remote_frame() const {
+#if defined(USE_P4_VIDEO_RENDERER_JPEG) &&                                     \
+    defined(USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY)
+    const uint32_t generation =
+        this->remote_frame_visible_.load(std::memory_order_acquire);
+    return this->rx_active_.load(std::memory_order_acquire) &&
+           generation != 0 &&
+           generation ==
+               this->rx_session_generation_.load(std::memory_order_acquire);
+#else
     return this->rx_active_.load(std::memory_order_acquire) &&
            this->remote_frame_visible_.load(std::memory_order_acquire);
+#endif
   }
   Trigger<> *get_first_frame_trigger() { return &this->first_frame_trigger_; }
   Trigger<> *get_video_ended_trigger() { return &this->video_ended_trigger_; }
@@ -115,7 +138,9 @@ protected:
 #endif
 #ifdef USE_P4_VIDEO_RENDERER_JPEG
   bool init_jpeg_decoder_();
-  bool update_jpeg_picture_info_(const uint8_t *data, size_t size);
+  bool read_jpeg_picture_info_(const uint8_t *data, size_t size,
+                               const voip_stack::JpegFrameInfo &frame_info,
+                               jpeg_decode_picture_info_t *picture) const;
   static uint16_t jpeg_storage_width_(
       const jpeg_decode_picture_info_t &picture);
   static uint16_t jpeg_storage_height_(
@@ -124,6 +149,8 @@ protected:
 #ifdef USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY
   bool present_surface_direct_(int index);
   bool commit_direct_surface_(int index);
+  bool present_native_rgb565_(int x, int y, int width, int height,
+                              const uint8_t *pixels, size_t bytes);
 #endif
 #if defined(USE_P4_VIDEO_RENDERER_JPEG) &&                                  \
     defined(USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY)
@@ -205,11 +232,7 @@ protected:
 #ifdef USE_P4_VIDEO_RENDERER_JPEG
   jpeg_decoder_handle_t jpeg_decoder_{nullptr};
   jpeg_decode_cfg_t jpeg_decode_config_{};
-  jpeg_decode_picture_info_t jpeg_picture_info_{};
-  bool jpeg_picture_info_valid_{false};
-  uint32_t jpeg_picture_info_generation_{0};
-  uint16_t decoded_storage_width_{0};
-  uint16_t decoded_storage_height_{0};
+  voip_stack::JpegFrameInfo rx_au_jpeg_info_{};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   std::atomic<uint32_t> rx_jpeg_decode_max_us_{0};
   std::atomic<uint32_t> rx_au_work_max_us_{0};
@@ -217,6 +240,9 @@ protected:
 #endif
 #ifdef USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY
   display::Display *direct_display_{nullptr};
+#ifdef USE_MIPI_DSI_RGB565_OWNED_TRANSFORM
+  mipi_dsi::MipiDsi *owned_display_{nullptr};
+#endif
   uint16_t display_rotation_{0};
 #ifdef USE_P4_VIDEO_RENDERER_H264
   std::atomic<uint64_t> direct_layout_area_{0};
@@ -246,6 +272,7 @@ protected:
 #endif
   uint8_t *surfaces_[2]{nullptr, nullptr};
   size_t surface_capacity_bytes_{0};
+  size_t surface_count_{2};
   size_t surface_data_size_[2]{0, 0};
   uint16_t surface_stride_bytes_[2]{0, 0};
   uint16_t surface_content_width_[2]{0, 0};
@@ -282,7 +309,9 @@ protected:
   std::atomic<uint32_t> loss_generation_{0};
 #endif
   TaskHandle_t rx_task_handle_{nullptr};
+#ifndef USE_ESP_IDF
   StaticTask_t rx_task_tcb_{};
+#endif
   StackType_t *rx_task_stack_{nullptr};
   bool rx_task_with_caps_{false};
   SemaphoreHandle_t rx_done_{nullptr};
@@ -299,12 +328,23 @@ protected:
   lv_img_dsc_t image_descriptor_{};
   std::atomic<int> front_surface_{0};
   std::atomic<int> pending_surface_{-1};
+#if defined(USE_P4_VIDEO_RENDERER_JPEG) &&                                     \
+    defined(USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY)
+  // Published with pending_surface_, independent of reusable AU slot metadata.
+  std::atomic<uint32_t> pending_surface_generation_{0};
+  // Published frame generation, not another epoch. Zero means no visible
+  // frame; unlike a bool, a late old publication cannot reopen a new call.
+  std::atomic<uint32_t> remote_frame_visible_{0};
+#endif
   // pending_surface_ owns the backing store until LVGL completes its flush, or
   // until the direct-display PPA has copied it into the rotated front buffer.
   // No timer or main-loop polling is involved.
   std::atomic<bool> presentation_in_flight_{false};
   std::atomic<bool> surface_ever_presented_{false};
+#if !defined(USE_P4_VIDEO_RENDERER_JPEG) ||                                    \
+    !defined(USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY)
   std::atomic<bool> remote_frame_visible_{false};
+#endif
 #ifdef USE_P4_VIDEO_RENDERER_H264
   std::atomic<bool> direct_page_active_{false};
 #endif

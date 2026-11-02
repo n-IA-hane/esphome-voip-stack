@@ -16,6 +16,9 @@ from esphome.const import CONF_DISPLAY_ID, CONF_ID
 from esphome.core import CORE
 
 CODEOWNERS = ["@n-IA-hane"]
+# Build-time consumer capability, checked by the optional MIPI provider from
+# the loaded manifest and complete merged package graph. No runtime negotiation.
+MIPI_NATIVE_COORDINATE_BLITS = True
 DEPENDENCIES = ["esp32", "voip_stack", "lvgl"]
 
 CONF_CODEC = "codec"
