@@ -37,6 +37,12 @@ struct SipTransport {
  unsigned wakes=0,flow_retirements=0,dns_invalidations=0,notifications=0;
  bool subscriptions_retired=true;
  bool registration_subscriptions_retired_(size_t)const{return subscriptions_retired;}
+ // This isolated managed-owner fixture controls retirement explicitly.
+ // Actual subscription transactions are exercised by the MWI wire fixture.
+ struct SubscriptionAdapter {
+  void invalidate_account(size_t){}
+  void update_registered_account(size_t,const SipRegistration::Account&,uint32_t){}
+ } mwi_;
  std::atomic<uint16_t> managed_retirement_status_{0};
  std::atomic<bool> running_{true},transport_stopping_{false},main_wake{false};
  void (*registration_wake_callback_)(void*,SipTransport*)=nullptr;void *registration_context_=nullptr;

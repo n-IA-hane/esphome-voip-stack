@@ -94,7 +94,6 @@ class SipRegistration {
     SipDigest digest, proxy_digest;
     std::string call_id, tag, branch, contact;
     RegistrationMessage request;
-    uint32_t config_revision{0};
     uint32_t cseq{0}, target_ip{0}, next_ms{0}, deadline_ms{0}, interval_ms{500}, negotiated_expires{0},
         requested_expires{0};
     uint32_t binding_expires_ms{0}, binding_ip{0};
