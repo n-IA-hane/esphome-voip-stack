@@ -18,6 +18,9 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
 #ifdef USE_ESPHOME_VOIP_MWI
     this->register_service(&VoipHAIntegration::call_mailbox, "call_mailbox", {"account_id", "target"});
 #endif
+#ifdef USE_ESPHOME_VOIP_BLF
+    this->register_service(&VoipHAIntegration::pickup_contact, "pickup_contact", {"contact_id"});
+#endif
     this->register_service(&VoipHAIntegration::answer_call, "answer_call");
     this->register_service(&VoipHAIntegration::decline_call, "decline_call", {"reason"});
     this->register_service(&VoipHAIntegration::hangup_call, "hangup_call");
@@ -79,6 +82,9 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
 #endif
 #ifdef USE_ESPHOME_VOIP_MWI
   void call_mailbox(std::string account_id, std::string target) { this->parent_->call_mailbox(account_id, target); }
+#endif
+#ifdef USE_ESPHOME_VOIP_BLF
+  void pickup_contact(std::string id) { this->parent_->pickup_contact(id); }
 #endif
   void answer_call() { this->parent_->answer_call(); }
   void decline_call(std::string reason) { this->parent_->decline_call(reason); }

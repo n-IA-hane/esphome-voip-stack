@@ -69,6 +69,11 @@ def registration_transport_source(*, full_invite=False):
 #include "sip_mwi.h"
 using esphome::voip_stack::SipMwi;
 using esphome::voip_stack::MessageWaitingState;
+#ifdef USE_ESPHOME_VOIP_BLF
+using esphome::voip_stack::BlfStatus;
+using esphome::voip_stack::BlfStateInfo;
+using esphome::voip_stack::BlfWatchConfig;
+#endif
 #endif
 #include <openssl/evp.h>
 using esphome::voip_stack::SipRegistration;

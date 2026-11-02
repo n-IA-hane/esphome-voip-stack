@@ -82,6 +82,14 @@ class SipTransport : public SipPhoneTransport {
   bool has_waiting_messages(const std::string &id = "");
   bool copy_message_waiting_slot(size_t index, MessageWaitingState *state);
 #endif
+#ifdef USE_ESPHOME_VOIP_BLF
+  using BlfCallback = void (*)(void *, SipTransport *, size_t);
+  bool configure_blf(uint8_t capacity, BlfCallback callback);
+  bool set_blf_watches(const std::vector<BlfWatchConfig> &watches);
+  bool get_blf_state(std::string_view, BlfStatus *);
+  bool get_blf_info(std::string_view, BlfStateInfo *);
+  bool copy_blf_slot(size_t, BlfStateInfo *);
+#endif
   void set_registration_keepalive_interval(uint32_t milliseconds) { this->registration_.set_keepalive_interval(milliseconds); }
   using AccountCommit = bool (*)(void *, const std::string &, const SipAccountConfig *);
   bool set_account(const SipAccountConfig &config, AccountCommit commit = nullptr, void *context = nullptr);
@@ -753,6 +761,11 @@ class SipTransport : public SipPhoneTransport {
   SipRegistration registration_;
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
   SipMwi mwi_;
+#ifdef USE_ESPHOME_VOIP_BLF
+  BlfCallback blf_callback_{nullptr};
+  static void registration_blf_notify_(void *, const BlfStateInfo &);
+  template<typename Result> bool copy_blf_state_(std::string_view, Result *);
+#endif
   static void registration_binding_accepted_(void *, size_t, uint32_t);
   void pump_registration_mwi_(uint32_t now);
   static bool registration_mwi_reply_(void *, const std::string &, uint32_t, uint16_t, bool, int);

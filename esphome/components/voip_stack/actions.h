@@ -356,6 +356,15 @@ class VoipIsHaDestinationCondition : public Condition<Ts...>, public Parented<Vo
   bool check(const Ts &...x) override { return this->parent_->is_ha_destination(); }
 };
 
+#ifdef USE_ESPHOME_VOIP_BLF
+template<typename... Ts>
+class PickupContactAction : public Action<Ts...>, public Parented<VoipStack> {
+ public:
+  TEMPLATABLE_VALUE(std::string, contact_id)
+  void play(const Ts &...x) override { this->parent_->pickup_contact(this->contact_id_.value(x...)); }
+};
+#endif
+
 }  // namespace voip_stack
 }  // namespace esphome
 

@@ -102,6 +102,9 @@ void SipTransport::initialize_registration() {
 #ifdef USE_ESPHOME_VOIP_MWI
   events.notify = registration_mwi_notify_;
 #endif
+#ifdef USE_ESPHOME_VOIP_BLF
+  events.notify_blf = registration_blf_notify_;
+#endif
   this->mwi_.set_hooks(events);
   if (!this->mwi_.initialized()) ESP_LOGE("voip_stack.mwi", "Subscription pool allocation failed");
 #endif
@@ -119,6 +122,9 @@ void SipTransport::pump_registration_mwi_(uint32_t now) {
     const auto &account = this->registration_.account(i);
 #ifdef USE_ESPHOME_VOIP_MWI
     this->mwi_.update_registered_account(i, account, now);
+#endif
+#ifdef USE_ESPHOME_VOIP_BLF
+    this->mwi_.update_blf_account(i, account, now);
 #endif
 
   }
@@ -173,6 +179,88 @@ bool SipTransport::has_waiting_messages(const std::string &id) {
   return false;
 }
 #endif
+#endif
+
+
+#ifdef USE_ESPHOME_VOIP_BLF
+bool SipTransport::configure_blf(uint8_t capacity, BlfCallback callback) {
+  LockGuard lock(this->dialog_mutex_);
+  if (!this->mwi_.configure_blf(capacity)) return false;
+  this->blf_callback_ = callback;
+  return true;
+}
+bool SipTransport::set_blf_watches(const std::vector<BlfWatchConfig> &watches) {
+  LockGuard lock(this->dialog_mutex_);
+  if (watches.size() > this->mwi_.blf_capacity()) return false;
+  for (size_t i = 0; i < watches.size(); ++i) {
+    const auto &watch = watches[i];
+    const int owner_index = this->registration_.find(watch.account_id);
+    if (watch.contact_id.empty() || watch.contact_id.size() > 96 || watch.target.empty() ||
+        watch.target.size() > 512 || owner_index < 0) return false;
+    for (unsigned char c : watch.target)
+      if (c <= 32 || c == 127 || c == '<' || c == '>' || c == '"') return false;
+    for (size_t j = 0; j < i; ++j)
+      if (watches[j].contact_id == watch.contact_id) return false;
+    const auto normalized = sip_normalize_dial_target(watch.target, 512);
+    if (normalized.empty() || (normalized.find(':') != std::string::npos && normalized.rfind("sip:", 0) != 0) ||
+        sip_target_uri(normalized, this->registration_.account(owner_index).config.domain).empty()) return false;
+  }
+  const uint32_t now = millis();
+  for (size_t slot = 0; slot < this->mwi_.blf_capacity(); ++slot) {
+    if (!this->mwi_.blf_watch_requested(slot)) continue;
+    bool retained = false;
+    for (const auto &watch : watches) retained |= watch.contact_id == this->mwi_.blf_watch_id(slot);
+    if (!retained) this->mwi_.clear_blf_watch(slot, now);
+  }
+  for (const auto &watch : watches) {
+    size_t slot = 0;
+    while (slot < this->mwi_.blf_capacity() &&
+           (!this->mwi_.blf_watch_requested(slot) || this->mwi_.blf_watch_id(slot) != watch.contact_id)) ++slot;
+    if (slot == this->mwi_.blf_capacity()) {
+      slot = 0;
+      while (slot < this->mwi_.blf_capacity() && this->mwi_.blf_watch_requested(slot)) ++slot;
+    }
+    if (slot == this->mwi_.blf_capacity()) return false;
+    const size_t account_index = this->registration_.find(watch.account_id);
+    const auto &account = this->registration_.account(account_index);
+    const std::string target = sip_target_uri(watch.target, account.config.domain);
+    if (!this->mwi_.set_blf_watch(slot, account_index, account, watch.contact_id, target, now)) return false;
+  }
+  this->wake_sip_task_();
+  return true;
+}
+template<typename Result> bool SipTransport::copy_blf_state_(std::string_view id, Result *out) {
+  if (out == nullptr) return false;
+  LockGuard lock(this->dialog_mutex_);
+  for (size_t slot = 0; slot < this->mwi_.blf_capacity(); ++slot) {
+    const auto *state = this->mwi_.blf_state(slot);
+    if (state != nullptr && state->contact_id == id) { *out = *state; return true; }
+  }
+  return false;
+}
+bool SipTransport::get_blf_state(std::string_view id, BlfStatus *out) {
+  return this->copy_blf_state_(id, out);
+}
+bool SipTransport::get_blf_info(std::string_view id, BlfStateInfo *out) {
+  return this->copy_blf_state_(id, out);
+}
+bool SipTransport::copy_blf_slot(size_t index, BlfStateInfo *out) {
+  if (out == nullptr) return false;
+  LockGuard lock(this->dialog_mutex_);
+  const auto *state = this->mwi_.blf_state(index);
+  if (state == nullptr || state->contact_id.empty()) return false;
+  *out = *state; return true;
+}
+void SipTransport::registration_blf_notify_(void *context, const BlfStateInfo &state) {
+  auto *self = static_cast<SipTransport *>(context);
+  if (self->blf_callback_ == nullptr) return;
+  for (size_t slot = 0; slot < self->mwi_.blf_capacity(); ++slot) {
+    const auto *current = self->mwi_.blf_state(slot);
+    if (current != nullptr && current->contact_id == state.contact_id) {
+      self->blf_callback_(self->registration_context_, self, slot); return;
+    }
+  }
+}
 #endif
 
 std::string SipTransport::registration_hash_(const std::string& algorithm, const std::string& input) {
@@ -358,6 +446,9 @@ bool SipTransport::set_account(const SipAccountConfig& config, AccountCommit com
 #ifdef USE_ESPHOME_VOIP_MWI
   if (i >= 0) this->mwi_.invalidate_account(i);
 #endif
+#ifdef USE_ESPHOME_VOIP_BLF
+  if (i >= 0) this->mwi_.invalidate_blf_account(i);
+#endif
   if (i >= 0) this->retire_registration_flow_(i);
   if (i >= 0) this->invalidate_registration_dns_(i);
   const bool result = this->registration_.set_account(config, millis());
@@ -380,6 +471,9 @@ bool SipTransport::remove_account(const std::string& id, AccountCommit commit, v
   if (commit != nullptr && !commit(context, id, nullptr)) return false;
 #ifdef USE_ESPHOME_VOIP_MWI
   this->mwi_.invalidate_account(i);
+#endif
+#ifdef USE_ESPHOME_VOIP_BLF
+  this->mwi_.invalidate_blf_account(i);
 #endif
   const bool result = this->registration_.remove_account(id);
   this->invalidate_registration_dns_(i);
