@@ -355,6 +355,10 @@ void VoipStack::start_call_on_line_(const std::string &target, const std::string
   this->pending_line_ = line;
   this->pending_dialplan_target_ = cleaned;
   this->start_with_id_(call_id);
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+  // The queued originate still owns this selector until its INVITE consumes it.
+  if (this->pending_media_start_ != ApplicationMediaStart::ORIGINATE)
+#endif
   if (this->transport_ != nullptr)
     static_cast<SipTransport *>(this->transport_.get())->clear_account_line();
   this->pending_line_.clear();
