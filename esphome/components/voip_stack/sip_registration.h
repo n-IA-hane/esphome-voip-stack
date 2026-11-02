@@ -29,6 +29,13 @@ struct SipAccountConfig {
   uint32_t expires{3600};
   bool tcp{false}, enabled{true};
   bool valid() const;
+  bool same_settings(const SipAccountConfig &other) const {
+    return this->id == other.id && this->registrar == other.registrar && this->domain == other.domain &&
+        this->username == other.username && this->password == other.password &&
+        this->auth_username == other.auth_username && this->proxy == other.proxy &&
+        this->port == other.port && this->proxy_port == other.proxy_port &&
+        this->expires == other.expires && this->tcp == other.tcp && this->enabled == other.enabled;
+  }
 };
 
 // Immutable YAML baseline. Strings and rows have firmware lifetime in Flash;
@@ -83,6 +90,7 @@ class SipRegistration {
     SipDigest digest, proxy_digest;
     std::string call_id, tag, branch, contact;
     RegistrationMessage request;
+    uint32_t config_revision{0};
     uint32_t cseq{0}, target_ip{0}, next_ms{0}, deadline_ms{0}, interval_ms{500}, negotiated_expires{0},
         requested_expires{0};
     uint32_t binding_expires_ms{0}, binding_ip{0};
@@ -116,6 +124,7 @@ class SipRegistration {
  protected:
   std::array<Account, CAPACITY> accounts_{};
   Hooks hooks_{};
+  uint32_t next_config_revision_{0};
   uint32_t keepalive_interval_ms_{15000};
   bool begin_(size_t index, uint32_t now);
   bool begin_keepalive_(size_t index, uint32_t now, bool capabilities = false);

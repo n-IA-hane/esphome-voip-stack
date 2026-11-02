@@ -235,12 +235,43 @@ native ESPHome audio as well as Audio Stack. HA integration is enabled when
 API is configured; use `voip_stack.ha_integration: false` for standalone SIP.
 Routing through HA remains controlled separately by `use_ha_as_first_contact`.
 
+Managed SIP registration with Home Assistant is optional:
+
+```yaml
+voip_stack:
+  ha_integration:
+    auto_register: true
+```
+
+The existing ESPHome API connection exposes real `set_ha_display_name` and
+`set_account` actions for HA provisioning. HA supplies account `ha`, its
+credentials and registrar; `transport: auto` follows the configured SIP UDP/TCP
+transport. This enables registration with default line `ha` and reserves one
+account slot. Manual PBX accounts can coexist within `registration.max_accounts`
+(default 2, maximum 4); they use another account ID and explicit UDP/TCP.
+An explicit `registration.default_line` still selects the default outgoing line.
+`start_call_on_line` can select a manual account for an individual call.
+
+Identical provisioning keeps the current binding and call. Changes wait for the
+current call and the old registration transaction before applying the latest
+configuration through the existing registration owner. The HA display name
+changes the outgoing caller name while preserving the device's routing identity.
+Disconnecting the native API does not remove the SIP account.
+
+Omitting `auto_register`, or setting it to `false`, preserves direct/phonebook
+behavior and optional manual PBX registration. Without a `registration` section,
+the registration engine and its saved-account pool are compiled out. Managed
+registration adds no audio worker, media buffer or dependency on LDAP, BLF or an
+ESP mailbox client.
+
 For an HA action that selects an outgoing trunk for one call, the native API also
 provides `start_call_via_ha(dest, call_id)` and `hangup_call_if_id(call_id)`.
 The HA integration supplies a fresh SIP Call-ID, binds its selected line to that
 call and routes the request through the configured HA peer. Scoped cancellation
 cannot hang up a later call with another identity. Ordinary `start_call(dest)`
-keeps its existing phonebook/direct-call behavior.
+keeps its existing phonebook/direct-call behavior when managed registration is
+disabled. With `auto_register: true`, HA-correlated calls use the managed `ha`
+account while retaining the supplied Call-ID.
 
 These additional actions are compiled with the HA API adapter. They add no audio
 task, audio buffer or per-frame processing. The requested identity is passed

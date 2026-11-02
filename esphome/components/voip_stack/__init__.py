@@ -803,6 +803,7 @@ def _consume_voip_sockets(config):
 def _final_validate(config):
     """Cross-component validation + socket reservation."""
     ha_integration.validate(config, fv.full_config.get())
+    registration.final_validate(config)
     protocol = config.get(CONF_TRANSPORT, TRANSPORT_UDP)
     audio_task_stacks_in_psram = config[CONF_AUDIO_TASK_STACKS_IN_PSRAM]
     if config[CONF_TASK_STACKS_IN_PSRAM] or audio_task_stacks_in_psram:

@@ -167,6 +167,12 @@ class VoipStack : public Component {
   void set_rx_task_stack_size(uint32_t bytes) { this->rx_task_stack_bytes_ = bytes; }
   void set_buffers_in_psram(bool enabled) { this->buffers_in_psram_ = enabled; }
   void set_device_name(const std::string &name) { this->device_name_ = name; }
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  const std::string &get_caller_display_name() const {
+    return this->ha_display_name_.empty() ? this->device_name_ : this->ha_display_name_;
+  }
+  void set_ha_display_name(const std::string &name);
+#endif
   void set_extension(const std::string &extension);
   const std::string &get_extension() const { return this->extension_; }
   void set_conference_groups(const std::string &groups);
@@ -734,6 +740,9 @@ class VoipStack : public Component {
   bool use_ha_as_first_contact_{false};
   bool first_contacts_batch_committed_{false};
   std::string device_name_;  // This device's friendly name (to exclude from contacts)
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  std::string ha_display_name_;
+#endif
   std::string extension_;  // Optional internal dial-plan alias published to HA.
   std::string conference_groups_;
   bool conference_ring_{false};

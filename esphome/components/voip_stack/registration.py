@@ -79,9 +79,22 @@ def validate_registration(value):
         raise cv.Invalid("Increase registration.max_accounts to fit the configured accounts")
     if "default_line" not in value:
         value["default_line"] = ids[0] if not value["accept_direct_calls"] and len(ids) == 1 else "direct"
-    if value["default_line"] != "direct" and value["default_line"] not in ids:
-        raise cv.Invalid("default_line must be direct or the account_id of a configured account")
     return value
+
+
+def final_validate(config):
+    conf = config.get(CONF_REGISTRATION)
+    if conf is None:
+        return
+    ha = config.get("ha_integration") or {}
+    managed = bool(ha.get("auto_register", False))
+    ids = {item["account_id"] for item in conf["accounts"]}
+    if managed and "ha" in ids:
+        raise cv.Invalid("account_id ha is managed by ha_integration.auto_register; use a different ID for manual PBX accounts")
+    if managed and len(ids) >= conf["max_accounts"]:
+        raise cv.Invalid("Increase registration.max_accounts to leave one slot for the managed HA account")
+    if conf["default_line"] != "direct" and conf["default_line"] not in ids and not (managed and conf["default_line"] == "ha"):
+        raise cv.Invalid("default_line must be direct or the account_id of a configured account")
 
 
 SCHEMA = cv.All(cv.Schema({

@@ -373,7 +373,9 @@ bool SipRegistration::set_account(const SipAccountConfig& c, uint32_t now) {
       }
   if (i < 0) return false;
   auto& a = this->accounts_[i];
+  const uint32_t revision = ++this->next_config_revision_;
   a = {};
+  a.config_revision = revision;
   a.config = c;
   a.occupied = true;
   a.desired = c.enabled;
@@ -386,7 +388,9 @@ bool SipRegistration::set_account(const SipAccountConfig& c, uint32_t now) {
 bool SipRegistration::remove_account(const std::string& id) {
   const int i = this->find(id);
   if (i < 0) return false;
+  const uint32_t revision = ++this->next_config_revision_;
   this->accounts_[i] = {};
+  this->accounts_[i].config_revision = revision;
   return true;
 }
 bool SipRegistration::request_registration(const std::string& id, bool on, uint32_t now) {

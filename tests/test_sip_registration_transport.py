@@ -8,6 +8,22 @@ from test_refer_wire_runtime import wire_source
 from test_refer_dialog_runtime import SOURCE, block
 
 
+def conditional_tail(source, begin):
+    """Extract a conditional section after its opening line, including nested gates."""
+    depth = 1
+    lines = []
+    for line in source[begin:].splitlines(keepends=True):
+        directive = line.strip()
+        if directive.startswith("#if"):
+            depth += 1
+        elif directive.startswith("#endif"):
+            depth -= 1
+            if depth == 0:
+                return "".join(lines)
+        lines.append(line)
+    raise ValueError("Unclosed C++ conditional in host fixture source")
+
+
 def registration_transport_source(*, full_invite=False):
     source = (SOURCE / "sip_transport.cpp").read_text()
     header = (SOURCE / "sip_transport.h").read_text()
@@ -15,9 +31,9 @@ def registration_transport_source(*, full_invite=False):
     code = wire_source(full_invite=full_invite)
     # Enable the new code after standard fixture includes have been declared.
     begin = header.index("  static bool registration_directional_audio_supported_(")
-    members = header[begin:header.index("#endif", begin)]
+    members = conditional_tail(header, begin)
     begin = header.index("  void initialize_registration();")
-    public = header[begin:header.index("#endif", begin)]
+    public = conditional_tail(header, begin)
     public = public.replace("void initialize_registration();", "")
     extra = public + "\n" + members + "\n"
     extra += next(line.strip() for line in header.splitlines() if " signaling_flows_();" in line) + "\n"

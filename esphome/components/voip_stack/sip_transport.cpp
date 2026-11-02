@@ -4644,6 +4644,9 @@ void SipTransport::sip_task_() {
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
     {
       LockGuard lock(this->dialog_mutex_); this->pump_registration_dns_(); this->registration_.tick(millis());
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+      this->notify_managed_account_main_loop_();
+#endif
     }
     for (auto &flow : this->registration_flows_) this->prepare_tcp_flow_(flow);
 #endif
