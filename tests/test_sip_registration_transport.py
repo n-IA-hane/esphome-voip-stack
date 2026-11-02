@@ -14,7 +14,7 @@ def registration_transport_source(*, full_invite=False):
     adapter = (SOURCE / "sip_registration_transport.cpp").read_text()
     code = wire_source(full_invite=full_invite)
     # Enable the new code after standard fixture includes have been declared.
-    begin = header.index("  SipRegistration registration_;")
+    begin = header.index("  static bool registration_directional_audio_supported_(")
     members = header[begin:header.index("#endif", begin)]
     begin = header.index("  void initialize_registration();")
     public = header[begin:header.index("#endif", begin)]
@@ -35,7 +35,7 @@ def registration_transport_source(*, full_invite=False):
     code += "\nvoid SipTransport::invalidate_registration_dns_(size_t) {}\n"
     names = ["registration_flow_index_", "registration_socket_index_", "account_in_use_", "retire_registration_flow_", "set_account", "remove_account",
              "register_account", "is_registered", "prepare_account_line", "clear_account_line", "registration_ingress_",
-             "retry_authenticated_request_", "remember_registration_routes_", "registration_send_"]
+             "retry_authenticated_request_", "remember_registration_routes_", "registration_send_", "registration_send_view_", "registration_directional_audio_supported_"]
     for name in names:
         marker = next(line for line in adapter.splitlines() if "SipTransport::" + name + "(" in line)
         code += "\n" + block(adapter, marker)
@@ -48,6 +48,7 @@ def registration_transport_source(*, full_invite=False):
     code = code.replace("using SipTcpFlow=::SipTcpFlow;", "using SipTcpFlow=::SipTcpFlow;\n" + extra)
     code = code.replace("struct SipTransport: SipPhoneTransport {", "struct SipTransport: SipPhoneTransport {\n")
     prefix = '''#include "sip_registration.h"
+#include "sip_sdp_features.h"
 #include <openssl/evp.h>
 using esphome::voip_stack::SipRegistration;
 using esphome::voip_stack::SipDigest;

@@ -53,7 +53,7 @@ Two scope decisions shape the component:
 
 **`voip_stack` does not own audio hardware or echo cancellation.** It consumes microphone and speaker interfaces. When software AEC/AFE is needed, [`esp_audio_stack`](https://github.com/n-IA-hane/esphome-audio-stack) owns the audio graph and hands `voip_stack` a clean post-processor microphone. Legacy processing options on `voip_stack` are intentionally gone.
 
-**Devices are peers, not trunk subscribers.** ESP devices call each other and Home Assistant directly by SIP; they never register to a PBX or provider trunk. If an installation has a trunk, Home Assistant terminates it and routes calls to ESP devices as normal SIP phones.
+**Direct SIP and optional PBX accounts.** ESP devices can call each other and Home Assistant directly. An optional `registration` block adds bounded PBX accounts using the same SIP and media owners. Provider trunks and central routing remain available through Home Assistant.
 
 ## What it gives you
 
@@ -84,6 +84,35 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 **Optional video.** Native ESP32-S3 cameras can transmit JPEG during calls; rendering received video on S3 screens remains future work. ESP32-P4 adapters support camera transmission and remote-video decode/display. JPEG and H.264 remain separate compile-time profiles. The camera component owns capture and borrowed frames, the codec-specific source owns encoding or compressed-frame forwarding, and `p4_video_renderer` owns receive decode and panel presentation. Audio-only builds do not include these components or their codec dependencies.
 
 **Full ESPHome automation surface.** Triggers, actions and conditions are normal ESPHome automations.
+
+## Native media discovery and keepalive
+
+An OPTIONS request can read the configured audio capabilities without opening a
+call or acquiring audio hardware. The SDP uses audio port zero and advertises
+the configured codecs and directions. It includes a packet-time hint only when
+all described directions support that value. A busy endpoint replies 486 to an
+out-of-dialog request; a matching in-dialog request replies 200 and preserves
+the call.
+
+Registered accounts query peer capabilities after a new binding. Discovery is
+advisory: calls can start immediately with ordinary SDP, including when OPTIONS
+is rejected or unanswered. Directional-audio support comes from the peer's SDP,
+and expires with the binding. It is never inferred from an account or device
+name. The INVITE answer remains authoritative for rates, payloads and framing.
+
+`registration.keepalive_interval` defaults to `15s`; `0` disables periodic
+OPTIONS. Each ping reuses the registered UDP socket or TCP flow and does not
+renew the binding or use Digest credentials. A matching final reply, including
+401 or 405, proves the signaling flow answered. A timeout or changed observed
+mapping starts a REGISTER refresh. This is ordinary SIP OPTIONS reachability,
+without RFC 5626 outbound negotiation or an RTP NAT keepalive guarantee.
+
+Before sending an original INVITE, the endpoint binds its advertised audio RTP
+port. Final media preparation adopts that socket, retaining packets received
+before the answer. Cancellation, rejection and timeout release it through the
+existing media cleanup barrier. Decoders and audio devices still start only
+after negotiation. Existing 48 kHz RX / 16 kHz TX at 10 ms and S3 16 ms formats
+remain available alongside an explicitly configured 16 kHz / 20 ms profile.
 
 ## Blind audio call transfer
 

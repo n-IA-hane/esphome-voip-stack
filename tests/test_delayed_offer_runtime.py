@@ -20,7 +20,7 @@ def delayed_source():
     transport = (COMPONENT / "sip_transport.cpp").read_text()
     responses = (COMPONENT / "sip_request_response.cpp").read_text()
     extra = ""
-    for marker in ("std::string sip_request_uri(", "bool parse_rtpmap_format(", "bool parse_audio_media_line("):
+    for marker in ("bool parse_rtpmap_format(", "bool parse_audio_media_line("):
         extra += block(parser, marker) + "\n"
     code = code.replace("struct SipPhoneTransport {", extra + "\nstruct SipPhoneTransport {")
     declarations = ""
@@ -52,7 +52,7 @@ def delayed_source():
     declarations = declarations.replace("const char *direction) const;", 'const char *direction = "sendrecv") const;')
     code = code.replace(" uint16_t sip_port_=5060;", declarations + r'''
  AudioFormatList offer_tx_formats_,offer_rx_formats_;int media_config_lock_=0;
- uint16_t rtp_port_=40000;size_t udp_max_payload_=1200;
+ size_t udp_max_payload_=1200;
  PcmReceiveConverter pcm_receive_converter_;
  bool prepare_media_path(){return pcm_receive_converter_.prepare(negotiated_rx_payloads_,selected_rx_format_);}
  bool commit_media_path(){open_media_session_();return true;}

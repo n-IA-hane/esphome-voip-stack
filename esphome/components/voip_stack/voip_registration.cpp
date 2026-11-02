@@ -72,6 +72,7 @@ VoipStack::RegistrationSavedPtr VoipStack::allocate_registration_saved_(const Sa
 void VoipStack::initialize_registration_() {
   auto* transport = static_cast<SipTransport*>(this->transport_.get());
   transport->initialize_registration();
+  transport->set_registration_keepalive_interval(this->registration_keepalive_interval_ms_);
   transport->set_accept_direct_calls(this->registration_accept_direct_);
   transport->set_registration_callback(registration_state_callback_, this, registration_dns_ready_callback_);
   if (!this->registration_saved_) this->registration_saved_ = this->allocate_registration_saved_();

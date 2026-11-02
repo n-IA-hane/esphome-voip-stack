@@ -17,8 +17,6 @@ def dialog_identity_binary(tmp_path_factory):
     code = code.replace(' uint16_t sip_port_=5060;', ' AudioFormatList offer_tx_formats_,offer_rx_formats_;\n uint16_t sip_port_=5060;')
     code = code.replace('const RtpAudioPayloads*p){', 'const RtpAudioPayloads*p=nullptr){').replace('negotiated_rx_payloads_=*p;', 'if(p)negotiated_rx_payloads_=*p;')
     code = code.replace('const std::string&,uint32_t,bool){return true;}', 'const std::string&,uint32_t,bool=false){return true;}')
-    parser = (COMPONENT / 'sip_message.cpp').read_text()
-    code = code.replace('struct SipPhoneTransport {', block(parser, 'std::string sip_request_uri(') + '\nstruct SipPhoneTransport {')
     source = (COMPONENT / 'sip_transport.cpp').read_text()
     responses = (COMPONENT / 'sip_request_response.cpp').read_text()
     code = code.replace('bool handle_invite_(const std::string&,const sockaddr_in&){assert(false);return false;}',

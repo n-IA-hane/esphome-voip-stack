@@ -30,10 +30,10 @@ bool socket_errno_is_transient_tx_pressure(int){return false;}
 template<class T>void reset_string(T&s){s.clear();}
 '''
     for marker in ['static bool is_sip_uri_unreserved(', 'std::string via_branch(', 'std::string message_body(', 'bool sip_content_length(',
-                   'std::string reason_text_from_header(', 'bool sip_option_supported(',
+                   'std::string reason_text_from_header(', 'bool sip_option_supported(', 'std::string sip_request_uri(',
                    'std::string sip_uri_user_encode(', 'std::string sip_quoted(',
                    'std::string sip_prefix_target_user(', 'std::string sip_target_uri(',
-                   'std::string sip_name_addr(', 'std::string response_via_with_rport(']:
+                   'std::string sip_name_addr(', 'std::string response_via_with_rport(', 'bool sip_accepts_sdp(']:
         extra += block(parser, marker) + '\n'
     # Default arguments normally come from sip_message.h.
     extra = extra.replace('const std::string &display_name)', 'const std::string &display_name = "")')
@@ -47,7 +47,7 @@ template<class T>void reset_string(T&s){s.clear();}
         ('send_stateless_response_', requests),
     ]
     declarations = {
-        'send_stateless_response_': 'bool send_stateless_response_(const std::string&,const sockaddr_in&,uint16_t,const char*,const std::string& = "",bool=false,int=-1);',
+        'send_stateless_response_': 'bool send_stateless_response_(const std::string&,const sockaddr_in&,uint16_t,const char*,const std::string& = "",bool=false,int=-1,const std::string& = "");',
     }
     for name, text in methods:
         # Remove the fixture implementation, retaining the production declaration.
@@ -59,7 +59,7 @@ template<class T>void reset_string(T&s){s.clear();}
         code = code.replace(old, declaration, 1) + '\n' + implementation
     more = [
         'bool SipTransport::handle_response_(', 'void SipTransport::handle_sip_datagram_(',
-        'void SipTransport::handle_sip_datagram_unlocked_(', 'bool SipTransport::replay_completed_response_(',
+        'void SipTransport::handle_sip_datagram_unlocked_(', 'void SipTransport::handle_options_(', 'bool SipTransport::replay_completed_response_(',
         'void SipTransport::remember_completed_response_(', 'bool SipTransport::replay_completed_invite_ack_(',
         'uint16_t SipTransport::acknowledge_completed_invite_(', 'void SipTransport::reset_dialog_media_locked_(',
         'void SipTransport::clear_udp_transactions_(', 'void SipTransport::clear_invite_transaction_(',
@@ -109,15 +109,17 @@ template<class T>void reset_string(T&s){s.clear();}
  void accept_tcp_client_(int,const sockaddr_in&);
 #endif
  bool should_accept_session_()const{return true;}
- uint16_t sip_port_=5060;int sip_socket_=-1;
+ uint16_t sip_port_=5060;int sip_socket_=-1,rtp_socket_=-1;uint16_t rtp_port_=40000;
+ bool bind_udp_(int*fd,uint16_t,const char*){*fd=0;return true;}
+ std::string build_sdp_capabilities_(uint32_t) const{return "";}
  void stop_audio_path(){media_active_=false;}
  bool send_request_(const std::string&m){SipRequestOptions o;return send_request_(m,"",o);}
  std::array<char,8192> sip_rx_scratch_{};
  std::atomic<bool> running_{true},transport_stopping_{false},audio_receive_enabled_{true};
- enum class MediaLifecyclePhase {IDLE};std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::IDLE};
+ enum class MediaLifecyclePhase {IDLE,PREPARED,ACTIVE,CLEANING,SHUTTING_DOWN};std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::IDLE};
  std::atomic<uint16_t>last_sip_status_code_{0};
  DeferredUdpResponse pending_provisional_response_;
- void request_audio_path_stop_locked_(){media_active_=false;}
+ void request_audio_path_stop_locked_(){media_active_=false;rtp_socket_=-1;}
  void close_tcp_client_from_sip_task_(){close_tcp_flow_(tcp_flow_);}
  void handle_tcp_peer_loss_(SipTcpFlow*f){close_tcp_flow_(*f);}
  static bool sip_method_known_(const std::string&){return false;}
@@ -163,8 +165,7 @@ def complete_invite_owner(code):
         'bool send_response_(uint16_t,const char*,const std::string & = "",const std::string & = "");\n'
         "void defer_udp_provisional_response_(const std::string&,uint32_t,uint16_t){assert(false);}\n",
     )
-    code = code.replace("struct SipPhoneTransport {",
-                        block(parser, "std::string sip_request_uri(") + "\nstruct SipPhoneTransport {", 1)
+
     code = code.replace("learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool)",
                         "learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false)")
     code = code.replace("const RtpAudioPayloads*p)", "const RtpAudioPayloads*p=nullptr)")

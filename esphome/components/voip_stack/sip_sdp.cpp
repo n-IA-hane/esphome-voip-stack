@@ -28,8 +28,7 @@ std::string SipTransport::wrap_sdp_envelope_(const std::string &local_ip, const 
          "m=audio " + std::to_string(this->rtp_port_) + " RTP/AVP " + payloads + "\r\n" +
          maps +
          flows +
-         "a=ptime:" + std::to_string(ptime) + "\r\n"
-         "a=maxptime:" + std::to_string(ptime) + "\r\n"
+         (ptime == 0 ? std::string() : "a=ptime:" + std::to_string(ptime) + "\r\na=maxptime:" + std::to_string(ptime) + "\r\n") +
          "a=" + std::string(direction) + "\r\n";
 }
 
@@ -155,6 +154,80 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
   return out;
 }
 #endif
+
+std::string SipTransport::build_sdp_capabilities_(uint32_t peer_ip) const {
+  // OPTIONS describes configured endpoints without touching offer maps,
+  // dialog generations, RTP reservations or the running media session.
+  AudioFormatList formats;
+  formats.count = 0;
+  std::array<uint8_t, VOIP_STACK_MAX_AUDIO_FORMATS> directions{};
+  const auto same_encoding = [](const AudioFormat &left, AudioFormat right) {
+    // rtpmap describes the encoding; ptime is an independent optional hint.
+    right.frame_ms = left.frame_ms;
+    return audio_formats_share_wire_encoding(left, right);
+  };
+  const auto collect = [&](const AudioFormatList &input, uint8_t direction) {
+    for (uint8_t i = 0; i < input.count; ++i) {
+      const auto &format = input.formats[i];
+      if (audio_format_rtp_encoding(format, this->udp_max_payload_) == nullptr) continue;
+      uint8_t slot = 0;
+      while (slot < formats.count && !same_encoding(formats.formats[slot], format)) ++slot;
+      if (slot == formats.count) {
+        if (formats.count == VOIP_STACK_MAX_AUDIO_FORMATS) continue;
+        formats.formats[formats.count++] = format;
+      }
+      directions[slot] |= direction;
+    }
+  };
+  collect(this->offer_rx_formats_, 2);
+  collect(this->offer_tx_formats_, 1);
+  if (formats.count == 0) return "";
+  std::string payloads, maps, flows;
+  for (uint8_t i = 0; i < formats.count && i < 24; ++i) {
+    const auto &format = formats.formats[i];
+    const uint8_t pt = 96 + i;
+    if (!payloads.empty()) payloads.push_back(' ');
+    payloads += std::to_string(pt);
+    maps += "a=rtpmap:" + std::to_string(pt) + " " + audio_format_rtp_encoding(format, this->udp_max_payload_) +
+            "/" + std::to_string(audio_format_rtp_clock_rate(format)) + "/" +
+            std::to_string(audio_format_rtp_channels(format)) + "\r\n";
+    if (format.codec == AudioCodec::OPUS)
+      maps += "a=fmtp:" + std::to_string(pt) + " stereo=0;sprop-stereo=0;maxaveragebitrate=28000\r\n";
+    const char *flow = directions[i] == 3 ? "sendrecv" : directions[i] == 1 ? "send" : "recv";
+    flows += "a=x-voip-stack-flow:" + std::to_string(pt) + " " + flow + "\r\n";
+  }
+
+  std::string local_ip = "0.0.0.0";
+  this->local_ip_for_peer_(peer_ip, &local_ip);
+  uint8_t ptime = choose_common_audio_ptime(this->offer_tx_formats_, this->offer_rx_formats_, this->udp_max_payload_);
+  // A capability union may contain codecs with different packet-time sets.
+  // Omit the hint unless every described direction can use that one value.
+  const auto supports_time = [&](const AudioFormatList &list, const AudioFormat &format) {
+    for (uint8_t i = 0; i < list.count; ++i)
+      if (list.formats[i].frame_ms == ptime && same_encoding(list.formats[i], format)) return true;
+    return false;
+  };
+  for (uint8_t i = 0; i < formats.count && ptime != 0; ++i)
+    if (((directions[i] & 1) && !supports_time(this->offer_tx_formats_, formats.formats[i])) ||
+        ((directions[i] & 2) && !supports_time(this->offer_rx_formats_, formats.formats[i]))) ptime = 0;
+  std::string result = this->wrap_sdp_envelope_(local_ip, payloads, maps, flows, ptime,
+      audio_direction_attribute(this->offer_tx_formats_.count != 0, this->offer_rx_formats_.count != 0));
+  // RFC 3264 section 9 gives each capability description its own origin.
+  // Preserve the live dialog's SDP identity, including in-dialog OPTIONS.
+  static std::atomic<uint32_t> sequence{0};
+  const uint64_t session = (static_cast<uint64_t>(esp_random()) << 32) |
+      sequence.fetch_add(1, std::memory_order_relaxed);
+  const auto origin = result.find("o=");
+  result.replace(origin, result.find("\r\n", origin) - origin,
+      "o=- " + std::to_string(session) + " 0 IN IP4 " + local_ip);
+  const auto start = result.find("m=audio ");
+  if (start != std::string::npos) {
+    const auto end = result.find(' ', start + 8);
+    result.replace(start + 8, end - start - 8, "0");
+  }
+
+  return result;
+}
 
 std::string SipTransport::build_sdp_offer_() {
   this->local_offered_rx_payloads_.count = 0;

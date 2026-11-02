@@ -29,6 +29,7 @@ std::string sip_target_uri(const std::string &target, const std::string &fallbac
 std::string sip_normalize_dial_target(const std::string &target, size_t max_bytes);
 std::string header_value(const std::string &message, const char *name);
 std::string header_values(const std::string &message, const char *name);
+bool sip_accepts_sdp(const std::string &message);
 bool parse_decimal_u32(const std::string &raw, uint32_t max_value,
                        uint32_t *out);
 bool time_reached(uint32_t now, uint32_t deadline);

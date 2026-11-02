@@ -218,12 +218,13 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
   auto *sip = static_cast<SipTransport *>(this->transport_.get());
   if (sip != nullptr) sip->clear_account_line();
   if (outgoing_line != "direct") {
-    if (sip == nullptr || !sip->prepare_account_line(outgoing_line, &dial_ip, &dial_port, &dial_sip_tcp)) {
+    if (sip == nullptr || !sip->prepare_account_line(outgoing_line, &dial_ip, &dial_port, &dial_sip_tcp,
+                                                       &dial_directional_audio_v1)) {
       this->pending_dialplan_target_.clear();
       this->defer([this]() { this->call_failed_trigger_.trigger("", "PBX account unavailable"); }); return;
     }
     registration_domain = sip->registration_account_domain(outgoing_line);
-    dial_rtp_port = 0; dial_directional_audio_v1 = false;
+    dial_rtp_port = 0;
   }
 #endif
   if (via_ha) {

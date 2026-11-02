@@ -1010,7 +1010,8 @@ bool SipTransport::prepare_media_path_locked_() {
   this->audio_tx_max_send_us_ = 0;
   this->audio_tx_last_debug_log_ms_ = millis();
 #endif
-  if (!this->bind_udp_(&this->rtp_socket_, this->rtp_port_, "RTP")) return false;
+  if (this->rtp_socket_ < 0 &&
+      !this->bind_udp_(&this->rtp_socket_, this->rtp_port_, "RTP")) return false;
   xSemaphoreTake(this->rtp_cleanup_done_, 0);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   if (this->video_negotiated_) {
@@ -1143,7 +1144,7 @@ void SipTransport::request_audio_path_stop_locked_() {
   constexpr bool video_was_running = false;
 #endif
   if (phase == MediaLifecyclePhase::IDLE && !audio_was_running &&
-      !video_was_running) {
+      !video_was_running && this->rtp_socket_ < 0) {
     return;
   }
   this->media_lifecycle_phase_.store(MediaLifecyclePhase::CLEANING,
@@ -2076,7 +2077,7 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
   if (!this->refer_context_active_) {
     LockGuard media_lock(this->media_lifecycle_mutex_);
     if (this->media_lifecycle_phase_.load(std::memory_order_acquire) !=
-        MediaLifecyclePhase::IDLE) {
+        MediaLifecyclePhase::IDLE || this->rtp_socket_ >= 0) {
       ESP_LOGW(TAG, "SIP INVITE deferred: prior media lifecycle not idle");
       return false;
     }
@@ -2152,6 +2153,10 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
   {
     LockGuard media_lock(this->media_lifecycle_mutex_);
     sdp = this->build_sdp_offer_();
+    // Receive on the advertised port before publishing the offer. The final
+    // format preparation adopts this same socket without draining it.
+    if (!sdp.empty() && !this->refer_context_active_ && this->rtp_socket_ < 0 &&
+        !this->bind_udp_(&this->rtp_socket_, this->rtp_port_, "RTP")) sdp.clear();
   }
   if (sdp.empty()) {
     this->reset_dialog_();
@@ -4139,12 +4144,61 @@ void SipTransport::handle_sip_datagram_unlocked_(const char *data, size_t len, c
   } else if (method == "UPDATE") {
     this->handle_update_(msg, src);
   } else if (method == "OPTIONS") {
-    this->send_stateless_response_(msg, src, 200, "OK");
+    this->handle_options_(msg, src);
   } else if (sip_method_known_(method)) {
     this->send_stateless_response_(msg, src, 405, "Method Not Allowed");
   } else {
     this->send_stateless_response_(msg, src, 501, "Not Implemented");
   }
+}
+
+void SipTransport::handle_options_(const std::string &message, const sockaddr_in &src) {
+  const std::string sequence = header_value(message, "CSeq");
+  if (cseq_method(sequence) != "OPTIONS" || cseq_number(sequence) == 0 ||
+      header_value(message, "Call-ID").empty()) {
+    this->send_stateless_response_(message, src, 400, "Bad Request");
+    return;
+  }
+  const std::string to_tag = tag_from_header(header_value(message, "To"));
+  const bool in_dialog = !this->call_id_.empty() && header_value(message, "Call-ID") == this->call_id_ &&
+      !this->local_tag_.empty() && to_tag == this->local_tag_ &&
+      tag_from_header(header_value(message, "From")) == this->remote_tag_ &&
+      ntohl(src.sin_addr.s_addr) == this->remote_ip_v4_.load(std::memory_order_acquire);
+  if (!to_tag.empty() && !in_dialog) {
+    this->send_stateless_response_(message, src, 481, "Call/Transaction Does Not Exist");
+    return;
+  }
+  if (!in_dialog) {
+    if (!this->running_.load(std::memory_order_acquire) || this->transport_stopping_.load(std::memory_order_acquire) ||
+        this->terminal_transaction_pending_locked_()) {
+      this->send_stateless_response_(message, src, 503, "Service Unavailable", "", false, 1);
+      return;
+    }
+    if (!this->call_id_.empty() || this->media_active_.load(std::memory_order_acquire) ||
+        this->outgoing_invite_pending_.load(std::memory_order_acquire) || !this->should_accept_session_()) {
+      this->send_stateless_response_(message, src, 486, "Busy Here");
+      return;
+    }
+    {
+      LockGuard media_lock(this->media_lifecycle_mutex_);
+      const auto phase = this->media_lifecycle_phase_.load(std::memory_order_acquire);
+      if (phase == MediaLifecyclePhase::CLEANING || phase == MediaLifecyclePhase::SHUTTING_DOWN) {
+        this->send_stateless_response_(message, src, 503, "Service Unavailable", "", false, 1);
+        return;
+      }
+    }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    if (!this->accept_direct_calls_ && this->registration_.match_incoming(
+        sip_user_from_header(sip_request_uri(message)), ntohl(src.sin_addr.s_addr),
+        this->dispatch_socket_ >= 0, this->registration_socket_index_(this->dispatch_socket_)) < 0) {
+      this->send_stateless_response_(message, src, 403, "Forbidden");
+      return;
+    }
+#endif
+  }
+  // A capability description is not an offer and acquires no dialog or media.
+  this->send_stateless_response_(message, src, 200, "OK", "", false, -1,
+      sip_accepts_sdp(message) ? this->build_sdp_capabilities_(ntohl(src.sin_addr.s_addr)) : std::string());
 }
 
 bool SipTransport::reject_if_stale_dialog_(const std::string &request, const sockaddr_in &src,

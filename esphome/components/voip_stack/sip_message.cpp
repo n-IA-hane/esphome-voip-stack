@@ -230,6 +230,55 @@ std::string header_values(const std::string &msg, const char *name) {
   return out;
 }
 
+bool sip_accepts_sdp(const std::string &message) {
+  bool present = false, accepted = false;
+  int best = -1;
+  size_t pos = message.find("\r\n");
+  while (pos != std::string::npos) {
+    const size_t end = message.find("\r\n", pos + 2);
+    if (end == std::string::npos || end == pos + 2) break;
+    const size_t colon = message.find(':', pos + 2);
+    if (colon < end && sip_header_name_equal(std::string_view(message).substr(pos + 2, colon - pos - 2), "Accept")) {
+      present = true;
+      const std::string value = message.substr(colon + 1, end - colon - 1);
+      for (size_t start = 0; start < value.size();) {
+        const size_t comma = value.find(',', start);
+        std::string item = trim_copy(value.substr(start, comma - start));
+        std::transform(item.begin(), item.end(), item.begin(), [](unsigned char ch) { return std::tolower(ch); });
+        const size_t semi = item.find(';');
+        const std::string type = trim_copy(item.substr(0, semi));
+        const int rank = type == "application/sdp" ? 2 : type == "application/*" ? 1 : type == "*/*" ? 0 : -1;
+        bool positive = true;
+        for (size_t at = semi; at != std::string::npos;) {
+          const size_t next = item.find(';', at + 1);
+          const std::string parameter = trim_copy(item.substr(at + 1, next - at - 1));
+          const size_t equals = parameter.find('=');
+          if (trim_copy(parameter.substr(0, equals)) == "q") {
+            const std::string q = equals == std::string::npos ? "" : trim_copy(parameter.substr(equals + 1));
+            bool valid = !q.empty() && (q[0] == '0' || q[0] == '1') &&
+                         (q.size() == 1 || (q.size() >= 2 && q.size() <= 5 && q[1] == '.'));
+            positive = !q.empty() && q[0] == '1';
+            for (size_t n = 2; n < q.size(); ++n) {
+              if (q[n] < '0' || q[n] > '9' || (q[0] == '1' && q[n] != '0')) valid = false;
+              if (q[n] != '0') positive = true;
+            }
+            positive = valid && positive;
+          }
+          at = next;
+        }
+        if (rank >= 0 && rank >= best) {
+          accepted = rank == best ? accepted || positive : positive;
+          best = rank;
+        }
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+      }
+    }
+    pos = end;
+  }
+  return !present || accepted;
+}
+
 bool parse_decimal_u32(const std::string &raw, uint32_t max_value, uint32_t *out) {
   if (out == nullptr) return false;
   const std::string value = trim_copy(raw);

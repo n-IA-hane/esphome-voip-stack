@@ -38,7 +38,7 @@ int main(int argc,char **argv){
   Peer original(true);setup(s,original);s.app_accept=false;
   Peer control(true);s.accept_tcp_client_(control.esp,control.address);
   assert(s.inbound_tcp_flow_.socket==control.esp&&s.tcp_flow_.socket==original.esp);
-  control.send_to(s,request(control,"OPTIONS",1,"","probe","","probe"));expect_status(control,200);
+  control.send_to(s,request(control,"OPTIONS",1,"","probe","","probe"));expect_status(control,486);
   assert(s.call_id_=="original"&&s.media_active_&&s.tcp_flow_.socket==original.esp);
   assert(s.inbound_tcp_flow_.socket<0&&fcntl(original.esp,F_GETFD)>=0);
  }else if(scenario=="partial-primary" || scenario=="unread-primary"){
@@ -56,13 +56,13 @@ int main(int argc,char **argv){
   assert(s.tcp_flow_.socket==first.esp&&s.inbound_tcp_flow_.socket==second.esp);
   if(scenario=="partial-primary")assert(s.tcp_flow_.rx_buffer==prefix);
   else assert(!s.tcp_flow_.received_record);
-  second.send_to(s,request(second,"OPTIONS",1,"","second","","probe"));expect_status(second,200);
+  second.send_to(s,request(second,"OPTIONS",1,"","second","","probe"));expect_status(second,486);
   assert(s.tcp_flow_.socket==first.esp&&fcntl(first.esp,F_GETFD)>=0&&s.call_id_.empty());
  }else{
   s.app_accept=false;Peer incoming(true);s.accept_tcp_client_(incoming.esp,incoming.address);
   assert(s.tcp_flow_for_socket_(incoming.esp)!=nullptr&&"busy application rejected TCP before method admission");
   if(scenario=="busy-options"){
-   incoming.send_to(s,request(incoming,"OPTIONS",1,"","probe","","probe"));expect_status(incoming,200);
+   incoming.send_to(s,request(incoming,"OPTIONS",1,"","probe","","probe"));expect_status(incoming,486);
   }else{
    assert(scenario=="busy-invite");
    auto invite=request(incoming,"INVITE",1,"","unowned","","caller");

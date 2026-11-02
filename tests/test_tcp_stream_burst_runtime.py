@@ -86,8 +86,8 @@ int main(int argc,char **argv){
   }
   assert(burst.size()>2*MAX_SIP_TCP_RX_BUFFER);write_all(notifier,burst);pump(s,notifier);
   const auto replies=notifier.drain();
-  assert(replies.size()==8&&"coalesced valid OPTIONS records must each receive 200");
-  for(const auto &reply:replies)assert(reply.rfind("SIP/2.0 200",0)==0);
+  assert(replies.size()==8&&"coalesced valid OPTIONS records must each receive a correlated final reply");
+  for(const auto &reply:replies)assert(reply.rfind(scenario=="burst-aux"?"SIP/2.0 486":"SIP/2.0 200",0)==0);
   assert(s.registration_flows_[0].socket==pbx.esp&&s.registration_.is_registered("office"));
   assert(fcntl(pbx.esp,F_GETFD)>=0);
   if(scenario=="burst-aux"){

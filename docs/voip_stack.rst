@@ -65,6 +65,10 @@ Configuration variables
 - **rtp_port** (*Optional*, int): Local RTP port. Defaults to ``40000``.
 - **udp_max_payload** (*Optional*, int): RTP payload budget in the accepted
   range ``576..1488``. Defaults to ``1200``.
+- **registration.keepalive_interval** (*Optional*, duration or seconds): Send
+  ordinary SIP OPTIONS on each registered account's existing signaling flow.
+  Defaults to ``15s``. Use ``0`` to disable periodic pings. Capability discovery
+  after a new binding remains advisory and does not delay calls.
 - **microphone** (*Optional*, :ref:`config-id`): ESPHome microphone used for TX.
 - **microphone_source** (*Optional*): Microphone source block with microphone
   ID, bit-depth and channel selection.
@@ -151,16 +155,42 @@ Conditions
 Boundaries
 ----------
 
-ESP devices are SIP peers, not registrar clients. There is no SIP registration
-or digest authentication support in the ESP component. Provider trunks,
-registrar accounts, central routing and the Lovelace softphone card are provided
-by the Home Assistant integration in ``esphome-intercom``.
+Direct SIP works without registration. The optional ``registration`` block adds
+PBX accounts and REGISTER Digest authentication on the existing SIP owner.
+Provider trunks, central routing and the Lovelace softphone card are also
+provided by the Home Assistant integration in ``esphome-intercom``.
 
 The phonebook controls outbound resolution; it is not an inbound caller
 allowlist. SIP has no TLS and RTP has no SRTP on ESP, so expose the listeners
 only on a trusted LAN/VPN or behind network admission policy. Session-changing
 in-dialog INVITE (including hold) is rejected with ``488`` while the original
 dialog remains established and can later receive BYE normally.
+
+Native audio capability discovery
+---------------------------------
+
+OPTIONS describes configured audio encodings and directions with SDP audio port
+zero. It does not acquire a dialog, decoder or audio device. Packet time is
+omitted when the capability union has no single supported value. Outside a
+dialog, admission follows the endpoint's call readiness; a matching in-dialog
+OPTIONS preserves that dialog and returns 200.
+
+After a new account binding, an advisory OPTIONS query can learn explicit
+directional-audio support from peer SDP. Ordinary calls work before discovery,
+after rejection, and after discovery timeout. Cached support belongs to the
+binding and is invalidated on replacement, expiry or flow/mapping changes.
+The INVITE answer selects the actual media format.
+
+Periodic OPTIONS uses the registered signaling flow without renewing the
+registration or authenticating a probe challenge. Any matching final response
+proves reachability; timeout or a changed observed mapping requests a REGISTER
+refresh. This mechanism does not negotiate RFC 5626 outbound and does not prove
+that an RTP NAT mapping is usable.
+
+The audio RTP port is bound before publishing an original INVITE and is adopted
+by final media preparation. Rejection, cancellation and timeout release that
+reservation through the existing cleanup barrier. No audio hardware is started
+before the negotiated format is known.
 
 Correlated Home Assistant calls
 -------------------------------

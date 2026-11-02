@@ -39,6 +39,15 @@ def user(value):
     return value
 
 
+def keepalive_interval(value):
+    """Ordinary SIP OPTIONS interval in seconds; zero disables periodic pings."""
+    if isinstance(value, bool):
+        raise cv.Invalid("keepalive_interval must be a duration or number of seconds")
+    if not isinstance(value, int):
+        value = cv.positive_time_period_seconds(value).total_seconds
+    return cv.int_range(min=0, max=86400)(value)
+
+
 def complete_account(value):
     value = dict(value)
     value.setdefault("domain", value["registrar"])
@@ -76,6 +85,7 @@ def validate_registration(value):
 
 
 SCHEMA = cv.All(cv.Schema({
+    cv.Optional("keepalive_interval", default="15s"): keepalive_interval,
     cv.Optional("max_accounts", default=2): cv.int_range(min=1, max=4),
     cv.Optional("accept_direct_calls", default=True): cv.boolean,
     cv.Optional("default_line"): cv.Any("direct", account_id),
@@ -95,6 +105,7 @@ async def to_code(parent, config):
     cg.add_define("VOIP_REGISTRATION_CAPACITY", conf["max_accounts"])
     esp32.include_builtin_idf_component("mbedtls")
     cg.add(parent.configure_registration(conf["accept_direct_calls"], conf["default_line"]))
+    cg.add(parent.set_registration_keepalive_interval(conf["keepalive_interval"] * 1000))
     if conf["accounts"]:
         view_type = NS.struct("SipAccountConfigView")
         rows = [cg.StructInitializer(view_type,

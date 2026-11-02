@@ -63,13 +63,14 @@ class SipTransport : public SipPhoneTransport {
   bool start() override;
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   void initialize_registration();
+  void set_registration_keepalive_interval(uint32_t milliseconds) { this->registration_.set_keepalive_interval(milliseconds); }
   using AccountCommit = bool (*)(void *, const std::string &, const SipAccountConfig *);
   bool set_account(const SipAccountConfig &config, AccountCommit commit = nullptr, void *context = nullptr);
   bool remove_account(const std::string &id, AccountCommit commit = nullptr, void *context = nullptr,
                       bool allow_missing = false);
   bool register_account(const std::string &id, bool enabled);
   bool is_registered(const std::string &id);
-  bool prepare_account_line(const std::string &id, std::string *host, uint16_t *port, bool *tcp);
+  bool prepare_account_line(const std::string &id, std::string *host, uint16_t *port, bool *tcp, bool *directional_audio_v1 = nullptr);
   std::string registration_account_domain(const std::string &id) {
     LockGuard lock(this->dialog_mutex_);
     const int index = this->registration_.find(id);
@@ -213,7 +214,8 @@ class SipTransport : public SipPhoneTransport {
                                 uint16_t status, const char *reason,
                                 const std::string &app_reason = "",
                                 bool cache_transaction = false,
-                                int retry_after_seconds = -1);
+                                int retry_after_seconds = -1,
+                                const std::string &body = "");
   std::string format_response_(uint16_t status, const char *reason,
                                const std::string &via, const std::string &from,
                                const std::string &to, const std::string &call_id,
@@ -249,11 +251,13 @@ class SipTransport : public SipPhoneTransport {
 
   void handle_sip_datagram_(const char *data, size_t len, const sockaddr_in &src);
   void handle_sip_stream_(int socket, const sockaddr_in &src);
+  void handle_options_(const std::string &message, const sockaddr_in &src);
   bool handle_invite_(const std::string &message, const sockaddr_in &src);
   bool handle_reinvite_(const std::string &message, const sockaddr_in &src);
   bool handle_update_(const std::string &message, const sockaddr_in &src);
   bool handle_response_(const std::string &message, const sockaddr_in &src);
   bool send_connected_identity_update_();
+  std::string build_sdp_capabilities_(uint32_t peer_ip) const;
   std::string build_sdp_offer_();
   std::string build_sdp_answer_() const;
   std::string wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
@@ -683,6 +687,7 @@ class SipTransport : public SipPhoneTransport {
   SipTcpFlow tcp_flow_;
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   SipTcpFlow inbound_tcp_flow_;
+  static bool registration_directional_audio_supported_(std::string_view body);
   SipRegistration registration_;
   std::array<SipTcpFlow, SipRegistration::CAPACITY> registration_flows_{};
   int active_account_{-1}, next_account_{-1}, dispatch_socket_{-2};
@@ -709,6 +714,7 @@ class SipTransport : public SipPhoneTransport {
   void invalidate_registration_dns_(size_t index);
   static std::string registration_hash_(const std::string &algorithm, const std::string &input);
   static bool registration_send_(void *, size_t, const std::string &, uint32_t, uint16_t, bool);
+  static bool registration_send_view_(void *, size_t, std::string_view, uint32_t, uint16_t, bool);
   static std::string registration_local_ip_(void *, uint32_t);
   static void registration_notify_(void *, const std::string &, RegistrationState, uint16_t);
 #endif

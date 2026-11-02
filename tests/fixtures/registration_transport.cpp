@@ -9,7 +9,7 @@ std::string SipTransport::registration_hash_(const std::string &algorithm, const
 void bind_account(SipTransport &s, Peer &peer) {
   setup(s, peer); s.call_id_.clear(); s.media_active_ = false;
   if (peer.tcp) { s.tcp_flow_.socket = -1; s.registration_flows_[0].socket = peer.esp; }
-  SipRegistration::Hooks hooks; hooks.context = &s; hooks.send = SipTransport::registration_send_;
+  SipRegistration::Hooks hooks; hooks.context = &s; hooks.send = SipTransport::registration_send_view_;
   hooks.resolve = [](void *, size_t, const std::string &) { return uint32_t(INADDR_LOOPBACK); };
   hooks.local_ip = [](void *, uint32_t) { return std::string("127.0.0.1"); };
   hooks.random = esp_random; hooks.hash = SipTransport::registration_hash_;

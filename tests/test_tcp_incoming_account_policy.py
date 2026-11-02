@@ -36,7 +36,9 @@ int main(int argc,char**argv){
  s.accept_direct_calls_=false;
  Peer options(true),caller(true);
  s.accept_tcp_client_(options.esp,options.address);
- options.send_to(s,request(options,"OPTIONS",1,"","probe","","probe"));
+ auto authorized_probe=request(options,"OPTIONS",1,"","probe","","probe");
+ authorized_probe.replace(authorized_probe.find("sip:esp@127.0.0.1"),strlen("sip:esp@127.0.0.1"),"sip:esphome-office@127.0.0.1");
+ options.send_to(s,authorized_probe);
  auto probe=options.drain();assert(probe.size()==1&&probe[0].rfind("SIP/2.0 200",0)==0);
  const int untouched=s.tcp_flow_.socket;
  assert(untouched==options.esp && s.call_id_.empty());
@@ -126,6 +128,13 @@ def mixed_ingress_binary(tmp_path_factory):
     defines.parent.mkdir(parents=True)
     defines.write_text("")
     code = incoming_account_source() + r'''
+std::string control_probe(Peer&peer,const std::string&id){
+ auto message=request(peer,"OPTIONS",1,"",id,"","probe");
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+ message.replace(message.find("sip:esp@127.0.0.1"),strlen("sip:esp@127.0.0.1"),"sip:esphome-office@127.0.0.1");
+#endif
+ return message;
+}
 std::string initial(Peer&peer,const std::string&id){
  auto message=request(peer,"INVITE",1,"",id,"","caller");
  message.replace(message.find("To: <sip:esp@127.0.0.1>;tag=\r\n"),
@@ -159,7 +168,7 @@ int main(int argc,char**argv){
 
  if(scenario.rfind("immediate-redial",0)==0){
   Peer idle(true);s.accept_tcp_client_(idle.esp,idle.address);
-  idle.send_to(s,request(idle,"OPTIONS",1,"","idle-probe","","probe"));
+  idle.send_to(s,control_probe(idle,"idle-probe"));
   auto probe=idle.drain();assert(probe.size()==1&&probe[0].rfind("SIP/2.0 200",0)==0);
   s.accept_tcp_client_(tcp.esp,tcp.address);tcp.send_to(s,tcp_invite);provisional(tcp);
   const auto first_tag=confirm(s,tcp,"tcp-call");
@@ -202,8 +211,8 @@ int main(int argc,char**argv){
  }else if(scenario=="active-udp-tcp-options"){
   udp.send_to(s,udp_invite);provisional(udp);const auto tag=confirm(s,udp,"udp-call");
   s.accept_tcp_client_(tcp.esp,tcp.address);
-  tcp.send_to(s,request(tcp,"OPTIONS",1,"","tcp-probe","","probe"));
-  auto replies=tcp.drain();assert(replies.size()==1&&replies[0].rfind("SIP/2.0 200",0)==0);
+  tcp.send_to(s,control_probe(tcp,"tcp-probe"));
+  auto replies=tcp.drain();assert(replies.size()==1&&replies[0].rfind("SIP/2.0 486",0)==0);
   assert(s.call_id_=="udp-call"&&!s.remote_sip_tcp_);
   hangup(s,udp,"udp-call",tag);
  }else{
@@ -236,7 +245,10 @@ int main(int argc,char**argv){
    assert(s.call_id_=="udp-call"&&!s.remote_sip_tcp_);
    hangup(s,udp,"udp-call",tag);
   }else{
-   udp.send_to(s,request(udp,"OPTIONS",1,"","udp-probe","","probe"));
+   udp.send_to(s,request(udp,"OPTIONS",1,"","forbidden-direct-probe","","probe"));
+   const auto forbidden=udp.drain();assert(forbidden.size()==1&&forbidden[0].rfind("SIP/2.0 403",0)==0);
+   assert(fcntl(tcp.esp,F_GETFD)>=0&&s.call_id_.empty());
+   udp.send_to(s,control_probe(udp,"udp-probe"));
    const auto replies=udp.drain();assert(replies.size()==1&&replies[0].rfind("SIP/2.0 200",0)==0);
    assert(fcntl(tcp.esp,F_GETFD)>=0&&"UDP OPTIONS must preserve the unread TCP stream");
    assert(s.call_id_.empty()&&tcp.drain().empty());

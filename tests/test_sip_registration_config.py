@@ -174,3 +174,18 @@ button:
         generated,
     )
     assert values == ["false", "true"]
+
+
+@pytest.mark.parametrize("interval, milliseconds", [("0", 0), ("0s", 0), ("15", 15000), ("15s", 15000)])
+def test_keepalive_interval_is_explicit_and_codegen_uses_milliseconds(tmp_path, interval, milliseconds):
+    config = ACCOUNT.replace("    accounts:", f"    keepalive_interval: {interval}\n    accounts:")
+    result = run_config(tmp_path, config)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"set_registration_keepalive_interval({milliseconds})" in next(tmp_path.rglob("main.cpp")).read_text()
+
+
+@pytest.mark.parametrize("interval", ["true", "-1", "86401"])
+def test_invalid_keepalive_interval_is_rejected(tmp_path, interval):
+    config = ACCOUNT.replace("    accounts:", f"    keepalive_interval: {interval}\n    accounts:")
+    result = run_config(tmp_path, config, generate=False)
+    assert result.returncode != 0

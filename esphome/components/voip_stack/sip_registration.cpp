@@ -103,6 +103,16 @@ uint32_t ipv4(std::string_view value) {
   }
   return result;
 }
+bool observe_mapping(SipRegistration::Account& a, std::string_view message) {
+  const auto via = header_view(message, "Via");
+  const uint32_t address = ipv4(via_parameter(via, "received"));
+  uint32_t port = 0;
+  if (!address || !decimal(via_parameter(via, "rport"), &port) || port == 0 || port > 65535) return false;
+  const bool changed = a.observed_ip != 0 && (a.observed_ip != address || a.observed_port != port);
+  a.observed_ip = address;
+  a.observed_port = port;
+  return changed;
+}
 // Quoted commas and escaped quotes occur in Digest qop/opaque values.
 std::string parameter(const std::string& source, const std::string& wanted) {
   size_t pos = 0;
@@ -386,6 +396,12 @@ bool SipRegistration::request_registration(const std::string& id, bool on, uint3
   // Do not abandon an in-flight non-INVITE transaction. Apply the intent when
   // its final response arrives, maintaining monotonic CSeq on this Call-ID.
   a.desired = on;
+  if (!on) a.peer_directional_audio_v1 = a.capabilities_due = false;
+  if (a.pending && a.request_kind != RequestKind::REGISTRATION) {
+    a.pending = false;
+    a.request_kind = RequestKind::REGISTRATION;
+    a.request.clear();
+  }
   if (!a.pending) {
     a.scheduled = true;
     a.next_ms = now;
@@ -409,6 +425,9 @@ void SipRegistration::state_(size_t i, RegistrationState state, uint16_t status)
 void SipRegistration::retry_(size_t i, uint16_t status, uint32_t now, uint32_t delay_ms) {
   auto& a = this->accounts_[i];
   a.pending = false;
+  a.request_kind = RequestKind::REGISTRATION;
+  if (!a.bound || reached(now, a.binding_expires_ms))
+    a.peer_directional_audio_v1 = a.capabilities_due = false;
   a.request.clear();
   a.auth_attempts = 0;
   a.proxy_auth_attempts = 0;
@@ -419,6 +438,7 @@ void SipRegistration::retry_(size_t i, uint16_t status, uint32_t now, uint32_t d
 }
 bool SipRegistration::begin_(size_t i, uint32_t now) {
   auto& a = this->accounts_[i];
+  a.request_kind = RequestKind::REGISTRATION;
   const auto& c = a.config;
   if (this->hooks_.send == nullptr || this->hooks_.resolve == nullptr || this->hooks_.local_ip == nullptr)
     return false;
@@ -441,8 +461,13 @@ bool SipRegistration::begin_(size_t i, uint32_t now) {
     this->retry_(i, 503, now);
     return false;
   }
-  a.contact = "sip:esphome-" + c.id + "@" + local_ip + ":" + std::to_string(this->hooks_.local_port) +
+  const std::string contact = "sip:esphome-" + c.id + "@" + local_ip + ":" + std::to_string(this->hooks_.local_port) +
               ";transport=" + (c.tcp ? "tcp" : "udp");
+  if (a.bound && (a.binding_ip != a.target_ip || a.contact != contact)) {
+    a.peer_directional_audio_v1 = false;
+    a.capabilities_due = this->hooks_.directional_audio_supported != nullptr;
+  }
+  a.contact = contact;
   a.branch = "z9hG4bK" + this->token_();
   ++a.cseq;
   a.requested_expires = a.desired ? c.expires : 0;
@@ -473,7 +498,7 @@ bool SipRegistration::begin_(size_t i, uint32_t now) {
   a.scheduled = false;
   if (!a.desired || !a.bound)
     this->state_(i, a.desired ? RegistrationState::REGISTERING : RegistrationState::UNREGISTERING, 0);
-  if (!this->hooks_.send(this->hooks_.context, i, a.request, a.target_ip, a.target_port, c.tcp)) {
+  if (!this->hooks_.send(this->hooks_.context, i, std::string_view(a.request.data(), a.request.size()), a.target_ip, a.target_port, c.tcp)) {
     // A record rejected by the transport is not an outstanding transaction.
     // RFC 3261 section 17.1.2.2 terminates on transport error, without Timer F.
     this->retry_(i, 503, now);
@@ -481,26 +506,100 @@ bool SipRegistration::begin_(size_t i, uint32_t now) {
   }
   return true;
 }
+bool SipRegistration::begin_keepalive_(size_t i, uint32_t now, bool capabilities) {
+  auto& a = this->accounts_[i];
+  const auto& c = a.config;
+  const auto at = a.contact.find('@');
+  const auto end = a.contact.find(';', at);
+  if (at == std::string::npos || this->hooks_.send == nullptr) return false;
+  a.registration_next_ms = a.next_ms;
+  char branch[30];
+  const unsigned first = this->hooks_.random == nullptr ? 1 : this->hooks_.random();
+  const unsigned second = this->hooks_.random == nullptr ? 1 : this->hooks_.random();
+  std::snprintf(branch, sizeof(branch), "z9hG4bK%u-%u", first, second);
+  a.branch.assign(branch);
+  ++a.cseq;
+  // Retain this existing transaction buffer between healthy keepalives,
+  // including PSRAM builds. No additional packet store or task is created.
+  a.request.erase(0, a.request.size());
+  auto append = [&a](std::string_view value) { a.request.append(value.data(), value.size()); };
+  char number[11];
+  append("OPTIONS sip:"); append(c.registrar); append(":");
+  std::snprintf(number, sizeof(number), "%u", c.port); append(number);
+  append(" SIP/2.0\r\nVia: SIP/2.0/"); append(c.tcp ? "TCP" : "UDP"); append(" ");
+  append(std::string_view(a.contact).substr(at + 1, end == std::string::npos ? end : end - at - 1));
+  append(";branch="); append(a.branch); append(";rport\r\nMax-Forwards: 70\r\nFrom: <sip:");
+  append(c.username); append("@"); append(c.domain); append(">;tag="); append(a.tag);
+  append("\r\nTo: <sip:"); append(c.username); append("@"); append(c.domain);
+  append(">\r\nCall-ID: "); append(a.call_id); append("\r\nCSeq: ");
+  std::snprintf(number, sizeof(number), "%u", a.cseq); append(number);
+  append(" OPTIONS\r\n");
+  if (capabilities) append("Accept: application/sdp\r\n");
+  append("Content-Length: 0\r\n\r\n");
+  a.pending = true;
+  a.request_kind = capabilities ? RequestKind::CAPABILITIES : RequestKind::KEEPALIVE;
+  a.capabilities_due = false;
+  a.interval_ms = 500;
+  a.next_ms = now + 500;
+  a.deadline_ms = now + 32000;
+  if (this->hooks_.send(this->hooks_.context, i, std::string_view(a.request.data(), a.request.size()), a.target_ip, a.target_port, c.tcp)) return true;
+  a.pending = false;
+  a.request_kind = RequestKind::REGISTRATION;
+  a.request.clear();
+  if (capabilities) { a.next_ms = a.registration_next_ms; return false; }
+  return this->begin_(i, now);
+}
 void SipRegistration::tick(uint32_t now) {
   for (size_t i = 0; i < CAPACITY; ++i) {
     auto& a = this->accounts_[i];
     if (!a.occupied) continue;
     if (a.bound && reached(now, a.binding_expires_ms)) {
       a.bound = false;
+      a.peer_directional_audio_v1 = a.capabilities_due = false;
       if (a.desired && a.pending) this->state_(i, RegistrationState::REGISTERING, 0);
+    }
+    if (a.pending && a.request_kind != RequestKind::REGISTRATION &&
+        (!a.bound || !a.desired || reached(now, a.registration_next_ms))) {
+      a.pending = false;
+      a.request_kind = RequestKind::REGISTRATION;
+      a.request.clear();
+      a.next_ms = a.registration_next_ms;
     }
     if (a.pending) {
       if (reached(now, a.deadline_ms)) {
-        this->retry_(i, 408, now);
+        const auto kind = a.request_kind;
+        if (kind == RequestKind::REGISTRATION) this->retry_(i, 408, now);
+        else {
+          a.pending = false;
+          a.request_kind = RequestKind::REGISTRATION;
+          a.request.erase(0, a.request.size());
+          a.next_ms = a.registration_next_ms;
+          if (kind == RequestKind::KEEPALIVE) this->begin_(i, now);
+        }
         continue;
       }
       if (!a.config.tcp && reached(now, a.next_ms)) {
-        this->hooks_.send(this->hooks_.context, i, a.request, a.target_ip, a.target_port, false);
+        if (!this->hooks_.send(this->hooks_.context, i, std::string_view(a.request.data(), a.request.size()),
+                              a.target_ip, a.target_port, false)) {
+          const auto kind = a.request_kind;
+          if (kind == RequestKind::REGISTRATION) this->retry_(i, 503, now);
+          else {
+            a.pending = false;
+            a.request_kind = RequestKind::REGISTRATION;
+            a.request.erase(0, a.request.size());
+            a.next_ms = a.registration_next_ms;
+            if (kind == RequestKind::KEEPALIVE) this->begin_(i, now);
+          }
+          continue;
+        }
         a.interval_ms = std::min<uint32_t>(a.interval_ms * 2, 4000);
         a.next_ms = now + a.interval_ms;
       }
-    } else if (a.scheduled && reached(now, a.next_ms))
-      this->begin_(i, now);
+    } else if (a.scheduled && reached(now, a.next_ms)) this->begin_(i, now);
+    else if (a.bound && a.desired && a.state == RegistrationState::REGISTERED && a.capabilities_due)
+      this->begin_keepalive_(i, now, true);
+    else if (a.bound && a.desired && a.state == RegistrationState::REGISTERED && this->keepalive_interval_ms_ &&
+             reached(now, a.keepalive_next_ms)) this->begin_keepalive_(i, now);
   }
 }
 bool SipRegistration::next_deadline(uint32_t now, uint32_t* remaining) const {
@@ -512,11 +611,18 @@ bool SipRegistration::next_deadline(uint32_t now, uint32_t* remaining) const {
       const uint32_t expiry = reached(now, a.binding_expires_ms) ? 0 : a.binding_expires_ms - now;
       if (!found || expiry < best) best = expiry;
       found = true;
+      if (a.desired && !a.pending && a.state == RegistrationState::REGISTERED && a.capabilities_due) best = 0;
+      if (a.desired && !a.pending && a.state == RegistrationState::REGISTERED && this->keepalive_interval_ms_) {
+        const uint32_t keepalive = reached(now, a.keepalive_next_ms) ? 0 : a.keepalive_next_ms - now;
+        best = std::min(best, keepalive);
+      }
     }
     if (!a.pending && !a.scheduled) continue;
     const uint32_t deadline = a.pending && a.config.tcp ? a.deadline_ms : a.next_ms;
     uint32_t delta = reached(now, deadline) ? 0 : deadline - now;
     if (a.pending) delta = std::min(delta, reached(now, a.deadline_ms) ? 0U : a.deadline_ms - now);
+    if (a.request_kind != RequestKind::REGISTRATION)
+      delta = std::min(delta, reached(now, a.registration_next_ms) ? 0U : a.registration_next_ms - now);
     if (!found || delta < best) best = delta;
     found = true;
   }
@@ -525,17 +631,22 @@ bool SipRegistration::next_deadline(uint32_t now, uint32_t* remaining) const {
 }
 bool SipRegistration::handle_response(const std::string& message, uint32_t ip, uint16_t port, bool tcp,
                                       int flow_index, uint32_t now) {
-  if (message.rfind("SIP/2.0 ", 0) != 0 || header(message, "CSeq").find(" REGISTER") == std::string::npos)
-    return false;
-  const std::string id = header(message, "Call-ID");
+  if (message.rfind("SIP/2.0 ", 0) != 0) return false;
+  const auto sequence = header_view(message, "CSeq");
+  const auto separator = sequence.find(' ');
+  if (separator == std::string_view::npos) return false;
+  const auto method = sequence.substr(separator + 1);
+  if (method != "REGISTER" && method != "OPTIONS") return false;
+  const auto id = header_view(message, "Call-ID");
   for (size_t i = 0; i < CAPACITY; ++i) {
     auto& a = this->accounts_[i];
-    if (!a.occupied || id != a.call_id) continue;
+    if (!a.occupied || id != std::string_view(a.call_id)) continue;
+    uint32_t cseq = 0;
     if (!a.pending || a.target_ip != ip || a.target_port != port || a.config.tcp != tcp ||
         (tcp && flow_index != static_cast<int>(i)) ||
-        header(message, "CSeq") != std::to_string(a.cseq) + " REGISTER" ||
-        parameter(header(message, "Via").substr(header(message, "Via").find(';') + 1), "branch") != a.branch)
-      return true;
+        !decimal(sequence.substr(0, separator), &cseq) || cseq != a.cseq ||
+        method != (a.request_kind == RequestKind::REGISTRATION ? "REGISTER" : "OPTIONS") ||
+        via_parameter(header_view(message, "Via"), "branch") != std::string_view(a.branch)) return true;
     uint32_t status = 0;
     if (message.size() < 12 || !decimal(message.substr(8, 3), &status) || status < 100 || status > 699)
       return true;
@@ -544,7 +655,31 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
       a.interval_ms = 4000;
       return true;
     }
+    const auto completed_kind = a.request_kind;
     a.pending = false;
+    a.request_kind = RequestKind::REGISTRATION;
+    if (completed_kind != RequestKind::REGISTRATION) {
+      a.request.erase(0, a.request.size());
+      a.next_ms = a.registration_next_ms;
+      if (completed_kind == RequestKind::CAPABILITIES) {
+        const auto split = message.find("\r\n\r\n");
+        auto type = header_view(message, "Content-Type");
+        type = type.substr(0, type.find(';'));
+        uint32_t length = 0;
+        a.peer_directional_audio_v1 = status < 300 && split != std::string::npos &&
+            decimal(header_view(message, "Content-Length"), &length) && length == message.size() - split - 4 &&
+            lower(trim(std::string(type))) == "application/sdp" && this->hooks_.directional_audio_supported != nullptr &&
+            this->hooks_.directional_audio_supported(std::string_view(message).substr(split + 4));
+      } else a.keepalive_next_ms = now + this->keepalive_interval_ms_;
+      // A final keepalive response proves reachability, not capabilities or
+      // REGISTER renewal. Only a correlated observed mapping can require rebind.
+      if (observe_mapping(a, message)) {
+        a.peer_directional_audio_v1 = false;
+        a.capabilities_due = this->hooks_.directional_audio_supported != nullptr;
+        this->begin_(i, now);
+      }
+      return true;
+    }
     a.request.clear();
     if (status == 401 || status == 407) {
       SipDigest challenge;
@@ -597,7 +732,13 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
       a.failures = 0;
       a.auth_attempts = 0;
       a.proxy_auth_attempts = 0;
+      const bool mapping_changed = observe_mapping(a, message);
+      const bool changed_binding = !a.bound || a.binding_ip != a.target_ip || mapping_changed;
       a.bound = expires > 0;
+      if (!a.bound || !a.desired || changed_binding) a.peer_directional_audio_v1 = false;
+      if (!a.bound || !a.desired) a.capabilities_due = false;
+      else if (changed_binding && this->hooks_.directional_audio_supported != nullptr) a.capabilities_due = true;
+      a.keepalive_next_ms = now + this->keepalive_interval_ms_;
       a.binding_expires_ms = now + expires * 1000;
       a.binding_ip = a.target_ip;
       if (a.desired != (a.requested_expires > 0)) {
@@ -626,12 +767,16 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
       this->retry_(i, status, now, std::min<uint32_t>(retry, 86400) * 1000);
     return true;
   }
-  return true;
+  return method != "OPTIONS";
 }
 void SipRegistration::connection_lost(size_t i, uint32_t now) {
   if (i >= CAPACITY || !this->accounts_[i].occupied) return;
+  const bool healthy = this->accounts_[i].state == RegistrationState::REGISTERED;
+  this->accounts_[i].peer_directional_audio_v1 = false;
+  this->accounts_[i].capabilities_due = this->hooks_.directional_audio_supported != nullptr;
   this->accounts_[i].target_ip = 0;
   this->retry_(i, 503, now);
+  if (healthy && this->accounts_[i].desired) this->accounts_[i].next_ms = now;
 }
 void SipRegistration::resolution_complete(size_t i, uint32_t ip, uint32_t now, bool obsolete) {
   if (i >= CAPACITY || !this->accounts_[i].occupied || !this->accounts_[i].resolving) return;
