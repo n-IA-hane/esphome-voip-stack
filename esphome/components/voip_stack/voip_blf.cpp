@@ -85,10 +85,6 @@ void VoipStack::sync_blf_contacts_() {
   this->set_blf_watches(watches);
 }
 
-std::string VoipStack::get_contact_account(std::string_view id) const {
-  const auto *entry = this->phonebook_.find_id(id);
-  return entry != nullptr && !entry->account_id.empty() ? entry->account_id : this->blf_account_id_;
-}
 
 bool VoipStack::pickup_contact(const std::string &id) {
   if (!this->can_start_call_() || this->blf_pickup_prefix_.empty()) return false;

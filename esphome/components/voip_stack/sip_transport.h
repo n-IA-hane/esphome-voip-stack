@@ -15,6 +15,9 @@
 #include "sip_signaling_string.h"
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
 #include "sip_registration.h"
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+#include "sip_account_view.h"
+#endif
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
 #include "sip_mwi.h"
 #endif
@@ -97,6 +100,9 @@ class SipTransport : public SipPhoneTransport {
                       bool allow_missing = false);
   bool register_account(const std::string &id, bool enabled);
   bool is_registered(const std::string &id);
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  bool get_account_snapshot(const std::string &id, SipAccountSnapshot *out);
+#endif
   bool prepare_account_line(const std::string &id, std::string *host, uint16_t *port, bool *tcp, bool *directional_audio_v1 = nullptr);
   std::string registration_account_domain(const std::string &id) {
     LockGuard lock(this->dialog_mutex_);

@@ -62,11 +62,12 @@ bool cJSON_IsBool(const cJSON*p){return p&&(p->type==1||p->type==2);}bool cJSON_
     code += r'''
 struct SipTransport{std::vector<BlfWatchConfig>desired;bool set_blf_watches(const std::vector<BlfWatchConfig>&v){desired=v;return true;}};
 struct VoipStack{Phonebook phonebook_;bool blf_ready_=true,blf_watch_contacts_=true;uint8_t blf_capacity_=16;
- std::string blf_account_id_="ha";std::unique_ptr<SipTransport>transport_=std::make_unique<SipTransport>();
+ std::string blf_account_id_="ha",default_line_="qa";std::unique_ptr<SipTransport>transport_=std::make_unique<SipTransport>();
  std::string get_contact_account(std::string_view)const;bool set_blf_watches(const std::vector<BlfWatchConfig>&);void sync_blf_contacts_();};
 '''
     facade = (SOURCE / "voip_blf.cpp").read_text()
-    for marker in ["std::string VoipStack::get_contact_account(", "bool VoipStack::set_blf_watches(", "void VoipStack::sync_blf_contacts_("]:
+    code += block(settings, "std::string VoipStack::get_contact_account(") + "\n"
+    for marker in ["bool VoipStack::set_blf_watches(", "void VoipStack::sync_blf_contacts_("]:
         code += block(facade, marker) + "\n"
     code += "int main(){\n" + "\n".join(lines) + f"\nconst auto*contacts=cJSON_GetObjectItemCaseSensitive({root}.get(),\"contacts\");\n"
     code += r'''
@@ -87,7 +88,7 @@ struct VoipStack{Phonebook phonebook_;bool blf_ready_=true,blf_watch_contacts_=t
     cpp.write_text(code)
     binary = tmp_path / "policy"
     result = subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-Wno-misleading-indentation", "-g",
-        "-fsanitize=address,undefined", "-fno-pie", "-no-pie", "-DUSE_ESP32", "-DUSE_ESPHOME_VOIP_BLF", "-DUSE_ESPHOME_VOIP_CONTACT_METADATA",
+        "-fsanitize=address,undefined", "-fno-pie", "-no-pie", "-DUSE_ESP32", "-DUSE_ESPHOME_VOIP_BLF", "-DUSE_ESPHOME_VOIP_REGISTRATION", "-DUSE_ESPHOME_VOIP_CONTACT_METADATA",
         "-I", str(tmp_path), "-I", str(SOURCE), str(cpp), "-o", str(binary)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     result = subprocess.run([binary], capture_output=True, text=True, timeout=5)

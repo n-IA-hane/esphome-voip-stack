@@ -55,6 +55,9 @@
 #include "voip_fsm.h"
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
 #include "sip_registration.h"
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+#include "sip_account_view.h"
+#endif
 #ifdef USE_ESPHOME_VOIP_MWI
 #include "message_waiting.h"
 #endif
@@ -143,6 +146,12 @@ class VoipStack : public Component {
   bool register_account(const std::string &id);
   bool unregister_account(const std::string &id);
   bool is_registered(const std::string &id);
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  bool get_account_snapshot(const std::string &id, SipAccountSnapshot *out);
+  template<typename F> void add_on_account_changed_callback(F &&callback) {
+    this->account_changed_callbacks_.add(std::forward<F>(callback));
+  }
+#endif
 #ifdef USE_ESPHOME_VOIP_MWI
   MessageWaitingState get_message_waiting(const std::string &id = "");
   bool has_waiting_messages(const std::string &id = "");
@@ -416,7 +425,6 @@ class VoipStack : public Component {
   BlfStatus get_contact_blf(std::string_view id);
   bool set_blf_watches(const std::vector<BlfWatchConfig> &watches);
   bool pickup_contact(const std::string &id);
-  std::string get_contact_account(std::string_view id) const;
   template<typename F> void add_on_blf_state_callback(F &&callback) {
     this->blf_callbacks_.add(std::forward<F>(callback)); this->blf_notifications_requested_.store(true, std::memory_order_release);
   }
@@ -440,17 +448,37 @@ class VoipStack : public Component {
   void hangup_call_if_id(const std::string &call_id);
   void next_contact();
   void prev_contact();
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  std::string get_current_destination() const;
+#else
   const std::string &get_current_destination() const;
+#endif
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  std::string get_current_destination_route() const;
+#else
   const std::string &get_current_destination_route() const;
+#endif
   // Endpoint of the selected SIP contact. Empty/zero makes start() fail with
   // transport_unreachable; there is no implicit default peer.
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  std::string get_current_contact_ip() const;
+#else
   const std::string &get_current_contact_ip() const;
+#endif
   uint16_t get_current_contact_port() const;
   uint16_t get_current_contact_rtp_port() const;
   bool get_current_contact_sip_transport_tcp() const;
   bool get_current_contact_directional_audio_v1() const;
   std::string get_caller() const { return this->current_caller_name_; }
   size_t get_contact_count() const { return this->phonebook_.size(); }
+  const ContactEntry *get_contact(size_t index) const { return this->phonebook_.at(index); }
+  std::string get_contact_account(std::string_view id) const;
+  bool call_contact(const std::string &id);
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  void set_ha_roster_enabled(bool enabled);
+  DirectoryCommitResult commit_contact_directory(const void *provider, std::vector<ContactEntry> entries, const std::string &account_id = {});
+  DirectoryCommitResult commit_contact_directory(const void *provider, ContactEntry *entries, size_t count, const std::string &account_id = {});
+#endif
   std::string get_contacts_csv() const;
 
   // Call state triggers (exposed to YAML)
@@ -753,6 +781,15 @@ class VoipStack : public Component {
   // in commit_cycle() and prunes once
   // delete_contact_missing_from.updates_number is hit.
   Phonebook phonebook_;
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  struct DirectoryProvider { const void *owner{nullptr}; std::string account_id; };
+  std::array<DirectoryProvider, 4> directory_providers_{};
+  bool ha_roster_enabled_{true};
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  LazyCallbackManager<void(const std::string &)> account_changed_callbacks_{};
+  void publish_account_changed_(const std::string &id);
+#endif
+#endif
   // Phonebook update cycle state. update_contacts() opens a cycle,
   // set_contacts() calls within the open cycle add their CSV names to
   // seen_in_cycle_, and the next update_contacts() (or the loop() timeout

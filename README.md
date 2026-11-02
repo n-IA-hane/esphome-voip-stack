@@ -284,6 +284,10 @@ See the [entity and migration guide](https://github.com/n-IA-hane/esphome-interc
 for the retired packages and entity customization. Old package/action
 declarations are rejected rather than silently creating duplicate controls.
 
+The standard [LDAP directory](docs/LDAP_DIRECTORY.md) refreshes the existing
+phonebook atomically, preserves manual contacts and shares contact metadata with
+BLF. It is optional for static or legacy roster installations.
+
 ## Audio wiring
 
 ### Standalone native ESPHome audio

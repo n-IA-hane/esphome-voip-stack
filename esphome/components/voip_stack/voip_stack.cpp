@@ -450,6 +450,13 @@ void VoipStack::fail_setup_() {
 
 void VoipStack::setup() {
   ESP_LOGI(TAG, "Setting up VoIP Stack...");
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  if (!this->phonebook_.prepare_directory_storage()) {
+    ESP_LOGE(TAG, "Could not reserve the directory phonebook storage");
+    this->fail_setup_();
+    return;
+  }
+#endif
 
 #if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
     defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
