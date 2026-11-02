@@ -37,10 +37,10 @@ void VoipStack::set_call_identity_(const std::string &call_id,
                                       const std::string &caller_route,
                                       const std::string &caller_name,
                                       const std::string &dest_route,
-                                      const std::string &dest_name) {
+                                      const std::string &dest_name, bool originated) {
   LockGuard l(this->call_state_mutex_);
   if (this->current_call_id_.empty() || this->current_call_id_ != call_id) {
-    if (caller_name == this->device_name_) {
+    if (originated) {
       this->current_dialed_dest_name_ = dest_name;
     } else {
       this->current_dialed_dest_name_.clear();
@@ -72,6 +72,12 @@ VoipStack::CallSnapshot VoipStack::snapshot_call_identity_() const {
                       this->current_caller_route_id_, this->current_caller_name_,
                       this->current_dest_route_id_, this->current_dest_name_,
                       this->current_dialed_dest_name_};
+}
+
+std::string VoipStack::get_active_peer_name() const {
+  LockGuard l(this->call_state_mutex_);
+  if (this->current_call_id_.empty()) return {};
+  return this->current_dialed_dest_name_.empty() ? this->current_caller_name_ : this->current_dest_name_;
 }
 
 std::string VoipStack::get_current_call_id_() const {
@@ -269,7 +275,7 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
     // attempt with identity so invalid dial-plan routes still produce a
     // terminal reason and on_call_failed event instead of failing silently.
     this->clear_terminal_call_snapshot_();
-    this->set_call_identity_(call_id, caller_route, caller_name, dest_route, dest_name);
+    this->set_call_identity_(call_id, caller_route, caller_name, dest_route, dest_name, true);
     this->clear_terminal_response_();
     this->set_current_media_formats_(this->tx_audio_format_, this->rx_audio_format_, this->tx_audio_format_,
                                      this->rx_audio_format_);
@@ -286,7 +292,7 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
     this->transport_->set_peer_directional_audio_v1(dial_directional_audio_v1);
   this->set_remote_endpoint(dial_ip, dial_port, dial_rtp_port);
   this->set_call_identity_(call_id, caller_route, caller_name,
-                            dest_route, dest_name);
+                            dest_route, dest_name, true);
   this->clear_terminal_response_();
 
   const std::string remote_uri =
@@ -677,7 +683,7 @@ void VoipStack::set_call_state_(CallState new_state) {
   }
 
   const CallSnapshot trigger_call = this->snapshot_call_identity_();
-  std::string trigger_peer = trigger_call.caller_name == this->device_name_
+  std::string trigger_peer = !trigger_call.dialed_dest_name.empty()
                                  ? trigger_call.dest_name
                                  : trigger_call.caller_name;
   if (trigger_peer.empty()) trigger_peer = this->get_current_destination();
@@ -817,7 +823,7 @@ void VoipStack::end_call_(CallEndReason reason, const std::string &detail) {
 
   std::string reason_str = detail.empty() ? call_end_reason_to_str(reason) : detail;
   const CallSnapshot call = this->snapshot_call_identity_();
-  std::string peer = call.caller_name == this->device_name_ ? call.dest_name : call.caller_name;
+  std::string peer = !call.dialed_dest_name.empty() ? call.dest_name : call.caller_name;
   if (peer.empty()) peer = this->get_current_destination();
   const std::string call_id = call.call_id;
   this->last_terminal_call_id_ = call.call_id;
@@ -1121,7 +1127,7 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
                                              ? msg.connected_route
                                              : msg.connected_name;
       if (connected_name.empty()) break;
-      if (call.caller_name == this->device_name_) {
+      if (!call.dialed_dest_name.empty()) {
         this->set_call_identity_(
             call.call_id,
             call.caller_route,
@@ -1140,6 +1146,9 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
             call.dest_name);
         this->publish_caller_(connected_name);
       }
+#ifdef USE_ESPHOME_VOIP_PEER_EVENTS
+      this->peer_changed_trigger_.trigger(this->get_active_peer_name());
+#endif
       ESP_LOGI(TAG, "%s: connected identity is %s",
                this->device_name_.c_str(), connected_name.c_str());
       break;

@@ -375,3 +375,21 @@ initiator dialogs, missing direction and stale state do not allow pickup.
 The prefix is applied to the contact's validated dial target on that account.
 There is no universal pickup code and no implicit Replaces implementation.
 Omitting BLF compiles out its subscription rows, cache, callbacks and actions.
+
+Connected peer and presentation
+-------------------------------
+
+``get_active_peer_name()`` returns the remote party of the owned call identity,
+including calling and ringing, independently of the selected Phonebook contact.
+It returns an empty string after that identity is cleared. An accepted connected
+identity update changes this value without starting a new call transition.
+
+Optional ``on_peer_changed`` receives ``peer`` on the main loop after the owned
+dialog's connected identity changes. Use it to refresh labels. ``on_in_call``
+remains the connected transition and can start the call duration timer once;
+``on_idle`` remains the lifecycle reset. Changing a contact selection does not
+change the current peer. Omitting the automation removes its trigger storage.
+
+With the switch component enabled, ``get_conference_ring_switch() const``
+returns the optional registered conference setting as a borrowed pointer. Check
+for ``nullptr`` when no switch entity was configured; the getter creates none.

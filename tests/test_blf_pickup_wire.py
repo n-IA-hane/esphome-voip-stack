@@ -6,12 +6,7 @@ from test_refer_dialog_runtime import ROOT, SOURCE, block
 from test_mwi_transport_runtime import mwi_transport_source
 
 
-@pytest.fixture(scope="module")
-def pickup_wire_binary(tmp_path_factory):
-    folder = tmp_path_factory.mktemp("blf-pickup")
-    core = folder / "esphome/core"
-    core.mkdir(parents=True)
-    (core / "defines.h").write_text("")
+def blf_pickup_source():
     code = mwi_transport_source().split("int main(int argc,char**argv)")[0]
     code = '#define USE_ESP32\n#include "phonebook.h"\n#undef USE_ESP32\n' + code
     code = code.replace("uint32_t esp_random(){return 42;}", "uint32_t esp_random(){static uint32_t value=42;return ++value;}")
@@ -116,6 +111,16 @@ int main(int argc,char**argv){
  for(auto&flow:phone.registration_flows_)phone.close_tcp_flow_(flow);close(phone.sip_socket_);
 }
 '''
+    return code
+
+
+@pytest.fixture(scope="module")
+def pickup_wire_binary(tmp_path_factory):
+    folder = tmp_path_factory.mktemp("blf-pickup")
+    core = folder / "esphome/core"
+    core.mkdir(parents=True)
+    (core / "defines.h").write_text("")
+    code = blf_pickup_source()
     cpp = folder / "pickup.cpp"
     cpp.write_text(code)
     binary = folder / "pickup"

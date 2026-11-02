@@ -3466,7 +3466,7 @@ def test_call_action_is_universal_local_or_ha_dialplan() -> None:
     ]
     assert "this->pending_dialplan_target_" in destination_body
     assert "call.dest_name" in destination_body
-    assert "call.caller_name == this->device_name_" in destination_body
+    assert "!call.dialed_dest_name.empty()" in destination_body
     assert "this->last_terminal_direction_ == \"outgoing\"" in destination_body
     assert "this->last_terminal_dest_name_" in destination_body
 
@@ -3492,7 +3492,8 @@ def test_terminal_destination_preserves_the_original_dialed_target() -> None:
     identity = cpp_method(fsm, r"VoipStack::set_call_identity_")
     assert "this->current_call_id_.empty()" in identity
     assert "this->current_call_id_ != call_id" in identity
-    assert "caller_name == this->device_name_" in identity
+    assert "if (originated)" in identity
+    assert "caller_name == this->device_name_" not in identity
     assert "this->current_dialed_dest_name_ = dest_name;" in identity
     assert "this->current_dialed_dest_name_.clear();" in identity
     end_call = cpp_method(fsm, r"VoipStack::end_call_")
