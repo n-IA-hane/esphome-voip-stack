@@ -326,6 +326,40 @@ int main(int argc, char** argv) {
                              "Contact: <sip:another@127.0.0.1:9999>;expires=300\r\nContact: " + own +
                                  ";expires=60\r\n"));
     assert(h.manager.is_registered("office") && h.manager.account(0).negotiated_expires == 60);
+  } else if (scenario == "mapped-contact") {
+    assert(argc == 4);
+    const std::string mode = argv[3];
+    h.feed(h.first, response(initial, 401,
+        "WWW-Authenticate: Digest realm=\"registrar\",nonce=\"mapped\",algorithm=MD5,qop=\"auth\"\r\n"));
+    const auto authenticated = h.first.receive();
+    assert(!field(authenticated, "Authorization").empty());
+    const std::string host = mode == "asterisk" ? "127.0.0.1" : "198.51.100.44";
+    const unsigned port = mode == "asterisk" && !tcp ? 5060 : 62000;
+    std::string contact = "sip:esphome-office@" + host + ":" + std::to_string(port);
+    if (tcp) contact += ";transport=TCP";
+    if (mode == "preserve-udp" && !tcp) contact += ";transport=udp";
+    if (mode == "wrong-host") contact.replace(contact.find(host), host.size(), "198.51.100.45");
+    if (mode == "wrong-port") contact.replace(contact.find(":62000"), 6, ":62001");
+    if (mode == "wrong-user") contact.replace(contact.find("esphome-office"), 14, "another-phone");
+    if (mode == "wrong-transport") {
+      if (tcp) contact.replace(contact.find(";transport=TCP"), 14, ";transport=udp");
+      else contact += ";transport=tcp";
+    }
+    const bool expected = mode == "asterisk" || mode == "nat" || mode == "preserve-udp" || mode == "multiple";
+    std::string headers;
+    if (mode == "multiple") headers += "Contact: <sip:another@198.51.100.44:62000>;expires=900\r\n";
+    if (mode != "missing-contact") headers += "Contact: <" + contact + ">;expires=60\r\n";
+    headers += "Expires: 120\r\n";
+    auto accepted = response(authenticated, 200, headers);
+    if (mode != "no-flow") {
+      const auto marker = accepted.find(";rport");
+      assert(marker != std::string::npos);
+      accepted.replace(marker, 6, ";received=" + host + ";rport=" + std::to_string(port));
+    }
+    h.feed(h.first, accepted, 3);
+    assert(h.manager.is_registered("office") == expected);
+    if (expected) assert(h.manager.account(0).negotiated_expires == 60);
+    else assert(h.manager.account(0).state == RegistrationState::RETRY);
   } else if (scenario == "retry") {
     h.feed(h.first, response(initial, 503, "Retry-After: 120\r\n"));
     assert(h.manager.account(0).state == RegistrationState::RETRY);

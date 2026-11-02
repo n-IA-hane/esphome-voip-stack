@@ -78,6 +78,15 @@ Each account advertises its own local Contact token, such as
 Digest identity remain the configured values. The Contact token keeps incoming
 calls unambiguous even when different accounts use the same PBX username.
 
+Registrars can return a rewritten Contact when their NAT policy uses the
+received signaling flow, such as Asterisk's `rewrite_contact` option. After
+matching the REGISTER transaction and peer, the client also recognizes its
+Contact user at the exact IPv4 address and port reported by Via `received` and
+`rport`, with the account's transport. UDP may omit its default transport
+parameter. Other users, addresses, ports and transports remain rejected, and
+the matching Contact supplies the accepted expiration. This association keeps
+the general SIP URI comparison rules unchanged.
+
 The default line remains `direct`. A specific PBX account can be selected in
 YAML without changing the phonebook:
 

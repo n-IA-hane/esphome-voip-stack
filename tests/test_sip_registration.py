@@ -35,6 +35,20 @@ def test_registration_wire_lifecycle(registration_binary, tcp, scenario):
 
 
 @pytest.mark.parametrize("tcp", ["udp", "tcp"])
+@pytest.mark.parametrize("mode", [
+    "asterisk", "nat", "preserve-udp", "multiple", "wrong-host", "wrong-port",
+    "wrong-user", "wrong-transport", "no-flow", "missing-contact",
+])
+def test_registration_associates_only_its_observed_flow_binding(registration_binary, tcp, mode):
+    result = subprocess.run(
+        [registration_binary, "mapped-contact", tcp, mode],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"PASS mapped-contact {tcp}\n"
+
+
+@pytest.mark.parametrize("tcp", ["udp", "tcp"])
 @pytest.mark.parametrize("style", ["v", "V", "i", "I", "m", "M", "mixed", "mixed-long"])
 @pytest.mark.parametrize("authentication", ["direct", "auth"])
 def test_registration_accepts_compact_response_headers(registration_binary, tcp, style, authentication):

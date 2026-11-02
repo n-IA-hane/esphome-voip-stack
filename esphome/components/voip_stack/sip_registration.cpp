@@ -208,6 +208,32 @@ bool find_registered_contact(const std::string& message, const std::string& expe
   }
   return false;
 }
+
+bool find_registered_binding(const std::string &message, const SipRegistration::Account &account,
+                             std::string *expires) {
+  if (find_registered_contact(message, account.contact, expires)) return true;
+  // Some registrars rewrite Contact to the received flow. This is binding
+  // association, not URI equality: retain the strict RFC3261 comparator and
+  // accept only our user/transport at the tuple reported by this transaction.
+  const auto via = header_view(message, "Via");
+  const auto address = via_parameter(via, "received");
+  uint32_t port = 0;
+  if (!ipv4(address) || !decimal(via_parameter(via, "rport"), &port) || port == 0 || port > 65535) return false;
+  const auto at = account.contact.find('@');
+  if (at == std::string::npos) return false;
+  std::string mapped;
+  mapped.reserve(at + address.size() + 22);
+  mapped.append(account.contact.data(), at + 1);
+  mapped.append(address.data(), address.size());
+  mapped += ":" + std::to_string(port);
+  const auto authority_end = mapped.size();
+  mapped += account.config.tcp ? ";transport=tcp" : ";transport=udp";
+  if (find_registered_contact(message, mapped, expires)) return true;
+  if (account.config.tcp) return false;
+  // A rewritten UDP binding may omit its default transport parameter.
+  mapped.resize(authority_end);
+  return find_registered_contact(message, mapped, expires);
+}
 }  // namespace
 
 bool SipAccountConfig::valid() const {
@@ -690,7 +716,7 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
       // Require our Contact in a successful registration response. A generic
       // Expires header must not accidentally acknowledge another binding.
       std::string contact_expires;
-      const bool own_contact = find_registered_contact(message, a.contact, &contact_expires);
+      const bool own_contact = find_registered_binding(message, a, &contact_expires);
       if (a.requested_expires > 0 && !own_contact) {
         this->retry_(i, 502, now);
         return true;
