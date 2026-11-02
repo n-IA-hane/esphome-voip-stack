@@ -8,6 +8,22 @@ from test_refer_wire_runtime import wire_source
 from test_refer_dialog_runtime import SOURCE, block
 
 
+def conditional_body(header, begin):
+    """Extract an outer feature body while preserving nested feature gates."""
+    depth = 0
+    position = begin
+    for line in header[begin:].splitlines(keepends=True):
+        directive = line.strip()
+        if directive.startswith(("#if ", "#ifdef ", "#ifndef ")):
+            depth += 1
+        elif directive == "#endif":
+            if depth == 0:
+                return header[begin:position]
+            depth -= 1
+        position += len(line)
+    raise AssertionError("unterminated outer feature body")
+
+
 def registration_transport_source(*, full_invite=False):
     source = (SOURCE / "sip_transport.cpp").read_text()
     header = (SOURCE / "sip_transport.h").read_text()
@@ -15,9 +31,9 @@ def registration_transport_source(*, full_invite=False):
     code = wire_source(full_invite=full_invite)
     # Enable the new code after standard fixture includes have been declared.
     begin = header.index("  static bool registration_directional_audio_supported_(")
-    members = header[begin:header.index("#endif", begin)]
+    members = conditional_body(header, begin)
     begin = header.index("  void initialize_registration();")
-    public = header[begin:header.index("#endif", begin)]
+    public = conditional_body(header, begin)
     public = public.replace("void initialize_registration();", "")
     extra = public + "\n" + members + "\n"
     extra += next(line.strip() for line in header.splitlines() if " signaling_flows_();" in line) + "\n"
@@ -49,6 +65,11 @@ def registration_transport_source(*, full_invite=False):
     code = code.replace("struct SipTransport: SipPhoneTransport {", "struct SipTransport: SipPhoneTransport {\n")
     prefix = '''#include "sip_registration.h"
 #include "sip_sdp_features.h"
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+#include "sip_mwi.h"
+using esphome::voip_stack::SipMwi;
+using esphome::voip_stack::MessageWaitingState;
+#endif
 #include <openssl/evp.h>
 using esphome::voip_stack::SipRegistration;
 using esphome::voip_stack::SipDigest;

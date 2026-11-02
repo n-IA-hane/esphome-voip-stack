@@ -284,3 +284,38 @@ entering its successor. They do not authenticate network packets: a very late
 RTP packet on an identically reused address/port/payload tuple has no SIP
 Call-ID with which to prove its original dialog. Firmware and interoperability
 qualification must keep that case separate from local queue cancellation.
+
+Message waiting and mailbox calls
+--------------------------------
+
+Optional ``registration.message_waiting: true`` enables RFC 3842
+``message-summary`` subscriptions for the configured registration pool. Each
+account retains its own availability, waiting flag, new/old and urgent counts,
+and ``Message-Account`` URI. ``has_waiting_messages(account_id)`` queries one
+account; an empty ID queries whether any account has waiting messages.
+
+``on_message_waiting`` runs on the main loop with ``account_id``, ``available``,
+``waiting``, ``new_messages``, ``old_messages``, ``urgent_new`` and ``urgent_old``.
+Rapid changes are coalesced per account into the latest state. C++ observers
+can use ``add_on_message_waiting_callback`` and query that state on the loop.
+The feature adds no SIP task or socket. Its bounded pool follows the signaling
+memory policy; requested PSRAM allocation never falls back to internal RAM.
+
+``voip_stack.call_mailbox`` accepts optional ``account_id`` and ``target``.
+Without a target it uses that account's current ``Message-Account``. An empty
+account ID prefers the selected waiting account, then another waiting account,
+then the selected available account. The native API action is
+``call_mailbox(account_id, target)``. Both use the ordinary account call path,
+including its audio direction and negotiated DTMF. No IMAP client or separate
+mailbox player runs on the ESP.
+
+Mailbox targets are validated SIP destinations. For example, a PBX can publish
+``sip:*97@pbx.example``; a logical mailbox user containing a colon must encode it
+as ``%3A``. Unsupported URI schemes reject the call without changing counts.
+Mailbox state and its service URI remain separate from the telephone's identity.
+
+Unregistering retires the event subscription with ``Expires: 0``. The account's
+credentials and signaling flow remain owned until the final NOTIFY or bounded
+timeout. Removing or replacing that account may return false during retirement;
+retry after it completes. Omitting the MWI option compiles out its pool, state,
+callbacks and mailbox actions.

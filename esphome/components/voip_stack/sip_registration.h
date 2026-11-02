@@ -73,12 +73,16 @@ class SipRegistration {
     void (*notify)(void*, const std::string&, RegistrationState, uint16_t){nullptr};
     uint32_t (*random)(){nullptr};
     SipDigest::Hash hash{nullptr};
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+    void (*binding_accepted)(void *, size_t, uint32_t){nullptr};
+#endif
     // Advisory discovery is scoped to this account binding, never a call gate.
     bool (*directional_audio_supported)(std::string_view){nullptr};
     uint16_t local_port{5060};
   };
   struct Account {
     SipAccountConfig config;
+    uint32_t config_revision{0};
     RegistrationState state{RegistrationState::DISABLED};
     SipDigest digest, proxy_digest;
     std::string call_id, tag, branch, contact;
@@ -116,6 +120,7 @@ class SipRegistration {
  protected:
   std::array<Account, CAPACITY> accounts_{};
   Hooks hooks_{};
+  uint32_t next_config_revision_{0};
   uint32_t keepalive_interval_ms_{15000};
   bool begin_(size_t index, uint32_t now);
   bool begin_keepalive_(size_t index, uint32_t now, bool capabilities = false);

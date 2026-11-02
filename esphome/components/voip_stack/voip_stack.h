@@ -52,6 +52,9 @@
 #include "voip_fsm.h"
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
 #include "sip_registration.h"
+#ifdef USE_ESPHOME_VOIP_MWI
+#include "message_waiting.h"
+#endif
 #include <nvs.h>
 #endif
 
@@ -137,6 +140,14 @@ class VoipStack : public Component {
   bool register_account(const std::string &id);
   bool unregister_account(const std::string &id);
   bool is_registered(const std::string &id);
+#ifdef USE_ESPHOME_VOIP_MWI
+  MessageWaitingState get_message_waiting(const std::string &id = "");
+  bool has_waiting_messages(const std::string &id = "");
+  bool can_call_mailbox(const std::string &account_id = "", const std::string &target = "");
+  bool call_mailbox(const std::string &account_id = "", const std::string &target = "");
+  Trigger<std::string, bool, bool, uint32_t, uint32_t, uint32_t, uint32_t> *get_message_waiting_trigger() { return &this->message_waiting_trigger_; }
+  template<typename F> void add_on_message_waiting_callback(F &&callback) { this->message_waiting_callbacks_.add(std::forward<F>(callback)); }
+#endif
   bool select_line(const std::string &id);
   void start_call_on_line(const std::string &target, const std::string &line);
   Trigger<std::string, std::string, int> *get_registration_state_trigger() { return &this->registration_state_trigger_; }
@@ -1054,6 +1065,16 @@ class VoipStack : public Component {
   bool load_registration_saved_();
   bool write_registration_saved_(const SavedRegistration &next);
   void pump_registration_wake_();
+#ifdef USE_ESPHOME_VOIP_MWI
+  static void message_waiting_callback_(void *, SipTransport *, size_t);
+  void pump_message_waiting_();
+  void publish_message_waiting_(const MessageWaitingState &);
+  bool mailbox_target_(const std::string &, const std::string &, std::string *, std::string *);
+  std::atomic<SipTransport *> message_waiting_owner_{nullptr};
+  std::atomic<uint32_t> message_waiting_pending_{0};
+  Trigger<std::string, bool, bool, uint32_t, uint32_t, uint32_t, uint32_t> message_waiting_trigger_;
+  LazyCallbackManager<void()> message_waiting_callbacks_;
+#endif
   bool save_registration_override_(const std::string &id, const SipAccountConfig *config, bool removed);
   static void registration_state_callback_(void *, const std::string &, RegistrationState, uint16_t);
   static void registration_dns_ready_callback_(void *, SipTransport *);

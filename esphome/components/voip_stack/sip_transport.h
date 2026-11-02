@@ -15,6 +15,9 @@
 #include "sip_signaling_string.h"
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
 #include "sip_registration.h"
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+#include "sip_mwi.h"
+#endif
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
 #include "opus_rtp_codec.h"
@@ -68,6 +71,13 @@ class SipTransport : public SipPhoneTransport {
   bool start() override;
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   void initialize_registration();
+#ifdef USE_ESPHOME_VOIP_MWI
+  using MessageWaitingCallback = void (*)(void *, SipTransport *, size_t);
+  void set_message_waiting_callback(MessageWaitingCallback callback) { this->message_waiting_callback_ = callback; }
+  bool get_message_waiting(const std::string &, MessageWaitingState *, const std::string &preferred = "");
+  bool has_waiting_messages(const std::string &id = "");
+  bool copy_message_waiting_slot(size_t index, MessageWaitingState *state);
+#endif
   void set_registration_keepalive_interval(uint32_t milliseconds) { this->registration_.set_keepalive_interval(milliseconds); }
   using AccountCommit = bool (*)(void *, const std::string &, const SipAccountConfig *);
   bool set_account(const SipAccountConfig &config, AccountCommit commit = nullptr, void *context = nullptr);
@@ -731,6 +741,23 @@ class SipTransport : public SipPhoneTransport {
   SipTcpFlow inbound_tcp_flow_;
   static bool registration_directional_audio_supported_(std::string_view body);
   SipRegistration registration_;
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+  SipMwi mwi_;
+  static void registration_binding_accepted_(void *, size_t, uint32_t);
+  void pump_registration_mwi_(uint32_t now);
+  static bool registration_mwi_reply_(void *, const std::string &, uint32_t, uint16_t, bool, int);
+#endif
+  bool registration_subscriptions_retired_(size_t index) const {
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+    return this->mwi_.account_retired(index);
+#else
+    (void) index; return true;
+#endif
+  }
+#ifdef USE_ESPHOME_VOIP_MWI
+  MessageWaitingCallback message_waiting_callback_{nullptr};
+  static void registration_mwi_notify_(void *, const MessageWaitingState &);
+#endif
   std::array<SipTcpFlow, SipRegistration::CAPACITY> registration_flows_{};
   int active_account_{-1}, next_account_{-1}, dispatch_socket_{-2};
   bool accept_direct_calls_{true};
