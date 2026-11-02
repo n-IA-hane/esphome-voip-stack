@@ -4650,6 +4650,9 @@ void SipTransport::sip_task_() {
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
       this->pump_registration_mwi_(millis());
 #endif
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+      this->notify_managed_account_main_loop_();
+#endif
     }
     for (auto &flow : this->registration_flows_) this->prepare_tcp_flow_(flow);
 #endif

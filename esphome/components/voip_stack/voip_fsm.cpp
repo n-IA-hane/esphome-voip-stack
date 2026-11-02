@@ -203,6 +203,11 @@ void VoipStack::start_with_id_(const std::string &call_id) {
 }
 
 void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_call_id) {
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  const std::string &caller_name = this->get_caller_display_name();
+#else
+  const std::string &caller_name = this->device_name_;
+#endif
   const CallSnapshot previous = this->snapshot_call_identity_();
   std::string dial_ip = this->get_current_contact_ip();
   uint16_t dial_port = this->get_current_contact_port();
@@ -264,7 +269,7 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
     // attempt with identity so invalid dial-plan routes still produce a
     // terminal reason and on_call_failed event instead of failing silently.
     this->clear_terminal_call_snapshot_();
-    this->set_call_identity_(call_id, caller_route, this->device_name_, dest_route, dest_name);
+    this->set_call_identity_(call_id, caller_route, caller_name, dest_route, dest_name);
     this->clear_terminal_response_();
     this->set_current_media_formats_(this->tx_audio_format_, this->rx_audio_format_, this->tx_audio_format_,
                                      this->rx_audio_format_);
@@ -280,7 +285,7 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
   if (this->transport_ != nullptr)
     this->transport_->set_peer_directional_audio_v1(dial_directional_audio_v1);
   this->set_remote_endpoint(dial_ip, dial_port, dial_rtp_port);
-  this->set_call_identity_(call_id, caller_route, this->device_name_,
+  this->set_call_identity_(call_id, caller_route, caller_name,
                             dest_route, dest_name);
   this->clear_terminal_response_();
 
@@ -291,7 +296,7 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
           :
 #endif
           "sip:" + dest_route + "@" + dial_ip + ":" + std::to_string(dial_port);
-  this->defer([this, call_id, caller = this->device_name_, dest_name, remote_uri, route_via_ha, via_ha]() {
+  this->defer([this, call_id, caller = caller_name, dest_name, remote_uri, route_via_ha, via_ha]() {
     if (!via_ha) this->outgoing_call_trigger_.trigger(call_id, caller, dest_name, remote_uri);
     if (route_via_ha) {
       this->bridge_request_trigger_.trigger(call_id, caller, dest_name, remote_uri);
@@ -317,7 +322,7 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
     return;
   }
 
-  if (!this->send_sip_invite_(call_id, caller_route, this->device_name_,
+  if (!this->send_sip_invite_(call_id, caller_route, caller_name,
                               dest_route, dest_name)) {
     ESP_LOGE(TAG, "SIP INVITE send failed");
     this->pending_dialplan_target_.clear();

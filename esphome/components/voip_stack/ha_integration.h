@@ -29,6 +29,9 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
     this->register_service(&VoipHAIntegration::remove_contact, "remove_contact", {"entry"});
     this->register_service(&VoipHAIntegration::flush_contacts, "flush_contacts");
     this->register_service(&VoipHAIntegration::update_contacts, "update_contacts");
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+    this->register_service(&VoipHAIntegration::set_ha_display_name, "set_ha_display_name", {"name"});
+#endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
     this->register_service(&VoipHAIntegration::set_account, "set_account",
         {"account_id", "registrar", "port", "domain", "username", "password", "auth_username", "proxy", "proxy_port", "transport", "expires", "persist"});
@@ -43,10 +46,16 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
     this->defer([this]() { this->parent_->publish_entity_states(); });
   }
   float get_setup_priority() const override { return setup_priority::AFTER_CONNECTION; }
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  void set_ha_display_name(std::string name) { this->parent_->set_ha_display_name(name); }
+#endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   void set_account(std::string id, std::string registrar, int32_t port, std::string domain, std::string username,
       std::string password, std::string auth_username, std::string proxy, int32_t proxy_port,
       std::string transport, int32_t expires, bool persist) {
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+    if (transport == "auto" && id == "ha") transport = this->parent_->configured_sip_transport_name();
+#endif
     if (port < 1 || port > 65535 || proxy_port < 1 || proxy_port > 65535 || expires < 30 || expires > 86400 ||
         (transport != "udp" && transport != "tcp")) return;
     SipAccountConfig c;

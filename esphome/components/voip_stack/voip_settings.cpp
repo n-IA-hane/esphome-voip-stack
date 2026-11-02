@@ -647,6 +647,16 @@ void VoipStack::flush_contacts() {
   ESP_LOGI(TAG, "Contacts flushed (empty list)");
 }
 
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+void VoipStack::set_ha_display_name(const std::string &name) {
+  const std::string cleaned = Phonebook::trim(name);
+  if (cleaned.empty() || cleaned.size() > Phonebook::MAX_NAME_BYTES) return;
+  for (const unsigned char ch : cleaned)
+    if (ch < 32 || ch == 127) return;
+  this->ha_display_name_ = cleaned;
+}
+#endif
+
 bool VoipStack::set_contact(const std::string &name) {
   if (this->phonebook_.empty()) {
     ESP_LOGW(TAG, "set_contact('%s') failed: contacts list is empty", name.c_str());
@@ -679,7 +689,9 @@ void VoipStack::call_via_ha(const std::string &value, const std::string &call_id
     if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
           (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' || ch == '@')) return;
   }
-#ifdef USE_ESPHOME_VOIP_REGISTRATION
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  this->start_call_on_line_(value, "ha", call_id);
+#elif defined(USE_ESPHOME_VOIP_REGISTRATION)
   this->start_call_on_line_(value, "direct", call_id);
 #else
   this->call_(value, call_id);

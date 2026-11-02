@@ -42,6 +42,10 @@
 #include <string>
 #include <vector>
 #include <utility>
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+#include <esp_heap_caps.h>
+#include <new>
+#endif
 
 namespace esphome {
 namespace voip_stack {
@@ -99,8 +103,14 @@ class SipTransport : public SipPhoneTransport {
     this->registration_callback_ = cb; this->registration_context_ = ctx; this->registration_wake_callback_ = wake;
   }
   void wake_registration_from_main_loop() {
-    if (this->running_.load(std::memory_order_acquire) && !this->transport_stopping_.load(std::memory_order_acquire))
-      this->wake_sip_task_();
+    if (!this->running_.load(std::memory_order_acquire) || this->transport_stopping_.load(std::memory_order_acquire)) return;
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+    {
+      LockGuard lock(this->dialog_mutex_);
+      this->pump_managed_account_(millis());
+    }
+#endif
+    this->wake_sip_task_();
   }
 #endif
   void stop() override;
@@ -757,6 +767,32 @@ class SipTransport : public SipPhoneTransport {
 #ifdef USE_ESPHOME_VOIP_MWI
   MessageWaitingCallback message_waiting_callback_{nullptr};
   static void registration_mwi_notify_(void *, const MessageWaitingState &);
+#endif
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  struct ManagedAccountUpdate {
+#ifdef USE_ESP32
+    static void *operator new(size_t size, const std::nothrow_t &) noexcept {
+#ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
+      return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+      return heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#endif
+    }
+    static void operator delete(void *pointer) noexcept { heap_caps_free(pointer); }
+    static void operator delete(void *pointer, const std::nothrow_t &) noexcept { heap_caps_free(pointer); }
+#endif
+    SipAccountConfig config;
+    AccountCommit commit{nullptr};
+    void *context{nullptr};
+    uint32_t retiring_revision{0};
+    bool active{false}, removing{false}, retiring{false};
+  };
+  std::unique_ptr<ManagedAccountUpdate> managed_update_;
+  std::atomic<uint16_t> managed_retirement_status_{0};
+  bool queue_managed_account_(const SipAccountConfig &config, bool removing, AccountCommit commit, void *context);
+  bool managed_account_needs_main_loop_() const;
+  void notify_managed_account_main_loop_();
+  void pump_managed_account_(uint32_t now);
 #endif
   std::array<SipTcpFlow, SipRegistration::CAPACITY> registration_flows_{};
   int active_account_{-1}, next_account_{-1}, dispatch_socket_{-2};
