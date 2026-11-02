@@ -62,7 +62,8 @@ def validate(config, full):
         raise cv.Invalid("Native VoIP actions require api: custom_services: true. No VoIP HA package is needed.")
     for action in full["api"].get("actions", []):
         name = action.get("action", action.get("service", ""))
-        if name in ACTIONS:
+        registration_actions = {"set_account", "remove_account", "reset_account", "register_account", "unregister_account", "select_line", "start_call_on_line"} if "registration" in config else set()
+        if name in ACTIONS | registration_actions:
             raise cv.Invalid(f"API action '{name}' is now provided by voip_stack. Remove the old VoIP HA package or copied action.")
     for item in full.get("text_sensor", []):
         if item.get("platform") == "voip_stack" and item.get("type") in ROLES:

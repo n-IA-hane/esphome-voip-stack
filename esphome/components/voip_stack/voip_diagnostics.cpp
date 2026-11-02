@@ -8,6 +8,9 @@ namespace esphome::voip_stack {
 static const char *const TAG = "voip_stack.diagnostics";
 
 void VoipStack::dump_diagnostics() {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->dump_registration_memory_();
+#endif
   const uint32_t now = millis();
   if (this->diagnostic_dump_ || (this->last_diagnostics_ms_ != 0 && now - this->last_diagnostics_ms_ < 1000)) return;
   if (this->is_failed()) {
@@ -66,8 +69,14 @@ void VoipStack::emit_diagnostic_section_() {
                (unsigned) dump.requested_ms, call_state_to_str(dump.state), (unsigned) dump.call_hash, YESNO(dump.changed));
       break;
     case 1:
-      ESP_LOGI(TAG, "configured: transport=%s sip_port=%u rtp_port=%u capability=%s registration=unsupported",
-               this->configured_sip_transport_name(), this->sip_port_, this->rtp_port_, this->audio_capability_());
+      ESP_LOGI(TAG, "configured: transport=%s sip_port=%u rtp_port=%u capability=%s registration=%s",
+               this->configured_sip_transport_name(), this->sip_port_, this->rtp_port_, this->audio_capability_(),
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+               "enabled"
+#else
+               "disabled"
+#endif
+      );
       break;
     case 2: format("local TX", dump.tx); format("local RX", dump.rx); break;
     case 3:

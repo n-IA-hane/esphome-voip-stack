@@ -1,6 +1,7 @@
 """Exercise production REFER ownership and notifications without an ESP scheduler."""
 from pathlib import Path
 import subprocess
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'esphome/components/voip_stack'
@@ -26,6 +27,7 @@ def refer_fixture_source():
         'UdpTransaction', 'CompletedServerTransaction', 'CompletedInviteClientTransaction', 'SipIdentity', 'RemoteMediaShape', 'SipTcpFlow'))
     context = block(header, 'struct ReferDialog {')
     fields = context[context.index('{') + 1:-1]
+    fields = re.sub(r"#ifdef USE_ESPHOME_VOIP_REGISTRATION.*?#endif\n", "", fields, flags=re.S)
     fields = fields.replace('bool remote_sip_tcp_{false};', 'std::atomic<bool> remote_sip_tcp_{false};')
     fields = fields.replace('bool outgoing_invite_pending_{false}, cancel_requested_{false};',
                             'std::atomic<bool> outgoing_invite_pending_{false}, cancel_requested_{false};')
@@ -44,6 +46,7 @@ def refer_fixture_source():
 #include <vector>
 #include <arpa/inet.h>
 #include "esphome/components/voip_stack/sip_types.h"
+#include "esphome/components/voip_stack/sip_header_name.h"
 #include "esphome/components/voip_stack/rtp_audio_payloads.h"
 using namespace esphome::voip_stack;
 using SipSignalingString=std::string;
@@ -79,11 +82,7 @@ struct SipTransport: SipPhoneTransport {
 ''' + context + ';\n' + block(header, 'struct CompletedRefer {') + ';\n' + block(header, 'class ReferScope {') + ';\n' + fields + r'''
  struct ReferDeleter {template<class T>void operator()(T*p)const{if(p){p->~T();RAMAllocator<T>().deallocate(p,1);}}};
  std::array<std::unique_ptr<CompletedRefer,ReferDeleter>,4> completed_refers_;
- struct SipRequestOptions {
-  uint32_t cseq_number=0;std::string cseq_method,branch_override,extra_headers;
-  bool remember_transaction=true,remember_invite_ack=true;
-  std::string *formatted_request=nullptr;const char *content_type="application/sdp";
- };
+''' + block(header, 'struct SipRequestOptions {') + ';\n' + r'''
  std::unique_ptr<ReferDialog,ReferDeleter> refer_dialog_;
  bool refer_context_active_=false,refer_retiring_=false,refer_signal_pending_=false;
  SipSignalType refer_signal_type_=SipSignalType::PROTOCOL_ERROR;uint16_t refer_status_=0;

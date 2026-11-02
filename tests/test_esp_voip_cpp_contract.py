@@ -2020,7 +2020,12 @@ def test_completed_sip_server_transactions_are_bounded_and_replayed() -> None:
     stale_bye = datagram.index('this->reject_if_stale_dialog_(msg, src, "BYE")')
     assert replay < stale_bye
     assert 'this->send_stateless_response_(msg, src, 200, "OK", "", true);' in datagram
-    assert 'this->replay_completed_response_(message, src, "INVITE", !this->remote_sip_tcp_.load' in sip_cpp
+    invite = cpp_method(sip_cpp, r"SipTransport::handle_invite_")
+    assert 'this->replay_completed_response_(message, src, "INVITE",' in invite
+    assert "this->dispatch_is_udp_()" in invite
+    dispatch = braced_block_after(sip_h, "bool dispatch_is_udp_() const")
+    assert "return this->dispatch_socket_ == -1;" in dispatch
+    assert "return !this->remote_sip_tcp_.load(std::memory_order_acquire);" in dispatch
 
 
 def test_retransmitted_invite_final_replays_the_cached_ack() -> None:
@@ -2427,13 +2432,13 @@ def test_non_2xx_invite_final_response_sends_ack() -> None:
     assert "SipRequestOptions &options =" not in sip_h
     assert "bool SipTransport::send_request_(const std::string &method, const std::string &body) {" in sip_cpp
     assert "send_invite_error_ack_" in sip_h
-    assert "bool SipTransport::send_invite_error_ack_()" in sip_cpp
-    assert "options.cseq_number = this->invite_cseq_" in sip_cpp
-    assert 'options.cseq_method = "ACK"' in sip_cpp
-    assert "options.branch_override = this->branch_" in sip_cpp
-    assert "3261 section 17.1.1.3" in sip_cpp
-    assert 'return this->send_request_("ACK", "", options);' in sip_cpp
-    assert "this->send_invite_error_ack_();" in sip_cpp
+    control = cpp_method(sip_cpp, r"SipTransport::send_invite_transaction_request_")
+    assert 'transaction.request.substr(0, headers_end + 2)' in control
+    assert 'header_value(original, "Via")' in control
+    assert 'header_value(original, "From")' in control
+    assert 'header_value(ack_request ? response : original, "To")' in control
+    assert 'transaction.ip_v4, transaction.port' in control
+    assert 'this->send_invite_error_ack_(message, this->pending_invite_' in sip_cpp
 
 
 def test_tcp_connect_queue_never_overwrites_the_pending_invite() -> None:
@@ -2762,9 +2767,9 @@ def test_sip_compact_headers_and_tcp_close_are_centralized() -> None:
     sip_cpp = read("sip_transport.cpp")
 
     header_parser = sip_cpp[sip_cpp.index("std::string header_value") : sip_cpp.index("\nstd::string message_body")]
-    assert 'canonical == "via"' in header_parser
-    assert 'canonical == "call-id"' in header_parser
-    assert 'canonical == "content-length"' in header_parser
+    assert "sip_header_name_equal" in header_parser
+    names = read("sip_header_name.h").lower()
+    assert '"via"' in names and '"call-id"' in names and '"content-length"' in names
 
     close = sip_cpp[
         sip_cpp.index("void SipTransport::close_tcp_flow_") :
@@ -2830,12 +2835,14 @@ def test_cancel_transactions_are_serialized_and_handle_crossed_200() -> None:
     cancel = sip_cpp[sip_cpp.index("bool SipTransport::send_cancel(") : sip_cpp.index("\nbool SipTransport::send_bye(")]
     early_cancel = cancel[
         cancel.index("if (cancelled_before_flush)") :
-        cancel.index("\n  SipRequestOptions options;")
+        cancel.index("\n  this->cancel_requested_.store")
     ]
-    wire_cancel = cancel[cancel.index("\n  SipRequestOptions options;") :]
+    wire_cancel = cancel[cancel.index("\n  this->cancel_requested_.store") :]
     assert "this->reset_dialog_();" in early_cancel
     assert "this->reset_dialog_();" not in wire_cancel
-    assert "this->clear_invite_transaction_();" in cancel
+    assert "this->clear_invite_transaction_();" not in wire_cancel
+    assert 'send_invite_transaction_request_("CANCEL", "", this->pending_invite_' in wire_cancel
+    assert "this->pending_invite_.completed = true;" in wire_cancel
     response = sip_cpp[sip_cpp.index("bool SipTransport::handle_response_(") : sip_cpp.index("\nvoid SipTransport::handle_sip_datagram_")]
     assert "CANCEL crossed the final 2xx" in response
     assert "this->send_bye_unlocked_(this->call_id_)" in response

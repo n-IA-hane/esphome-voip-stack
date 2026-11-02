@@ -23,10 +23,39 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
     this->register_service(&VoipHAIntegration::remove_contact, "remove_contact", {"entry"});
     this->register_service(&VoipHAIntegration::flush_contacts, "flush_contacts");
     this->register_service(&VoipHAIntegration::update_contacts, "update_contacts");
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    this->register_service(&VoipHAIntegration::set_account, "set_account",
+        {"account_id", "registrar", "port", "domain", "username", "password", "auth_username", "proxy", "proxy_port", "transport", "expires", "persist"});
+    this->register_service(&VoipHAIntegration::remove_account, "remove_account", {"account_id", "persist"});
+    this->register_service(&VoipHAIntegration::reset_account, "reset_account", {"account_id"});
+    this->register_service(&VoipHAIntegration::register_account, "register_account", {"account_id"});
+    this->register_service(&VoipHAIntegration::unregister_account, "unregister_account", {"account_id"});
+    this->register_service(&VoipHAIntegration::select_line, "select_line", {"line"});
+    this->register_service(&VoipHAIntegration::start_call_on_line, "start_call_on_line", {"dest", "line"});
+#endif
     // ESPHome sends retained entity states to each new API subscriber.
     this->defer([this]() { this->parent_->publish_entity_states(); });
   }
   float get_setup_priority() const override { return setup_priority::AFTER_CONNECTION; }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  void set_account(std::string id, std::string registrar, int32_t port, std::string domain, std::string username,
+      std::string password, std::string auth_username, std::string proxy, int32_t proxy_port,
+      std::string transport, int32_t expires, bool persist) {
+    if (port < 1 || port > 65535 || proxy_port < 1 || proxy_port > 65535 || expires < 30 || expires > 86400 ||
+        (transport != "udp" && transport != "tcp")) return;
+    SipAccountConfig c;
+    c.id = id; c.registrar = registrar; c.port = port; c.domain = domain.empty() ? registrar : domain;
+    c.username = username; c.password = password; c.auth_username = auth_username; c.proxy = proxy;
+    c.proxy_port = proxy_port; c.tcp = transport == "tcp"; c.expires = expires;
+    this->parent_->set_account(c, persist);
+  }
+  void remove_account(std::string id, bool persist) { this->parent_->remove_account(id, persist); }
+  void reset_account(std::string id) { this->parent_->reset_account(id); }
+  void register_account(std::string id) { this->parent_->register_account(id); }
+  void unregister_account(std::string id) { this->parent_->unregister_account(id); }
+  void select_line(std::string id) { this->parent_->select_line(id); }
+  void start_call_on_line(std::string dest, std::string line) { this->parent_->start_call_on_line(dest, line); }
+#endif
   void start_call(std::string dest) { this->parent_->call(dest); }
   void start_call_via_ha(std::string dest, std::string call_id) { this->parent_->call_via_ha(dest, call_id); }
   void hangup_call_if_id(std::string call_id) { this->parent_->hangup_call_if_id(call_id); }

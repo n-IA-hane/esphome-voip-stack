@@ -8,6 +8,9 @@
 #include "rtp_audio_payloads.h"
 #include "pcm_receive_converter.h"
 #include "sip_signaling_string.h"
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+#include "sip_registration.h"
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
 #include "opus_rtp_codec.h"
 #endif
@@ -58,6 +61,32 @@ class SipTransport : public SipPhoneTransport {
   ~SipTransport() override;
 
   bool start() override;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  void initialize_registration();
+  using AccountCommit = bool (*)(void *, const std::string &, const SipAccountConfig *);
+  bool set_account(const SipAccountConfig &config, AccountCommit commit = nullptr, void *context = nullptr);
+  bool remove_account(const std::string &id, AccountCommit commit = nullptr, void *context = nullptr,
+                      bool allow_missing = false);
+  bool register_account(const std::string &id, bool enabled);
+  bool is_registered(const std::string &id);
+  bool prepare_account_line(const std::string &id, std::string *host, uint16_t *port, bool *tcp);
+  std::string registration_account_domain(const std::string &id) {
+    LockGuard lock(this->dialog_mutex_);
+    const int index = this->registration_.find(id);
+    return index >= 0 ? this->registration_.account(index).config.domain : std::string();
+  }
+  void clear_account_line();
+  void set_accept_direct_calls(bool enabled) { this->accept_direct_calls_ = enabled; }
+  using RegistrationCallback = void (*)(void *, const std::string &, RegistrationState, uint16_t);
+  using RegistrationWakeCallback = void (*)(void *, SipTransport *);
+  void set_registration_callback(RegistrationCallback cb, void *ctx, RegistrationWakeCallback wake) {
+    this->registration_callback_ = cb; this->registration_context_ = ctx; this->registration_wake_callback_ = wake;
+  }
+  void wake_registration_from_main_loop() {
+    if (this->running_.load(std::memory_order_acquire) && !this->transport_stopping_.load(std::memory_order_acquire))
+      this->wake_sip_task_();
+  }
+#endif
   void stop() override;
   void disconnect() override;
   bool is_connected() const override;
@@ -148,6 +177,8 @@ class SipTransport : public SipPhoneTransport {
     bool remember_transaction{true};
     bool remember_invite_ack{true};
     std::string *formatted_request{nullptr};
+    uint32_t *destination_ip{nullptr};
+    uint16_t *destination_port{nullptr};
     std::string extra_headers;
     const char *content_type{"application/sdp"};
   };
@@ -176,7 +207,6 @@ class SipTransport : public SipPhoneTransport {
   bool send_cancel_unlocked_(const std::string &call_id);
   bool send_bye_unlocked_(const std::string &call_id);
   bool defer_bye_until_uas_ack_locked_();
-  bool send_invite_error_ack_();
   bool send_response_(uint16_t status, const char *reason, const std::string &body = "",
                       const std::string &app_reason = "");
   bool send_stateless_response_(const std::string &request, const sockaddr_in &src,
@@ -276,7 +306,7 @@ class SipTransport : public SipPhoneTransport {
   void close_media_session_();
   void request_tcp_client_close_();
   void close_tcp_client_from_sip_task_();
-  void handle_tcp_peer_loss_(SipTcpFlow *flow = nullptr);
+  void handle_tcp_peer_loss_(SipTcpFlow *flow = nullptr, uint32_t expired_deadline = 0);
   bool close_tcp_dialog_();
   void close_tcp_flow_(SipTcpFlow &flow);
   void prepare_tcp_flow_(SipTcpFlow &flow);
@@ -284,6 +314,20 @@ class SipTransport : public SipPhoneTransport {
   void fail_tcp_flow_(SipTcpFlow &flow, int error);
   SipTcpFlow *tcp_flow_for_socket_(int socket);
   void release_refer_dialog_();
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  std::array<SipTcpFlow *, 3 + SipRegistration::CAPACITY> signaling_flows_();
+  bool park_inbound_tcp_(int socket, const sockaddr_in &source);
+  bool claim_inbound_tcp_(int socket);
+  bool reclaim_idle_inbound_tcp_(SipTcpFlow &flow);
+  void accept_tcp_client_(int client, const sockaddr_in &src);
+#endif
+  bool dispatch_is_udp_() const {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    return this->dispatch_socket_ == -1;
+#else
+    return !this->remote_sip_tcp_.load(std::memory_order_acquire);
+#endif
+  }
   void wake_sip_task_();
   void wake_rtp_task_();
   bool prepare_media_path_locked_();
@@ -343,6 +387,12 @@ class SipTransport : public SipPhoneTransport {
     }
     bool empty() const { return this->request.empty(); }
   };
+
+  bool send_invite_error_ack_(const std::string &response, const UdpTransaction &transaction,
+                              bool remember_ack, std::string *formatted_request);
+  bool send_invite_transaction_request_(const char *method, const std::string &response,
+                                        const UdpTransaction &transaction, bool remember_ack,
+                                        std::string *formatted_request);
 
   struct DeferredUdpResponse {
     SipSignalingString response;
@@ -596,6 +646,10 @@ class SipTransport : public SipPhoneTransport {
     std::atomic<uint16_t> target_port{0};
     std::atomic<bool> connect_requested{false}, close_requested{false};
     SipSignalingString rx_buffer, pending;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    std::atomic<uint32_t> ingress_deadline{0};
+    bool received_record{false};
+#endif
     int connecting_socket{-1};
     uint32_t connect_deadline{0}, connecting_ip{0};
     uint16_t connecting_port{0};
@@ -611,7 +665,13 @@ class SipTransport : public SipPhoneTransport {
       exchange(target_port, other.target_port);
       exchange(connect_requested, other.connect_requested);
       exchange(close_requested, other.close_requested);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+      exchange(ingress_deadline, other.ingress_deadline);
+#endif
       using std::swap;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+      swap(received_record, other.received_record);
+#endif
       swap(rx_buffer, other.rx_buffer);
       swap(pending, other.pending);
       swap(connecting_socket, other.connecting_socket);
@@ -621,7 +681,46 @@ class SipTransport : public SipPhoneTransport {
     }
   };
   SipTcpFlow tcp_flow_;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  SipTcpFlow inbound_tcp_flow_;
+  SipRegistration registration_;
+  std::array<SipTcpFlow, SipRegistration::CAPACITY> registration_flows_{};
+  int active_account_{-1}, next_account_{-1}, dispatch_socket_{-2};
+  bool accept_direct_calls_{true};
+  SipDigest dialog_digest_, dialog_proxy_digest_;
+  uint8_t dialog_auth_attempts_{0}, dialog_proxy_auth_attempts_{0};
+  std::string authenticated_invite_body_, invite_authorization_;
+  int dialog_account_socket_{-1};
+  std::array<std::string, 8> dialog_routes_{};
+  size_t dialog_route_count_{0};
+  RegistrationCallback registration_callback_{nullptr};
+  RegistrationWakeCallback registration_wake_callback_{nullptr};
+  void *registration_context_{nullptr};
+  int registration_flow_index_(const SipTcpFlow *flow) const;
+  int registration_socket_index_(int socket) const;
+  bool account_in_use_(int index) const;
+  void retire_registration_flow_(size_t index);
+  bool registration_ingress_(const std::string &message, const sockaddr_in &src, int socket);
+  bool retry_authenticated_request_(const std::string &message, const std::string &method, uint16_t status);
+  void remember_registration_routes_(const std::string &message, bool reverse);
+  static uint32_t registration_resolve_(void *, size_t, const std::string &host);
+  void pump_registration_dns_();
+  void cancel_registration_dns_();
+  void invalidate_registration_dns_(size_t index);
+  static std::string registration_hash_(const std::string &algorithm, const std::string &input);
+  static bool registration_send_(void *, size_t, const std::string &, uint32_t, uint16_t, bool);
+  static std::string registration_local_ip_(void *, uint32_t);
+  static void registration_notify_(void *, const std::string &, RegistrationState, uint16_t);
+#endif
   struct ReferDialog {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    int active_account_{-1}, dialog_account_socket_{-1};
+    SipDigest dialog_digest_, dialog_proxy_digest_;
+    uint8_t dialog_auth_attempts_{0}, dialog_proxy_auth_attempts_{0};
+    std::string authenticated_invite_body_, invite_authorization_;
+    std::array<std::string, 8> dialog_routes_{};
+    size_t dialog_route_count_{0};
+#endif
     SipTcpFlow tcp_flow_;
     bool remote_sip_tcp_{false};
     std::string owner_call_id, target_uri;

@@ -580,6 +580,10 @@ void SipTransport::close_tcp_flow_(SipTcpFlow &flow) {
   flow.connect_deadline = 0;
   flow.connecting_ip = 0;
   flow.connecting_port = 0;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  flow.ingress_deadline = 0;
+  flow.received_record = false;
+#endif
   reset_string(flow.rx_buffer);
 }
 
@@ -623,10 +627,66 @@ bool SipTransport::close_tcp_dialog_() {
   return dialog_lost;
 }
 
-void SipTransport::handle_tcp_peer_loss_(SipTcpFlow *flow) {
+void SipTransport::handle_tcp_peer_loss_(SipTcpFlow *flow, uint32_t expired_deadline) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (flow == &this->inbound_tcp_flow_) {
+    LockGuard lock(this->dialog_mutex_);
+    if (expired_deadline != 0 && flow->ingress_deadline.load(std::memory_order_acquire) != expired_deadline) return;
+    this->close_tcp_flow_(*flow);
+    return;
+  }
+#endif
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  const int account = this->registration_flow_index_(flow);
+  if (account >= 0) {
+    bool dialog_lost = false;
+    {
+      LockGuard lock(this->dialog_mutex_);
+      // A main-loop account replacement has already retired this old flow.
+      // Its delayed EOF must neither cancel a newly queued record nor apply
+      // failure/backoff to the replacement account now occupying the slot.
+      if (flow->close_requested.load(std::memory_order_acquire)) {
+        this->close_tcp_flow_(*flow);
+        return;
+      }
+      const int lost_socket = flow->socket.load(std::memory_order_acquire);
+      this->retire_registration_flow_(account);
+      this->close_tcp_flow_(*flow);
+      this->registration_.connection_lost(account, millis());
+
+      if (this->refer_dialog_ && this->refer_dialog_->active_account_ == account &&
+          !this->refer_dialog_->call_id_.empty() &&
+          (this->refer_dialog_->dialog_account_socket_ < 0 ||
+           this->refer_dialog_->dialog_account_socket_ == lost_socket)) {
+        ReferScope scope(*this);
+        if (this->close_tcp_dialog_()) {
+          SipSignal signal;
+          signal.type = SipSignalType::PROTOCOL_ERROR;
+          signal.status_code = 503;
+          this->emit_sip_signal_(std::move(signal));
+        }
+      }
+      this->pump_refer_();
+      if (this->active_account_ == account && !this->call_id_.empty() &&
+          (this->dialog_account_socket_ < 0 || this->dialog_account_socket_ == lost_socket))
+        dialog_lost = this->close_tcp_dialog_();
+    }
+    if (dialog_lost) this->emit_connection_change_(false);
+    return;
+  }
+#endif
   bool dialog_lost = false;
   {
     LockGuard lock(this->dialog_mutex_);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    if (expired_deadline != 0 && flow->ingress_deadline.load(std::memory_order_acquire) != expired_deadline) return;
+    if (flow == &this->tcp_flow_ && this->active_account_ >= 0 &&
+        this->dialog_account_socket_ != flow->socket.load(std::memory_order_acquire)) {
+      // An unrelated inbound TCP peer must never end an account-owned dialog.
+      this->close_tcp_flow_(*flow);
+      return;
+    }
+#endif
     if (this->refer_dialog_ && flow == &this->refer_dialog_->tcp_flow_) {
       {
         ReferScope scope(*this);
@@ -647,6 +707,11 @@ void SipTransport::handle_tcp_peer_loss_(SipTcpFlow *flow) {
 
 SipTransport::SipTcpFlow *SipTransport::tcp_flow_for_socket_(int socket) {
   if (socket < 0) return nullptr;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->inbound_tcp_flow_.socket.load(std::memory_order_acquire) == socket) return &this->inbound_tcp_flow_;
+  for (auto &flow : this->registration_flows_)
+    if (flow.socket.load(std::memory_order_acquire) == socket) return &flow;
+#endif
   if (this->tcp_flow_.socket.load(std::memory_order_acquire) == socket) return &this->tcp_flow_;
   if (this->refer_dialog_ && this->refer_dialog_->tcp_flow_.socket.load(std::memory_order_acquire) == socket)
     return &this->refer_dialog_->tcp_flow_;
@@ -772,6 +837,9 @@ void SipTransport::stop() {
   this->transport_stopping_.store(true, std::memory_order_release);
   const bool was_running =
       this->running_.exchange(false, std::memory_order_acq_rel);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->cancel_registration_dns_();
+#endif
 
   // Stop new SIP work first. A strong wait is required here because this
   // method is also the destructor boundary: returning with a worker that can
@@ -1115,6 +1183,13 @@ void SipTransport::finish_audio_path_stop_() {
 }
 
 bool SipTransport::originate(const std::string &host, uint16_t port) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->next_account_ >= 0) {
+    if (!this->parse_remote_(host)) return false;
+    this->remote_sip_port_.store(port ? port : 5060, std::memory_order_release);
+    return true;  // The persistent account flow already owns this next hop.
+  }
+#endif
   if (!this->parse_remote_(host)) return false;
   const uint16_t sip_port = port ? port : 5060;
   this->remote_sip_port_.store(sip_port, std::memory_order_release);
@@ -1208,6 +1283,16 @@ void SipTransport::reset_dialog_media_locked_() {
     }
   }
   if (abort_queued_tcp_record) this->wake_sip_task_();
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->tcp_flow_.socket.load(std::memory_order_acquire) >= 0 && this->tcp_flow_.ingress_deadline == 0)
+    this->tcp_flow_.ingress_deadline = millis() + SIP_TRANSACTION_TIMEOUT_MS;
+  {
+    this->active_account_ = -1; this->dialog_digest_ = {}; this->dialog_proxy_digest_ = {};
+    this->dialog_auth_attempts_ = 0; this->dialog_proxy_auth_attempts_ = 0;
+    this->authenticated_invite_body_.clear(); this->invite_authorization_.clear();
+    this->dialog_account_socket_ = -1; this->dialog_route_count_ = 0;
+  }
+#endif
   reset_string(this->call_id_);
   reset_string(this->local_tag_);
   reset_string(this->remote_tag_);
@@ -1533,6 +1618,14 @@ bool SipTransport::send_sip_(const SipSignalingString &message, uint32_t ip_v4,
 
 bool SipTransport::send_sip_bytes_(const char *data, size_t size,
                                    uint32_t ip_v4, uint16_t port) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->dispatch_socket_ != -2 &&
+      ((size >= 8 && std::memcmp(data, "SIP/2.0 ", 8) == 0) ||
+       (size >= 4 && std::memcmp(data, "ACK ", 4) == 0))) {
+    return this->dispatch_is_udp_() ? this->send_sip_udp_bytes_(data, size, ip_v4, port)
+                                    : this->send_sip_tcp_bytes_(data, size);
+  }
+#endif
   if (this->remote_sip_tcp_.load(std::memory_order_acquire)) {
     return this->send_sip_tcp_bytes_(data, size);
   }
@@ -1582,6 +1675,17 @@ bool SipTransport::send_sip_tcp_bytes_(const char *data, size_t size) {
   // from two callers can never interleave into an invalid SIP message.
   LockGuard send_lock(this->tcp_send_mutex_);
   if (size == 0) return false;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->dispatch_socket_ >= 0 &&
+      ((size >= 8 && std::memcmp(data, "SIP/2.0 ", 8) == 0) ||
+       (size >= 4 && std::memcmp(data, "ACK ", 4) == 0)))
+    return this->send_sip_tcp_record_(data, size, this->dispatch_socket_);
+  if (this->active_account_ >= 0) {
+    const int socket = this->dialog_account_socket_ >= 0 ? this->dialog_account_socket_ :
+        this->registration_flows_[this->active_account_].socket.load(std::memory_order_acquire);
+    return this->send_sip_tcp_record_(data, size, socket);
+  }
+#endif
   const bool replacing_session =
       this->tcp_flow_.close_requested.load(std::memory_order_acquire) ||
       this->tcp_flow_.connect_requested.load(std::memory_order_acquire);
@@ -1983,8 +2087,18 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
   }
   // A fresh INVITE must never inherit tags or transaction state from a
   // cancelled dialog whose final response was lost.
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  const int prepared_account = this->refer_context_active_ ? this->active_account_ : this->next_account_;
+#endif
   this->reset_dialog_();
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->active_account_ = prepared_account;
+  if (!this->refer_context_active_) this->next_account_ = -1;
+#endif
   this->call_id_ = call_id;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->active_account_ < 0) this->tcp_flow_.ingress_deadline = 0;
+#endif
   this->sdp_session_id_ = esp_random();
   if (this->sdp_session_id_ == 0) this->sdp_session_id_ = 1;
   this->sdp_session_version_ = 0;
@@ -2020,6 +2134,18 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
   this->local_contact_uri_ = sip_name_addr(local_identity_uri);
   this->remote_uri_ = sip_name_addr(remote_identity_uri, this->destination_.name);
   this->remote_target_uri_ = strip_angle_uri(this->remote_uri_);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->active_account_ >= 0) {
+    const auto &account = this->registration_.account(this->active_account_);
+    this->local_uri_ = sip_name_addr("sip:" + account.config.username + "@" + account.config.domain, this->caller_.name);
+    this->local_contact_uri_ = sip_name_addr(account.contact);
+    const std::string account_target = this->refer_context_active_ && this->refer_dialog_
+        ? this->refer_dialog_->target_uri
+        : sip_target_uri(dest_route, account.config.domain);
+    this->remote_uri_ = sip_name_addr(account_target, dest_name);
+    this->remote_target_uri_ = strip_angle_uri(this->remote_uri_);
+  }
+#endif
   ESP_LOGI(TAG, "SIP INVITE call_id=%s from=%s to=%s", this->call_id_.c_str(),
            this->caller_.name.c_str(), this->destination_.name.c_str());
   std::string sdp;
@@ -2036,6 +2162,9 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
 #endif
   SipRequestOptions options;
   options.cseq_number = this->invite_cseq_;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->active_account_ >= 0) this->authenticated_invite_body_ = sdp;
+#endif
   const bool sent = this->send_request_("INVITE", sdp, options);
   if (sent) {
     this->outgoing_invite_pending_.store(true, std::memory_order_release);
@@ -2283,14 +2412,13 @@ bool SipTransport::send_cancel_unlocked_(const std::string &call_id) {
       return true;
     }
   }
-  SipRequestOptions options;
-  options.cseq_number = this->invite_cseq_;
   this->cancel_requested_.store(true, std::memory_order_release);
-  const bool sent = this->send_request_("CANCEL", "", options);
+  const bool sent = this->send_invite_transaction_request_("CANCEL", "", this->pending_invite_, false, nullptr);
   if (sent) {
-    // INVITE retransmission stops once cancellation begins. Keep the dialog
-    // identifiers until the final 487 so it can be ACKed correctly.
-    this->clear_invite_transaction_();
+    // Stop retransmission but retain the original wire request until its final
+    // response: the non-2xx ACK must reuse that exact transaction, even after180.
+    this->pending_invite_.completed = true;
+    this->pending_invite_.next_ms = this->pending_invite_.deadline_ms;
   } else {
     this->cancel_requested_.store(false, std::memory_order_release);
   }
@@ -2461,7 +2589,7 @@ void SipTransport::remember_completed_response_(const std::string &request, uint
   completed->deadline_ms = now + SIP_TRANSACTION_TIMEOUT_MS;
   completed->retransmit_interval_ms = SIP_T1_MS;
   completed->retransmits = 0;
-  completed->udp = !this->remote_sip_tcp_.load(std::memory_order_acquire);
+  completed->udp = this->dispatch_is_udp_();
   // Every final INVITE response is completed by ACK. UDP retransmits every
   // final response; 2xx is retransmitted by the UAS core even on TCP because
   // its ACK is a separate transaction.
@@ -2483,7 +2611,7 @@ uint16_t SipTransport::acknowledge_completed_invite_(
   const uint32_t peer_ip = ntohl(src.sin_addr.s_addr);
   const std::string branch = via_branch(header_value(request, "Via"));
   const bool transport_matches =
-      this->completed_invite_.udp != this->remote_sip_tcp_.load(std::memory_order_acquire);
+      this->completed_invite_.status < 300 || this->completed_invite_.udp == this->dispatch_is_udp_();
   const bool transaction_matches =
       cseq_method(cseq) == "ACK" && cseq_number(cseq) == this->completed_invite_.cseq &&
       header_value(request, "Call-ID") == this->completed_invite_.call_id &&
@@ -2584,7 +2712,13 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
     ESP_LOGW(TAG, "SIP INVITE rejected: missing or invalid transaction headers");
     return this->send_stateless_response_(message, src, 400, "Bad Request");
   }
-  if (this->replay_completed_response_(message, src, "INVITE", !this->remote_sip_tcp_.load(std::memory_order_acquire))) {
+    if (this->replay_completed_response_(message, src, "INVITE",
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+                                        this->dispatch_is_udp_()
+#else
+                                        !this->remote_sip_tcp_.load(std::memory_order_acquire)
+#endif
+                                        )) {
     return true;
   }
   const std::string incoming_from_tag = tag_from_header(incoming_from);
@@ -2654,6 +2788,15 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
     return this->send_stateless_response_(message, src, 481,
                                           "Call/Transaction Does Not Exist");
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  int incoming_account = -1;
+  if (!matching_dialog && this->call_id_.empty()) {
+    incoming_account = this->registration_.match_incoming(sip_user_from_header(sip_request_uri(message)), src_ip,
+        this->dispatch_socket_ >= 0, this->registration_socket_index_(this->dispatch_socket_));
+    if (!this->accept_direct_calls_ && incoming_account < 0)
+      return this->send_stateless_response_(message, src, 403, "Forbidden");
+  }
+#endif
   const bool in_dialog_invite = matching_dialog;
   if (in_dialog_invite &&
       incoming_cseq_number == this->last_invite_cseq_number_ &&
@@ -2683,6 +2826,12 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   if (!this->call_id_.empty()) {
     return this->send_stateless_response_(message, src, 486, "Busy Here", "busy");
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  // The application can own an outgoing attempt before its INVITE reaches
+  // the wire. Authorize/replay first, then apply the same gate to UDP and TCP.
+  if (!this->should_accept_session_())
+    return this->send_stateless_response_(message, src, 486, "Busy Here", "busy");
+#endif
   {
     LockGuard media_lock(this->media_lifecycle_mutex_);
     const MediaLifecyclePhase phase =
@@ -2696,11 +2845,21 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
           message, src, 503, "Service Unavailable", "media_cleanup", true, 1);
     }
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->dispatch_socket_ >= 0 && !this->claim_inbound_tcp_(this->dispatch_socket_))
+    return this->send_stateless_response_(message, src, 503, "Service Unavailable", "retry_new_connection", false, 1);
+  if (this->dispatch_socket_ == -1) this->remote_sip_tcp_.store(false, std::memory_order_release);
+#endif
   this->remote_ip_v4_.store(src_ip, std::memory_order_release);
   this->remote_sip_port_.store(ntohs(src.sin_port), std::memory_order_release);
   this->logical_call_id_.clear();
   this->logical_wire_id_.clear();
   this->call_id_ = incoming_call_id;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->active_account_ = incoming_account;
+  this->dialog_account_socket_ = incoming_account >= 0 ? this->dispatch_socket_ : -1;
+  if (incoming_account >= 0) this->remember_registration_routes_(message, false);
+#endif
   this->sdp_session_id_ = esp_random();
   if (this->sdp_session_id_ == 0) this->sdp_session_id_ = 1;
   this->sdp_session_version_ = 0;
@@ -2738,6 +2897,10 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   this->local_contact_uri_ =
       "<sip:" + local_contact_user + "@" + local_contact_ip + ":" +
       std::to_string(this->sip_port_) + ";transport=" + contact_transport + ">";
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->active_account_ >= 0)
+    this->local_contact_uri_ = sip_name_addr(this->registration_.account(this->active_account_).contact);
+#endif
   bool media_compatible = false;
   {
     LockGuard media_lock(this->media_lifecycle_mutex_);
@@ -2762,6 +2925,10 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
     this->reset_dialog_();
     return sent;
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (auto *flow = this->tcp_flow_for_socket_(this->dispatch_socket_); flow != nullptr)
+    flow->ingress_deadline = 0;
+#endif
   this->send_response_(100, "Trying");
 
   std::string from_user = incoming_caller_name;
@@ -3315,7 +3482,13 @@ bool SipTransport::handle_video_direction_response_(
   ack_options.remember_transaction = false;
   ack_options.remember_invite_ack = false;
   ack_options.formatted_request = &ack;
-  const bool ack_sent = this->send_request_("ACK", "", ack_options);
+  uint32_t ack_ip = pending.transaction.ip_v4;
+  uint16_t ack_port = pending.transaction.port;
+  ack_options.destination_ip = &ack_ip;
+  ack_options.destination_port = &ack_port;
+  const bool ack_sent = status < 300
+      ? this->send_request_("ACK", "", ack_options)
+      : this->send_invite_error_ack_(message, pending.transaction, false, &ack);
   if (!ack_sent) {
     ESP_LOGW(TAG,
              "SIP video re-INVITE ACK initial send failed; retaining it for "
@@ -3329,22 +3502,11 @@ bool SipTransport::handle_video_direction_response_(
     completed.branch = pending.branch;
     completed.ack = ack;
     completed.response_ip_v4 = src_ip;
-    uint32_t ack_ip =
-        this->remote_ip_v4_.load(std::memory_order_acquire);
-    uint16_t ack_port =
-        this->remote_sip_port_.load(std::memory_order_acquire);
-    uint32_t contact_ip = 0;
-    uint16_t contact_port = 0;
-    if (sip_uri_ipv4_target(this->remote_target_uri_, &contact_ip,
-                            &contact_port)) {
-      ack_ip = contact_ip;
-      ack_port = contact_port;
-    }
     completed.ack_ip_v4 = ack_ip;
     completed.ack_port = ack_port;
     completed.completed_ms = millis();
-    completed.udp =
-        !this->remote_sip_tcp_.load(std::memory_order_acquire);
+    completed.udp = status >= 300 ? pending.transaction.udp
+        : !this->remote_sip_tcp_.load(std::memory_order_acquire);
   }
 
   const bool previous_send = pending.previous_send;
@@ -3509,7 +3671,11 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   if (this->replay_completed_video_direction_ack_(message, src)) return true;
 #endif
+  #ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->replay_completed_invite_ack_(message, src, this->dispatch_is_udp_())) return true;
+#else
   if (this->replay_completed_invite_ack_(message, src, !this->remote_sip_tcp_.load(std::memory_order_acquire))) return true;
+#endif
   if (cseq_method(header_value(message, "CSeq")) == "NOTIFY" && this->refer_dialog_) {
     for (auto *transaction : {&this->refer_dialog_->pending_notify_, &this->refer_dialog_->pending_notify_final_}) {
       if (!transaction->empty() &&
@@ -3626,6 +3792,8 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
       this->pending_invite_.completed = true;
       this->pending_invite_.next_ms = this->pending_invite_.deadline_ms;
     } else {
+      if (status >= 300)
+        this->send_invite_error_ack_(message, this->pending_invite_, true, nullptr);
       this->clear_invite_transaction_();
     }
   }
@@ -3637,7 +3805,15 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
     this->emit_sip_signal_(std::move(signal));
     return true;
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if ((method == "INVITE" || method == "BYE" || method == "UPDATE") && (status == 401 || status == 407) &&
+      this->active_account_ >= 0 && this->retry_authenticated_request_(message, method, status)) return true;
+#endif
   if (status >= 200 && status < 300) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    this->dialog_auth_attempts_ = 0; this->dialog_proxy_auth_attempts_ = 0;
+    if (method == "INVITE" && this->active_account_ >= 0) this->remember_registration_routes_(message, true);
+#endif
     if (method == "BYE") {
       const std::string completed_call_id = this->call_id_;
       ESP_LOGI(TAG, "SIP BYE completed call_id=%s", completed_call_id.c_str());
@@ -3752,7 +3928,6 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
       return true;
     }
     this->outgoing_invite_pending_.store(false, std::memory_order_release);
-    this->send_invite_error_ack_();
     std::string reason = sip_header_token(header_value(message, "X-Voip-Stack-Decline-Reason"));
     if (reason.empty()) reason = reason_text_from_header(header_value(message, "Reason"));
     if (reason.empty()) reason = sip_failure_reason_(status);
@@ -3773,7 +3948,13 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
 
 void SipTransport::handle_sip_datagram_(const char *data, size_t len, const sockaddr_in &src) {
   LockGuard lock(this->dialog_mutex_);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->dispatch_socket_ = -1;
+#endif
   this->handle_sip_datagram_unlocked_(data, len, src);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->dispatch_socket_ = -2;
+#endif
 }
 
 void SipTransport::handle_sip_datagram_unlocked_(const char *data, size_t len, const sockaddr_in &src) {
@@ -3792,6 +3973,9 @@ void SipTransport::handle_sip_datagram_unlocked_(const char *data, size_t len, c
     }
     return;
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->registration_ingress_(msg, src, this->dispatch_socket_)) return;
+#endif
   if (!this->refer_context_active_ && this->refer_dialog_ && header_value(msg, "Call-ID") == this->refer_wire_id_) {
     {
       ReferScope scope(*this);
@@ -3809,7 +3993,13 @@ void SipTransport::handle_sip_datagram_unlocked_(const char *data, size_t len, c
   const std::string method = first_space == std::string::npos ? "" : msg.substr(0, first_space);
   ESP_LOGI(TAG, "SIP RX method=%s len=%u", method.c_str(), (unsigned) len);
   if ((method == "CANCEL" || method == "BYE" || method == "REFER") &&
-      this->replay_completed_response_(msg, src, method, !this->remote_sip_tcp_.load(std::memory_order_acquire))) {
+      this->replay_completed_response_(msg, src, method,
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+                                         this->dispatch_is_udp_()
+#else
+                                         !this->remote_sip_tcp_.load(std::memory_order_acquire)
+#endif
+                                         )) {
     return;
   }
   const SipEvent event = sip_event_from_method_(method);
@@ -3981,6 +4171,106 @@ bool SipTransport::reject_if_stale_dialog_(const std::string &request, const soc
 }
 
 void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+
+  char *const buf = this->sip_rx_scratch_.data();
+  auto *flow = this->tcp_flow_for_socket_(socket);
+  if (flow == nullptr) return;
+  auto drop_tcp_stream = [&](const char *reason) {
+    char ip[16];
+    inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
+    ESP_LOGW(TAG, "%s from %s, dropping connection", reason, ip);
+    this->handle_tcp_peer_loss_(flow);
+  };
+  size_t bytes_read = 0;
+  while (true) {
+    flow = this->tcp_flow_for_socket_(socket);
+    if (flow == nullptr) return;
+    // Ignore CRLF before a stream start-line (RFC 3261 section 7.5), including
+    // across reads. Consume only that prefix, never bytes inside a SIP body.
+    size_t prefix = 0;
+    while (prefix + 1 < flow->rx_buffer.size() && flow->rx_buffer.data()[prefix] == '\r' &&
+           flow->rx_buffer.data()[prefix + 1] == '\n')
+      prefix += 2;
+    if (prefix != 0) flow->rx_buffer.erase(0, prefix);
+    const size_t sep = flow->rx_buffer.find("\r\n\r\n");
+    size_t total = 0;
+    if (sep != std::string::npos) {
+      size_t body_len = 0;
+      if (!sip_content_length(flow->rx_buffer, &body_len)) {
+        drop_tcp_stream("SIP TCP invalid or ambiguous Content-Length");
+        return;
+      }
+      if (body_len > MAX_SIP_BODY_BYTES) {
+        drop_tcp_stream("SIP TCP Content-Length exceeds limit");
+        return;
+      }
+      total = sep + 4 + body_len;
+      if (total > MAX_SIP_TCP_RX_BUFFER) {
+        drop_tcp_stream("SIP TCP framed message exceeds RX buffer");
+        return;
+      }
+    }
+    if (total == 0 || flow->rx_buffer.size() < total) {
+      if (flow->rx_buffer.size() >= MAX_SIP_TCP_RX_BUFFER) {
+        drop_tcp_stream("SIP TCP RX buffer overflow");
+        return;
+      }
+      // Parse each chunk before reading again. A coalesced burst must not
+      // count against the per-record limit or monopolize the SIP worker.
+      if (bytes_read >= MAX_SIP_TCP_RX_BUFFER) return;
+      const size_t available = MAX_SIP_TCP_RX_BUFFER - flow->rx_buffer.size();
+      const size_t count = std::min<size_t>(1024, std::min(available, MAX_SIP_TCP_RX_BUFFER - bytes_read));
+      const int n = recv(socket, buf, count, 0);
+      if (n > 0) {
+        flow->rx_buffer.append(buf, static_cast<size_t>(n));
+        bytes_read += static_cast<size_t>(n);
+        continue;
+      }
+      if (n == 0) {
+        ESP_LOGI(TAG, "SIP TCP peer closed");
+        this->handle_tcp_peer_loss_(flow);
+        return;
+      }
+      const int err = errno;
+      if (err == EINTR) continue;
+      if (err == EWOULDBLOCK || err == EAGAIN || err == ENOTCONN || err == EINPROGRESS || err == EALREADY) {
+        // Only release the spare once no unread record remains in the socket.
+        if (flow == &this->inbound_tcp_flow_ && flow->rx_buffer.empty()) this->close_tcp_flow_(*flow);
+        return;
+      }
+      ESP_LOGW(TAG, "SIP TCP RX failed: %s (%d: %s)", socket_errno_name(err), err, socket_errno_text(err));
+      this->handle_tcp_peer_loss_(flow);
+      return;
+    }
+    const std::string msg = flow->rx_buffer.substr(0, total);
+    flow->rx_buffer.erase(0, total);
+    flow->received_record = true;
+    {
+      LockGuard lock(this->dialog_mutex_);
+      this->dispatch_socket_ = socket;
+      if (flow == &this->inbound_tcp_flow_ && msg.rfind("INVITE ", 0) == 0) {
+        bool owned = this->media_active_.load(std::memory_order_acquire) ||
+                     this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
+                     this->terminal_transaction_pending_locked_();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+        owned = owned || this->pending_video_direction_invite_.pending();
+#endif
+        if (this->call_id_.empty() && (owned || !this->should_accept_session_())) {
+          this->send_stateless_response_(msg, src, 503, "Service Unavailable", "retry_new_connection", false, 1);
+          this->dispatch_socket_ = -2;
+          this->close_tcp_flow_(*flow);
+          return;
+        }
+      }
+      this->handle_sip_datagram_unlocked_(msg.data(), msg.size(), src);
+      this->dispatch_socket_ = -2;
+    }
+    // The authorized INVITE may have exchanged the two storage slots.
+    // Reacquire by socket before the next record or read.
+  }
+#else
+
   char *const buf = this->sip_rx_scratch_.data();
   auto *flow = this->tcp_flow_for_socket_(socket);
   if (flow == nullptr) return;
@@ -4042,11 +4332,28 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
     }
     const std::string msg = flow->rx_buffer.substr(0, total);
     flow->rx_buffer.erase(0, total);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    this->dispatch_socket_ = socket;
+#endif
     this->handle_sip_datagram_(msg.data(), msg.size(), src);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    this->dispatch_socket_ = -1;
+#endif
   }
+#endif
 }
 
 void SipTransport::handle_sip_udp_datagram_(char *buf, int n, const sockaddr_in &src) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->handle_sip_datagram_(buf, static_cast<size_t>(n), src);
+#else
+
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  {
+    LockGuard lock(this->dialog_mutex_);
+    if (this->registration_ingress_(std::string(buf, n), src, -1)) return;
+  }
+#endif
   // Retired transactions retain their own transport after a mixed handoff.
   // Replay before the active-dialog gate, without retargeting that dialog.
   {
@@ -4070,10 +4377,16 @@ void SipTransport::handle_sip_udp_datagram_(char *buf, int n, const sockaddr_in 
         this->pending_video_direction_invite_.pending();
 #endif
   }
-  const bool tcp_session_active =
+  bool tcp_session_active =
       tcp_call_active && this->remote_sip_tcp_.load(std::memory_order_acquire) &&
       (this->tcp_flow_.socket.load(std::memory_order_acquire) >= 0 || this->tcp_flow_.connecting_socket >= 0 ||
        this->tcp_flow_.connect_requested.load(std::memory_order_acquire));
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  tcp_session_active = tcp_session_active ||
+      (tcp_call_active && this->remote_sip_tcp_.load(std::memory_order_acquire) && this->active_account_ >= 0 &&
+       (this->dialog_account_socket_ >= 0 ||
+        this->registration_flows_[this->active_account_].socket.load(std::memory_order_acquire) >= 0));
+#endif
   bool refer_udp = false;
   {
     LockGuard lock(this->dialog_mutex_);
@@ -4081,6 +4394,11 @@ void SipTransport::handle_sip_udp_datagram_(char *buf, int n, const sockaddr_in 
         header_value(std::string(buf, static_cast<size_t>(n)), "Call-ID") == this->refer_wire_id_;
   }
   if (tcp_session_active && !refer_udp) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    LockGuard lock(this->dialog_mutex_);
+    const std::string message(buf, n);
+    if (message.rfind("INVITE ", 0) == 0) this->send_stateless_response_(message, src, 486, "Busy Here");
+#endif
     ESP_LOGD(TAG, "SIP UDP datagram ignored while TCP signaling is active");
     return;
   }
@@ -4095,7 +4413,123 @@ void SipTransport::handle_sip_udp_datagram_(char *buf, int n, const sockaddr_in 
   inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
   ESP_LOGI(TAG, "SIP UDP RX %d bytes from %s:%u", n, ip, (unsigned) ntohs(src.sin_port));
   this->handle_sip_datagram_(reinterpret_cast<const char *>(buf), static_cast<size_t>(n), src);
+#endif
 }
+
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+bool SipTransport::park_inbound_tcp_(int socket, const sockaddr_in &source) {
+  if (this->inbound_tcp_flow_.socket.load(std::memory_order_acquire) >= 0) return false;
+  // Admission reserves storage only. The normal SIP handler authorizes the
+  // complete request before it can claim the single dialog owner.
+  this->inbound_tcp_flow_.socket.store(socket, std::memory_order_release);
+  this->inbound_tcp_flow_.peer_ip.store(ntohl(source.sin_addr.s_addr), std::memory_order_release);
+  this->inbound_tcp_flow_.rx_buffer.clear();
+  this->inbound_tcp_flow_.received_record = false;
+  this->inbound_tcp_flow_.ingress_deadline = millis() + SIP_TRANSACTION_TIMEOUT_MS;
+  return true;
+}
+
+bool SipTransport::claim_inbound_tcp_(int socket) {
+  auto *flow = this->tcp_flow_for_socket_(socket);
+  if (flow == nullptr || !this->call_id_.empty() ||
+      this->media_active_.load(std::memory_order_acquire) ||
+      this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
+      this->terminal_transaction_pending_locked_() || !this->should_accept_session_()) return false;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  if (this->pending_video_direction_invite_.pending()) return false;
+#endif
+  if (flow == &this->inbound_tcp_flow_) {
+    // Called with the dialog mutex held after INVITE validation and account
+    // authorization. Preserve the prior stream, including unread records.
+    this->tcp_flow_.swap(this->inbound_tcp_flow_);
+  }
+  this->remote_sip_tcp_.store(true, std::memory_order_release);
+  return true;
+}
+
+bool SipTransport::reclaim_idle_inbound_tcp_(SipTcpFlow &flow) {
+  // The SIP worker holds dialog_mutex_. A new/unread or partial stream is
+  // never evicted merely because another connection arrived.
+  const int socket = flow.socket.load(std::memory_order_acquire);
+  if (socket < 0 || !flow.received_record || !flow.rx_buffer.empty() ||
+      flow.connecting_socket >= 0 || flow.connect_requested.load(std::memory_order_acquire) ||
+      flow.close_requested.load(std::memory_order_acquire) || this->terminal_transaction_pending_locked_())
+    return false;
+  {
+    LockGuard pending_lock(this->tcp_tx_pending_mutex_);
+    if (!flow.pending.empty()) return false;
+  }
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  if (this->pending_video_direction_invite_.pending()) return false;
+#endif
+  if (&flow == &this->tcp_flow_ && this->remote_sip_tcp_.load(std::memory_order_acquire) &&
+      (!this->call_id_.empty() || this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
+       this->media_active_.load(std::memory_order_acquire))) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    if (this->active_account_ < 0 || this->dialog_account_socket_ == socket)
+#endif
+      return false;
+  }
+  char unread;
+  const int count = recv(socket, &unread, 1, MSG_PEEK | MSG_DONTWAIT);
+  if (count > 0 || (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) return false;
+  this->close_tcp_flow_(flow);
+  return true;
+}
+
+void SipTransport::accept_tcp_client_(int client, const sockaddr_in &src) {
+  int opt = 1;
+  setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+  int flags = fcntl(client, F_GETFL, 0);
+  fcntl(client, F_SETFL, flags | O_NONBLOCK);
+  LockGuard dialog_lock(this->dialog_mutex_);
+  const uint32_t accepted_ip_v4 = ntohl(src.sin_addr.s_addr);
+  const int active_client = this->tcp_flow_.socket.load(std::memory_order_acquire);
+  bool signaling_owned = false;
+  {
+    signaling_owned =
+        !this->call_id_.empty() ||
+        this->outgoing_invite_pending_.load(std::memory_order_acquire) ||
+        this->media_active_.load(std::memory_order_acquire) ||
+        this->terminal_transaction_pending_locked_();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+    signaling_owned =
+        signaling_owned ||
+        this->pending_video_direction_invite_.pending();
+#endif
+  }
+  // A registered dialog can own its account flow while the primary slot is
+  // empty. Admit control traffic to the same bounded spare in either case.
+  if (active_client >= 0 || signaling_owned) {
+    if (this->park_inbound_tcp_(client, src)) return;
+    if (this->reclaim_idle_inbound_tcp_(this->inbound_tcp_flow_) && this->park_inbound_tcp_(client, src)) return;
+    if (this->reclaim_idle_inbound_tcp_(this->tcp_flow_)) {
+      this->tcp_flow_.swap(this->inbound_tcp_flow_);
+      if (this->park_inbound_tcp_(client, src)) return;
+    }
+    char ip[16];
+    inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
+    ESP_LOGW(TAG,
+             "SIP TCP accept rejected: signaling transport owned by %s",
+             ip);
+    close(client);
+    return;
+  }
+  // A connection is not a new dialog. The framed INVITE handler applies the
+  // application admission gate; unrelated control traffic keeps its owner.
+  this->close_tcp_client_from_sip_task_();
+  this->tcp_flow_.socket.store(client, std::memory_order_release);
+  this->tcp_flow_.peer_ip.store(accepted_ip_v4, std::memory_order_release);
+  this->tcp_flow_.close_requested.store(false, std::memory_order_release);
+  this->tcp_flow_.rx_buffer.clear();
+  this->tcp_flow_.received_record = false;
+  this->tcp_flow_.ingress_deadline = millis() + SIP_TRANSACTION_TIMEOUT_MS;
+  char ip[16];
+  inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
+  ESP_LOGI(TAG, "SIP TCP accepted from %s:%u", ip, (unsigned) ntohs(src.sin_port));
+
+}
+#endif
 
 void SipTransport::sip_task_trampoline_(void *param) {
   static_cast<SipTransport *>(param)->sip_task_();
@@ -4109,6 +4543,12 @@ void SipTransport::sip_task_() {
   char *const buf = this->sip_rx_scratch_.data();
   while (this->running_.load(std::memory_order_acquire)) {
     this->pump_udp_retransmits_();
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    {
+      LockGuard lock(this->dialog_mutex_); this->pump_registration_dns_(); this->registration_.tick(millis());
+    }
+    for (auto &flow : this->registration_flows_) this->prepare_tcp_flow_(flow);
+#endif
     this->prepare_tcp_flow_(this->tcp_flow_);
     if (this->refer_dialog_) this->prepare_tcp_flow_(this->refer_dialog_->tcp_flow_);
     fd_set readfds;
@@ -4128,7 +4568,13 @@ void SipTransport::sip_task_() {
       FD_SET(this->sip_tcp_listener_socket_, &readfds);
       max_fd = std::max(max_fd, this->sip_tcp_listener_socket_);
     }
-    for (auto *flow : {&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}) {
+        for (auto *flow :
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+         this->signaling_flows_()
+#else
+         std::array<SipTcpFlow *, 2>{&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}
+#endif
+         ) {
       if (flow == nullptr) continue;
       const int socket = flow->socket.load(std::memory_order_acquire);
       if (socket >= 0) { FD_SET(socket, &readfds); max_fd = std::max(max_fd, socket); }
@@ -4145,7 +4591,13 @@ void SipTransport::sip_task_() {
     struct timeval *timeout_ptr = nullptr;
     uint32_t timeout_ms = 0;
     bool have_timeout = false;
-    for (auto *flow : {&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}) {
+        for (auto *flow :
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+         this->signaling_flows_()
+#else
+         std::array<SipTcpFlow *, 2>{&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}
+#endif
+         ) {
       if (flow == nullptr || flow->connecting_socket < 0) continue;
       const uint32_t now = millis();
       const uint32_t remaining = time_reached(now, flow->connect_deadline) ? 0 : flow->connect_deadline - now;
@@ -4241,13 +4693,46 @@ void SipTransport::sip_task_() {
       }
     }
 #endif
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    {
+      LockGuard lock(this->dialog_mutex_); uint32_t registration_timeout = 0;
+      if (this->registration_.next_deadline(millis(), &registration_timeout) &&
+          (!have_timeout || registration_timeout < timeout_ms)) {
+        timeout_ms = registration_timeout; have_timeout = true; timeout_ptr = &timeout;
+      }
+    }
+#endif
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    for (auto *flow : {&this->tcp_flow_, &this->inbound_tcp_flow_}) {
+      const uint32_t deadline = flow->ingress_deadline.load(std::memory_order_acquire);
+      if (flow->socket.load(std::memory_order_acquire) < 0 || deadline == 0) continue;
+      const uint32_t now = millis();
+      const uint32_t remaining = time_reached(now, deadline) ? 0 : deadline - now;
+      if (!have_timeout || remaining < timeout_ms) {
+        timeout_ms = remaining; have_timeout = true; timeout_ptr = &timeout;
+      }
+    }
+#endif
     if (timeout_ptr != nullptr) {
       timeout.tv_sec = timeout_ms / 1000;
       timeout.tv_usec = (timeout_ms % 1000) * 1000;
     }
     const int ready = ::select(max_fd + 1, &readfds, &writefds, nullptr, timeout_ptr);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    for (auto *flow : {&this->tcp_flow_, &this->inbound_tcp_flow_}) {
+      const uint32_t deadline = flow->ingress_deadline.load(std::memory_order_acquire);
+      if (flow->socket.load(std::memory_order_acquire) >= 0 && deadline != 0 &&
+          time_reached(millis(), deadline)) this->handle_tcp_peer_loss_(flow, deadline);
+    }
+#endif
     bool connect_expired = false;
-    for (auto *flow : {&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}) {
+        for (auto *flow :
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+         this->signaling_flows_()
+#else
+         std::array<SipTcpFlow *, 2>{&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}
+#endif
+         ) {
       if (flow != nullptr && flow->connecting_socket >= 0 && time_reached(millis(), flow->connect_deadline)) {
         this->fail_tcp_flow_(*flow, ETIMEDOUT);
         connect_expired = true;
@@ -4267,7 +4752,13 @@ void SipTransport::sip_task_() {
       if (!this->running_.load(std::memory_order_acquire)) continue;
     }
 
-    for (auto *flow : {&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}) {
+        for (auto *flow :
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+         this->signaling_flows_()
+#else
+         std::array<SipTcpFlow *, 2>{&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}
+#endif
+         ) {
       if (flow == nullptr || flow->connecting_socket < 0 || !FD_ISSET(flow->connecting_socket, &writefds)) continue;
       int error = 0;
       socklen_t len = sizeof(error);
@@ -4282,6 +4773,9 @@ void SipTransport::sip_task_() {
       socklen_t slen = sizeof(src);
       int client = accept(this->sip_tcp_listener_socket_, reinterpret_cast<struct sockaddr *>(&src), &slen);
       if (client >= 0) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+        this->accept_tcp_client_(client, src);
+#else
         int opt = 1;
         setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
         int flags = fcntl(client, F_GETFL, 0);
@@ -4335,6 +4829,7 @@ void SipTransport::sip_task_() {
         char ip[16];
         inet_ntoa_r(src.sin_addr, ip, sizeof(ip));
         ESP_LOGI(TAG, "SIP TCP accepted from %s:%u", ip, (unsigned) ntohs(src.sin_port));
+#endif
       }
     }
 
@@ -4350,8 +4845,14 @@ void SipTransport::sip_task_() {
 
     // A commit can exchange the two owners while dispatching a record. Resolve
     // each saved descriptor again instead of retaining a pointer across dispatch.
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    std::array<int, 3 + SipRegistration::CAPACITY> sockets{};
+    auto flows = this->signaling_flows_();
+    for (size_t i = 0; i < sockets.size(); ++i) sockets[i] = flows[i] == nullptr ? -1 : flows[i]->socket.load(std::memory_order_acquire);
+#else
     const int sockets[] = {this->tcp_flow_.socket.load(std::memory_order_acquire),
         this->refer_dialog_ ? this->refer_dialog_->tcp_flow_.socket.load(std::memory_order_acquire) : -1};
+#endif
     for (int socket : sockets) {
       if (socket < 0 || !FD_ISSET(socket, &readfds) || this->tcp_flow_for_socket_(socket) == nullptr) continue;
       struct sockaddr_in src{};
@@ -4360,6 +4861,10 @@ void SipTransport::sip_task_() {
         this->handle_sip_stream_(socket, src);
     }
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->close_tcp_flow_(this->inbound_tcp_flow_);
+  for (auto &flow : this->registration_flows_) this->close_tcp_flow_(flow);
+#endif
   this->close_tcp_client_from_sip_task_();
   if (this->refer_dialog_) this->close_tcp_flow_(this->refer_dialog_->tcp_flow_);
   if (this->sip_task_done_ != nullptr) {

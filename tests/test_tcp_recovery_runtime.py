@@ -97,7 +97,7 @@ class SipTransport {
  bool send_sip_tcp_record_(const std::string&m,int fd){return send(fd,m.data(),m.size(),MSG_NOSIGNAL)==static_cast<ssize_t>(m.size());}
  void request_tcp_client_close_();void close_tcp_client_from_sip_task_();
  bool close_tcp_dialog_();void close_tcp_flow_(SipTcpFlow&);
- void handle_tcp_peer_loss_(SipTcpFlow* = nullptr);
+ void handle_tcp_peer_loss_(SipTcpFlow* = nullptr,uint32_t expired_deadline=0);
  SipTcpFlow*tcp_flow_for_socket_(int);
  void release_refer_dialog_();
  void fail_tcp_flow_(SipTcpFlow&,int);void promote_tcp_flow_(SipTcpFlow&);void prepare_tcp_flow_(SipTcpFlow&);
@@ -199,5 +199,6 @@ int main(){
 }
 ''')
     exe = tmp_path / "tcp"
-    subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-I", str(ROOT), str(cpp), "-o", str(exe)], check=True, capture_output=True, text=True)
+    build = subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-I", str(ROOT), str(cpp), "-o", str(exe)], capture_output=True, text=True)
+    assert build.returncode == 0, build.stderr
     subprocess.run([str(exe)], check=True, capture_output=True, text=True, timeout=5)

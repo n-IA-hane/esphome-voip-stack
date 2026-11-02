@@ -670,7 +670,11 @@ void VoipStack::call_via_ha(const std::string &value, const std::string &call_id
     if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
           (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' || ch == '@')) return;
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->start_call_on_line_(value, "direct", call_id);
+#else
   this->call_(value, call_id);
+#endif
 }
 
 void VoipStack::hangup_call_if_id(const std::string &call_id) {
@@ -685,6 +689,11 @@ void VoipStack::call_(const std::string &value, const std::string &call_id) {
     this->defer([this]() { this->call_failed_trigger_.trigger("", "Empty target"); });
     return;
   }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (call_id.empty() && !this->force_direct_call_ && this->default_line_ != "direct") {
+    this->start_call_on_line(target, this->default_line_); return;
+  }
+#endif
   if (target.size() > Phonebook::MAX_NAME_BYTES ||
       target.find_first_of("|,;\r\n") != std::string::npos) {
     ESP_LOGW(TAG, "call failed: invalid target label");

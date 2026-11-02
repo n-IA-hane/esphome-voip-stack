@@ -10,6 +10,7 @@
 #include <lwip/sockets.h>
 
 #include "esphome/core/hal.h"
+#include "sip_header_name.h"
 
 namespace esphome {
 namespace voip_stack {
@@ -75,39 +76,132 @@ std::string sip_uri_user_decode(const std::string &raw) {
   return sip_header_token(out);
 }
 
+std::string sip_prefix_target_user(std::string_view target, std::string_view prefix) {
+  const std::string value = trim_copy(std::string(target));
+  if (value.empty() || value.size() > 512 || prefix.size() > 32) return "";
+  for (const unsigned char ch : value)
+    if (ch < 32 || ch == 127 || ch == '<' || ch == '>' || ch == '"') return "";
+  for (const unsigned char ch : prefix)
+    if (ch <= 32 || ch == 127 || ch == '<' || ch == '>' || ch == '"') return "";
+  const bool sip = value.size() >= 4 && std::tolower(static_cast<unsigned char>(value[0])) == 's' &&
+      std::tolower(static_cast<unsigned char>(value[1])) == 'i' &&
+      std::tolower(static_cast<unsigned char>(value[2])) == 'p' && value[3] == ':';
+  if (!sip) {
+    if (value.size() >= 5 && std::tolower(static_cast<unsigned char>(value[0])) == 's' &&
+        std::tolower(static_cast<unsigned char>(value[1])) == 'i' &&
+        std::tolower(static_cast<unsigned char>(value[2])) == 'p' &&
+        std::tolower(static_cast<unsigned char>(value[3])) == 's' && value[4] == ':') return "";
+    std::string result;
+    result.reserve(prefix.size() + value.size());
+    result.append(prefix.data(), prefix.size());
+    result += value;
+    return result;
+  }
+  if (value.find(' ') != std::string::npos || value.find('?') != std::string::npos) return "";
+  const auto at = value.find('@', 4);
+  if (at == std::string::npos || at == 4 || at + 1 == value.size()) return "";
+  const std::string user = value.substr(4, at - 4);
+  if (user.find(':') != std::string::npos || user.size() > 3 * VOIP_STACK_MAX_ROUTE_ID_LEN) return "";
+  std::string decoded_user;
+  for (size_t i = 0; i < user.size(); ++i) {
+    unsigned char ch = user[i];
+    if (user[i] == '%') {
+      if (i + 2 >= user.size() || hex_value(user[i + 1]) == 0xFF || hex_value(user[i + 2]) == 0xFF) return "";
+      ch = (hex_value(user[i + 1]) << 4) | hex_value(user[i + 2]);
+      i += 2;
+    }
+    if (ch < 32 || ch == 127) return "";
+    decoded_user.push_back(static_cast<char>(ch));
+  }
+  const auto authority_end = value.find_first_of(";?", at + 1);
+  const auto authority = value.substr(at + 1, authority_end - at - 1);
+  if (authority.empty() || authority.find('@') != std::string::npos) return "";
+  const auto colon = authority.find(':');
+  const auto host = authority.substr(0, colon);
+  if (host.empty() || host.size() > 253) return "";
+  size_t label_size = 0;
+  for (size_t i = 0; i < host.size(); ++i) {
+    if (host[i] == '.') {
+      if (label_size == 0 || host[i - 1] == '-') return "";
+      label_size = 0;
+    } else {
+      if ((label_size == 0 && host[i] == '-') || ++label_size > 63) return "";
+    }
+  }
+  if (host.back() == '-') return "";
+  for (unsigned char ch : host)
+    if (!std::isalnum(ch) && ch != '-' && ch != '.') return "";
+  if (colon != std::string::npos) {
+    uint32_t port = 0;
+    const auto text = authority.substr(colon + 1);
+    if (text.empty()) return "";
+    for (unsigned char ch : text) {
+      if (ch < '0' || ch > '9') return "";
+      port = port * 10U + ch - '0';
+      if (port > 65535) return "";
+    }
+    if (port == 0) return "";
+  }
+  bool transport_seen = false;
+  for (size_t position = authority_end; position != std::string::npos && position < value.size();) {
+    const auto end = value.find(';', position + 1);
+    const auto parameter = value.substr(position + 1, end - position - 1);
+    if (parameter.empty()) return "";
+    const auto equals = parameter.find('=');
+    std::string key = parameter.substr(0, equals);
+    if (key.empty()) return "";
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) { return std::tolower(ch); });
+    if (key == "transport") {
+      if (transport_seen || equals == std::string::npos) return "";
+      std::string transport = parameter.substr(equals + 1);
+      std::transform(transport.begin(), transport.end(), transport.begin(), [](unsigned char ch) { return std::tolower(ch); });
+      if (transport != "udp" && transport != "tcp") return "";
+      transport_seen = true;
+    }
+    position = end;
+  }
+  std::string prefixed_user;
+  prefixed_user.reserve(prefix.size() + decoded_user.size());
+  prefixed_user.append(prefix.data(), prefix.size());
+  prefixed_user += decoded_user;
+  const auto prefixed = sip_uri_user_encode(prefixed_user);
+  const std::string result = "sip:" + prefixed + value.substr(at);
+  return result.size() <= 512 ? result : "";
+}
+
+std::string sip_target_uri(const std::string &target, const std::string &fallback_authority) {
+  const auto normalized = sip_prefix_target_user(target, "");
+  if (normalized.empty()) return "";
+  if (normalized.rfind("sip:", 0) == 0) return normalized;
+  const std::string result = "sip:" + sip_uri_user_encode(normalized) + "@" + fallback_authority;
+  return result.size() <= 512 ? result : "";
+}
+
+std::string sip_normalize_dial_target(const std::string &target, size_t max_bytes) {
+  // Preserve the call path's rejection of CR/LF, including at the edges.
+  if (target.find_first_of("\r\n") != std::string::npos) return "";
+  std::string cleaned = trim_copy(std::string(target));
+  if (cleaned.empty() || cleaned.size() > max_bytes) return "";
+  for (unsigned char ch : cleaned) if (ch < 32 || ch == 127) return "";
+  std::string scheme = cleaned.substr(0, cleaned.find(':'));
+  std::transform(scheme.begin(), scheme.end(), scheme.begin(), [](unsigned char ch) { return std::tolower(ch); });
+  if (scheme == "sip" || scheme == "sips") {
+    cleaned = sip_prefix_target_user(cleaned, "");
+    if (cleaned.empty() || cleaned.size() > max_bytes) return "";
+  } else if (cleaned.find_first_of("|,;\r\n") != std::string::npos || cleaned.find("://") != std::string::npos) return "";
+  return cleaned;
+}
+
 std::string header_value(const std::string &msg, const char *name) {
-  std::string canonical = name;
-  for (char &ch : canonical) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-  const char *compact = nullptr;
-  if (canonical == "via") compact = "v";
-  else if (canonical == "from") compact = "f";
-  else if (canonical == "to") compact = "t";
-  else if (canonical == "call-id") compact = "i";
-  else if (canonical == "contact") compact = "m";
-  else if (canonical == "content-type") compact = "c";
-  else if (canonical == "content-length") compact = "l";
-  const std::string needle = canonical + ":";
-  const std::string compact_needle = compact == nullptr ? std::string() : std::string(compact) + ":";
   size_t pos = 0;
   while (pos < msg.size()) {
     const size_t end = msg.find("\r\n", pos);
     const size_t line_end = end == std::string::npos ? msg.size() : end;
     const std::string line = msg.substr(pos, line_end - pos);
     if (line.empty()) break;
-    auto starts_with_header = [&line](const std::string &candidate) {
-      if (candidate.empty() || line.size() < candidate.size()) return false;
-      bool match = true;
-      for (size_t i = 0; i < candidate.size(); i++) {
-        if (std::tolower(static_cast<unsigned char>(line[i])) !=
-            std::tolower(static_cast<unsigned char>(candidate[i]))) {
-          match = false;
-          break;
-        }
-      }
-      return match;
-    };
-    if (starts_with_header(needle)) return trim_copy(line.substr(needle.size()));
-    if (starts_with_header(compact_needle)) return trim_copy(line.substr(compact_needle.size()));
+    const size_t colon = line.find(':');
+    if (colon != std::string::npos && sip_header_name_equal(std::string_view(line).substr(0, colon), name))
+      return trim_copy(line.substr(colon + 1));
     if (end == std::string::npos) break;
     pos = end + 2;
   }
@@ -115,9 +209,6 @@ std::string header_value(const std::string &msg, const char *name) {
 }
 
 std::string header_values(const std::string &msg, const char *name) {
-  std::string canonical = name;
-  for (char &ch : canonical) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-  const char *compact = canonical == "via" ? "v" : nullptr;
   std::string out;
   size_t pos = 0;
   while (pos < msg.size()) {
@@ -128,8 +219,7 @@ std::string header_values(const std::string &msg, const char *name) {
     const size_t colon = line.find(':');
     if (colon != std::string::npos) {
       std::string key = trim_copy(line.substr(0, colon));
-      for (char &ch : key) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-      if (key == canonical || (compact != nullptr && key == compact)) {
+      if (sip_header_name_equal(key, name)) {
         if (!out.empty()) out += "\r\nVia: ";
         out += trim_copy(line.substr(colon + 1));
       }

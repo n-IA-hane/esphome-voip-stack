@@ -46,6 +46,10 @@
 #include "sip_types.h"
 #include "transport.h"
 #include "voip_fsm.h"
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+#include "sip_registration.h"
+#include <nvs.h>
+#endif
 
 #include <esp_event.h>
 #include <freertos/FreeRTOS.h>
@@ -61,6 +65,9 @@
 
 namespace esphome {
 namespace voip_stack {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+class SipTransport;
+#endif
 
 // SIP signaling transport. Media is always RTP/UDP.
 enum class TransportType : uint8_t {
@@ -104,6 +111,29 @@ class VoipStack : public Component {
   void loop() override;
   void dump_config() override;
   void dump_diagnostics();
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  void configure_registration(bool accept_direct, const std::string &default_line) {
+    this->registration_accept_direct_ = accept_direct; this->default_line_ = default_line;
+  }
+  void set_registration_accounts(const SipAccountConfigView *accounts, size_t count) {
+    this->registration_cpp_baseline_.reset();
+    this->registration_baseline_ = accounts;
+    this->registration_baseline_count_ = std::min(count, SipRegistration::CAPACITY);
+  }
+  void add_registration_account(const std::string &id, const std::string &registrar, uint16_t port,
+      const std::string &domain, const std::string &username, const std::string &password,
+      const std::string &auth_username, const std::string &proxy, uint16_t proxy_port,
+      bool tcp, uint32_t expires, bool enabled);
+  bool set_account(const SipAccountConfig &config, bool persist = false);
+  bool remove_account(const std::string &id, bool persist = false);
+  bool reset_account(const std::string &id);
+  bool register_account(const std::string &id);
+  bool unregister_account(const std::string &id);
+  bool is_registered(const std::string &id);
+  bool select_line(const std::string &id);
+  void start_call_on_line(const std::string &target, const std::string &line);
+  Trigger<std::string, std::string, int> *get_registration_state_trigger() { return &this->registration_state_trigger_; }
+#endif
   // AFTER_CONNECTION: bind sockets and publish initial state only after
   // the HA API is up (AFTER_WIFI would race the API connection).
   float get_setup_priority() const override { return setup_priority::AFTER_CONNECTION; }
@@ -959,6 +989,53 @@ class VoipStack : public Component {
   Trigger<std::string, std::string> call_failed_trigger_;
   Trigger<std::string> destination_changed_trigger_;
   Trigger<std::string> phonebook_update_trigger_;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  struct SavedRegistrationAccount {
+    uint8_t used{0}, removed{0}, tcp{0}, enabled{1};
+    uint16_t port{5060}, proxy_port{5060}; uint32_t expires{3600};
+    char id[33]{}, registrar[254]{}, domain[254]{}, username[65]{}, password[129]{}, auth_username[65]{}, proxy[254]{};
+  };
+  struct SavedRegistration {
+    uint32_t version{2};
+    uint16_t account_count{SipRegistration::CAPACITY}, removed_count{SipRegistration::CAPACITY};
+    std::array<SavedRegistrationAccount, SipRegistration::CAPACITY> accounts{};
+    std::array<std::array<char, 33>, SipRegistration::CAPACITY> removed{};
+  };
+  const SipAccountConfigView *registration_baseline_{nullptr};
+  // Allocated only for advanced C++ callers using the incremental builder.
+  std::unique_ptr<std::vector<SipAccountConfig>> registration_cpp_baseline_;
+  SipAccountConfig registration_baseline_at_(size_t index) const {
+    return this->registration_cpp_baseline_ ? (*this->registration_cpp_baseline_)[index]
+                                          : this->registration_baseline_[index].materialize();
+  }
+  bool registration_baseline_matches_(size_t index, const std::string &id) const {
+    return this->registration_cpp_baseline_ ? (*this->registration_cpp_baseline_)[index].id == id
+                                          : id == this->registration_baseline_[index].id;
+  }
+  size_t registration_baseline_count_{0};
+  struct RegistrationSavedDeleter {
+    void operator()(SavedRegistration *value) const {
+      if (value != nullptr) { value->~SavedRegistration(); RAMAllocator<SavedRegistration>().deallocate(value, 1); }
+    }
+  };
+  using RegistrationSavedPtr = std::unique_ptr<SavedRegistration, RegistrationSavedDeleter>;
+  static RegistrationSavedPtr allocate_registration_saved_(const SavedRegistration *copy_from = nullptr);
+  RegistrationSavedPtr registration_saved_;
+  nvs_handle_t registration_nvs_handle_{0};
+  bool registration_accept_direct_{true}, force_direct_call_{false};
+  std::string default_line_{"direct"}, pending_line_;
+  Trigger<std::string, std::string, int> registration_state_trigger_;
+  std::atomic<SipTransport *> registration_dns_owner_{nullptr};
+  void start_call_on_line_(const std::string &target, const std::string &line, const std::string &call_id);
+  void initialize_registration_();
+  void dump_registration_memory_();
+  bool load_registration_saved_();
+  bool write_registration_saved_(const SavedRegistration &next);
+  void pump_registration_wake_();
+  bool save_registration_override_(const std::string &id, const SipAccountConfig *config, bool removed);
+  static void registration_state_callback_(void *, const std::string &, RegistrationState, uint16_t);
+  static void registration_dns_ready_callback_(void *, SipTransport *);
+#endif
   CallbackManager<void(CallState)> state_callback_{};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   // Bit 0 marks a fresh transport event, bit 1 is the committed send state,

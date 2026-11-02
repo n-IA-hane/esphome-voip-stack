@@ -299,6 +299,9 @@ bool VoipStack::setup_transport_() {
   }
   this->transport_->set_sip_signaling_transport(this->protocol_ == TransportType::TCP);
 
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->initialize_registration_();
+#endif
   this->transport_->set_audio_formats(this->tx_audio_formats_, this->rx_audio_formats_);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->transport_->set_video_endpoints(this->video_source_, this->video_sink_);
@@ -558,6 +561,9 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
 }
 
 void VoipStack::loop() {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->pump_registration_wake_();
+#endif
 #if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
     defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)
   this->video_camera_source_.loop();

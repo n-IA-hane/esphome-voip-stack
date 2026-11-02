@@ -1,4 +1,8 @@
 #include "voip_stack.h"
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+#include "sip_transport.h"
+#include "sip_message.h"
+#endif
 
 #ifdef USE_ESP32
 
@@ -207,6 +211,21 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
   bool dial_directional_audio_v1 =
       this->get_current_contact_directional_audio_v1();
 
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  const std::string outgoing_line = via_ha || this->force_direct_call_ ? "direct" :
+      (this->pending_line_.empty() ? this->default_line_ : this->pending_line_);
+  std::string registration_domain;
+  auto *sip = static_cast<SipTransport *>(this->transport_.get());
+  if (sip != nullptr) sip->clear_account_line();
+  if (outgoing_line != "direct") {
+    if (sip == nullptr || !sip->prepare_account_line(outgoing_line, &dial_ip, &dial_port, &dial_sip_tcp)) {
+      this->pending_dialplan_target_.clear();
+      this->defer([this]() { this->call_failed_trigger_.trigger("", "PBX account unavailable"); }); return;
+    }
+    registration_domain = sip->registration_account_domain(outgoing_line);
+    dial_rtp_port = 0; dial_directional_audio_v1 = false;
+  }
+#endif
   if (via_ha) {
     const auto *ha = this->phonebook_.find(this->ha_peer_name_);
     dial_ip = ha != nullptr ? ha->ip : "";
@@ -216,7 +235,11 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
     dial_directional_audio_v1 = ha != nullptr && ha->directional_audio_v1;
   }
   const std::string selected_dest = this->get_current_destination();
-  const bool route_via_ha = via_ha || (!this->ha_peer_name_.empty() && selected_dest == this->ha_peer_name_);
+  const bool route_via_ha = via_ha || (
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+      outgoing_line == "direct" &&
+#endif
+      !this->ha_peer_name_.empty() && selected_dest == this->ha_peer_name_);
   const std::string dest_name = via_ha ? previous.dest_name : !this->pending_dialplan_target_.empty()
       ? this->pending_dialplan_target_
       : selected_dest.empty()
@@ -260,7 +283,13 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
                             dest_route, dest_name);
   this->clear_terminal_response_();
 
-  const std::string remote_uri = "sip:" + dest_route + "@" + dial_ip + ":" + std::to_string(dial_port);
+  const std::string remote_uri =
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+      outgoing_line != "direct"
+          ? sip_target_uri(dest_route, registration_domain)
+          :
+#endif
+          "sip:" + dest_route + "@" + dial_ip + ":" + std::to_string(dial_port);
   this->defer([this, call_id, caller = this->device_name_, dest_name, remote_uri, route_via_ha, via_ha]() {
     if (!via_ha) this->outgoing_call_trigger_.trigger(call_id, caller, dest_name, remote_uri);
     if (route_via_ha) {

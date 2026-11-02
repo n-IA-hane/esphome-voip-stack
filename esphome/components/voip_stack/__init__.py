@@ -14,7 +14,7 @@ from esphome.const import (
 )
 from esphome.components import audio, esp32, microphone, psram, speaker, wifi, text_sensor as esphome_text_sensor
 
-from . import ha_integration
+from . import ha_integration, registration
 from esphome.components import esp32_camera as esp32_camera_component
 
 CODEOWNERS = ["@n-IA-hane"]
@@ -613,6 +613,8 @@ VoipHAIntegration = voip_stack_ns.class_("VoipHAIntegration", cg.Component, cg.P
 CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), ha_integration.prepare, cv.Schema(
     {
         cv.Optional("ha_integration"): ha_integration.schema,
+        cv.Optional("registration"): registration.SCHEMA,
+        cv.Optional("on_registration_state"): automation.validate_automation(),
         cv.GenerateID("ha_adapter_id"): cv.declare_id(VoipHAIntegration),
         cv.Optional("legacy_ha_package"): cv.invalid("This VoIP HA package is retired in 2026.10.0. Remove its packages entry and enable api: custom_services: true; voip_stack now provides discovery, actions and phonebook integration."),
         cv.GenerateID(): cv.declare_id(VoipStack),
@@ -778,6 +780,12 @@ def _consume_voip_sockets(config):
     socket.consume_sockets(3, "voip_stack_sip", socket.SocketType.UDP)(config)
     socket.consume_sockets(3, "voip_stack_sip_tcp")(config)
     socket.consume_sockets(1, "voip_stack_sip", socket.SocketType.TCP_LISTEN)(config)
+    if "registration" in config:
+        # Runtime provisioning can fill every compiled slot with a TCP account.
+        # UDP registrations reuse the existing bound signaling socket. One
+        # additional accepted stream can coexist with both dialog owners;
+        # retain the existing transient accept/reject socket reserve.
+        socket.consume_sockets(config["registration"]["max_accounts"] + 1, "voip_stack_registration")(config)
     if CONF_VIDEO in config:
         # Separate RTP/RTCP sockets plus a private event-driven wake socket.
         # They exist only in video builds; audio-only firmware pays nothing.
@@ -1245,6 +1253,7 @@ async def to_code(config):
     await _build_voip_automations(var, config)
     await _bind_ha_phonebook_sensor(var, config)
     await ha_integration.to_code(var, config)
+    await registration.to_code(var, config)
 
 
 # === Action registrations ===
@@ -1578,3 +1587,6 @@ async def voip_destination_is_to_code(config, condition_id, template_arg, args):
 
 
 _register_simple_condition("voip_stack.is_ha_destination", VoipIsHaDestinationCondition)
+
+
+registration.register_automations(VoipStack)
