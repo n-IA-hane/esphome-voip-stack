@@ -28,6 +28,7 @@ def reservation_binary(tmp_path_factory):
  std::atomic<bool>rtp_running_{false},rtp_task_terminate_{false},rtp_task_quiesced_{true};
  std::atomic<uint16_t>rtp_sequence_{0};std::atomic<uint32_t>rtp_timestamp_{0};uint32_t rtp_ssrc_=0;
  void *rtp_task_handle_=this,*rtp_cleanup_done_=this;
+ AudioFormatList offer_rx_formats_;
  struct Converter {
   unsigned prepares=0;uint32_t last_rate=0;
   bool prepare(const RtpAudioPayloads&,const AudioFormat&format){++prepares;last_rate=format.sample_rate;return true;}

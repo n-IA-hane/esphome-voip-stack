@@ -14,6 +14,29 @@ inline bool pcm_receive_conversion_supported(const AudioFormat &source, const Au
             source.sample_rate <= target.sample_rate);
   }
 
+// Keep the configured PCM sink clock independent of an accepted wire rate.
+// Packet duration still belongs to the negotiated stream. The setup-time RX
+// buffers already cover the configured formats; do not exceed that capacity.
+inline AudioFormat pcm_playout_format(const AudioFormat &wire, const AudioFormatList &configured) {
+  if (!wire.is_valid() || configured.count == 0 || wire.codec != AudioCodec::PCM ||
+      wire.pcm_format != PcmFormat::S16LE)
+    return wire;
+  AudioFormat target = configured.formats[0];
+  target.frame_ms = wire.frame_ms;
+  if (!target.is_valid() || target.codec != AudioCodec::PCM || target.pcm_format != PcmFormat::S16LE ||
+      !pcm_receive_conversion_supported(wire, target))
+    return wire;
+  size_t capacity = 0;
+  for (uint8_t i = 0; i < configured.count; ++i) {
+    const auto &format = configured.formats[i];
+    // Mixed-codec decoding retains its established PCM geometry contract.
+    if (format.codec != AudioCodec::PCM || format.pcm_format != PcmFormat::S16LE) return wire;
+    const size_t bytes = format.nominal_frame_bytes();
+    if (bytes > capacity) capacity = bytes;
+  }
+  return target.nominal_frame_bytes() <= capacity ? target : wire;
+}
+
 // A payload number has meaning only inside the current offer/answer exchange.
 // Keep the small negotiated set, rather than a permanent 128-entry RTP table.
 struct RtpAudioPayloads {

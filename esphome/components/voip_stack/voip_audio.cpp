@@ -18,42 +18,40 @@ namespace voip_stack {
 
 static const char *const TAG = "voip_stack.audio";
 
-#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
-void VoipStack::debug_log_pcm_level_(const char *label, const uint8_t *pcm, size_t bytes,
-                                       const AudioFormat &format,
-                                       uint32_t &last_log_ms, uint32_t &frame_count) {
-  frame_count++;
+#if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_MIC)
+void VoipStack::record_tx_debug_(const uint8_t *pcm, size_t bytes, const AudioFormat &format) {
+  const uint32_t frame_count = ++this->audio_debug_tx_frames_;
   const uint32_t now = millis();
-  if (now - last_log_ms < 1000)
-    return;
-  last_log_ms = now;
-
-  const size_t samples = bytes / sizeof(int16_t);
-  if (pcm == nullptr || samples == 0) {
-    ESP_LOGI(TAG, "AudioDebug[%s]: frames=%u bytes=%u empty state=%s",
-             label, frame_count, (unsigned) bytes, this->get_call_state_str());
+  if (now - this->audio_debug_last_tx_log_ms_ < 1000) return;
+  this->audio_debug_last_tx_log_ms_ = now;
+  PcmDebugData data;
+  data.producer_ms = now;
+  data.frames = frame_count;
+  data.bytes = bytes;
+  data.samples = bytes / sizeof(int16_t);
+  data.format = pack_audio_format(format);
+  data.volume = this->volume_.load(std::memory_order_relaxed);
+  data.state = static_cast<uint8_t>(this->call_state_.load(std::memory_order_acquire));
+  if (pcm == nullptr || data.samples == 0) {
+    data.status = 1;
+  } else if (format.pcm_format != PcmFormat::S16LE) {
+    data.status = 2;
+  } else {
+    const auto levels = compute_levels_dbfs_i16(reinterpret_cast<const int16_t *>(pcm), data.samples);
+    data.peak = levels.peak;
+    data.peak_dbfs = levels.peak_dbfs;
+    data.rms_dbfs = levels.rms_dbfs;
+  }
+  if (this->audio_debug_pcm_.busy.test_and_set(std::memory_order_acquire)) {
+    this->audio_debug_stats_quality_.fetch_or(1U, std::memory_order_relaxed);
     return;
   }
-
-  if (format.pcm_format != PcmFormat::S16LE) {
-    ESP_LOGI(TAG,
-             "AudioDebug[%s]: frames=%u bytes=%u format=%u:%u:%u:%u "
-             "levels=skipped_non_s16 "
-             "voip_volume=%.3f state=%s",
-             label, frame_count, (unsigned) bytes, (unsigned) format.sample_rate, (unsigned) format.pcm_format,
-             (unsigned) format.channels, (unsigned) format.frame_ms, this->volume_.load(std::memory_order_relaxed),
-             this->get_call_state_str());
-    return;
-  }
-
-  const auto levels = compute_levels_dbfs_i16(reinterpret_cast<const int16_t *>(pcm), samples);
-  const char *path = "direct";
-  ESP_LOGI(TAG,
-           "AudioDebug[%s]: frames=%u bytes=%u samples=%u peak=%u "
-           "peak_dbfs=%.1f rms_dbfs=%.1f "
-           "voip_volume=%.3f state=%s path=%s",
-           label, frame_count, (unsigned) bytes, (unsigned) samples, (unsigned) levels.peak, levels.peak_dbfs,
-           levels.rms_dbfs, this->volume_.load(std::memory_order_relaxed), this->get_call_state_str(), path);
+  if (this->audio_debug_pcm_.pending.load(std::memory_order_relaxed))
+    this->audio_debug_stats_quality_.fetch_or(4U, std::memory_order_relaxed);
+  this->audio_debug_pcm_.data = data;
+  this->audio_debug_pcm_.pending.store(true, std::memory_order_release);
+  this->audio_debug_pcm_.busy.clear(std::memory_order_release);
+  this->enable_loop_soon_any_context();
 }
 #endif
 
@@ -107,8 +105,7 @@ void VoipStack::send_chunk_(const uint8_t *data, size_t length) {
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
   if (this->audio_debug_) {
     const AudioFormat tx_format = this->get_current_tx_audio_format_();
-    this->debug_log_pcm_level_("tx_network", data, length, tx_format, this->audio_debug_last_tx_log_ms_,
-                               this->audio_debug_tx_frames_);
+    this->record_tx_debug_(data, length, tx_format);
   }
 #endif
   this->transport_->send_audio_frame(data, length);
@@ -244,18 +241,28 @@ void VoipStack::on_microphone_data_(const uint8_t *data, size_t len) {
     if (now - this->audio_debug_last_mic_log_ms_ >= 1000) {
       const AudioFormat tx_format = this->get_current_tx_audio_format_();
       this->audio_debug_last_mic_log_ms_ = now;
-      ESP_LOGI(TAG,
-               "AudioDebug[mic_callback]: callbacks=%u len=%u delta_ms=%u "
-               "tx_frame_bytes=%u "
-               "accum_available=%u tx_queue_depth=%u tx_drops=%u tx_drop_bytes=%u "
-               "tx_format=%u:%u:%u:%u state=%s",
-               (unsigned) this->audio_debug_mic_callbacks_, (unsigned) len, (unsigned) delta,
-               (unsigned) this->tx_audio_chunk_bytes_(), (unsigned) this->mic_buffer_->available(),
-               (unsigned) this->media_tx_queue_depth_.load(std::memory_order_relaxed),
-               (unsigned) this->media_tx_queue_drops_.load(std::memory_order_relaxed),
-               (unsigned) this->media_tx_queue_drop_bytes_.load(std::memory_order_relaxed),
-               (unsigned) tx_format.sample_rate, (unsigned) tx_format.pcm_format, (unsigned) tx_format.channels,
-               (unsigned) tx_format.frame_ms, this->get_call_state_str());
+      MicDebugData snapshot;
+      snapshot.producer_ms = now;
+      snapshot.callbacks = this->audio_debug_mic_callbacks_;
+      snapshot.bytes = len;
+      snapshot.delta_ms = delta;
+      snapshot.frame_bytes = this->tx_audio_chunk_bytes_();
+      snapshot.available = this->mic_buffer_->available();
+      snapshot.depth = this->media_tx_queue_depth_.load(std::memory_order_relaxed);
+      snapshot.drops = this->media_tx_queue_drops_.load(std::memory_order_relaxed);
+      snapshot.drop_bytes = this->media_tx_queue_drop_bytes_.load(std::memory_order_relaxed);
+      snapshot.format = pack_audio_format(tx_format);
+      snapshot.state = static_cast<uint8_t>(this->call_state_.load(std::memory_order_acquire));
+      if (this->audio_debug_mic_.busy.test_and_set(std::memory_order_acquire)) {
+        this->audio_debug_stats_quality_.fetch_or(2U, std::memory_order_relaxed);
+      } else {
+        if (this->audio_debug_mic_.pending.load(std::memory_order_relaxed))
+          this->audio_debug_stats_quality_.fetch_or(8U, std::memory_order_relaxed);
+        this->audio_debug_mic_.data = snapshot;
+        this->audio_debug_mic_.pending.store(true, std::memory_order_release);
+        this->audio_debug_mic_.busy.clear(std::memory_order_release);
+        this->enable_loop_soon_any_context();
+      }
     }
   }
 #endif
@@ -302,6 +309,149 @@ void VoipStack::rx_task(void *param) {
   static_cast<VoipStack *>(param)->rx_task_();
 }
 
+VoipStack::RxPlayoutPhase VoipStack::rx_playout_phase_(uint32_t revision) const {
+  const uint32_t state = this->rx_playout_state_.load(std::memory_order_acquire);
+  return (state >> 3U) == (revision & 0x1fffffffU) ? static_cast<RxPlayoutPhase>(state & 7U) : RxPlayoutPhase::STOPPED;
+}
+
+bool VoipStack::prepare_rx_playout_() {
+  if (this->speaker_ == nullptr || !this->get_current_rx_audio_format_().is_valid()) return true;
+  if (this->speaker_feedback_source_ != nullptr &&
+      (this->speaker_feedback_source_->is_failed() || this->speaker_feedback_source_->status_has_error()))
+    return false;
+  const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
+  const RxPlayoutPhase phase = this->rx_playout_phase_(revision);
+  if (phase == RxPlayoutPhase::READY || phase == RxPlayoutPhase::ACTIVE) return true;
+  if (phase == RxPlayoutPhase::STOPPED) {
+    this->rx_prepare_started_us_.store(static_cast<uint32_t>(esp_timer_get_time()), std::memory_order_release);
+    // Unrecognized legacy providers retain input-admission readiness. They
+    // never wait for an output callback their public implementation omits.
+    const auto next = this->speaker_feedback_source_ == nullptr ? RxPlayoutPhase::READY : RxPlayoutPhase::PREPARING;
+    this->rx_playout_state_.store((revision << 3U) | static_cast<uint8_t>(next), std::memory_order_release);
+    if (this->rx_task_handle_ != nullptr) xTaskNotifyGive(this->rx_task_handle_);
+  }
+  return this->rx_playout_phase_(revision) == RxPlayoutPhase::READY;
+}
+
+bool VoipStack::activate_rx_playout_() {
+  if (this->speaker_ == nullptr || !this->get_current_rx_audio_format_().is_valid()) return true;
+  const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
+  uint32_t expected = (revision << 3U) | static_cast<uint8_t>(RxPlayoutPhase::READY);
+  if (!this->rx_playout_state_.compare_exchange_strong(
+          expected, (revision << 3U) | static_cast<uint8_t>(RxPlayoutPhase::ACTIVE), std::memory_order_acq_rel))
+    return false;
+  if (this->rx_task_handle_ != nullptr) xTaskNotifyGive(this->rx_task_handle_);
+  return true;
+}
+
+void VoipStack::speaker_output_progress_(uint32_t frames, int64_t timestamp) {
+  const uint32_t state = this->rx_playout_state_.load(std::memory_order_acquire);
+  if ((state & 7U) != static_cast<uint8_t>(RxPlayoutPhase::WAITING_OUTPUT)) {
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+    if (this->audio_debug_ && ((state & 7U) == static_cast<uint8_t>(RxPlayoutPhase::READY) ||
+                               (state & 7U) == static_cast<uint8_t>(RxPlayoutPhase::ACTIVE)))
+      this->debug_output_last_us_.store(static_cast<uint32_t>(timestamp), std::memory_order_relaxed);
+#endif
+    return;
+  }
+  const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
+  if (frames == 0 || this->speaker_ == nullptr || !this->speaker_->is_running() ||
+      this->rx_playout_phase_(revision) == RxPlayoutPhase::STOPPED ||
+      static_cast<int32_t>(static_cast<uint32_t>(timestamp) -
+                           this->rx_prepare_started_us_.load(std::memory_order_acquire)) < 0)
+    return;
+  uint32_t expected = (revision << 3U) | static_cast<uint8_t>(RxPlayoutPhase::WAITING_OUTPUT);
+  const bool prepared = this->rx_playout_state_.compare_exchange_strong(
+      expected, (revision << 3U) | static_cast<uint8_t>(RxPlayoutPhase::READY), std::memory_order_release);
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  if (this->audio_debug_) {
+    this->debug_output_last_us_.store(static_cast<uint32_t>(timestamp), std::memory_order_relaxed);
+    if (prepared) {
+      uint32_t first = 0;
+      this->debug_output_first_us_.compare_exchange_strong(first, static_cast<uint32_t>(timestamp),
+                                                           std::memory_order_relaxed);
+    }
+  }
+#else
+  (void)prepared;
+#endif
+}
+
+bool VoipStack::play_rx_preroll_(uint32_t revision, TickType_t frame_ticks) {
+  const RxPlayoutPhase phase = this->rx_playout_phase_(revision);
+  if (this->speaker_feedback_source_ == nullptr && phase == RxPlayoutPhase::ACTIVE) return false;
+  const bool awaiting_first =
+      phase == RxPlayoutPhase::ACTIVE && !this->first_audio_received_.load(std::memory_order_acquire);
+  if (!awaiting_first && phase != RxPlayoutPhase::PREPARING && phase != RxPlayoutPhase::WAITING_OUTPUT &&
+      phase != RxPlayoutPhase::READY)
+    return false;
+  if (!awaiting_first && this->speaker_feedback_source_ == nullptr) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    return true;
+  }
+  // The ordinary receive clock owns the frame deadline, including wakeups.
+  const TickType_t started = xTaskGetTickCount();
+  TickType_t remaining = frame_ticks;
+  while (remaining > 0 && this->rx_audio_revision_.load(std::memory_order_acquire) == revision) {
+    ulTaskNotifyTake(pdTRUE, remaining);
+    const auto current = this->rx_playout_phase_(revision);
+    if (current == RxPlayoutPhase::STOPPED || (!awaiting_first && current == RxPlayoutPhase::ACTIVE) ||
+        (awaiting_first &&
+         (current != RxPlayoutPhase::ACTIVE || this->first_audio_received_.load(std::memory_order_acquire))))
+      return true;
+    const TickType_t elapsed = xTaskGetTickCount() - started;
+    if (elapsed >= frame_ticks) break;
+    remaining = frame_ticks - elapsed;
+  }
+  if (this->rx_audio_revision_.load(std::memory_order_acquire) == revision &&
+      this->rx_playout_phase_(revision) != RxPlayoutPhase::STOPPED &&
+      (awaiting_first || this->rx_playout_phase_(revision) != RxPlayoutPhase::ACTIVE)) {
+    this->play_silence_frame_(SilenceReason::PREROLL, 0, revision);
+  }
+  return true;
+}
+
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+void VoipStack::debug_rx_startup_event_(RxStartupEvent event, uint32_t revision,
+                                      const RtpJitterBuffer::Counters *jitter) {
+  if (!this->audio_debug_ || this->rx_audio_revision_.load(std::memory_order_acquire) != revision) return;
+  auto &record = this->audio_debug_rx_startup_[static_cast<uint8_t>(event)];
+  uint32_t seen = record.revision.load(std::memory_order_relaxed);
+  if (record.present.load(std::memory_order_acquire) &&
+      (seen == revision || static_cast<int32_t>(revision - seen) <= 0)) return;
+  const uint64_t at_us = esp_timer_get_time();
+  if (record.busy.test_and_set(std::memory_order_acquire)) {
+    if (this->rx_audio_revision_.load(std::memory_order_acquire) == revision)
+      this->audio_debug_rx_startup_quality_.fetch_or(1U, std::memory_order_relaxed);
+    return;
+  }
+  seen = record.revision.load(std::memory_order_relaxed);
+  if ((!record.present.load(std::memory_order_relaxed) ||
+       (seen != revision && static_cast<int32_t>(revision - seen) > 0)) &&
+      this->rx_audio_revision_.load(std::memory_order_acquire) == revision) {
+    RxStartupData data;
+    data.us = at_us;
+    data.output_us = this->debug_output_last_us_.load(std::memory_order_relaxed);
+    data.state = static_cast<uint8_t>(this->call_state_.load(std::memory_order_acquire));
+    data.flags = (this->speaker_ != nullptr && this->speaker_->is_running() ? 1U : 0U);
+    if (jitter != nullptr) {
+      data.flags |= 4U;
+      data.depth = static_cast<uint16_t>(jitter->depth);
+      data.drops = jitter->drops;
+      data.discarded = jitter->discarded_frames;
+    }
+    if (this->rx_audio_revision_.load(std::memory_order_acquire) == revision) {
+      if (event == RxStartupEvent::FIRST_ZERO_WRITE) this->debug_zero_output_us_ = data.output_us;
+      if (event == RxStartupEvent::FIRST_JITTER_DROP) this->debug_drop_output_us_ = data.output_us;
+      record.data = data;
+      record.revision.store(revision, std::memory_order_release);
+      record.present.store(true, std::memory_order_release);
+    }
+  }
+  record.busy.clear(std::memory_order_release);
+}
+#endif
+
 void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
   if (this->rx_jitter_buffer_ == nullptr || frame.pcm == nullptr || frame.bytes == 0)
     return;
@@ -312,6 +462,9 @@ void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
   if ((rx_format.codec == AudioCodec::PCM && frame.bytes != expected) ||
       frame.bytes > this->rx_jitter_frame_alloc_bytes_)
     return;
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
+#endif
   if (frame.source_changed) {
     this->rx_jitter_buffer_->reset();
   }
@@ -326,6 +479,9 @@ void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
   jitter_frame.source_changed = frame.source_changed;
   jitter_frame.format_packed = frame.format_packed;
   if (this->rx_jitter_buffer_->push(jitter_frame)) {
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+    this->debug_rx_startup_event_(RxStartupEvent::RX_ENQUEUE, revision);
+#endif
     if (this->rx_task_handle_ != nullptr) {
       xTaskNotifyGive(this->rx_task_handle_);
     }
@@ -334,6 +490,9 @@ void VoipStack::enqueue_rx_frame_(const TransportAudioFrame &frame) {
   this->media_rx_queue_depth_.store(after.depth, std::memory_order_relaxed);
   if (after.drops > before.drops) {
     this->media_rx_queue_drops_.fetch_add(after.drops - before.drops, std::memory_order_relaxed);
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+    this->debug_rx_startup_event_(RxStartupEvent::FIRST_JITTER_DROP, revision, &after);
+#endif
   }
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
   if (after.late > before.late) {
@@ -352,18 +511,49 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
                              uint32_t revision) {
   if (this->speaker_ == nullptr || pcm == nullptr || bytes == 0)
     return;
-  if (silence_reason == SilenceReason::NONE && this->rx_silence_chunk_ != nullptr &&
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  // Trace the NONE PCM path before local muting, excluding generated silence.
+  // The existing Opus PLC path also uses NONE; this does not prove RTP origin.
+  const bool trace_pcm = silence_reason == SilenceReason::NONE;
+#endif
+  if (silence_reason == SilenceReason::NONE && this->rx_audio_chunk_ != nullptr &&
+      bytes <= this->rx_audio_chunk_alloc_bytes_ &&
       this->volume_.load(std::memory_order_relaxed) <= 0.001f) {
-    pcm = this->rx_silence_chunk_;
+    // The RX task owns decode and playout serially, including partial writes.
+    // Zero PCM after decoding so codec prediction/PLC state still advances.
+    memset(this->rx_audio_chunk_, 0, bytes);
+    pcm = this->rx_audio_chunk_;
     silence_reason = SilenceReason::MUTED_SINK;
   }
 
   size_t offset = 0;
-  while (offset < bytes && this->audio_devices_active_.load(std::memory_order_acquire) &&
-         this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL &&
+  while (offset < bytes && (this->audio_devices_active_.load(std::memory_order_acquire) ||
+                           this->rx_playout_phase_(revision) != RxPlayoutPhase::ACTIVE) &&
+         this->rx_playout_phase_(revision) != RxPlayoutPhase::STOPPED &&
          this->rx_audio_revision_.load(std::memory_order_acquire) == revision) {
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+    if (trace_pcm) this->debug_rx_startup_event_(RxStartupEvent::PLAY_ATTEMPT, revision);
+#endif
     const TickType_t started = xTaskGetTickCount();
     const size_t written = this->speaker_->play(pcm + offset, bytes - offset, ticks_to_wait);
+    if (written > 0 && silence_reason == SilenceReason::PREROLL) {
+      uint32_t expected = (revision << 3U) | static_cast<uint8_t>(RxPlayoutPhase::PREPARING);
+      this->rx_playout_state_.compare_exchange_strong(
+          expected, (revision << 3U) | static_cast<uint8_t>(RxPlayoutPhase::WAITING_OUTPUT), std::memory_order_release);
+    }
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+    if (trace_pcm) {
+      if (written == 0) {
+        this->debug_rx_startup_event_(RxStartupEvent::FIRST_ZERO_WRITE, revision);
+      } else {
+        this->debug_rx_startup_event_(RxStartupEvent::PCM_ACCEPTED, revision);
+        if (this->audio_debug_rx_startup_[static_cast<uint8_t>(RxStartupEvent::FIRST_ZERO_WRITE)]
+                .revision.load(std::memory_order_relaxed) == revision) {
+          this->debug_rx_startup_event_(RxStartupEvent::RESUMED, revision);
+        }
+      }
+    }
+#endif
     if (written == 0) {
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
       this->audio_debug_speaker_short_writes_.fetch_add(1, std::memory_order_relaxed);
@@ -395,8 +585,9 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
 
 void VoipStack::play_silence_frame_(SilenceReason reason, TickType_t ticks_to_wait, uint32_t revision) {
   const size_t silence_bytes = this->get_current_rx_audio_format_().nominal_frame_bytes();
-  if (this->rx_silence_chunk_ != nullptr && silence_bytes <= this->rx_audio_chunk_alloc_bytes_) {
-    this->play_rx_frame_(this->rx_silence_chunk_, silence_bytes, reason, ticks_to_wait, revision);
+  if (this->rx_audio_chunk_ != nullptr && silence_bytes <= this->rx_audio_chunk_alloc_bytes_) {
+    memset(this->rx_audio_chunk_, 0, silence_bytes);
+    this->play_rx_frame_(this->rx_audio_chunk_, silence_bytes, reason, ticks_to_wait, revision);
   }
 }
 
@@ -406,13 +597,14 @@ void VoipStack::rx_task_() {
   uint32_t previous_revision = UINT32_MAX;
 
   while (true) {
-    if (!this->audio_devices_active_.load(std::memory_order_acquire) ||
-        this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL) {
+    const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
+    if (this->rx_playout_phase_(revision) == RxPlayoutPhase::STOPPED ||
+        (!this->audio_devices_active_.load(std::memory_order_acquire) &&
+         this->rx_playout_phase_(revision) == RxPlayoutPhase::ACTIVE)) {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
       continue;
     }
 
-    const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
     if (revision != previous_revision) {
       previous_format_packed = 0;
       previous_revision = revision;
@@ -426,6 +618,7 @@ void VoipStack::rx_task_() {
         static_cast<uint64_t>(rx_format.frame_ms) * configTICK_RATE_HZ;
     const TickType_t frame_ticks = static_cast<TickType_t>(
         std::max<uint64_t>(1, (frame_tick_numerator + 999) / 1000));
+    if (this->play_rx_preroll_(revision, frame_ticks)) continue;
     // A sink may go idle before the first RTP packet arrives. Deliver media
     // through play(), whose speaker contract starts it again as needed; waiting
     // for is_running() here would prevent that restart indefinitely.
@@ -482,8 +675,9 @@ void VoipStack::rx_task_() {
       // after an established stream drains completely. In that second case we
       // still have to clock silence into the sink or I2S can stall/pop until
       // enough RTP packets arrive to satisfy the prebuffer again.
-      if (read_result == RtpJitterBuffer::ReadResult::BUFFERING &&
-          !this->first_audio_received_.load(std::memory_order_acquire)) {
+      // Receiving a packet does not mean the initial prebuffer is ready. Retry
+      // on notifications until this revision has consumed its first frame.
+      if (read_result == RtpJitterBuffer::ReadResult::BUFFERING && previous_format_packed == 0) {
         ulTaskNotifyTake(pdTRUE, frame_ticks);
         continue;
       }
@@ -500,7 +694,7 @@ void VoipStack::rx_task_() {
       while (remaining > 0) {
         ulTaskNotifyTake(pdTRUE, remaining);
         if (!this->audio_devices_active_.load(std::memory_order_acquire) ||
-            this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL ||
+            this->rx_playout_phase_(revision) != RxPlayoutPhase::ACTIVE ||
             this->rx_audio_revision_.load(std::memory_order_acquire) != revision) {
           break;
         }
@@ -509,7 +703,7 @@ void VoipStack::rx_task_() {
         remaining = frame_ticks - elapsed;
       }
       if (!this->audio_devices_active_.load(std::memory_order_acquire) ||
-          this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL ||
+          this->rx_playout_phase_(revision) != RxPlayoutPhase::ACTIVE ||
           this->rx_audio_revision_.load(std::memory_order_acquire) != revision) {
         continue;
       }
@@ -522,7 +716,7 @@ void VoipStack::rx_task_() {
       if (now - underrun_start >= VoipStack::kRxSilenceAfterMs &&
           this->first_audio_received_.load(std::memory_order_acquire) &&
           this->audio_devices_active_.load(std::memory_order_acquire) &&
-          this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL) {
+          this->rx_playout_phase_(revision) == RxPlayoutPhase::ACTIVE) {
         // The notification wait above already owns this frame's cadence.
         // Do not add a second blocking budget in the speaker sink.
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
@@ -544,8 +738,13 @@ void VoipStack::rx_task_() {
   }
 }
 
-void VoipStack::reset_rx_audio_() {
-  this->rx_audio_revision_.fetch_add(1, std::memory_order_acq_rel);
+void VoipStack::reset_rx_audio_(bool preserve_playout) {
+  const uint32_t old_revision = this->rx_audio_revision_.load(std::memory_order_acquire);
+  const bool active = preserve_playout && this->rx_playout_phase_(old_revision) == RxPlayoutPhase::ACTIVE;
+  const uint32_t revision = this->rx_audio_revision_.fetch_add(1, std::memory_order_acq_rel) + 1;
+  this->rx_playout_state_.store(
+      (revision << 3U) | static_cast<uint8_t>(active ? RxPlayoutPhase::ACTIVE : RxPlayoutPhase::STOPPED),
+      std::memory_order_release);
   if (this->rx_jitter_buffer_ != nullptr) {
     this->rx_jitter_buffer_->reset();
   }

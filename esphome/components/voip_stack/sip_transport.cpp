@@ -16,6 +16,9 @@
 #include <sys/socket.h>
 #include <esp_system.h>
 #include <esp_heap_caps.h>
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+#include <esp_timer.h>
+#endif
 
 #include "audio_core_task_utils.h"
 #include "esphome/components/network/util.h"
@@ -25,6 +28,11 @@
 
 namespace esphome {
 namespace voip_stack {
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+#define VOIP_STARTUP_EVENT(event) this->record_startup_(StartupEvent::event)
+#else
+#define VOIP_STARTUP_EVENT(event) ((void) 0)
+#endif
 
 static const char *const TAG = "voip_stack.sip";
 
@@ -154,6 +162,7 @@ SipTransportSnapshot SipTransport::snapshot() const {
   this->get_media_config_(&out.selected_tx_format, &out.selected_rx_format, nullptr, nullptr);
   out.rtp_tx_packets = this->rtp_tx_packets_.load(std::memory_order_acquire);
   out.rtp_rx_packets = this->rtp_rx_packets_.load(std::memory_order_acquire);
+  out.rtp_rx_datagrams = this->rtp_rx_datagrams_.load(std::memory_order_relaxed);
   out.rtp_tx_bytes = this->rtp_tx_bytes_.load(std::memory_order_acquire);
   out.rtp_rx_bytes = this->rtp_rx_bytes_.load(std::memory_order_acquire);
   out.last_sip_status_code = this->last_sip_status_code_.load(std::memory_order_acquire);
@@ -332,6 +341,7 @@ VideoCapability SipTransport::local_video_direction_capability_(
 
 bool SipTransport::prepare_video_session_locked_() {
   if (!this->video_negotiated_) return true;
+  VOIP_STARTUP_EVENT(VIDEO_PREPARE);
   if (this->video_session_ == nullptr) return false;
   if (this->video_session_->is_running()) {
     return this->video_session_->negotiation_matches(
@@ -346,7 +356,7 @@ bool SipTransport::prepare_video_session_locked_() {
            this->video_session_->can_request_media_direction(
                this->video_send_enabled_, this->video_receive_enabled_);
   }
-  return this->video_session_->set_negotiated(
+  const bool prepared = this->video_session_->set_negotiated(
              this->negotiated_video_capability_,
              this->local_video_direction_capability_(
                  this->negotiated_video_capability_, true),
@@ -357,6 +367,8 @@ bool SipTransport::prepare_video_session_locked_() {
              this->remote_video_rtcp_port_, this->video_send_enabled_,
              this->video_receive_enabled_) &&
          this->video_session_->start(false);
+  VOIP_STARTUP_EVENT(VIDEO_PREPARED);
+  return prepared;
 }
 
 void SipTransport::reset_video_negotiation_() {
@@ -393,7 +405,73 @@ bool SipTransport::parse_remote_(const std::string &host) {
   return true;
 }
 
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+void SipTransport::configure_startup_trace(bool enabled, bool prefer_psram) {
+  if (!enabled || this->startup_trace_) return;
+  RAMAllocator<StartupTrace> allocator = prefer_psram
+                                             ? RAMAllocator<StartupTrace>()
+                                             : RAMAllocator<StartupTrace>(RAMAllocator<StartupTrace>::ALLOC_INTERNAL);
+  auto* memory = allocator.allocate(1);
+  if (memory != nullptr)
+    this->startup_trace_.reset(new (memory) StartupTrace());
+  else
+    ESP_LOGW(TAG, "Startup RTP diagnostics allocation failed");
+}
+
+void SipTransport::reset_startup_trace_() {
+  if (!this->startup_trace_ || !this->rtp_task_quiesced_.load(std::memory_order_acquire)) return;
+  for (auto& event : this->startup_trace_->events) event.store(0, std::memory_order_relaxed);
+  this->startup_trace_->count = 0;
+}
+
+void SipTransport::record_startup_(StartupEvent event) {
+  if (!this->startup_trace_) return;
+  uint32_t expected = 0;
+  this->startup_trace_->events[static_cast<uint8_t>(event)].compare_exchange_strong(
+      expected, static_cast<uint32_t>(esp_timer_get_time()), std::memory_order_relaxed);
+}
+
+uint8_t SipTransport::record_startup_packet_(const uint8_t* data, size_t bytes) {
+  if (!this->startup_trace_ || bytes < 12 || this->startup_trace_->count == 64) return 255;
+  this->record_startup_(StartupEvent::RECV);
+  auto read32 = [](const uint8_t* p) {
+    return uint32_t(p[0]) << 24U | uint32_t(p[1]) << 16U | uint32_t(p[2]) << 8U | p[3];
+  };
+  const uint8_t index = this->startup_trace_->count++;
+  auto& packet = this->startup_trace_->packets[index];
+  packet = {static_cast<uint32_t>(esp_timer_get_time()),
+            0,
+            read32(data + 4),
+            read32(data + 8),
+            static_cast<uint16_t>(uint16_t(data[2]) << 8U | data[3]),
+            static_cast<uint8_t>(data[1] & 127U),
+            static_cast<uint8_t>(this->media_lifecycle_phase_.load(std::memory_order_acquire))};
+  return index;
+}
+
+void SipTransport::dump_startup_trace() {
+  if (!this->startup_trace_ || this->rtp_running_.load(std::memory_order_acquire) ||
+      !this->rtp_task_quiesced_.load(std::memory_order_acquire))
+    return;
+  LockGuard lock(this->dialog_mutex_);
+  if (this->rtp_running_.load(std::memory_order_acquire) || !this->rtp_task_quiesced_.load(std::memory_order_acquire))
+    return;
+  for (uint8_t i = 0; i < static_cast<uint8_t>(StartupEvent::COUNT); ++i) {
+    const auto stamp = this->startup_trace_->events[i].load(std::memory_order_relaxed);
+    if (stamp != 0) ESP_LOGI(TAG, "MediaStart stage=%u us=%u", i, (unsigned)stamp);
+  }
+  for (uint8_t i = 0; i < this->startup_trace_->count; ++i) {
+    const auto& p = this->startup_trace_->packets[i];
+    ESP_LOGI(TAG, "RTPStart n=%u us=%u done=%u seq=%u ts=%u ssrc=%08x pt=%u phase=%u delivered=%u", i, (unsigned)p.us,
+             (unsigned)p.done_us, p.sequence, (unsigned)p.timestamp, (unsigned)p.ssrc, p.pt, p.phase & 127U,
+             p.phase >> 7U);
+  }
+}
+#endif
+
+
 bool SipTransport::bind_udp_(int *fd, uint16_t port, const char *label) {
+  if (label != nullptr && strcmp(label, "RTP") == 0) VOIP_STARTUP_EVENT(BIND);
   *fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
   if (*fd < 0) {
     const int err = errno;
@@ -965,6 +1043,7 @@ bool SipTransport::prepare_media_path() {
 }
 
 bool SipTransport::prepare_media_path_locked_() {
+  VOIP_STARTUP_EVENT(PREPARE);
   const MediaLifecyclePhase phase =
       this->media_lifecycle_phase_.load(std::memory_order_acquire);
   if (phase == MediaLifecyclePhase::PREPARED ||
@@ -997,7 +1076,8 @@ bool SipTransport::prepare_media_path_locked_() {
   RtpAudioPayloads rx_payloads;
   this->get_media_config_(nullptr, &sink_format, nullptr, nullptr, &rx_payloads);
   if (sink_format.is_valid() &&
-      !this->pcm_receive_converter_.prepare(rx_payloads.pcm_only(), decoded_pcm_format(sink_format))) {
+      !this->pcm_receive_converter_.prepare(
+          rx_payloads.pcm_only(), decoded_pcm_format(pcm_playout_format(sink_format, this->offer_rx_formats_)))) {
     ESP_LOGE(TAG, "Unable to prepare negotiated PCM receive formats");
     return false;
   }
@@ -1049,6 +1129,7 @@ bool SipTransport::prepare_media_path_locked_() {
   // final SIP answer has been sent successfully.
   this->media_lifecycle_phase_.store(MediaLifecyclePhase::PREPARED,
                                       std::memory_order_release);
+  VOIP_STARTUP_EVENT(PREPARED);
   return true;
 }
 
@@ -1069,6 +1150,7 @@ bool SipTransport::commit_media_path() {
 }
 
 bool SipTransport::commit_media_path_locked_() {
+  VOIP_STARTUP_EVENT(COMMIT);
   const MediaLifecyclePhase phase =
       this->media_lifecycle_phase_.load(std::memory_order_acquire);
   if (phase == MediaLifecyclePhase::ACTIVE &&
@@ -1091,8 +1173,10 @@ bool SipTransport::commit_media_path_locked_() {
   this->rtp_running_.store(true, std::memory_order_release);
   this->media_lifecycle_phase_.store(MediaLifecyclePhase::ACTIVE,
                                       std::memory_order_release);
+  VOIP_STARTUP_EVENT(NOTIFY);
   xTaskNotifyGive(this->rtp_task_handle_);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  VOIP_STARTUP_EVENT(VIDEO_BEGIN);
   if (this->video_negotiated_ &&
       !this->video_session_->request_media_direction(
           this->video_send_enabled_, this->video_receive_enabled_)) {
@@ -1107,7 +1191,9 @@ bool SipTransport::commit_media_path_locked_() {
       (this->video_send_enabled_ || this->video_receive_enabled_));
   this->emit_video_send_state_(
       this->video_negotiated_ && this->video_send_enabled_, false);
+  VOIP_STARTUP_EVENT(VIDEO_END);
 #endif
+  VOIP_STARTUP_EVENT(COMMITTED);
   return true;
 }
 
@@ -2170,6 +2256,10 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
   if (!this->refer_context_active_) this->next_account_ = -1;
 #endif
   this->call_id_ = call_id;
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  if (!this->refer_context_active_) this->reset_startup_trace_();
+#endif
+  VOIP_STARTUP_EVENT(INVITE);
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   if (this->active_account_ < 0) this->tcp_flow_.ingress_deadline = 0;
 #endif
@@ -2908,12 +2998,10 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   if (!this->call_id_.empty()) {
     return this->send_stateless_response_(message, src, 486, "Busy Here", "busy");
   }
-#ifdef USE_ESPHOME_VOIP_REGISTRATION
   // The application can own an outgoing attempt before its INVITE reaches
   // the wire. Authorize/replay first, then apply the same gate to UDP and TCP.
   if (!this->should_accept_session_())
     return this->send_stateless_response_(message, src, 486, "Busy Here", "busy");
-#endif
   {
     LockGuard media_lock(this->media_lifecycle_mutex_);
     const MediaLifecyclePhase phase =
@@ -2937,6 +3025,9 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   this->logical_call_id_.clear();
   this->logical_wire_id_.clear();
   this->call_id_ = incoming_call_id;
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  this->reset_startup_trace_();
+#endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   this->active_account_ = incoming_account;
   this->dialog_account_socket_ = incoming_account >= 0 ? this->dispatch_socket_ : -1;
@@ -3977,6 +4068,7 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
     SipRequestOptions options;
     options.cseq_number = this->invite_cseq_;
     this->send_request_("ACK", "", options);
+    VOIP_STARTUP_EVENT(ACK);
     if (this->remote_tag_.empty()) {
       SipSignal signal;
       signal.type = SipSignalType::PROTOCOL_ERROR;
@@ -5075,6 +5167,7 @@ void SipTransport::rtp_task_() {
 #endif
   while (true) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    VOIP_STARTUP_EVENT(WAKE);
     while (!this->rtp_task_terminate_.load(std::memory_order_acquire) &&
            this->rtp_running_.load(std::memory_order_acquire)) {
       const int socket = this->rtp_socket_;
@@ -5142,6 +5235,11 @@ void SipTransport::rtp_task_() {
       socklen_t slen = sizeof(src);
       int n = recvfrom(socket, buf, sizeof(buf), 0,
                        reinterpret_cast<struct sockaddr *>(&src), &slen);
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+      const uint8_t startup_index = n > 0 ? this->record_startup_packet_(buf, static_cast<size_t>(n)) : 255;
+#endif
+      // Count socket deliveries before RTP admission, including invalid input.
+      if (n > 0) this->rtp_rx_datagrams_.fetch_add(1, std::memory_order_relaxed);
       if (n <= 12 || (buf[0] & 0xC0) != 0x80) {
         continue;
       }
@@ -5247,6 +5345,13 @@ void SipTransport::rtp_task_() {
       this->rtp_rx_bytes_.fetch_add(static_cast<uint32_t>(n), std::memory_order_acq_rel);
       this->emit_audio_frame_(audio_data, audio_bytes, sequence, timestamp,
                               source_changed, pack_audio_format(rx_format));
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+      if (startup_index < 64 && this->startup_trace_) {
+        auto &packet = this->startup_trace_->packets[startup_index];
+        packet.done_us = static_cast<uint32_t>(esp_timer_get_time());
+        packet.phase |= 128U;
+      }
+#endif
     }
 
 #ifdef USE_ESPHOME_VOIP_DTMF

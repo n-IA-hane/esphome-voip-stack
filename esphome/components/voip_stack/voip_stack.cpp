@@ -164,10 +164,6 @@ void VoipStack::cleanup_partial_setup_() {
                            this->rx_jitter_frame_alloc_bytes_ * VoipStack::kRxQueuedFrames);
     this->rx_jitter_pcm_storage_ = nullptr;
   }
-  if (this->rx_silence_chunk_ != nullptr) {
-    rx_u8_alloc.deallocate(this->rx_silence_chunk_, this->rx_audio_chunk_alloc_bytes_);
-    this->rx_silence_chunk_ = nullptr;
-  }
   this->rx_audio_chunk_alloc_bytes_ = 0;
   this->rx_jitter_frame_alloc_bytes_ = 0;
 #endif
@@ -232,8 +228,7 @@ bool VoipStack::allocate_setup_buffers_() {
         psram_u8.allocate(this->rx_jitter_frame_alloc_bytes_);
     this->rx_jitter_pcm_storage_ =
         psram_u8.allocate(this->rx_jitter_frame_alloc_bytes_ * VoipStack::kRxQueuedFrames);
-    this->rx_silence_chunk_ = psram_u8.allocate(this->rx_audio_chunk_alloc_bytes_);
-    if (!this->rx_audio_chunk_ || !this->rx_jitter_pcm_storage_ || !this->rx_silence_chunk_
+    if (!this->rx_audio_chunk_ || !this->rx_jitter_pcm_storage_
         || !this->rx_network_chunk_
     ) {
       ESP_LOGE(TAG, "Failed to allocate RX playout buffers");
@@ -243,7 +238,6 @@ bool VoipStack::allocate_setup_buffers_() {
         this->rx_jitter_pcm_storage_, this->rx_jitter_frame_alloc_bytes_,
         static_cast<uint8_t>(VoipStack::kRxQueuedFrames),
         static_cast<uint8_t>(VoipStack::kRxPrebufferFrames));
-    memset(this->rx_silence_chunk_, 0, this->rx_audio_chunk_alloc_bytes_);
   }
 #endif
 
@@ -251,6 +245,13 @@ bool VoipStack::allocate_setup_buffers_() {
 }
 
 bool VoipStack::setup_audio_helpers_() {
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+  if (this->speaker_ != nullptr && this->speaker_feedback_source_ != nullptr) {
+    this->speaker_->add_audio_output_callback([this](uint32_t frames, int64_t timestamp) {
+      this->speaker_output_progress_(frames, timestamp);
+    });
+  }
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
   if (this->microphone_ != nullptr) {
     this->microphone_->add_data_callback([this](const std::vector<uint8_t> &data) {
@@ -319,6 +320,9 @@ bool VoipStack::setup_transport_() {
 #endif
 
   // Wire callbacks before start() so the transport task never fires into null.
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  this->transport_->configure_startup_trace(this->audio_debug_, this->buffers_in_psram_);
+#endif
   this->transport_->set_audio_callback(VoipStack::transport_audio_callback_, this);
   this->transport_->set_sip_signal_callback(VoipStack::transport_sip_signal_callback_, this);
   this->transport_->set_connection_callback(VoipStack::transport_connection_callback_, this);
@@ -596,6 +600,10 @@ void VoipStack::pump_dtmf_events_() {
 #endif
 
 void VoipStack::loop() {
+  this->pump_application_media_start_();
+#if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_MIC)
+  this->emit_audio_debug_pending_();
+#endif
 #ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
   this->pump_dtmf_events_();
 #endif
@@ -654,6 +662,11 @@ void VoipStack::loop() {
     this->publish_sip_snapshot_();
   }
   bool keep_loop = this->cycle_active_ || state != CallState::IDLE;
+#if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_MIC)
+  keep_loop = keep_loop || (this->audio_debug_ &&
+      (this->audio_debug_pcm_.pending.load(std::memory_order_acquire) ||
+       this->audio_debug_mic_.pending.load(std::memory_order_acquire)));
+#endif
   keep_loop = keep_loop || this->endpoint_publish_requested_.load(std::memory_order_acquire);
   if (!keep_loop) {
     this->disable_loop();
