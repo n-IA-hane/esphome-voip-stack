@@ -86,6 +86,7 @@ def validate_registration(value):
 
 SCHEMA = cv.All(cv.Schema({
     cv.Optional("keepalive_interval", default="15s"): keepalive_interval,
+    cv.Optional("message_waiting", default=False): cv.boolean,
     cv.Optional("max_accounts", default=2): cv.int_range(min=1, max=4),
     cv.Optional("accept_direct_calls", default=True): cv.boolean,
     cv.Optional("default_line"): cv.Any("direct", account_id),
@@ -94,6 +95,15 @@ SCHEMA = cv.All(cv.Schema({
 
 
 async def to_code(parent, config):
+    mwi_enabled = (config.get(CONF_REGISTRATION) or {}).get("message_waiting", False)
+    if "on_message_waiting" in config and not mwi_enabled:
+        raise cv.Invalid("on_message_waiting requires registration.message_waiting: true")
+    for trigger in config.get("on_message_waiting", []):
+        await automation.build_automation(parent.get_message_waiting_trigger(),
+            [(cg.std_string, "account_id"), (cg.bool_, "available"), (cg.bool_, "waiting"),
+             (cg.uint32, "new_messages"), (cg.uint32, "old_messages"),
+             (cg.uint32, "urgent_new"), (cg.uint32, "urgent_old")], trigger)
+
     if CONF_REGISTRATION not in config:
         if "on_registration_state" in config:
             raise cv.Invalid("on_registration_state requires voip_stack.registration")
@@ -102,6 +112,8 @@ async def to_code(parent, config):
         raise cv.Invalid("SIP registration requires the ESP-IDF framework")
     conf = config[CONF_REGISTRATION]
     cg.add_define("USE_ESPHOME_VOIP_REGISTRATION")
+    if conf["message_waiting"]:
+        cg.add_define("USE_ESPHOME_VOIP_MWI")
     cg.add_define("VOIP_REGISTRATION_CAPACITY", conf["max_accounts"])
     esp32.include_builtin_idf_component("mbedtls")
     cg.add(parent.configure_registration(conf["accept_direct_calls"], conf["default_line"]))
@@ -188,4 +200,36 @@ def register_automations(parent_type):
         cg.add(action.set_config(a["account_id"], a["registrar"], a["port"], a["domain"], a["username"], a["password"],
             a["auth_username"], a["proxy"], a["proxy_port"], a["transport"] == "tcp", a["expires"], a["enabled"]))
         cg.add(action.set_persist(await cg.templatable(conf["persist"], args, cg.bool_)))
+        return action
+
+def register_mwi_condition(parent_type):
+    def require_mwi(name):
+        config = (CORE.config or {}).get("voip_stack") or {}
+        if not (config.get(CONF_REGISTRATION) or {}).get("message_waiting", False):
+            raise cv.Invalid(f"voip_stack.{name} requires registration.message_waiting: true")
+
+    mailbox = NS.class_("CallMailboxAction", automation.Action)
+    @automation.register_action("voip_stack.call_mailbox", mailbox, cv.Schema({
+        cv.GenerateID(): cv.use_id(parent_type),
+        cv.Optional("account_id", default=""): cv.templatable(cv.Any("", account_id)),
+        cv.Optional("target", default=""): cv.templatable(cv.string),
+    }), synchronous=True)
+    async def mailbox_to_code(conf, action_id, template_arg, args):
+        require_mwi("call_mailbox")
+        action = cg.new_Pvariable(action_id, template_arg)
+        cg.add(action.set_parent(await cg.get_variable(conf["id"])))
+        cg.add(action.set_account_id(await cg.templatable(conf["account_id"], args, cg.std_string)))
+        cg.add(action.set_target(await cg.templatable(conf["target"], args, cg.std_string)))
+        return action
+
+    condition = NS.class_("HasWaitingMessagesCondition", automation.Condition)
+    @automation.register_condition("voip_stack.has_waiting_messages", condition, cv.Schema({
+        cv.GenerateID(): cv.use_id(parent_type),
+        cv.Optional("account_id", default=""): cv.templatable(cv.Any("", "direct", account_id)),
+    }))
+    async def condition_to_code(conf, condition_id, template_arg, args):
+        require_mwi("has_waiting_messages")
+        action = cg.new_Pvariable(condition_id, template_arg)
+        cg.add(action.set_parent(await cg.get_variable(conf["id"])))
+        cg.add(action.set_account_id(await cg.templatable(conf["account_id"], args, cg.std_string)))
         return action

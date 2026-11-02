@@ -729,6 +729,7 @@ CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), ha_integration.p
         # Trigger when state returns to idle
         cv.Optional(CONF_ON_IDLE): automation.validate_automation(single=True),
         cv.Optional(CONF_ON_DTMF): automation.validate_automation(single=True),
+        cv.Optional("on_message_waiting"): automation.validate_automation(),
         # Trigger on negotiated video media lifecycle edges
         cv.Optional(CONF_ON_VIDEO_START): automation.validate_automation(single=True),
         cv.Optional(CONF_ON_VIDEO_END): automation.validate_automation(single=True),
@@ -1614,3 +1615,4 @@ _register_simple_condition("voip_stack.can_send_dtmf", VoipCanSendDtmfCondition)
 
 
 registration.register_automations(VoipStack)
+registration.register_mwi_condition(VoipStack)

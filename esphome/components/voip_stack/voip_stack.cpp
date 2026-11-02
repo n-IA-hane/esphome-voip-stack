@@ -591,6 +591,9 @@ void VoipStack::loop() {
 #endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   this->pump_registration_wake_();
+#ifdef USE_ESPHOME_VOIP_MWI
+  this->pump_message_waiting_();
+#endif
 #endif
 #if defined(USE_ESPHOME_VOIP_STACK_VIDEO_JPEG) && \
     defined(USE_ESPHOME_VOIP_STACK_VIDEO_CAMERA)

@@ -82,13 +82,94 @@ void SipTransport::initialize_registration() {
   hooks.resolve = registration_resolve_;
   hooks.local_ip = registration_local_ip_;
   hooks.notify = registration_notify_;
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+  hooks.binding_accepted = registration_binding_accepted_;
+#endif
   hooks.random = esp_random;
   hooks.hash = registration_hash_;
   hooks.local_port = this->sip_port_;
   hooks.directional_audio_supported = registration_directional_audio_supported_;
   this->registration_.set_hooks(hooks);
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+  SipMwi::Hooks events;
+  events.context = this; events.send = registration_send_view_; events.reply = registration_mwi_reply_;
+  events.local_ip = registration_local_ip_; events.random = esp_random;
+  events.hash = registration_hash_; events.local_port = this->sip_port_;
+#ifdef USE_ESPHOME_VOIP_MWI
+  events.notify = registration_mwi_notify_;
+#endif
+  this->mwi_.set_hooks(events);
+  if (!this->mwi_.initialized()) ESP_LOGE("voip_stack.mwi", "Subscription pool allocation failed");
+#endif
 }
 
+
+
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+void SipTransport::registration_binding_accepted_(void *context, size_t index, uint32_t now) {
+  auto *self = static_cast<SipTransport *>(context);
+  self->mwi_.on_registration_accepted(index, self->registration_.account(index), now);
+}
+void SipTransport::pump_registration_mwi_(uint32_t now) {
+  for (size_t i = 0; i < SipRegistration::CAPACITY; ++i) {
+    const auto &account = this->registration_.account(i);
+#ifdef USE_ESPHOME_VOIP_MWI
+    this->mwi_.update_registered_account(i, account, now);
+#endif
+
+  }
+  this->mwi_.tick(now);
+}
+bool SipTransport::registration_mwi_reply_(void *ctx, const std::string &message, uint32_t ip, uint16_t port,
+                                          bool tcp, int) {
+  auto *self = static_cast<SipTransport *>(ctx);
+  if (!tcp) return self->send_sip_udp_bytes_(message.data(), message.size(), ip, port);
+  LockGuard send_lock(self->tcp_send_mutex_);
+  return self->send_sip_tcp_record_(message, self->dispatch_socket_);
+}
+#ifdef USE_ESPHOME_VOIP_MWI
+void SipTransport::registration_mwi_notify_(void *ctx, const MessageWaitingState &state) {
+  auto *self = static_cast<SipTransport *>(ctx);
+  const int index = self->registration_.find(state.account_id);
+  if (index >= 0 && self->message_waiting_callback_ != nullptr)
+    self->message_waiting_callback_(self->registration_context_, self, static_cast<size_t>(index));
+}
+bool SipTransport::copy_message_waiting_slot(size_t index, MessageWaitingState *state) {
+  if (state == nullptr || index >= SipRegistration::CAPACITY) return false;
+  LockGuard lock(this->dialog_mutex_); *state = this->mwi_.state(index); return !state->account_id.empty();
+}
+bool SipTransport::get_message_waiting(const std::string &id, MessageWaitingState *state, const std::string &preferred) {
+  if (state == nullptr) return false;
+  LockGuard lock(this->dialog_mutex_);
+  int index = this->registration_.find(id);
+  if (id.empty()) {
+    int first = -1, waiting = -1, selected = -1;
+    for (size_t i = 0; i < SipRegistration::CAPACITY; ++i) {
+      const auto &account = this->registration_.account(i);
+      const auto &mailbox = this->mwi_.state(i);
+      if (!account.occupied || !mailbox.available || mailbox.account_id != account.config.id) continue;
+      if (first < 0) first = i;
+      if (waiting < 0 && mailbox.waiting) waiting = i;
+      if (account.config.id == preferred) selected = i;
+    }
+    index = selected >= 0 && this->mwi_.state(selected).waiting ? selected :
+        waiting >= 0 ? waiting : selected >= 0 ? selected : first;
+  }
+  if (index < 0 || (!id.empty() && this->mwi_.state(index).account_id != id)) return false;
+  *state = this->mwi_.state(index); return true;
+}
+bool SipTransport::has_waiting_messages(const std::string &id) {
+  LockGuard lock(this->dialog_mutex_);
+  for (size_t i = 0; i < SipRegistration::CAPACITY; ++i) {
+    const auto &account = this->registration_.account(i);
+    const auto &state = this->mwi_.state(i);
+    if (account.occupied && (id.empty() || id == account.config.id) && state.account_id == account.config.id &&
+        state.available && state.waiting) return true;
+  }
+  return false;
+}
+#endif
+#endif
 
 std::string SipTransport::registration_hash_(const std::string& algorithm, const std::string& input) {
   const auto type = algorithm == "MD5"       ? MBEDTLS_MD_MD5
@@ -242,7 +323,7 @@ void SipTransport::retire_registration_flow_(size_t index) {
 bool SipTransport::set_account(const SipAccountConfig& config, AccountCommit commit, void* context) {
   LockGuard lock(this->dialog_mutex_);
   const int i = this->registration_.find(config.id);
-  if (this->account_in_use_(i) || !config.valid()) return false;
+  if (this->account_in_use_(i) || (i >= 0 && !this->registration_subscriptions_retired_(i)) || !config.valid()) return false;
   // Retire a registered binding explicitly before replacing credentials or
   // registrar. A successful unregister leaves the same slot reusable.
   if (i >= 0 && this->registration_.account(i).bound) return false;
@@ -256,6 +337,9 @@ bool SipTransport::set_account(const SipAccountConfig& config, AccountCommit com
     if (!space) return false;
   }
   if (commit != nullptr && !commit(context, config.id, &config)) return false;
+#ifdef USE_ESPHOME_VOIP_MWI
+  if (i >= 0) this->mwi_.invalidate_account(i);
+#endif
   if (i >= 0) this->retire_registration_flow_(i);
   if (i >= 0) this->invalidate_registration_dns_(i);
   const bool result = this->registration_.set_account(config, millis());
@@ -266,10 +350,13 @@ bool SipTransport::remove_account(const std::string& id, AccountCommit commit, v
   LockGuard lock(this->dialog_mutex_);
   const int i = this->registration_.find(id);
   if (i < 0) return allow_missing && commit != nullptr && commit(context, id, nullptr);
-  if (this->account_in_use_(i) || this->registration_.account(i).pending ||
+  if (this->account_in_use_(i) || !this->registration_subscriptions_retired_(i) || this->registration_.account(i).pending ||
       this->registration_.account(i).bound)
     return false;
   if (commit != nullptr && !commit(context, id, nullptr)) return false;
+#ifdef USE_ESPHOME_VOIP_MWI
+  this->mwi_.invalidate_account(i);
+#endif
   const bool result = this->registration_.remove_account(id);
   this->invalidate_registration_dns_(i);
   this->retire_registration_flow_(i);
@@ -281,6 +368,9 @@ bool SipTransport::register_account(const std::string& id, bool enabled) {
   const int i = this->registration_.find(id);
   if (i < 0) return false;
   const bool result = this->registration_.request_registration(id, enabled, millis());
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+  this->mwi_.update_registered_account(i, this->registration_.account(i), millis());
+#endif
   this->wake_sip_task_();
   return result;
 }
@@ -322,6 +412,11 @@ bool SipTransport::registration_ingress_(const std::string& message, const socka
   if (!sip_content_length(message, &declared_length) || separator == std::string::npos ||
       declared_length != message.size() - separator - 4) return false;
   const int flow = this->registration_socket_index_(socket);
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+  const uint32_t ip = ntohl(src.sin_addr.s_addr); const uint16_t port = ntohs(src.sin_port);
+  if (this->mwi_.handle_response(message, ip, port, socket >= 0, flow, millis()) ||
+      this->mwi_.handle_notify(message, ip, port, socket >= 0, flow, millis())) return true;
+#endif
   if (message.rfind("SIP/2.0 ", 0) == 0) {
     return this->registration_.handle_response(message, ntohl(src.sin_addr.s_addr), ntohs(src.sin_port),
                                                socket >= 0, flow, millis());

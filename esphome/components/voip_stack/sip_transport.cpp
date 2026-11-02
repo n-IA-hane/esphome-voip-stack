@@ -659,6 +659,9 @@ void SipTransport::handle_tcp_peer_loss_(SipTcpFlow *flow, uint32_t expired_dead
       this->retire_registration_flow_(account);
       this->close_tcp_flow_(*flow);
       this->registration_.connection_lost(account, millis());
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+      this->mwi_.connection_lost(account, millis());
+#endif
 
       if (this->refer_dialog_ && this->refer_dialog_->active_account_ == account &&
           !this->refer_dialog_->call_id_.empty() &&
@@ -4644,6 +4647,9 @@ void SipTransport::sip_task_() {
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
     {
       LockGuard lock(this->dialog_mutex_); this->pump_registration_dns_(); this->registration_.tick(millis());
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+      this->pump_registration_mwi_(millis());
+#endif
     }
     for (auto &flow : this->registration_flows_) this->prepare_tcp_flow_(flow);
 #endif
@@ -4798,6 +4804,12 @@ void SipTransport::sip_task_() {
           (!have_timeout || registration_timeout < timeout_ms)) {
         timeout_ms = registration_timeout; have_timeout = true; timeout_ptr = &timeout;
       }
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+      if (this->mwi_.next_deadline(millis(), &registration_timeout) &&
+          (!have_timeout || registration_timeout < timeout_ms)) {
+        timeout_ms = registration_timeout; have_timeout = true; timeout_ptr = &timeout;
+      }
+#endif
     }
 #endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION

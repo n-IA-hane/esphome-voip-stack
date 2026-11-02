@@ -6,7 +6,7 @@
 #include <cstdio>
 #include <limits>
 
-#include "sip_header_name.h"
+#include "sip_record.h"
 
 namespace esphome::voip_stack {
 namespace {
@@ -37,21 +37,8 @@ std::string quote(const std::string& s) {
   return out + '"';
 }
 std::string_view header_view(std::string_view message, std::string_view name) {
-  size_t pos = message.find("\r\n");
-  while (pos != std::string::npos) {
-    const size_t next = message.find("\r\n", pos + 2);
-    if (next == std::string::npos || next == pos + 2) break;
-    const size_t colon = message.find(':', pos + 2);
-    if (colon < next && sip_header_name_equal(std::string_view(message).substr(pos + 2, colon - pos - 2), name))
-      {
-        auto value = message.substr(colon + 1, next - colon - 1);
-        const auto first = value.find_first_not_of(" \t");
-        return first == std::string_view::npos ? std::string_view{} :
-            value.substr(first, value.find_last_not_of(" \t") - first + 1);
-      }
-    pos = next;
-  }
-  return "";
+  const auto field = sip_record_first(message, name);
+  return field.substr(0, field.find("\r\n"));
 }
 std::string header(const std::string& message, const std::string& name) {
   return std::string(header_view(message, name));
@@ -373,7 +360,9 @@ bool SipRegistration::set_account(const SipAccountConfig& c, uint32_t now) {
       }
   if (i < 0) return false;
   auto& a = this->accounts_[i];
+  const uint32_t revision = ++this->next_config_revision_;
   a = {};
+  a.config_revision = revision;
   a.config = c;
   a.occupied = true;
   a.desired = c.enabled;
@@ -386,7 +375,9 @@ bool SipRegistration::set_account(const SipAccountConfig& c, uint32_t now) {
 bool SipRegistration::remove_account(const std::string& id) {
   const int i = this->find(id);
   if (i < 0) return false;
+  const uint32_t revision = ++this->next_config_revision_;
   this->accounts_[i] = {};
+  this->accounts_[i].config_revision = revision;
   return true;
 }
 bool SipRegistration::request_registration(const std::string& id, bool on, uint32_t now) {
@@ -741,6 +732,10 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
       a.keepalive_next_ms = now + this->keepalive_interval_ms_;
       a.binding_expires_ms = now + expires * 1000;
       a.binding_ip = a.target_ip;
+#if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
+      if (a.bound && a.desired && this->hooks_.binding_accepted != nullptr)
+        this->hooks_.binding_accepted(this->hooks_.context, i, now);
+#endif
       if (a.desired != (a.requested_expires > 0)) {
         a.scheduled = true;
         a.next_ms = now;

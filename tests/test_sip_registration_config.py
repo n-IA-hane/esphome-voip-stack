@@ -125,11 +125,13 @@ button:
     assert "get_registration_state_trigger" in generated
 
 
-def test_message_waiting_key_is_rejected_in_registration_only_candidate(tmp_path):
+def test_message_waiting_key_enables_its_optional_subscription_owner(tmp_path):
     config = ACCOUNT.replace("    accounts:", "    message_waiting: true\n    accounts:")
-    result = run_config(tmp_path, config, generate=False)
-    assert result.returncode != 0
-    assert "message_waiting" in result.stdout + result.stderr
+    result = run_config(tmp_path, config)
+    assert result.returncode == 0, result.stdout + result.stderr
+    defines = next(tmp_path.rglob("defines.h")).read_text()
+    assert "#define USE_ESPHOME_VOIP_MWI" in defines
+    assert "#define USE_ESPHOME_VOIP_BLF" not in defines
 
 
 def test_duplicate_account_ids_are_rejected(tmp_path):
