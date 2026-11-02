@@ -60,7 +60,6 @@ def cross_bye_source():
  void stop();
  void hangup_call_if_id(const std::string&);
  static void transport_sip_signal_callback_(void*,SipSignal);
- void enable_loop_soon_any_context(){}
 """, 1)
     app = app.replace("bool send_sip_bye_(const std::string&){return true;}",
                       "bool send_sip_bye_(const std::string&);")
