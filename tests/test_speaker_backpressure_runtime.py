@@ -15,6 +15,7 @@ def test_received_pcm_is_retained_until_accepted_or_cancelled(tmp_path):
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <cstring>
 #include <vector>
 using TickType_t=uint32_t;
 #define pdTRUE 1
@@ -23,7 +24,7 @@ std::function<void()> on_wait;
 uint32_t xTaskGetTickCount(){return tick;}
 void ulTaskNotifyTake(int,uint32_t duration){assert(duration>0);tick+=duration;waits++;if(on_wait)on_wait();}
 enum class CallState{IN_CALL,IDLE};
-enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP};
+enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP,PREROLL};
 struct Speaker {
  unsigned attempts=0,blocked=0;bool consumes_wait=false;size_t chunk=3;
  std::vector<uint8_t> accepted;
@@ -33,11 +34,15 @@ struct Speaker {
  }
 };
 struct VoipStack {
- Speaker *speaker_;uint8_t *rx_silence_chunk_=nullptr;
+ Speaker *speaker_;uint8_t *rx_audio_chunk_=nullptr;size_t rx_audio_chunk_alloc_bytes_=0;
  std::atomic<float> volume_{1};
  std::atomic<bool> audio_devices_active_{true};
  std::atomic<CallState> call_state_{CallState::IN_CALL};
  std::atomic<uint32_t> rx_audio_revision_{0};
+ enum class RxPlayoutPhase:uint8_t{STOPPED,PREPARING,WAITING_OUTPUT,READY,ACTIVE};
+ std::atomic<uint32_t>rx_playout_state_{4},rx_prepare_started_us_{0};uint32_t rx_prepared_format_packed_=0;
+ RxPlayoutPhase rx_playout_phase_(uint32_t revision)const{return revision==rx_audio_revision_.load()&&call_state_==CallState::IN_CALL?RxPlayoutPhase::ACTIVE:RxPlayoutPhase::STOPPED;}
+ bool play_rx_preroll_(uint32_t,TickType_t){return false;}
  void play_rx_frame_(const uint8_t*,size_t,SilenceReason,TickType_t,uint32_t);
 };
 '''
@@ -53,6 +58,17 @@ int main(){
   tick=waits=0;Speaker sink;VoipStack v;v.speaker_=&sink;
   v.play_rx_frame_(pcm.data(),pcm.size(),SilenceReason::NONE,10,0);
   assert(sink.accepted==pcm&&waits==0&&tick==0);
+ }
+ {
+  tick=waits=0;Speaker sink;sink.chunk=3;sink.blocked=2;
+  VoipStack v;v.speaker_=&sink;std::vector<uint8_t> scratch(64,0xab);
+  v.rx_audio_chunk_=scratch.data();v.rx_audio_chunk_alloc_bytes_=scratch.size();v.volume_=0;
+  v.play_rx_frame_(pcm.data(),pcm.size(),SilenceReason::NONE,10,0);
+  assert(sink.accepted==std::vector<uint8_t>(64,0));
+  assert(pcm[1]==13); // Other input storage remains borrowed and unchanged.
+  sink.accepted.clear();v.volume_=1;
+  v.play_rx_frame_(pcm.data(),pcm.size(),SilenceReason::NONE,10,0);
+  assert(sink.accepted==pcm);
  }
  for(bool reset:{false,true}) {
   tick=waits=0;Speaker sink;sink.blocked=100;VoipStack v;v.speaker_=&sink;

@@ -31,6 +31,7 @@ def media_failure_source():
 #include <sys/socket.h>
 #include <unistd.h>
 #define ESP_LOGE(...) ((void)0)
+#define VOIP_STARTUP_EVENT(...) ((void)0)
 using namespace esphome::voip_stack;
 constexpr unsigned kRtpSocketRxBufferBytes=65536;
 uint32_t esp_random(){return 42;}
@@ -41,6 +42,7 @@ struct MediaOwner {
  std::atomic<bool>rtp_running_{false},rtp_task_terminate_{false},rtp_task_quiesced_{true};
  void *rtp_task_handle_=this;std::atomic<uint16_t>rtp_sequence_{0};std::atomic<uint32_t>rtp_timestamp_{0};uint32_t rtp_ssrc_=0;
  int rtp_socket_=-1,rtp_cleanup_done_=0;uint16_t rtp_port_=0;
+ AudioFormatList offer_rx_formats_;
  struct Converter {bool ok=true;bool prepare(const RtpAudioPayloads&,const AudioFormat&){return ok;}}pcm_receive_converter_;
  void reset_rtp_latch_(){}
  template<class...T>void get_media_config_(T...){ }

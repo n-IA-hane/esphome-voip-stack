@@ -18,6 +18,23 @@ namespace esphome::voip_stack {
 class PcmReceiveConverter {
  public:
   bool prepare(const RtpAudioPayloads &payloads, const AudioFormat &target) {
+    if (target == this->target_) {
+      bool covered = true;
+      const uint8_t count = this->count_.load(std::memory_order_acquire);
+      for (uint8_t i = 0; i < payloads.count && covered; ++i) {
+        const auto &source = payloads.entries[i].format;
+        if (source == target) continue;
+        bool found = false;
+        for (uint8_t j = 0; j < count; ++j) found |= this->entries_[j].format == source;
+        covered = found;
+      }
+      if (covered) {
+        // RTP admission still owns the negotiated PT map. Reuse only the
+        // existing converters, with fresh history for the new media session.
+        this->reset();
+        return true;
+      }
+    }
     this->clear_();
     this->target_ = target;
     return this->prepare_additional(payloads, target);

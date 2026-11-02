@@ -27,6 +27,7 @@ constexpr const char *TAG="test";
 const char* socket_errno_name(int){return "injected";}
 const char* socket_errno_text(int){return "injected";}
 #define ESP_LOGE(tag,...) do{(void)tag;if(false)std::printf(__VA_ARGS__);}while(false)
+#define VOIP_STARTUP_EVENT(...) ((void)0)
 int fault=0;std::set<int> live;
 int injected_socket(int domain,int type,int protocol){if(fault==1){errno=EMFILE;return -1;}int fd=::socket(domain,type,protocol);assert(fd>=0);assert(live.insert(fd).second);return fd;}
 int injected_bind(int fd,const sockaddr*a,socklen_t n){if(fault==2){errno=EADDRINUSE;return -1;}return ::bind(fd,a,n);}

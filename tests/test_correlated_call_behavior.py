@@ -7,14 +7,17 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / 'esphome/components/voip_stack'
 
 
-def test_correlated_call_uses_ha_and_scoped_hangup_without_retained_override(tmp_path):
+def correlated_fixture_source():
     fsm = (COMPONENT / 'voip_fsm.cpp').read_text()
     settings = (COMPONENT / 'voip_settings.cpp').read_text()
     methods = fsm[fsm.index('bool VoipStack::can_start_call_()'):fsm.index('void VoipStack::stop()')]
     methods += settings[settings.index('void VoipStack::call(const std::string &value)'):settings.index('void VoipStack::next_contact()')]
-    source = tmp_path / 'correlated_call.cpp'
-    source.write_text(r'''
+    from test_refer_dialog_runtime import block
+    for marker in ('void VoipStack::begin_application_media_start_(', 'void VoipStack::finish_application_media_start_(', 'void VoipStack::pump_application_media_start_('):
+        methods += '\n' + block(fsm, marker)
+    return r'''
 #include <atomic>
+#include <arpa/inet.h>
 #include <cassert>
 #include <cstdint>
 #include <map>
@@ -26,6 +29,7 @@ def test_correlated_call_uses_ha_and_scoped_hangup_without_retained_override(tmp
 #define ESP_LOGE(...)
 uint32_t millis(){return 100;}
 uint32_t esp_random(){return 42;}
+const char*inet_ntoa_r(in_addr a,char*out,size_t n){return inet_ntop(AF_INET,&a,out,n);}
 namespace esphome::voip_stack {
 struct Contact {std::string ip;uint16_t port=5060;uint16_t rtp_port=40000;bool sip_transport_tcp=false;bool directional_audio_v1=true;};
 struct Phonebook {
@@ -40,9 +44,11 @@ struct Transport {
   bool terminating=false,originate_ok=true;
   mutable int snapshots=0;
   std::string ip;
-  struct Snapshot {bool terminal_transaction_pending;};
+  struct Snapshot {bool terminal_transaction_pending;uint32_t remote_ip_v4=0x7f000001;uint16_t remote_sip_port=5060;bool sip_tcp=false;};
   Snapshot snapshot() const {++snapshots;return {terminating};}
   void set_peer_directional_audio_v1(bool){}
+  void set_sip_signaling_transport(bool){}
+  bool prepare_media_path(){return true;}bool commit_media_path(){return true;}void abort_media_path(){}
   bool originate(const std::string &value,uint16_t){ip=value;return originate_ok;}
 };
 struct Trigger {template<typename... Args> void trigger(Args...) {}};
@@ -61,6 +67,17 @@ public:
   bool can_start_call_() const;
   void start();void start_with_id_(const std::string &);
   void start_call_attempt_(bool,const std::string & = {});
+  enum class ApplicationMediaStart:uint8_t{NONE,ORIGINATE,ANSWER,CONFIRM,OFFER};
+  void begin_application_media_start_(ApplicationMediaStart);void finish_application_media_start_(ApplicationMediaStart);void pump_application_media_start_();
+  uint32_t prepared_peer_ip_=0x7f000001;uint16_t prepared_peer_port_=5060;bool prepared_peer_tcp_=false;
+  ApplicationMediaStart pending_media_start_=ApplicationMediaStart::NONE;std::atomic<uint32_t>rx_audio_revision_{0};
+  void reset_rx_audio_(bool=false){++rx_audio_revision_;}bool sink_ready=true;
+  bool incoming_setup_pending_=false,incoming_answer_accepted_=false;
+  static constexpr unsigned INVITE_NO_RESPONSE_TIMEOUT_MS=5000;
+  bool prepare_speaker_for_current_rx_(){return sink_ready;}bool prepare_rx_playout_(){return true;}bool activate_rx_playout_(){return true;}
+  void enable_loop_soon_any_context(){}bool send_sip_answer_(const std::string&){return true;}
+  void set_in_call_(bool on){if(on)call_state_=CallState::IN_CALL;}void reset_peer_audio_watchdog_(bool){}
+
   void call(const std::string &);void call_(const std::string &,const std::string &);
   void call_via_ha(const std::string &,const std::string &);void hangup_call_if_id(const std::string &);
   const char *get_call_state_str() const{return "state";}
@@ -86,6 +103,12 @@ public:
 ''' + methods + r'''
 }
 using namespace esphome::voip_stack;
+'''
+
+
+def test_correlated_call_uses_ha_and_scoped_hangup_without_retained_override(tmp_path):
+    source = tmp_path / 'correlated_call.cpp'
+    source.write_text(correlated_fixture_source() + r'''
 int main(){
  VoipStack phone;
  phone.call_via_ha("Desk","ha-ABC123@controller");

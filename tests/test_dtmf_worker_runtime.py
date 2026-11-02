@@ -40,6 +40,7 @@ template<typename... T>void ignored_log(T&&...){}
 #define ESP_LOGI(...) ignored_log(__VA_ARGS__)
 #define ESP_LOGW(...) ignored_log(__VA_ARGS__)
 #define ESP_LOGE(...) ignored_log(__VA_ARGS__)
+#define VOIP_STARTUP_EVENT(...) ((void)0)
 #define TAG "host"
 constexpr int pdTRUE=1;constexpr unsigned portMAX_DELAY=~0U;
 unsigned ulTaskNotifyTake(int,unsigned){return 1;}
@@ -67,7 +68,7 @@ struct SipTransport {
  AudioFormat audio;int rtp_socket_=-1;uint16_t rtp_port_=0;
  Queue queue;Queue*dtmf_queue_=&queue;
  std::atomic<bool>media_active_{true},rtp_running_{true},rtp_task_terminate_{false},rtp_task_quiesced_{false};
- std::atomic<uint32_t>rtp_tx_packets_{0},rtp_rx_packets_{0},rtp_tx_bytes_{0},rtp_rx_bytes_{0};
+ std::atomic<uint32_t>rtp_tx_packets_{0},rtp_rx_packets_{0},rtp_tx_bytes_{0},rtp_rx_bytes_{0},rtp_rx_datagrams_{0};
  std::atomic<uint32_t>latched_rtp_ip_v4_{0},latched_rtp_ssrc_{0};std::atomic<uint16_t>latched_rtp_port_{0};std::atomic<bool>rtp_ssrc_latched_{false};
  enum class MediaLifecyclePhase {IDLE,ACTIVE,CLEANING,SHUTTING_DOWN};
  std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::ACTIVE};

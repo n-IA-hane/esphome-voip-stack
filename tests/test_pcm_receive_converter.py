@@ -30,7 +30,9 @@ def test_real_pcm_converter_preserves_tone_and_resets(tmp_path, opus_enabled):
 #include "esphome/components/voip_stack/pcm_receive_converter.h"
 using namespace esphome::voip_stack;
 bool fail_allocation=false;
+unsigned allocations=0;
 void *operator new(std::size_t size, const std::nothrow_t&) noexcept {
+  ++allocations;
   if(fail_allocation) return nullptr;
   try { return ::operator new(size); } catch (...) { return nullptr; }
 }
@@ -48,13 +50,26 @@ int main() {
     fail_allocation=false;
     for (unsigned call=0;call<3;++call) {
       assert(converter.prepare(map,output));
+      const auto prepared_allocations=allocations;
+      fail_allocation=true;
+      assert(converter.prepare(map,output)&&"An identical prepared PCM target must reuse its converters");
+      converter.reset();
+      fail_allocation=false;
+      assert(allocations==prepared_allocations);
       std::vector<int16_t> source(input.nominal_frame_samples()), sink(480), captured;
       for (unsigned packet=0;packet<100;++packet) {
         if (packet==50) {
           RtpAudioPayloads extra;
           extra.add(98, format(rate==32000 ? 24000 : 32000));
+          RtpAudioPayloads uncached;
+          uncached.add(99, format(8000));
           fail_allocation=true;
-          assert(!converter.prepare_additional(extra,output));
+          assert(!converter.prepare_additional(uncached,output));
+          if(call!=0){
+            const auto cached_allocations=allocations;
+            assert(converter.prepare_additional(extra,output));
+            assert(allocations==cached_allocations);
+          }
           fail_allocation=false;
           assert(converter.prepare_additional(extra,output));
           assert(!converter.prepare_additional(extra,format(16000)));
@@ -92,11 +107,16 @@ int main() {
                "src/resample/art_biquad.cpp", "src/quantization_utils.cpp",
                "src/memory_utils.cpp", "src/dsp/dsps_dotprod_f32_ansi.c"]
     binary = tmp_path / "converter"
-    subprocess.run([
-        "g++", "-std=c++17", "-DUSE_ESPHOME_VOIP_STACK_SPEAKER",
+    built = subprocess.run([
+        # Match the firmware SDK's C++20 signed PCM quantization semantics.
+        "g++", "-std=c++20", "-DUSE_ESPHOME_VOIP_STACK_SPEAKER",
         *(["-DUSE_ESPHOME_VOIP_STACK_OPUS"] if opus_enabled else []),
         "-fsanitize=address,undefined", "-g", "-I", str(ROOT),
         "-I", str(library / "include"), str(cpp),
         *(str(library / source) for source in sources), "-o", str(binary),
-    ], check=True, capture_output=True, text=True)
-    subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+    ], capture_output=True, text=True)
+    assert built.returncode == 0, built.stderr
+    run = subprocess.run(["bash", "-c", 'ulimit -c 0; exec "$1"', "bash", str(binary)],
+                         capture_output=True, text=True,
+                         env={**os.environ, "UBSAN_OPTIONS": "halt_on_error=1"})
+    assert run.returncode == 0, run.stderr

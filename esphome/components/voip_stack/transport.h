@@ -66,6 +66,7 @@ struct SipTransportSnapshot {
   AudioFormat selected_rx_format{DEFAULT_AUDIO_FORMAT};
   uint32_t rtp_tx_packets{0};
   uint32_t rtp_rx_packets{0};
+  uint32_t rtp_rx_datagrams{0};
   uint32_t rtp_tx_bytes{0};
   uint32_t rtp_rx_bytes{0};
   uint16_t last_sip_status_code{0};
@@ -202,6 +203,10 @@ class SipPhoneTransport {
   virtual void abort_media_path() { this->stop_audio_path(); }
   /// Compatibility one-shot used by the already-confirmed outgoing call path.
   virtual bool start_audio_path() { return true; }
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  virtual void configure_startup_trace(bool enabled, bool prefer_psram) { (void) enabled; (void) prefer_psram; }
+  virtual void dump_startup_trace() {}
+#endif
   virtual void stop_audio_path() {}
 
   virtual SipTransportSnapshot snapshot() const { return {}; }

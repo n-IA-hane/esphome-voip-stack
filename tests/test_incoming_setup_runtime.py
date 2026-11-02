@@ -21,6 +21,9 @@ def incoming_source() -> str:
         "void VoipStack::finish_call_termination_(",
         "void VoipStack::clear_call_identity_(",
         "bool VoipStack::send_sip_final_response_(",
+        "void VoipStack::begin_application_media_start_(",
+        "void VoipStack::finish_application_media_start_(",
+        "void VoipStack::pump_application_media_start_(",
     ))
     if "void VoipStack::complete_incoming_answer_(" in source:
         methods += "\n" + block(source, "void VoipStack::complete_incoming_answer_(")
@@ -46,10 +49,10 @@ int main() {
   connected.call_id="incoming"; connected.media_source_changed=true;
   connected.connected_name="transfer target";
   phone.on_sip_signal_received_(connected);
-  assert(phone.watchdog_resets==1);
+  assert(phone.watchdog_resets==2); // Media activation, then the new source.
   assert(phone.rx_resets==
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
-    1
+    2
 #else
     0
 #endif

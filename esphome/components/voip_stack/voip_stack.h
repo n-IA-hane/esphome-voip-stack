@@ -39,6 +39,7 @@
 #endif
 
 #include "phonebook.h"
+#include "rtp_audio_payloads.h"
 #ifdef USE_ESPHOME_VOIP_BLF
 #include "sip_blf.h"
 #endif
@@ -179,6 +180,8 @@ class VoipStack : public Component {
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   void set_speaker(speaker::Speaker *spk) { this->speaker_ = spk; }
+  // Borrowed provider status, output callbacks remain on the selected source.
+  void set_speaker_output_feedback(Component *provider) { this->speaker_feedback_source_ = provider; }
 #endif
 
   void set_dc_offset_removal(bool enabled) { this->dc_offset_removal_ = enabled; }
@@ -564,6 +567,10 @@ class VoipStack : public Component {
 #endif
     CallState state{CallState::IDLE};
     uint8_t step{0};
+#if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_SPEAKER)
+    uint32_t startup_revision{0};
+    bool startup_present{false};
+#endif
     bool has_transport{false}, has_jitter{false}, changed{false}, audio_active{false};
     char last_reason[48]{};
     const char *route{""};
@@ -594,9 +601,35 @@ class VoipStack : public Component {
   void process_tx_chunk_(const uint8_t *audio_chunk);
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
-  void debug_log_pcm_level_(const char *label, const uint8_t *pcm, size_t bytes,
-                            const AudioFormat &format,
-                            uint32_t &last_log_ms, uint32_t &frame_count);
+  void record_tx_debug_(const uint8_t *pcm, size_t bytes, const AudioFormat &format);
+#ifdef USE_ESPHOME_VOIP_STACK_MIC
+  struct PcmDebugData {
+    uint32_t producer_ms{0}, frames{0}, bytes{0}, samples{0}, peak{0}, format{0};
+    float peak_dbfs{0}, rms_dbfs{0}, volume{0};
+    uint8_t state{0}, status{0};
+  };
+  struct MicDebugData {
+    uint32_t producer_ms{0}, callbacks{0}, bytes{0}, delta_ms{0}, frame_bytes{0}, available{0};
+    uint32_t depth{0}, drops{0}, drop_bytes{0}, format{0};
+    uint8_t state{0};
+  };
+  struct PcmDebugRecord {
+    std::atomic_flag busy = ATOMIC_FLAG_INIT;
+    std::atomic<bool> pending{false};
+    PcmDebugData data{};
+  };
+  struct MicDebugRecord {
+    std::atomic_flag busy = ATOMIC_FLAG_INIT;
+    std::atomic<bool> pending{false};
+    MicDebugData data{};
+  };
+  static_assert(sizeof(PcmDebugRecord) == 44 && sizeof(MicDebugRecord) == 48);
+  PcmDebugRecord audio_debug_pcm_{};
+  MicDebugRecord audio_debug_mic_{};
+  // Writer contention and latest-stat replacement remain observable.
+  std::atomic<uint32_t> audio_debug_stats_quality_{0};
+  void emit_audio_debug_pending_();
+#endif
 #endif
 
   // Transport callbacks (registered in setup()).
@@ -639,16 +672,28 @@ class VoipStack : public Component {
     NONE,
     NETWORK_GAP,
     MUTED_SINK,
+    PREROLL,
   };
   void play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason silence_reason, TickType_t ticks_to_wait,
                       uint32_t revision);
   void play_silence_frame_(SilenceReason reason, TickType_t ticks_to_wait, uint32_t revision);
-  void reset_rx_audio_();
+  void reset_rx_audio_(bool preserve_playout = false);
+  enum class RxPlayoutPhase : uint8_t { STOPPED, PREPARING, WAITING_OUTPUT, READY, ACTIVE };
+  RxPlayoutPhase rx_playout_phase_(uint32_t revision) const;
+  bool prepare_rx_playout_();
+  bool activate_rx_playout_();
+  void speaker_output_progress_(uint32_t frames, int64_t timestamp);
+  bool play_rx_preroll_(uint32_t revision, TickType_t frame_ticks);
 #endif
 
   void set_audio_devices_active_(bool on);
   void set_in_call_(bool on);
   void start_speaker_for_current_rx_();
+  bool prepare_speaker_for_current_rx_();
+  enum class ApplicationMediaStart : uint8_t { NONE, ORIGINATE, ANSWER, CONFIRM, OFFER };
+  void begin_application_media_start_(ApplicationMediaStart action);
+  void finish_application_media_start_(ApplicationMediaStart action);
+  void pump_application_media_start_();
   void reset_peer_audio_watchdog_(bool seed_from_transport);
   void notify_audio_tasks_();
 
@@ -870,12 +915,49 @@ class VoipStack : public Component {
   uint8_t *rx_audio_chunk_{nullptr};
   uint8_t *rx_network_chunk_{nullptr};
   uint8_t *rx_jitter_pcm_storage_{nullptr};
-  uint8_t *rx_silence_chunk_{nullptr};
   size_t rx_audio_chunk_alloc_bytes_{0};
   size_t rx_jitter_frame_alloc_bytes_{0};
   std::unique_ptr<RtpJitterBuffer> rx_jitter_buffer_;
   // A pending speaker write belongs to the receive session that supplied it.
   std::atomic<uint32_t> rx_audio_revision_{0};
+  // One RX owner phase, tagged by the existing revision (not another epoch).
+  std::atomic<uint32_t> rx_playout_state_{0};
+  std::atomic<uint32_t> rx_prepare_started_us_{0};
+  Component *speaker_feedback_source_{nullptr};
+  // One fixed continuation and resolved peer, with no heap/identity copies.
+  // Pack the IPv4/port/transport/action into eight bytes; RX revision already
+  // guards reentrant changes while preparing the sink.
+  uint32_t prepared_peer_ip_{0};
+  uint16_t prepared_peer_port_{0};
+  bool prepared_peer_tcp_{false};
+  ApplicationMediaStart pending_media_start_{ApplicationMediaStart::NONE};
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  enum class RxStartupEvent : uint8_t {
+    SPEAKER_START_REQUEST, IN_CALL_GATE, RX_ENQUEUE, PLAY_ATTEMPT, PCM_ACCEPTED,
+    FIRST_ZERO_WRITE, RESUMED, FIRST_JITTER_DROP
+  };
+  struct RxStartupData {
+    uint64_t us{0};
+    uint32_t output_us{0}, drops{0}, discarded{0};
+    uint16_t depth{0};
+    uint8_t state{0}, flags{0};  // sink running, present, exact jitter snapshot
+  };
+  struct RxStartupRecord {
+    std::atomic<uint32_t> revision{UINT32_MAX};
+    std::atomic_flag busy = ATOMIC_FLAG_INIT;
+    std::atomic<bool> present{false};
+    RxStartupData data{};
+  };
+  static_assert(sizeof(RxStartupRecord) == 32);
+  RxStartupRecord audio_debug_rx_startup_[8]{};
+  // Sticky diagnostic quality: writer loss, deferred reader, changed revision.
+  std::atomic<uint32_t> audio_debug_rx_startup_quality_{0};
+  void debug_rx_startup_event_(RxStartupEvent event, uint32_t revision,
+                              const RtpJitterBuffer::Counters *jitter = nullptr);
+  bool debug_rx_startup_snapshot_(RxStartupEvent event, uint32_t &revision, RxStartupData &data);
+  std::atomic<uint32_t> debug_output_first_us_{0}, debug_output_last_us_{0};
+  std::atomic<uint32_t> debug_zero_output_us_{0}, debug_drop_output_us_{0};
+#endif
   TaskHandle_t rx_task_handle_{nullptr};
   StaticTask_t rx_task_tcb_{};
   StackType_t *rx_task_stack_{nullptr};
@@ -928,7 +1010,7 @@ class VoipStack : public Component {
     LockGuard lock(this->media_format_mutex_);
     this->current_media_formats_ = CurrentMediaFormats{caller_to_dest, dest_to_caller, tx, rx};
     this->current_tx_audio_format_packed_.store(pack_audio_format(tx), std::memory_order_release);
-    this->current_rx_audio_format_packed_.store(pack_audio_format(rx), std::memory_order_release);
+    this->current_rx_audio_format_packed_.store(pack_audio_format(pcm_playout_format(rx, this->rx_audio_formats_)), std::memory_order_release);
     this->current_tx_audio_frame_bytes_.store(tx.nominal_frame_bytes(), std::memory_order_release);
   }
   void set_current_tx_audio_format_(const AudioFormat &format) {
@@ -940,7 +1022,7 @@ class VoipStack : public Component {
   void set_current_rx_audio_format_(const AudioFormat &format) {
     LockGuard lock(this->media_format_mutex_);
     this->current_media_formats_.rx = format;
-    this->current_rx_audio_format_packed_.store(pack_audio_format(format), std::memory_order_release);
+    this->current_rx_audio_format_packed_.store(pack_audio_format(pcm_playout_format(format, this->rx_audio_formats_)), std::memory_order_release);
   }
   std::atomic<size_t> current_tx_audio_frame_bytes_{DEFAULT_AUDIO_FORMAT.nominal_frame_bytes()};
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG

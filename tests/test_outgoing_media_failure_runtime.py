@@ -50,13 +50,13 @@ def outgoing_wire_binary(tmp_path_factory):
     from test_incoming_media_failure_runtime import media_failure_source
     from test_refer_wire_runtime import wire_source
     code = wire_source()
-    code = code.replace(' uint16_t sip_port_=5060;', ' struct Converter {bool prepare_additional(const RtpAudioPayloads&,const AudioFormat&){assert(false);return false;}}pcm_receive_converter_;\n uint16_t sip_port_=5060;')
+    code = code.replace(' uint16_t sip_port_=5060;', ' AudioFormatList offer_rx_formats_;\n struct Converter {bool prepare_additional(const RtpAudioPayloads&,const AudioFormat&){assert(false);return false;}}pcm_receive_converter_;\n uint16_t sip_port_=5060;')
     media = media_failure_source().replace('uint32_t esp_random(){return 42;}', '').replace('struct RtpAudioPayloads {};', '')
     app = incoming_source().replace('uint32_t millis(){return 100;}', '')
     app = app.replace('struct Transport {', 'struct AppTransport {').replace('Transport t;Transport*transport_', 'AppTransport t;AppTransport*transport_')
     app = app.replace('bool Transport::send_final_response', 'bool AppTransport::send_final_response')
     app = app.replace('Snapshot snapshot()const{return {};}', 'Snapshot snapshot()const{return {wire_transport->terminal_transaction_pending_locked_(),0};}')
-    app = app.replace('bool start_audio_path(){return true;}', 'bool start_audio_path(){++prepares;return media_owner.prepare_media_path_locked_();}')
+    app = app.replace('bool prepare_media_path(){++prepares;return prepare_ok;}', 'bool prepare_media_path(){++prepares;return prepare_ok&&media_owner.prepare_media_path_locked_();}')
     app = app.replace('void disconnect(){++disconnects;}', 'void disconnect(){++disconnects;wire_transport->disconnect();}')
     app = app.replace('bool send_sip_bye_(const std::string&){return true;}', 'bool send_sip_bye_(const std::string&id){return wire_transport->send_bye_unlocked_(id);}')
     # The abstraction calls the production reset path only after its owner has

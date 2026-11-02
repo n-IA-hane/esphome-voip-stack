@@ -6,6 +6,73 @@
 
 namespace esphome::voip_stack {
 static const char *const TAG = "voip_stack.diagnostics";
+#if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && \
+    (defined(USE_ESPHOME_VOIP_STACK_MIC) || defined(USE_ESPHOME_VOIP_STACK_SPEAKER))
+static const char *const AUDIO_TAG = "voip_stack.audio";
+#endif
+
+#if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_MIC)
+void VoipStack::emit_audio_debug_pending_() {
+  if (!this->audio_debug_) return;
+  if (this->audio_debug_pcm_.pending.load(std::memory_order_acquire)) {
+    if (!this->audio_debug_pcm_.busy.test_and_set(std::memory_order_acquire)) {
+      const PcmDebugData data = this->audio_debug_pcm_.data;
+      this->audio_debug_pcm_.pending.store(false, std::memory_order_relaxed);
+      this->audio_debug_pcm_.busy.clear(std::memory_order_release);
+      const auto quality = this->audio_debug_stats_quality_.load(std::memory_order_relaxed);
+      const auto *state = call_state_to_str(static_cast<CallState>(data.state));
+      const auto format = unpack_audio_format(data.format);
+      if (data.status == 1) {
+        ESP_LOGI(AUDIO_TAG, "AudioDebug[tx_network]: frames=%u bytes=%u empty state=%s producer_ms=%u quality=%u quality_scope=since_boot",
+            (unsigned) data.frames, (unsigned) data.bytes, state, (unsigned) data.producer_ms, (unsigned) quality);
+      } else if (data.status == 2) {
+        ESP_LOGI(AUDIO_TAG, "AudioDebug[tx_network]: frames=%u bytes=%u format=%u:%u:%u:%u levels=skipped_non_s16 voip_volume=%.3f state=%s producer_ms=%u quality=%u quality_scope=since_boot",
+            (unsigned) data.frames, (unsigned) data.bytes, (unsigned) format.sample_rate,
+            (unsigned) format.pcm_format, (unsigned) format.channels, (unsigned) format.frame_ms, data.volume, state,
+            (unsigned) data.producer_ms, (unsigned) quality);
+      } else {
+        ESP_LOGI(AUDIO_TAG, "AudioDebug[tx_network]: frames=%u bytes=%u samples=%u peak=%u peak_dbfs=%.1f rms_dbfs=%.1f voip_volume=%.3f state=%s path=direct producer_ms=%u quality=%u quality_scope=since_boot",
+            (unsigned) data.frames, (unsigned) data.bytes, (unsigned) data.samples, (unsigned) data.peak,
+            data.peak_dbfs, data.rms_dbfs, data.volume, state, (unsigned) data.producer_ms, (unsigned) quality);
+      }
+    } else {
+      this->audio_debug_stats_quality_.fetch_or(16U, std::memory_order_relaxed);
+    }
+  }
+  if (this->audio_debug_mic_.pending.load(std::memory_order_acquire)) {
+    if (!this->audio_debug_mic_.busy.test_and_set(std::memory_order_acquire)) {
+      const MicDebugData data = this->audio_debug_mic_.data;
+      this->audio_debug_mic_.pending.store(false, std::memory_order_relaxed);
+      this->audio_debug_mic_.busy.clear(std::memory_order_release);
+      const auto format = unpack_audio_format(data.format);
+      ESP_LOGI(AUDIO_TAG, "AudioDebug[mic_callback]: callbacks=%u len=%u delta_ms=%u tx_frame_bytes=%u accum_available=%u tx_queue_depth=%u tx_drops=%u tx_drop_bytes=%u tx_format=%u:%u:%u:%u state=%s producer_ms=%u quality=%u quality_scope=since_boot",
+          (unsigned) data.callbacks, (unsigned) data.bytes, (unsigned) data.delta_ms,
+          (unsigned) data.frame_bytes, (unsigned) data.available, (unsigned) data.depth,
+          (unsigned) data.drops, (unsigned) data.drop_bytes, (unsigned) format.sample_rate,
+          (unsigned) format.pcm_format, (unsigned) format.channels, (unsigned) format.frame_ms,
+          call_state_to_str(static_cast<CallState>(data.state)), (unsigned) data.producer_ms,
+          (unsigned) this->audio_debug_stats_quality_.load(std::memory_order_relaxed));
+    } else {
+      this->audio_debug_stats_quality_.fetch_or(32U, std::memory_order_relaxed);
+    }
+  }
+}
+#endif
+
+#if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_SPEAKER)
+bool VoipStack::debug_rx_startup_snapshot_(RxStartupEvent event, uint32_t &revision, RxStartupData &data) {
+  auto &record = this->audio_debug_rx_startup_[static_cast<uint8_t>(event)];
+  if (record.busy.test_and_set(std::memory_order_acquire)) {
+    this->audio_debug_rx_startup_quality_.fetch_or(2U, std::memory_order_relaxed);
+    return false;
+  }
+  revision = record.revision.load(std::memory_order_relaxed);
+  data = record.data;
+  if (record.present.load(std::memory_order_relaxed)) data.flags |= 2U;
+  record.busy.clear(std::memory_order_release);
+  return true;
+}
+#endif
 
 void VoipStack::dump_diagnostics() {
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
@@ -88,10 +155,11 @@ void VoipStack::emit_diagnostic_section_() {
       } else { ESP_LOGI(TAG, "transport: not available"); }
       break;
     case 4:
-      ESP_LOGI(TAG, "rtp: running=%s remote_sip_port=%u remote_rtp_port=%u tx_packets=%u rx_packets=%u tx_bytes=%u rx_bytes=%u",
+      ESP_LOGI(TAG, "rtp: running=%s remote_sip_port=%u remote_rtp_port=%u tx_packets=%u rx_packets=%u tx_bytes=%u rx_bytes=%u udp_datagrams=%u",
                YESNO(transport.rtp_running), transport.remote_sip_port, transport.remote_rtp_port,
                (unsigned) transport.rtp_tx_packets, (unsigned) transport.rtp_rx_packets,
-               (unsigned) transport.rtp_tx_bytes, (unsigned) transport.rtp_rx_bytes);
+               (unsigned) transport.rtp_tx_bytes, (unsigned) transport.rtp_rx_bytes,
+               (unsigned) transport.rtp_rx_datagrams);
       break;
     case 5:
       if (!dump.changed && transport.call_active) {
@@ -126,7 +194,91 @@ void VoipStack::emit_diagnostic_section_() {
                YESNO(dump.audio_active), YESNO(this->buffers_in_psram_), YESNO(this->task_stacks_in_psram_),
                YESNO(this->audio_task_stacks_in_psram_), dump.route);
       break;
-    case 10: ESP_LOGI(TAG, "last_termination=%s", dump.last_reason); break;
+    case 10:
+      ESP_LOGI(TAG, "last_termination=%s", dump.last_reason);
+#if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_MIC)
+      if (this->audio_debug_ && this->audio_debug_stats_quality_.load(std::memory_order_relaxed) != 0)
+        ESP_LOGI(AUDIO_TAG, "AudioDebugQuality flags=%u quality_scope=since_boot",
+                 (unsigned) this->audio_debug_stats_quality_.load(std::memory_order_relaxed));
+#endif
+      break;
+#if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_SPEAKER)
+    case 11: {
+      if (!this->audio_debug_ || this->call_state_.load(std::memory_order_acquire) != CallState::IDLE ||
+          this->audio_devices_active_.load(std::memory_order_acquire)) { dump.step = 21; break; }
+      bool present = false;
+      bool retry = false;
+      uint32_t latest = 0;
+      for (uint8_t i = 0; i < 8; ++i) {
+        uint32_t revision;
+        RxStartupData data;
+        if (!this->debug_rx_startup_snapshot_(static_cast<RxStartupEvent>(i), revision, data)) {
+          retry = true; break;
+        }
+        if ((data.flags & 2U) && (!present || static_cast<int32_t>(revision - latest) > 0)) {
+          latest = revision; present = true;
+        }
+      }
+      if (retry) { --dump.step; break; }  // Keep the existing deferred owner pending.
+      dump.startup_revision = latest;
+      dump.startup_present = present;
+      break;
+    }
+    case 12: case 13: case 14: case 15: case 16: case 17: case 18: case 19: {
+      if (!dump.startup_present) break;
+      if (this->call_state_.load(std::memory_order_acquire) != CallState::IDLE ||
+          this->audio_devices_active_.load(std::memory_order_acquire)) {
+        this->audio_debug_rx_startup_quality_.fetch_or(4U, std::memory_order_relaxed);
+        dump.step = 21; break;
+      }
+      const uint8_t index = dump.step - 13;
+      uint32_t revision;
+      RxStartupData data;
+      if (!this->debug_rx_startup_snapshot_(static_cast<RxStartupEvent>(index), revision, data)) {
+        --dump.step; break;
+      }
+      if (!(data.flags & 2U)) break;
+      if (revision != dump.startup_revision) {
+        if (static_cast<int32_t>(revision - dump.startup_revision) > 0)
+          this->audio_debug_rx_startup_quality_.fetch_or(4U, std::memory_order_relaxed);
+        break;
+      }
+      static const char *const names[]{"speaker_start_request", "in_call_gate", "rx_enqueue", "play_attempt",
+          "pcm_accepted", "first_zero_write", "resumed", "first_jitter_drop"};
+      if (data.flags & 4U) {
+        ESP_LOGI(AUDIO_TAG, "AudioStartup rev=%u event=%s us=%llu sink_running=%u state=%u output_us=%u jitter_depth=%u drops=%u discarded=%u",
+            (unsigned) revision, names[index], (unsigned long long) data.us, data.flags & 1U, (unsigned) data.state,
+            (unsigned) data.output_us, (unsigned) data.depth, (unsigned) data.drops, (unsigned) data.discarded);
+      } else {
+        ESP_LOGI(AUDIO_TAG, "AudioStartup rev=%u event=%s us=%llu sink_running=%u state=%u output_us=%u jitter_snapshot=unavailable",
+            (unsigned) revision, names[index], (unsigned long long) data.us, data.flags & 1U, (unsigned) data.state,
+            (unsigned) data.output_us);
+      }
+      break;
+    }
+    case 20: {
+      bool retry = false;
+      for (uint8_t i = 0; i < 8; ++i) {
+        uint32_t revision;
+        RxStartupData data;
+        if (!this->debug_rx_startup_snapshot_(static_cast<RxStartupEvent>(i), revision, data)) {
+          retry = true; break;
+        }
+        if (dump.startup_present && (data.flags & 2U) &&
+            static_cast<int32_t>(revision - dump.startup_revision) > 0)
+          this->audio_debug_rx_startup_quality_.fetch_or(4U, std::memory_order_relaxed);
+      }
+      if (retry) { --dump.step; break; }
+      {
+        const auto quality = this->audio_debug_rx_startup_quality_.load(std::memory_order_relaxed);
+        if (dump.startup_present || quality != 0)
+          ESP_LOGI(AUDIO_TAG, "AudioStartupTrace rev=%u present=%s complete=%s quality=%u deferred_read=%s quality_scope=since_boot",
+              (unsigned) dump.startup_revision, YESNO(dump.startup_present),
+              YESNO(dump.startup_present && (quality & 5U) == 0), (unsigned) quality, YESNO(quality & 2U));
+      }
+      break;
+    }
+#endif
     default:
       ESP_LOGI(TAG, "END v=1 uptime_ms=%u untracked_metrics=not_available", (unsigned) dump.requested_ms);
       this->diagnostic_dump_.reset();

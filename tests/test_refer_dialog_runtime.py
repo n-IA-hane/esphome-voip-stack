@@ -63,6 +63,7 @@ template<class T> struct RAMAllocator {
 #define ESP_LOGI(...) ((void)0)
 #define ESP_LOGD(...) ((void)0)
 #define ESP_LOGW(...) ((void)0)
+#define VOIP_STARTUP_EVENT(...) ((void)0)
 #define TAG "test"
 std::string sip_header_token(const std::string &v,size_t=160){return v;}
 std::string sip_route_id(const std::string &v,size_t){return v;}

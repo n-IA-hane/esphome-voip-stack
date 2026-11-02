@@ -41,7 +41,7 @@ void deliver(const TransportAudioFrame&);
 // TRANSPORT_FIELDS
 
 enum class CallState{IN_CALL,IDLE,CONNECTING};
-enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP};
+enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP,PREROLL};
 struct Speaker {
  std::vector<std::vector<int16_t>> frames;
  size_t play(const uint8_t *data,size_t bytes,unsigned){
@@ -57,13 +57,17 @@ struct VoipStack {
  std::atomic<CallState>call_state_{CallState::IN_CALL};
  std::atomic<uint32_t>rx_underrun_start_ms_{0},media_rx_queue_depth_{0},media_rx_queue_drops_{0};
  std::atomic<float>volume_{1};void *rx_task_handle_=nullptr;
- uint8_t data[2048]{},silence[2048]{},network[2048]{};
- uint8_t*rx_audio_chunk_=data,*rx_silence_chunk_=silence,*rx_network_chunk_=network;
+ uint8_t data[2048]{},network[2048]{};
+ uint8_t*rx_audio_chunk_=data,*rx_network_chunk_=network;
  size_t rx_audio_chunk_alloc_bytes_=2048,rx_jitter_frame_alloc_bytes_=2048;
  static constexpr unsigned kRxSilenceAfterMs=100;
  AudioFormat get_current_rx_audio_format_(){return transport_->rx;}
  void on_audio_received_(const TransportAudioFrame&);
  void enqueue_rx_frame_(const TransportAudioFrame&);
+ enum class RxPlayoutPhase:uint8_t{STOPPED,PREPARING,WAITING_OUTPUT,READY,ACTIVE};
+ std::atomic<uint32_t>rx_playout_state_{4};
+ RxPlayoutPhase rx_playout_phase_(uint32_t)const{return RxPlayoutPhase::ACTIVE;}
+ bool play_rx_preroll_(uint32_t,unsigned){return false;}
  void play_rx_frame_(const uint8_t*,size_t,SilenceReason,unsigned,uint32_t);
  void play_silence_frame_(SilenceReason,unsigned,uint32_t);
  void rx_task_();
@@ -71,6 +75,7 @@ struct VoipStack {
 VoipStack *phone=nullptr;
 void deliver(const TransportAudioFrame&frame){phone->on_audio_received_(frame);}
 
+#define VOIP_STARTUP_EVENT(...) ((void)0)
 // PRODUCTION_METHODS
 
 AudioFormat fmt(unsigned rate,unsigned frame,AudioCodec codec){AudioFormat f;f.sample_rate=rate;f.frame_ms=frame;f.codec=codec;return f;}
@@ -113,9 +118,12 @@ int main(int argc,char**argv){
   if(bad_size)--bytes;
   assert(sendto(sender,packet.data(),12+bytes,0,reinterpret_cast<sockaddr*>(&destination),sizeof(destination))==ssize_t(12+bytes));
  };
+ assert(sendto(sender,"x",1,0,reinterpret_cast<sockaddr*>(&destination),sizeof(destination))==1);
+ assert(sendto(sender,"",0,0,reinterpret_cast<sockaddr*>(&destination),sizeof(destination))==0);
  send_packet(20,99,false);send_packet(21,pcm_pt,false,true);
  for(unsigned seq:{1U,2U,4U,5U,7U,8U})send_packet(seq,(seq==4||seq==5)?opus_pt:pcm_pt,seq==4||seq==5);
  try{s.rtp_task_();assert(false);}catch(const EndRtp&){}
+ assert(s.rtp_rx_datagrams_==9&&"Raw ingress includes malformed/unsupported packets, excludes zero-length UDP");
  assert(s.rtp_rx_packets_==6&&jitter.depth()==6);
  try{app.rx_task_();assert(false);}catch(const EndPlayout&){}
  assert(speaker.frames.size()==8&&s.decodes==3&&s.plc==1&&"Opus decode/PLC follows each packet's codec, not the preferred codec");
