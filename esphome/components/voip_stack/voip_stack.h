@@ -9,6 +9,10 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 #include "esphome/core/preferences.h"
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#endif
 
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
 #include "esphome/components/microphone/microphone.h"
@@ -415,6 +419,11 @@ class VoipStack : public Component {
   Trigger<std::string> *get_ringing_trigger() { return &this->ringing_trigger_; }
   Trigger<std::string> *get_in_call_trigger() { return &this->in_call_trigger_; }
   Trigger<> *get_idle_trigger() { return &this->idle_trigger_; }
+  bool can_send_dtmf() const;
+  bool send_dtmf(char digit, uint16_t duration_ms = 160);
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  Trigger<std::string> *get_dtmf_trigger() { return &this->dtmf_trigger_; }
+#endif
   Trigger<> *get_video_start_trigger() { return &this->video_start_trigger_; }
   Trigger<> *get_video_end_trigger() { return &this->video_end_trigger_; }
   Trigger<std::string> *get_calling_trigger() { return &this->calling_trigger_; }
@@ -525,6 +534,15 @@ class VoipStack : public Component {
   static bool transport_accept_callback_(void *ctx);
   static bool transport_dialog_active_callback_(void *ctx);
   static void transport_media_quiesced_callback_(void *ctx);
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  static void transport_dtmf_callback_(void *, char, uint32_t);
+  void pump_dtmf_events_();
+  struct DtmfEvent { uint32_t generation; char digit; };
+  Trigger<std::string> dtmf_trigger_;
+  StaticQueue_t dtmf_events_storage_{};
+  uint8_t dtmf_events_buffer_[8 * sizeof(DtmfEvent)]{};
+  QueueHandle_t dtmf_events_{nullptr};
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   static void transport_video_send_state_callback_(void *ctx, bool enabled,
                                                    bool pending);

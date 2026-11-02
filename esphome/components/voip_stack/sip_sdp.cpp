@@ -197,6 +197,14 @@ std::string SipTransport::build_sdp_capabilities_(uint32_t peer_ip) const {
     flows += "a=x-voip-stack-flow:" + std::to_string(pt) + " " + flow + "\r\n";
   }
 
+#ifdef USE_ESPHOME_VOIP_DTMF
+  uint8_t clocks = 1;
+  for (uint8_t i = 0; i < formats.count; ++i) {
+    const int index = dtmf_clock_index(audio_format_rtp_clock_rate(formats.formats[i]));
+    if (index >= 0) clocks |= 1U << index;
+  }
+  append_dtmf_sdp_(&payloads, &maps, clocks);
+#endif
   std::string local_ip = "0.0.0.0";
   this->local_ip_for_peer_(peer_ip, &local_ip);
   uint8_t ptime = choose_common_audio_ptime(this->offer_tx_formats_, this->offer_rx_formats_, this->udp_max_payload_);
@@ -307,6 +315,15 @@ std::string SipTransport::build_sdp_offer_() {
     ESP_LOGW(TAG, "SIP SDP offer has no common UDP-safe RTP PCM format");
     return "";
   }
+#ifdef USE_ESPHOME_VOIP_DTMF
+  this->dtmf_offered_clocks_ = 1;
+  for (const auto *list : {&this->local_offered_tx_formats_, &this->offer_rx_formats_})
+    for (uint8_t i = 0; i < list->count; ++i) {
+      const int index = dtmf_clock_index(audio_format_rtp_clock_rate(list->formats[i]));
+      if (index >= 0) this->dtmf_offered_clocks_ |= 1U << index;
+    }
+  append_dtmf_sdp_(&payloads, &maps, this->dtmf_offered_clocks_);
+#endif
   std::string sdp =
       this->wrap_sdp_envelope_(local_ip, payloads, maps, flows, selected_ptime,
           audio_direction_attribute(this->offer_tx_formats_.count != 0, this->offer_rx_formats_.count != 0));
@@ -316,7 +333,11 @@ std::string SipTransport::build_sdp_offer_() {
   return sdp;
 }
 
-std::string SipTransport::build_sdp_answer_() const {
+std::string SipTransport::build_sdp_answer_(
+#ifdef USE_ESPHOME_VOIP_DTMF
+    const DtmfConfig *dtmf_proposal
+#endif
+    ) const {
   const uint32_t remote_ip = this->remote_ip_v4_.load(std::memory_order_acquire);
   std::string local_ip = "0.0.0.0";
   this->local_ip_for_peer_(remote_ip, &local_ip);
@@ -354,6 +375,25 @@ std::string SipTransport::build_sdp_answer_() const {
   }
   if (send && (!receive || tx_payload_type != rx_payload_type) &&
       !append(tx_payload_type, selected_tx, "send")) return "";
+#ifdef USE_ESPHOME_VOIP_DTMF
+  DtmfConfig committed_dtmf;
+  if (dtmf_proposal == nullptr) {
+    this->get_dtmf_config_(&committed_dtmf.tx, &committed_dtmf.rx);
+    dtmf_proposal = &committed_dtmf;
+  }
+  const DtmfFormat dtmf = dtmf_proposal->rx.valid() ? dtmf_proposal->rx : dtmf_proposal->tx;
+  if (dtmf.valid()) {
+    const auto pt = std::to_string(dtmf.payload_type);
+    payloads += " " + pt;
+    maps += "a=rtpmap:" + pt + " telephone-event/" + std::to_string(dtmf.clock) + "\r\n";
+    std::string events;
+    for (unsigned event = 0; event < 16; ++event) if (dtmf.events & (1U << event)) {
+      if (!events.empty()) events += ',';
+      events += std::to_string(event);
+    }
+    maps += "a=fmtp:" + pt + " " + events + "\r\n";
+  }
+#endif
   const std::string audio_sdp = this->wrap_sdp_envelope_(
       local_ip, payloads, maps, flows, receive ? selected_rx.frame_ms : selected_tx.frame_ms,
       audio_direction_attribute(send, receive));
@@ -396,7 +436,11 @@ std::string SipTransport::build_sdp_answer_() const {
 
 bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
                                               uint32_t default_ip,
-                                              bool remote_is_answer) {
+                                              bool remote_is_answer
+#ifdef USE_ESPHOME_VOIP_DTMF
+                                              , DtmfConfig *dtmf_proposal
+#endif
+                                              ) {
   this->remote_directional_audio_v1_ =
       sdp.find("a=x-voip-stack-flow:") != std::string::npos &&
       (!remote_is_answer || this->local_offered_directional_audio_v1_);
@@ -645,6 +689,21 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
 #endif
     if (usable && !accepted_rx.add(entry.payload_type, entry.format)) return false;
   }
+#ifdef USE_ESPHOME_VOIP_DTMF
+  const auto next_media = sdp.find("\r\nm=", selected_audio_line);
+  const std::string_view media(sdp.data() + selected_audio_line,
+      (next_media == std::string::npos ? sdp.size() : next_media + 2) - selected_audio_line);
+  auto dtmf = negotiate_dtmf(media, payload_rank,
+      audio_format_rtp_clock_rate(selected_tx ? selected_tx_format : selected_rx_format),
+      remote_is_answer, this->dtmf_offered_clocks_);
+  if (dtmf.valid() && (seen_mapping[dtmf.payload_type] != 0 ||
+      received_payloads.find(dtmf.payload_type, nullptr) ||
+      (selected_tx && selected_tx_payload_type == dtmf.payload_type))) dtmf = {};
+  DtmfConfig dtmf_config{selected_tx ? dtmf : DtmfFormat{}, selected_rx ? dtmf : DtmfFormat{}};
+  if (remote_is_answer && dtmf_config.rx.valid()) dtmf_config.rx.payload_type = 120 + dtmf_clock_index(dtmf.clock);
+  if (dtmf_proposal != nullptr) *dtmf_proposal = dtmf_config;
+  else this->set_dtmf_config_(dtmf_config.tx, dtmf_config.rx);
+#endif
   this->set_media_config_(selected_tx_format, selected_rx_format,
                           selected_tx_payload_type, selected_rx_payload_type, &accepted_rx);
   // Signaling can traverse a PBX/proxy while RTP terminates on a separate

@@ -58,6 +58,25 @@ class SetAccountAction : public Action<Ts...>, public Parented<VoipStack> {
 };
 #endif
 
+#ifdef USE_ESPHOME_VOIP_DTMF
+template<typename... Ts>
+class SendDtmfAction : public Action<Ts...>, public Parented<VoipStack> {
+ public:
+  TEMPLATABLE_VALUE(std::string, digit)
+  TEMPLATABLE_VALUE(uint16_t, duration_ms)
+  void play(const Ts &...x) override {
+    const std::string value = this->digit_.value(x...);
+    if (value.size() == 1)
+      this->parent_->send_dtmf(value[0], this->duration_ms_.optional_value(x...).value_or(160));
+  }
+};
+template<typename... Ts>
+class VoipCanSendDtmfCondition : public Condition<Ts...>, public Parented<VoipStack> {
+ public:
+  bool check(const Ts &...) override { return this->parent_->can_send_dtmf(); }
+};
+#endif
+
 template<typename... Ts>
 class NextContactAction : public Action<Ts...>, public Parented<VoipStack> {
  public:

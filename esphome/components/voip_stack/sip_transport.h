@@ -6,6 +6,11 @@
 
 #include "transport.h"
 #include "rtp_audio_payloads.h"
+#ifdef USE_ESPHOME_VOIP_DTMF
+#include "rtp_dtmf.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#endif
 #include "pcm_receive_converter.h"
 #include "sip_signaling_string.h"
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
@@ -92,6 +97,13 @@ class SipTransport : public SipPhoneTransport {
   void disconnect() override;
   bool is_connected() const override;
   void send_audio_frame(const uint8_t *pcm, size_t bytes) override;
+#ifdef USE_ESPHOME_VOIP_DTMF
+  bool can_send_dtmf() const override;
+  bool send_dtmf(char digit, uint16_t duration_ms = 160) override;
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  uint32_t dtmf_generation() const override { return this->dtmf_generation_.load(std::memory_order_acquire); }
+#endif
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   size_t decode_audio_payload(const uint8_t *payload, size_t payload_bytes,
                               const AudioFormat &format, uint8_t *pcm,
@@ -259,13 +271,21 @@ class SipTransport : public SipPhoneTransport {
   bool send_connected_identity_update_();
   std::string build_sdp_capabilities_(uint32_t peer_ip) const;
   std::string build_sdp_offer_();
-  std::string build_sdp_answer_() const;
+  std::string build_sdp_answer_(
+#ifdef USE_ESPHOME_VOIP_DTMF
+      const DtmfConfig *dtmf_proposal = nullptr
+#endif
+      ) const;
   std::string wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
                                  const std::string &maps, const std::string &flows,
                                  uint8_t ptime, const char *direction = "sendrecv") const;
   bool learn_remote_rtp_from_sdp_(const std::string &sdp,
                                   uint32_t default_ip,
-                                  bool remote_is_answer = false);
+                                  bool remote_is_answer = false
+#ifdef USE_ESPHOME_VOIP_DTMF
+                                  , DtmfConfig *dtmf_proposal = nullptr
+#endif
+                                  );
   void capture_remote_media_shape_(const std::string &sdp);
   std::string rejected_media_answer_(const std::string &media_line) const;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
@@ -593,6 +613,28 @@ class SipTransport : public SipPhoneTransport {
   AudioFormat selected_rx_format_{DEFAULT_AUDIO_FORMAT};
   uint8_t rtp_tx_payload_type_{96};
   uint8_t rtp_rx_payload_type_{96};
+#ifdef USE_ESPHOME_VOIP_DTMF
+  DtmfFormat dtmf_tx_format_{}, dtmf_rx_format_{};
+  // Stable committed revision. Speculative SDP uses media_proposal_epoch_;
+  // rolling back that proposal must not retire an unchanged DTMF event.
+  std::atomic<uint32_t> dtmf_generation_{0};
+  uint8_t dtmf_offered_clocks_{0};
+  struct DtmfRequest { uint32_t epoch; uint16_t duration_ms; uint8_t event; };
+  static constexpr size_t kDtmfQueueDepth = 8;
+  QueueHandle_t dtmf_queue_{nullptr};
+  StaticQueue_t dtmf_queue_storage_{};
+  uint8_t dtmf_queue_buffer_[kDtmfQueueDepth * sizeof(DtmfRequest)]{};
+  uint32_t rtp_tx_clock_ms_{0}, rtp_tx_clock_timestamp_{0};
+  void get_dtmf_config_(DtmfFormat *tx, DtmfFormat *rx, uint32_t *epoch = nullptr) const;
+  void set_dtmf_config_(const DtmfFormat &tx, const DtmfFormat &rx);
+  bool can_send_dtmf_locked_(const DtmfFormat &format, uint32_t epoch) const;
+  static void append_dtmf_sdp_(std::string *payloads, std::string *maps, uint8_t clocks);
+  bool send_dtmf_packet_(const DtmfSender::Report &, const DtmfFormat &, uint32_t epoch,
+                         uint32_t ssrc, uint16_t *separate_sequence);
+  bool handle_dtmf_packet_(const uint8_t *payload, size_t bytes, uint8_t payload_type,
+                           uint32_t ssrc, uint32_t timestamp, uint16_t source_port,
+                           uint32_t proposal_epoch, DtmfReceiver *receiver);
+#endif
   mutable portMUX_TYPE media_config_lock_ = portMUX_INITIALIZER_UNLOCKED;
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   OpusRtpCodec opus_codec_{};
@@ -751,6 +793,10 @@ class SipTransport : public SipPhoneTransport {
     UdpTransaction pending_notify_, pending_notify_final_;
     AudioFormat selected_tx_format_{DEFAULT_AUDIO_FORMAT}, selected_rx_format_{DEFAULT_AUDIO_FORMAT};
     uint8_t rtp_tx_payload_type_{96}, rtp_rx_payload_type_{96};
+#ifdef USE_ESPHOME_VOIP_DTMF
+    DtmfFormat dtmf_tx_format_{}, dtmf_rx_format_{};
+    uint8_t dtmf_offered_clocks_{0};
+#endif
     RtpAudioPayloads negotiated_rx_payloads_, local_offered_rx_payloads_;
     AudioFormatList local_offered_tx_formats_;
     bool remote_directional_audio_v1_{false}, local_offered_directional_audio_v1_{false};

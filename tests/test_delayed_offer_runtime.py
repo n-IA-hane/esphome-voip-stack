@@ -33,7 +33,7 @@ def delayed_source():
     ):
         body = block(source, marker)
         declaration = body[:body.index("{")].replace("SipTransport::", "").strip()
-        declaration = declaration.replace("bool remote_is_answer)", "bool remote_is_answer = false)")
+        declaration = declaration.replace("bool remote_is_answer", "bool remote_is_answer = false")
         declaration = declaration.replace("const RtpAudioPayloads *rx_payloads)", "const RtpAudioPayloads *rx_payloads = nullptr)")
         if "send_response_" in marker:
             declaration = 'bool send_response_(uint16_t,const char*,const std::string & = "",const std::string & = "")'
