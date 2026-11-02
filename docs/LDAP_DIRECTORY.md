@@ -58,7 +58,14 @@ when a contact is renamed.
 Standard attributes are `uid` or `entryUUID` for identity, `displayName` or `cn`,
 `telephoneNumber`, `labeledURI` and `ou`. A missing identity gets a bounded key
 derived from the entry DN. SIP URI authority and transport remain independent of
-the display number. Contact metadata is shared with BLF: managed HA resources
+the display number.
+
+Display kind and number are available even without LDAP or BLF; stable identity
+falls back to the existing route. The UI reads the same phonebook and calls the
+existing call owner through `get_contact(index)` and `call_contact(stable_id)`.
+The old transport-row audio hints are still validated and discarded, never
+displayed as a number. Stable IDs, provider and account storage remain gated.
+Contact metadata is shared with BLF: managed HA resources
 use their declared kind; ordinary external LDAP contacts may opt into automatic
 watching as `CONTACT`. Groups, services and automations are excluded by BLF's
 existing policy. LDAP itself starts no subscription lifecycle.
@@ -75,8 +82,8 @@ Resource limits are explicit:
 - The canonical phonebook shares its 64 slots across all sources. With signaling
   PSRAM enabled its records and retained text use that placement and slots are
   reserved at setup. Staged records are moved into the canonical owner.
-- Host ABI measurements: ContactEntry 264 bytes with ordinary strings,320 bytes
-  with the signaling wrapper. At 64 rows the stage is 16896 or 20480 host bytes;
+- Host ABI measurements: ContactEntry 216 bytes with ordinary strings, 264 bytes
+  with the signaling wrapper. At 64 rows the stage is 13824 or 16896 host bytes;
   these are not ESP ABI or physical RAM measurements. Warm identical and changed
   nine-row provider commits make zero additional allocations in the host gate.
 - Network work stays on the worker. The main loop commits at most 64 rows, then

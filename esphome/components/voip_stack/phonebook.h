@@ -34,9 +34,7 @@ enum class ContactEndpointType : uint8_t {
   SIP,
 };
 
-#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
 enum class ContactKind : uint8_t { UNKNOWN, ESP, SIP_ACCOUNT, BROWSER, CONTACT, AUTOMATION, GROUP, SERVICE };
-#endif
 enum class ContactOrigin : uint8_t { MANUAL, HA, LDAP };
 enum class DirectoryCommitResult : uint8_t { APPLIED, UNCHANGED, INVALID, CONFLICT, CAPACITY };
 
@@ -71,17 +69,15 @@ struct ContactEntry {
   uint16_t rtp_port{0};
   bool sip_transport_tcp{false};
   bool directional_audio_v1{false};
-  ContactText audio_capability;
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  // Display-only number reuses the former uncached per-contact audio-hint slot.
   ContactText number;
-#endif
   uint8_t missing_count{0};
   ContactOrigin origin{ContactOrigin::MANUAL};
+  ContactKind kind{ContactKind::UNKNOWN};
+  bool auto_blf{false};
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
   ContactText id;
-  ContactKind kind{ContactKind::UNKNOWN};
   ContactText account_id;
-  bool auto_blf{false};
 #endif
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
   const void *provider{nullptr};
@@ -600,7 +596,6 @@ class Phonebook {
       existing.sip_transport_tcp = incoming.sip_transport_tcp;
       existing.directional_audio_v1 = incoming.directional_audio_v1;
       existing.number = incoming.number;
-      existing.audio_capability = incoming.audio_capability;
       existing.kind = incoming.kind;
       existing.origin = incoming.origin;
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
@@ -634,7 +629,7 @@ class Phonebook {
           existing.endpoint_type == incoming.endpoint_type &&
           existing.sip_transport_tcp == incoming.sip_transport_tcp &&
           existing.directional_audio_v1 == incoming.directional_audio_v1 &&
-          existing.audio_capability == incoming.audio_capability &&
+          existing.number == incoming.number &&
           existing.name == incoming.name) {
         return AddResult::Noop;
       }
@@ -647,7 +642,7 @@ class Phonebook {
       existing.rtp_port = incoming.rtp_port;
       existing.sip_transport_tcp = incoming.sip_transport_tcp;
       existing.directional_audio_v1 = incoming.directional_audio_v1;
-      existing.audio_capability = incoming.audio_capability;
+      existing.number = incoming.number;
       return was_unset ? AddResult::Upgraded : AddResult::EndpointReplaced;
     }
     // New name: append; cursor unchanged so the UI doesn't jump.
@@ -659,13 +654,14 @@ class Phonebook {
   }
 
   static bool same_entry_(const ContactEntry &a, const ContactEntry &b) {
-    return a.name == b.name && a.route == b.route && a.ip == b.ip && a.audio_capability == b.audio_capability &&
+    return a.name == b.name && a.route == b.route && a.ip == b.ip && a.number == b.number &&
+           a.kind == b.kind && a.auto_blf == b.auto_blf &&
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
-           a.kind == b.kind && a.id == b.id && a.account_id == b.account_id && a.auto_blf == b.auto_blf &&
+           a.id == b.id && a.account_id == b.account_id &&
 #endif
            a.origin == b.origin &&
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
-           a.number == b.number && a.provider == b.provider &&
+           a.provider == b.provider &&
 #endif
            a.endpoint_type == b.endpoint_type &&
            a.port == b.port && a.rtp_port == b.rtp_port &&
@@ -793,15 +789,12 @@ class Phonebook {
         !valid_text_field_(entry.name, MAX_NAME_BYTES, true) ||
         !valid_text_field_(entry.route, MAX_ROUTE_BYTES, entry.route.rfind("sip:", 0) != 0) ||
         !valid_text_field_(entry.ip, MAX_ADDRESS_BYTES, true) ||
-        !valid_text_field_(entry.audio_capability, MAX_CAPABILITY_BYTES, true)) {
+        !valid_text_field_(entry.number, MAX_ROUTE_BYTES, true)) {
       return false;
     }
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
     if (!valid_text_field_(entry.id, MAX_ROUTE_BYTES, true) ||
         !valid_text_field_(entry.account_id, 32, true)) return false;
-#endif
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
-    if (!valid_text_field_(entry.number, MAX_ROUTE_BYTES, true)) return false;
 #endif
     if (entry.endpoint_type == ContactEndpointType::SIP) {
       return !entry.ip.empty() && entry.port != 0;

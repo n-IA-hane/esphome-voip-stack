@@ -451,10 +451,10 @@ class VoipStack : public Component {
   bool get_current_contact_directional_audio_v1() const;
   std::string get_caller() const { return this->current_caller_name_; }
   size_t get_contact_count() const { return this->phonebook_.size(); }
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
   const ContactEntry *get_contact(size_t index) const { return this->phonebook_.at(index); }
   std::string get_contact_account(std::string_view id) const;
   bool call_contact(const std::string &id);
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
   void set_ha_roster_enabled(bool enabled);
   DirectoryCommitResult commit_contact_directory(const void *provider, std::vector<ContactEntry> entries, const std::string &account_id = {});
   DirectoryCommitResult commit_contact_directory(const void *provider, ContactEntry *entries, size_t count, const std::string &account_id = {});

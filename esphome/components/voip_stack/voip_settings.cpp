@@ -697,7 +697,6 @@ bool VoipStack::set_contact(const std::string &name) {
   return false;
 }
 
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
 bool VoipStack::call_contact(const std::string &id) {
   if (!this->can_start_call_()) return false;
   const auto *entry = this->phonebook_.find_id(id);
@@ -717,13 +716,16 @@ bool VoipStack::call_contact(const std::string &id) {
 
 std::string VoipStack::get_contact_account(std::string_view id) const {
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
   const auto *entry = this->phonebook_.find_id(id);
+#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
+  if (entry != nullptr && !entry->account_id.empty()) return std::string(entry->account_id);
+#endif
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
   if (entry != nullptr && entry->provider != nullptr)
     for (const auto &provider : this->directory_providers_)
       if (provider.owner == entry->provider && !provider.account_id.empty()) return provider.account_id;
 #else
-  (void) id;
+  (void) entry;
 #endif
   return this->default_line_;
 #else
@@ -732,6 +734,7 @@ std::string VoipStack::get_contact_account(std::string_view id) const {
 #endif
 }
 
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
 void VoipStack::set_ha_roster_enabled(bool enabled) {
   this->ha_roster_enabled_ = enabled;
   if (!enabled && this->phonebook_.replace_provider(ContactOrigin::HA, this, {}) == DirectoryCommitResult::APPLIED)
