@@ -14,7 +14,7 @@ from esphome.const import (
 )
 from esphome.components import audio, esp32, microphone, psram, speaker, wifi, text_sensor as esphome_text_sensor
 
-from . import ha_integration, registration
+from . import ha_integration, registration, blf
 from esphome.components import esp32_camera as esp32_camera_component
 
 CODEOWNERS = ["@n-IA-hane"]
@@ -584,6 +584,11 @@ PHONEBOOK_CONTACT_SCHEMA = cv.Schema(
         cv.Optional(CONF_ENTRY): cv.string,
         cv.Optional(CONF_NAME): _validate_contact_name,
         cv.Optional(CONF_IP): cv.ipv4address,
+        cv.Optional("route"): cv.string_strict,
+        cv.Optional("contact_id"): cv.string_strict,
+        cv.Optional("kind"): cv.one_of("unknown", "esphome", "sip_account", "browser", "contact", "automation", "group", "service", lower=True),
+        cv.Optional("account_id"): registration.account_id,
+        cv.Optional("auto_blf"): cv.boolean,
         cv.Optional(CONF_PORT, default=5060): cv.port,
         cv.Optional(CONF_RTP_PORT_ACTION, default=40000): cv.port,
         cv.Optional(CONF_TRANSPORT): cv.one_of(TRANSPORT_UDP, TRANSPORT_TCP, lower=True),
@@ -593,10 +598,17 @@ PHONEBOOK_CONTACT_SCHEMA = cv.Schema(
 
 def _validate_static_contact(value):
     value = PHONEBOOK_CONTACT_SCHEMA(value)
+    for key, limit in (("route", 96), ("contact_id", 96), ("account_id", 32)):
+        if key in value:
+            value[key] = registration.bounded(value[key], limit)
+            if any(ch in value[key] for ch in "|,;"):
+                raise cv.Invalid(f"{key} cannot contain phonebook delimiters")
     if CONF_ENTRY in value:
         return value
     if CONF_NAME not in value:
         raise cv.Invalid("static contact requires name")
+    if "route" in value and not value.get(CONF_IP):
+        raise cv.Invalid("a static route requires an explicit SIP endpoint; use set_blf_watches for PBX-only resources")
     return value
 
 
@@ -609,6 +621,8 @@ def _static_contact_entry(contact, default_transport: str) -> str:
         return name
     transport = contact.get(CONF_TRANSPORT) or default_transport
     transport = "sip_tcp" if transport == TRANSPORT_TCP else "sip_udp"
+    if "route" in contact:
+        return f"{name}|{contact['route']}|{ip}|{contact[CONF_PORT]}|{contact[CONF_RTP_PORT_ACTION]}|{transport}"
     return f"{name}|{ip}|{contact[CONF_PORT]}|{contact[CONF_RTP_PORT_ACTION]}|{transport}"
 
 VoipHAIntegration = voip_stack_ns.class_("VoipHAIntegration", cg.Component, cg.Parented.template(VoipStack))
@@ -617,6 +631,8 @@ CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), ha_integration.p
     {
         cv.Optional("ha_integration"): ha_integration.schema,
         cv.Optional("registration"): registration.SCHEMA,
+        cv.Optional("blf"): blf.SCHEMA,
+        cv.Optional("on_blf_state"): automation.validate_automation(),
         cv.Optional("on_registration_state"): automation.validate_automation(),
         cv.GenerateID("ha_adapter_id"): cv.declare_id(VoipHAIntegration),
         cv.Optional("legacy_ha_package"): cv.invalid("This VoIP HA package is retired in 2026.10.0. Remove its packages entry and enable api: custom_services: true; voip_stack now provides discovery, actions and phonebook integration."),
@@ -805,6 +821,7 @@ def _final_validate(config):
     """Cross-component validation + socket reservation."""
     ha_integration.validate(config, fv.full_config.get())
     registration.final_validate(config)
+    blf.final_validate(config, fv.full_config.get())
     protocol = config.get(CONF_TRANSPORT, TRANSPORT_UDP)
     audio_task_stacks_in_psram = config[CONF_AUDIO_TASK_STACKS_IN_PSRAM]
     if config[CONF_TASK_STACKS_IN_PSRAM] or audio_task_stacks_in_psram:
@@ -1132,6 +1149,14 @@ def _add_static_contacts(var, config):
     default_transport = config.get(CONF_TRANSPORT, TRANSPORT_UDP)
     for contact in contacts:
         cg.add(var.add_contact(_static_contact_entry(contact, default_transport)))
+        if any(key in contact for key in ("contact_id", "kind", "account_id", "auto_blf")):
+            cg.add_define("USE_ESPHOME_VOIP_CONTACT_METADATA")
+            kind = contact.get("kind", "unknown")
+            enum = voip_stack_ns.enum("ContactKind", is_class=True)
+            values = {"esphome": "ESP", "sip_account": "SIP_ACCOUNT", "browser": "BROWSER", "contact": "CONTACT", "automation": "AUTOMATION", "group": "GROUP", "service": "SERVICE", "unknown": "UNKNOWN"}
+            cg.add(var.set_contact_metadata(contact.get(CONF_NAME, contact.get(CONF_ENTRY, "").split("|", 1)[0]),
+                contact.get("contact_id", ""), getattr(enum, values[kind]), contact.get("account_id", ""),
+                contact.get("auto_blf", kind in ("esphome", "sip_account", "browser"))))
 
 
 async def _add_device_and_audio_settings(var, config):
@@ -1264,6 +1289,7 @@ async def to_code(config):
     await _bind_ha_phonebook_sensor(var, config)
     await ha_integration.to_code(var, config)
     await registration.to_code(var, config)
+    await blf.to_code(var, config)
 
 
 # === Action registrations ===
@@ -1617,3 +1643,5 @@ _register_simple_condition("voip_stack.can_send_dtmf", VoipCanSendDtmfCondition)
 
 registration.register_automations(VoipStack)
 registration.register_mwi_condition(VoipStack)
+
+blf.register_automations(VoipStack)

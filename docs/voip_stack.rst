@@ -319,3 +319,59 @@ credentials and signaling flow remain owned until the final NOTIFY or bounded
 timeout. Removing or replacing that account may return false during retirement;
 retry after it completes. Omitting the MWI option compiles out its pool, state,
 callbacks and mailbox actions.
+
+Busy lamp field and presence
+---------------------------
+
+Optional ``voip_stack.blf`` uses the existing SIP worker and registration
+accounts for RFC 4235 ``dialog`` subscriptions. ``max_subscriptions`` bounds
+the watched resources from 1 to 64 (default 16). Optional ``presence: true``
+adds one independent RFC 3863 subscription for each resource. No additional
+task, socket or media decoder is created. ``buffers_in_psram`` defaults to
+whether PSRAM is configured; allocation uses the selected heap without fallback.
+Retained SIP strings follow the existing signaling memory setting separately.
+
+``get_contact_blf(stable_id)`` returns a small status value without copying
+owned identity strings. ``available`` means that the dialog table is coherent;
+``state`` reports unknown, idle, calling, ringing, active or held. The separate
+``presence`` field reports unknown, open or closed. An idle dialog table does
+not establish presence, and closed presence does not clear an active call.
+
+The parser accepts bounded full/partial documents with at most four dialogs,
+128-byte dialog IDs and a 4096-byte body. A missing partial version makes call
+state unavailable and requests one full refresh. Older documents cannot restore
+stale state. A new subscription dialog resets the version fence. Rejected
+NOTIFY records and failed response sends cannot commit document state.
+
+``set_blf_watches(vector<BlfWatchConfig>)`` replaces the desired watch list.
+Each row contains ``contact_id``, ``account_id`` and a validated SIP resource
+``target``. Invalid batches, duplicate IDs and capacity overflow are rejected
+before changing the current list. Removed or replaced rows first retire their
+old subscriptions. Their credentials and flows remain owned through the final
+NOTIFY, Timer N or loss of that flow.
+
+With ``watch_contacts: true`` (default), explicit Phonebook metadata selects
+the first eligible resources up to the configured bound. HA roster v2 preserves
+its existing keys: ``contacts[].id`` is the dial target,
+``metadata.endpoint_id`` supplies the stable identity, and
+``metadata.account_id`` selects the SIP account. Explicit kinds esphome,
+sip_account and browser enable automatic watches unless disabled. A generic
+contact requires an explicit ``auto_blf: true`` provider policy. Unknown,
+group, service and automation entries remain excluded. Static contacts can
+supply ``contact_id``, ``kind``, ``account_id`` and ``auto_blf`` without LDAP.
+An explicit static ``route`` also requires its SIP endpoint ``ip``.
+
+``on_blf_state`` runs on the main loop with ``contact_id``, ``account_id``,
+``state`` and ``available``. C++ ``add_on_blf_state_callback`` receives the full
+status including independent presence. Notifications are optional, coalesced
+per slot into the latest state, and limited to eight slots per loop turn.
+A state getter is suitable for periodic UI queries without registering callbacks.
+
+Directed pickup requires an explicitly configured ``pickup_prefix`` understood
+by the PBX. ``pickup_contact(stable_id)`` and the corresponding YAML/API action
+only originate a normal call when a coherent dialog explicitly identifies an
+incoming ringing recipient and the selected account is registered. Outgoing
+initiator dialogs, missing direction and stale state do not allow pickup.
+The prefix is applied to the contact's validated dial target on that account.
+There is no universal pickup code and no implicit Replaces implementation.
+Omitting BLF compiles out its subscription rows, cache, callbacks and actions.

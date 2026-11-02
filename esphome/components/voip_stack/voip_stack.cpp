@@ -302,6 +302,9 @@ bool VoipStack::setup_transport_() {
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   this->initialize_registration_();
 #endif
+#ifdef USE_ESPHOME_VOIP_BLF
+  this->initialize_blf_();
+#endif
   this->transport_->set_audio_formats(this->tx_audio_formats_, this->rx_audio_formats_);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->transport_->set_video_endpoints(this->video_source_, this->video_sink_);
@@ -591,6 +594,9 @@ void VoipStack::loop() {
 #endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   this->pump_registration_wake_();
+#ifdef USE_ESPHOME_VOIP_BLF
+  this->pump_blf_events_();
+#endif
 #ifdef USE_ESPHOME_VOIP_MWI
   this->pump_message_waiting_();
 #endif

@@ -32,6 +32,11 @@ struct ParsedPhonebookSlot {
 };
 
 struct JsonRosterSlot {
+#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
+  std::string stable_id, account_id;
+  ContactKind kind{ContactKind::UNKNOWN};
+  bool auto_blf{false};
+#endif
   std::string name;
   std::string route;
   std::string address;
@@ -173,6 +178,17 @@ bool parse_json_roster_slot(const cJSON *obj, JsonRosterSlot *slot) {
     return false;
   }
 
+#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
+  slot->stable_id = json_metadata_string(obj, "endpoint_id");
+  slot->account_id = json_metadata_string(obj, "account_id");
+  slot->kind = contact_kind_from_string(json_metadata_string(obj, "endpoint_kind"));
+  if (slot->kind == ContactKind::UNKNOWN) slot->kind = contact_kind_from_string(json_metadata_string(obj, "kind"));
+  if (json_metadata_string(obj, "virtual_endpoint") == "automation") slot->kind = ContactKind::AUTOMATION;
+  const auto *meta = json_metadata(obj);
+  const auto *automatic = meta == nullptr ? nullptr : cJSON_GetObjectItemCaseSensitive(meta, "auto_blf");
+  const bool phone_kind = slot->kind == ContactKind::ESP || slot->kind == ContactKind::SIP_ACCOUNT || slot->kind == ContactKind::BROWSER;
+  slot->auto_blf = cJSON_IsBool(automatic) ? cJSON_IsTrue(automatic) : phone_kind;
+#endif
   slot->name = name;
   slot->route = id;
   slot->address = Phonebook::trim(json_string(obj, "address"));
@@ -377,6 +393,13 @@ void VoipStack::set_mic_gain_db(float db) {
 // merge: same shape = noop, missing endpoint = upgrade, mismatch = replace.
 // Slot order is stable; only flush_contacts wipes.
 
+#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
+void VoipStack::set_contact_metadata(const std::string &name, const std::string &id, ContactKind kind,
+                                     const std::string &account_id, bool auto_blf) {
+  if (this->phonebook_.set_metadata(name, id, kind, account_id, auto_blf)) this->publish_phonebook_changed_();
+}
+#endif
+
 void VoipStack::add_contact(const std::string &entry) {
   this->phonebook_.set_self_name(this->device_name_);
   const std::string normalized_entry = this->normalize_phonebook_for_transport_(entry);
@@ -546,6 +569,10 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
     ContactEntry entry;
     entry.name = slot.name;
     entry.route = slot.route;
+#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
+    entry.id = slot.stable_id; entry.kind = slot.kind;
+    entry.account_id = slot.account_id; entry.auto_blf = slot.auto_blf;
+#endif
 
     if (slot.local_ha) {
       entry.endpoint_type = local_endpoint_type;
@@ -844,6 +871,9 @@ void VoipStack::publish_contacts_() {
 }
 
 void VoipStack::publish_phonebook_changed_() {
+#ifdef USE_ESPHOME_VOIP_BLF
+  this->sync_blf_contacts_();
+#endif
   this->publish_destination_();
   this->publish_contacts_();
   this->phonebook_update_trigger_.trigger(this->get_current_destination());

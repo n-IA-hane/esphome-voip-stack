@@ -5,6 +5,12 @@
 
 #include "sip_registration.h"
 #include "message_waiting.h"
+#ifdef USE_ESPHOME_VOIP_BLF
+#include "sip_blf.h"
+#ifdef USE_ESP32
+#include <esp_heap_caps.h>
+#endif
+#endif
 
 #ifdef USE_ESP32
 #include <esp_heap_caps.h>
@@ -39,11 +45,14 @@ public:
 #ifdef USE_ESPHOME_VOIP_MWI
     void (*notify)(void *, const MessageWaitingState &){nullptr};
 #endif
+#ifdef USE_ESPHOME_VOIP_BLF
+    void (*notify_blf)(void *, const BlfStateInfo &){nullptr};
+#endif
     uint32_t (*random)(){nullptr};
     SipDigest::Hash hash{nullptr};
     uint16_t local_port{5060};
   };
-  bool initialized() const { return this->accounts_ != nullptr; }
+  bool initialized() const { return MWI_CAPACITY == 0 || this->accounts_ != nullptr; }
   bool account_retired(size_t index) const;
   void set_hooks(const Hooks &hooks) { this->hooks_ = hooks; }
   void update_account(size_t index, const SipAccountConfig &config,
@@ -64,6 +73,18 @@ public:
                      uint16_t source_port, bool tcp, int flow_index,
                      uint32_t now);
   void connection_lost(size_t index, uint32_t now);
+#ifdef USE_ESPHOME_VOIP_BLF
+  bool configure_blf(uint8_t capacity);
+  bool set_blf_watch(size_t index, size_t account_index, const SipRegistration::Account &account,
+                     const std::string &id, const std::string &target, uint32_t now);
+  void update_blf_account(size_t index, const SipRegistration::Account &account, uint32_t now);
+  void clear_blf_watch(size_t index, uint32_t now);
+  void invalidate_blf_account(size_t account_index);
+  const BlfStateInfo *blf_state(size_t index) const;
+  std::string_view blf_watch_id(size_t index) const;
+  bool blf_watch_requested(size_t index) const;
+  uint8_t blf_capacity() const { return this->blf_capacity_; }
+#endif
   const MessageWaitingState &state(size_t index) const {
     static const MessageWaitingState empty;
     return this->accounts_ != nullptr && index < MWI_CAPACITY ? this->accounts_[index].state : empty;
@@ -74,16 +95,21 @@ public:
 
 protected:
   struct Account {
+#ifdef USE_ESPHOME_VOIP_BLF
+    enum class Package : uint8_t { MESSAGE_SUMMARY, DIALOG, PRESENCE };
+    Package package{Package::MESSAGE_SUMMARY};
+    uint8_t account_index{0};
 #ifdef USE_ESP32
-    static void *operator new[](size_t bytes, const std::nothrow_t &) noexcept {
-#ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
-      return heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    static void *operator new[](size_t size, const std::nothrow_t &) noexcept {
+#ifdef USE_ESPHOME_VOIP_BLF_PSRAM
+      return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #else
-      return heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+      return heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 #endif
     }
-    static void operator delete[](void *p) noexcept { heap_caps_free(p); }
-    static void operator delete[](void *p, const std::nothrow_t &) noexcept { heap_caps_free(p); }
+    static void operator delete[](void *pointer) noexcept { heap_caps_free(pointer); }
+    static void operator delete[](void *pointer, const std::nothrow_t &) noexcept { heap_caps_free(pointer); }
+#endif
 #endif
     const SipAccountConfig *config_{nullptr};
     // Only standalone C++ callers of update_account need an owned copy.
@@ -114,18 +140,84 @@ protected:
   };
   // Only message-summary subscriptions own mailbox counts. Dialog/presence
   // rows share the transaction engine without carrying unused mailbox state.
-  struct MwiAccount : Account { MessageWaitingState state; };
-  std::unique_ptr<MwiAccount[]> accounts_{new (std::nothrow) MwiAccount[MWI_CAPACITY]};
+  struct MwiAccount : Account {
+#ifdef USE_ESP32
+    static void *operator new[](size_t bytes, const std::nothrow_t &) noexcept {
+#ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
+      return heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+      return heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#endif
+    }
+    static void operator delete[](void *p) noexcept { heap_caps_free(p); }
+    static void operator delete[](void *p, const std::nothrow_t &) noexcept { heap_caps_free(p); }
+#endif
+    MessageWaitingState state;
+  };
+  std::unique_ptr<MwiAccount[]> accounts_{MWI_CAPACITY == 0 ? nullptr : new (std::nothrow) MwiAccount[MWI_CAPACITY]};
+#ifdef USE_ESPHOME_VOIP_BLF
+  struct BlfWatch : Account {
+    RegistrationMessage watch_target;
+    BlfStateInfo blf;
+    BlfDialogCache dialogs;
+    RegistrationMessage pending_account, pending_id, pending_target;
+    uint8_t pending_account_index{0};
+    bool replace_pending{false};
+    bool needs_full{false}, full_refresh_requested{false};
+  };
+  std::unique_ptr<BlfWatch[]> blf_accounts_;
+#ifdef USE_ESPHOME_VOIP_PRESENCE
+  // A second standard SIP dialog needs transaction state, not another BLF cache.
+  std::unique_ptr<Account[]> presence_accounts_;
+  size_t presence_index_(size_t slot) const { return MWI_CAPACITY + this->blf_capacity_ + slot; }
+#endif
+  uint8_t blf_capacity_{0};
+  size_t watch_slot_(size_t index) const { return (index - MWI_CAPACITY) % this->blf_capacity_; }
+  bool watch_retired_(size_t slot) const;
+  void update_watch_account_(size_t slot, size_t account_index, const SipRegistration::Account &account, uint32_t now);
+#ifdef USE_ESPHOME_VOIP_PRESENCE
+  void publish_presence_(size_t index, PresenceState presence);
+#endif
+  void publish_blf_(size_t index);
+  void begin_blf_watch_(size_t slot, size_t account_index, const SipRegistration::Account &account,
+                         std::string_view id, std::string_view target, uint32_t now);
+  void retire_blf_watch_(size_t slot, uint32_t now);
+#endif
   size_t total_capacity_() const {
+    if (!this->initialized()) return 0;
+#ifdef USE_ESPHOME_VOIP_BLF
+    return MWI_CAPACITY + this->blf_capacity_
+#ifdef USE_ESPHOME_VOIP_PRESENCE
+        * 2
+#endif
+        ;
+#else
     return MWI_CAPACITY;
+#endif
   }
   size_t owner_index_(size_t index) const {
+#ifdef USE_ESPHOME_VOIP_BLF
+    return this->account_(index).account_index;
+#else
     return index;
+#endif
   }
   Account &account_(size_t index) {
+#ifdef USE_ESPHOME_VOIP_BLF
+#ifdef USE_ESPHOME_VOIP_PRESENCE
+    if (index >= MWI_CAPACITY + this->blf_capacity_) return this->presence_accounts_[index - MWI_CAPACITY - this->blf_capacity_];
+#endif
+    if (index >= MWI_CAPACITY) return this->blf_accounts_[index - MWI_CAPACITY];
+#endif
     return this->accounts_[index];
   }
   const Account &account_(size_t index) const {
+#ifdef USE_ESPHOME_VOIP_BLF
+#ifdef USE_ESPHOME_VOIP_PRESENCE
+    if (index >= MWI_CAPACITY + this->blf_capacity_) return this->presence_accounts_[index - MWI_CAPACITY - this->blf_capacity_];
+#endif
+    if (index >= MWI_CAPACITY) return this->blf_accounts_[index - MWI_CAPACITY];
+#endif
     return this->accounts_[index];
   }
   Hooks hooks_{};

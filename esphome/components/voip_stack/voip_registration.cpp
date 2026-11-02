@@ -345,6 +345,9 @@ void VoipStack::registration_state_callback_(void* ctx, const std::string& id, R
   auto* self = static_cast<VoipStack*>(ctx);
   self->defer([self, id, state, status]() {
     self->registration_state_trigger_.trigger(id, registration_state_name(state), status);
+#ifdef USE_ESPHOME_VOIP_BLF
+    self->sync_blf_contacts_();
+#endif
   });
 }
 

@@ -39,6 +39,9 @@
 #endif
 
 #include "phonebook.h"
+#ifdef USE_ESPHOME_VOIP_BLF
+#include "sip_blf.h"
+#endif
 #include "rtp_jitter_buffer.h"
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 #include "video.h"
@@ -403,6 +406,24 @@ class VoipStack : public Component {
   // = no-op, missing endpoint upgraded in place, mismatched endpoint
   // replaced. Slot order is stable; only flush_contacts() trims.
   void add_contact(const std::string &entry);
+#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
+  void set_contact_metadata(const std::string &, const std::string &, ContactKind, const std::string &, bool);
+#endif
+#ifdef USE_ESPHOME_VOIP_BLF
+  void set_blf_configuration(const std::string &account, uint8_t capacity, const std::string &prefix, bool contacts) {
+    this->blf_account_id_ = account; this->blf_capacity_ = capacity; this->blf_pickup_prefix_ = prefix; this->blf_watch_contacts_ = contacts;
+  }
+  BlfStatus get_contact_blf(std::string_view id);
+  bool set_blf_watches(const std::vector<BlfWatchConfig> &watches);
+  bool pickup_contact(const std::string &id);
+  std::string get_contact_account(std::string_view id) const;
+  template<typename F> void add_on_blf_state_callback(F &&callback) {
+    this->blf_callbacks_.add(std::forward<F>(callback)); this->blf_notifications_requested_.store(true, std::memory_order_release);
+  }
+  Trigger<std::string, std::string, std::string, bool> *get_blf_state_trigger() {
+    this->blf_notifications_requested_.store(true, std::memory_order_release); return &this->blf_state_trigger_;
+  }
+#endif
   void remove_contact(const std::string &name);
   void set_contacts(const std::string &contacts_csv);  // batch wrapper, same
                                                        // merge rules per entry
@@ -1074,6 +1095,21 @@ class VoipStack : public Component {
   bool load_registration_saved_();
   bool write_registration_saved_(const SavedRegistration &next);
   void pump_registration_wake_();
+#ifdef USE_ESPHOME_VOIP_BLF
+  void initialize_blf_();
+  void sync_blf_contacts_();
+  static void blf_callback_(void *, SipTransport *, size_t);
+  void pump_blf_events_();
+  BlfStateInfo get_contact_blf_info_(std::string_view id);
+  uint8_t blf_capacity_{16};
+  bool blf_ready_{false}, blf_watch_contacts_{true};
+  std::string blf_account_id_{"ha"}, blf_pickup_prefix_;
+  std::atomic<bool> blf_notifications_requested_{false};
+  std::atomic<SipTransport *> blf_event_owner_{nullptr};
+  std::array<std::atomic<uint32_t>, 2> blf_pending_{};
+  LazyCallbackManager<void(const BlfStateInfo &)> blf_callbacks_;
+  Trigger<std::string, std::string, std::string, bool> blf_state_trigger_;
+#endif
 #ifdef USE_ESPHOME_VOIP_MWI
   static void message_waiting_callback_(void *, SipTransport *, size_t);
   void pump_message_waiting_();

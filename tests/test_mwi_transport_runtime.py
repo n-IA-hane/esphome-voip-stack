@@ -7,12 +7,7 @@ from test_refer_dialog_runtime import SOURCE, ROOT, block
 from test_sip_registration_transport import registration_transport_source
 
 
-@pytest.fixture(scope="module")
-def mwi_transport_binary(tmp_path_factory):
-    folder = tmp_path_factory.mktemp("mwi-transport")
-    core = folder / "esphome/core"
-    core.mkdir(parents=True)
-    (core / "defines.h").write_text("")
+def mwi_transport_source():
     code = registration_transport_source(full_invite=True)
     adapter = (SOURCE / "sip_registration_transport.cpp").read_text()
     for marker in ["void SipTransport::registration_binding_accepted_(", "void SipTransport::pump_registration_mwi_(",
@@ -93,6 +88,16 @@ int main(int argc,char**argv){
     code = "template<class...T>void host_log(T&&...values){((void)values,...);}\n" + code
     for name in ["ESP_LOGW", "ESP_LOGE", "ESP_LOGD", "ESP_LOGI"]:
         code = re.sub(rf"^#define {name}\(\.\.\.\).*$", f"#define {name}(...) host_log(__VA_ARGS__)", code, flags=re.MULTILINE)
+    return code
+
+
+@pytest.fixture(scope="module")
+def mwi_transport_binary(tmp_path_factory):
+    folder = tmp_path_factory.mktemp("mwi-transport")
+    core = folder / "esphome/core"
+    core.mkdir(parents=True)
+    (core / "defines.h").write_text("")
+    code = mwi_transport_source()
     cpp = folder / "mwi-transport.cpp"
     cpp.write_text(code)
     binary = folder / "mwi-transport"
