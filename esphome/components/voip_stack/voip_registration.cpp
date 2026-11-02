@@ -249,7 +249,11 @@ bool VoipStack::set_account(const SipAccountConfig& config, bool persist) {
     commit = [](void* ctx, const std::string& id, const SipAccountConfig* c) {
       return static_cast<VoipStack*>(ctx)->save_registration_override_(id, c, false);
     };
-  return static_cast<SipTransport*>(this->transport_.get())->set_account(config, commit, this);
+  const bool accepted = static_cast<SipTransport*>(this->transport_.get())->set_account(config, commit, this);
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  if (accepted) this->publish_account_changed_(config.id);
+#endif
+  return accepted;
 }
 bool VoipStack::remove_account(const std::string& id, bool persist) {
   if (this->transport_ == nullptr) return false;
@@ -260,6 +264,9 @@ bool VoipStack::remove_account(const std::string& id, bool persist) {
     };
   if (!static_cast<SipTransport*>(this->transport_.get())->remove_account(id, commit, this)) return false;
   if (this->default_line_ == id) this->default_line_ = "direct";
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  this->publish_account_changed_(id);
+#endif
   return true;
 }
 bool VoipStack::reset_account(const std::string& id) {
@@ -291,8 +298,21 @@ bool VoipStack::reset_account(const std::string& id) {
                                            : transport->remove_account(id, commit, this, true);
   if (!changed) return false;
   if (!has_baseline && this->default_line_ == id) this->default_line_ = "direct";
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+  this->publish_account_changed_(id);
+#endif
   return true;
 }
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+bool VoipStack::get_account_snapshot(const std::string &id, SipAccountSnapshot *out) {
+  return this->transport_ != nullptr &&
+         static_cast<SipTransport *>(this->transport_.get())->get_account_snapshot(id, out);
+}
+void VoipStack::publish_account_changed_(const std::string &id) {
+  this->defer([this, id]() { this->account_changed_callbacks_.call(id); });
+}
+#endif
+
 bool VoipStack::register_account(const std::string& id) {
   return this->transport_ != nullptr &&
          static_cast<SipTransport*>(this->transport_.get())->register_account(id, true);
@@ -345,6 +365,9 @@ void VoipStack::registration_state_callback_(void* ctx, const std::string& id, R
   auto* self = static_cast<VoipStack*>(ctx);
   self->defer([self, id, state, status]() {
     self->registration_state_trigger_.trigger(id, registration_state_name(state), status);
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
+    self->account_changed_callbacks_.call(id);
+#endif
   });
 }
 
