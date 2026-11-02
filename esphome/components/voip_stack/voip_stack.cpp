@@ -1031,7 +1031,7 @@ std::string VoipStack::build_sip_snapshot_string_() const {
       selected_rx_format = snap.selected_rx_format;
     }
   }
-  std::string contact = this->phonebook_.current_name();
+  std::string contact(this->phonebook_.current_name());
   char out[512];
   snprintf(out, sizeof(out),
            "st=%s; id=%s; dir=%s; from=%s; to=%s; ct=%s; tr=%s; sc=%u; "
