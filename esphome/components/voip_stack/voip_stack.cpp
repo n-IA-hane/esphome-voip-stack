@@ -324,6 +324,13 @@ bool VoipStack::setup_transport_() {
   this->transport_->set_media_quiesced_callback(
       VoipStack::transport_media_quiesced_callback_, this);
 
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  if (this->dtmf_events_ == nullptr)
+    this->dtmf_events_ = xQueueCreateStatic(8, sizeof(DtmfEvent), this->dtmf_events_buffer_, &this->dtmf_events_storage_);
+  if (this->dtmf_events_ == nullptr) return false;
+  xQueueReset(this->dtmf_events_);
+  this->transport_->set_dtmf_callback(VoipStack::transport_dtmf_callback_, this);
+#endif
   if (!this->transport_->start()) {
     ESP_LOGE(TAG, "Transport failed to start");
     return false;
@@ -560,7 +567,28 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
   }
 }
 
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+void VoipStack::transport_dtmf_callback_(void *ctx, char digit, uint32_t generation) {
+  auto *self = static_cast<VoipStack *>(ctx);
+  const DtmfEvent event{generation, digit};
+  if (self->dtmf_events_ != nullptr && xQueueSend(self->dtmf_events_, &event, 0) == pdTRUE)
+    self->enable_loop_soon_any_context();
+}
+void VoipStack::pump_dtmf_events_() {
+  DtmfEvent event;
+  for (uint8_t budget = 8; budget != 0 && this->dtmf_events_ != nullptr &&
+       xQueueReceive(this->dtmf_events_, &event, 0) == pdTRUE; --budget)
+    if (this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL && this->transport_ != nullptr &&
+        event.generation == this->transport_->dtmf_generation()) this->dtmf_trigger_.trigger(std::string(1, event.digit));
+  if (this->dtmf_events_ != nullptr && uxQueueMessagesWaiting(this->dtmf_events_) != 0)
+    this->enable_loop_soon_any_context();
+}
+#endif
+
 void VoipStack::loop() {
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  this->pump_dtmf_events_();
+#endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   this->pump_registration_wake_();
 #endif

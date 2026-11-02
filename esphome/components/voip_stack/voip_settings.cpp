@@ -14,6 +14,15 @@
 namespace esphome {
 namespace voip_stack {
 
+bool VoipStack::can_send_dtmf() const {
+  return this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL &&
+      this->transport_ != nullptr && this->transport_->can_send_dtmf();
+}
+bool VoipStack::send_dtmf(char digit, uint16_t duration_ms) {
+  return this->can_send_dtmf() && this->transport_->send_dtmf(digit, duration_ms);
+}
+
+
 static const char *const TAG = "voip_stack.settings";
 
 namespace {

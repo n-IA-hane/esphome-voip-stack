@@ -1,0 +1,27 @@
+# Public DTMF automation without logging private digits.
+packages:
+  base: !include minimal_no_text.yaml
+
+api:
+  custom_services: true
+
+voip_stack:
+  on_dtmf:
+    then:
+      - lambda: |-
+          (void) digit;
+
+script:
+  - id: keypad_digit
+    then:
+      - if:
+          condition:
+            voip_stack.can_send_dtmf: phone
+          then:
+            - voip_stack.send_dtmf:
+                id: phone
+                digit: '1'
+      - voip_stack.send_dtmf:
+          id: phone
+          digit: !lambda return std::string("#");
+          duration_ms: !lambda return uint16_t(200);

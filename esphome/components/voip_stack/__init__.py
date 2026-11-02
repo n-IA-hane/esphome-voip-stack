@@ -81,6 +81,7 @@ CONF_HA_PHONEBOOK_TEXT_SENSOR_ID = "ha_phonebook_text_sensor_id"
 CONF_ON_RINGING = "on_ringing"
 CONF_ON_IN_CALL = "on_in_call"
 CONF_ON_IDLE = "on_idle"
+CONF_ON_DTMF = "on_dtmf"
 CONF_ON_VIDEO_START = "on_video_start"
 CONF_ON_VIDEO_END = "on_video_end"
 # FSM triggers
@@ -556,6 +557,8 @@ SetMicGainDbAction = voip_stack_ns.class_("SetMicGainDbAction", automation.Actio
 SetVideoSendAction = voip_stack_ns.class_("SetVideoSendAction", automation.Action)
 SetContactsAction = voip_stack_ns.class_("SetContactsAction", automation.Action)
 SetContactAction = voip_stack_ns.class_("SetContactAction", automation.Action)
+SendDtmfAction = voip_stack_ns.class_("SendDtmfAction", automation.Action)
+VoipCanSendDtmfCondition = voip_stack_ns.class_("VoipCanSendDtmfCondition", automation.Condition)
 CallAction = voip_stack_ns.class_("CallAction", automation.Action)
 SetRemoteEndpointAction = voip_stack_ns.class_("SetRemoteEndpointAction", automation.Action)
 AddContactAction = voip_stack_ns.class_("AddContactAction", automation.Action)
@@ -725,6 +728,7 @@ CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), ha_integration.p
         cv.Optional(CONF_ON_IN_CALL): automation.validate_automation(single=True),
         # Trigger when state returns to idle
         cv.Optional(CONF_ON_IDLE): automation.validate_automation(single=True),
+        cv.Optional(CONF_ON_DTMF): automation.validate_automation(single=True),
         # Trigger on negotiated video media lifecycle edges
         cv.Optional(CONF_ON_VIDEO_START): automation.validate_automation(single=True),
         cv.Optional(CONF_ON_VIDEO_END): automation.validate_automation(single=True),
@@ -1107,6 +1111,7 @@ async def _add_core_settings(var, config):
         )
         esp32.add_idf_sdkconfig_option("CONFIG_OPUS_FLOATING_POINT", False)
     cg.add_define("USE_ESPHOME_VOIP_SIP_TRANSPORT")
+    cg.add_define("USE_ESPHOME_VOIP_DTMF")
 
 
 def _add_transport_settings(var, config):
@@ -1164,6 +1169,9 @@ async def _build_voip_automations(var, config):
         )
 
     # on_idle automation
+    if CONF_ON_DTMF in config:
+        cg.add_define("USE_ESPHOME_VOIP_DTMF_EVENTS")
+        await automation.build_automation(var.get_dtmf_trigger(), [(cg.std_string, "digit")], config[CONF_ON_DTMF])
     if CONF_ON_IDLE in config:
         await automation.build_automation(
             var.get_idle_trigger(), [], config[CONF_ON_IDLE]
@@ -1316,6 +1324,21 @@ async def decline_call_action_to_code(config, action_id, template_arg, args):
 _register_simple_action("voip_stack.call_toggle", CallToggleAction)
 _register_simple_action("voip_stack.publish_entity_states", PublishEntityStatesAction)
 
+
+
+@automation.register_action(
+    "voip_stack.send_dtmf", SendDtmfAction,
+    cv.Schema({
+        cv.GenerateID(): cv.use_id(VoipStack),
+        cv.Required("digit"): cv.templatable(cv.one_of(*"0123456789*#ABCDabcd", lower=False)),
+        cv.Optional("duration_ms", default=160): cv.templatable(cv.int_range(min=40, max=8000)),
+    }), synchronous=True,
+)
+async def send_dtmf_action_to_code(config, action_id, template_arg, args):
+    var = await _new_parented_action(config, action_id, template_arg)
+    cg.add(var.set_digit(await cg.templatable(config["digit"], args, cg.std_string)))
+    cg.add(var.set_duration_ms(await cg.templatable(config["duration_ms"], args, cg.uint16)))
+    return var
 
 # === Parameterized actions ===
 
@@ -1587,6 +1610,7 @@ async def voip_destination_is_to_code(config, condition_id, template_arg, args):
 
 
 _register_simple_condition("voip_stack.is_ha_destination", VoipIsHaDestinationCondition)
+_register_simple_condition("voip_stack.can_send_dtmf", VoipCanSendDtmfCondition)
 
 
 registration.register_automations(VoipStack)

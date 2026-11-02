@@ -237,3 +237,50 @@ See Also
 - :doc:`/components/micro_wake_word`
 - :apiref:`voip_stack/voip_stack.h`
 - :ghedit:`Edit`
+
+DTMF telephone events
+---------------------
+
+The SIP transport sends negotiated RFC 4733 telephone events on the existing
+RTP path. ``can_send_dtmf()`` describes the current call; ``send_dtmf(digit,
+ duration_ms)`` independently checks admission and returns whether the bounded
+queue accepted the digit. Calls outside IN_CALL, absent negotiation, unsupported
+digits, receive-only media, teardown and a full queue reject the request. There
+is no SIP INFO or generated in-band audio fallback.
+
+The YAML action is ``voip_stack.send_dtmf`` with ``digit`` and optional
+``duration_ms`` (default 160). Digits 0-9, ``*``, ``#`` and A-D are supported
+when included in the peer's event mask. Durations must be 40-8000 milliseconds
+and fit 65535 ticks at the negotiated event clock. For example, 8000 milliseconds
+cannot be represented at 48000 Hz and is rejected rather than truncated.
+
+.. code-block:: yaml
+
+   script:
+     - id: send_key
+       then:
+         - if:
+             condition:
+               voip_stack.can_send_dtmf: phone
+             then:
+               - voip_stack.send_dtmf:
+                   id: phone
+                   digit: '#'
+                   duration_ms: 160
+
+Native Home Assistant integration exposes the ordinary ESPHome ``send_dtmf``
+action with a single ``digit`` argument. It uses the same owner and admission
+checks as the YAML action.
+
+Optional ``on_dtmf`` delivers a ``digit`` string on the ESPHome main loop,
+once per received RTP event. Its queue and callback state are compiled only
+when the hook is configured. Each loop turn has a bounded delivery budget.
+Audio remains on its existing pipeline while events are transmitted. Equal
+clock rates share the audio RTP source; a different negotiated clock uses a
+separate RTP source on the same socket according to RFC 7160.
+
+Local request and callback generations prevent queued work from a retired call
+entering its successor. They do not authenticate network packets: a very late
+RTP packet on an identically reused address/port/payload tuple has no SIP
+Call-ID with which to prove its original dialog. Firmware and interoperability
+qualification must keep that case separate from local queue cancellation.

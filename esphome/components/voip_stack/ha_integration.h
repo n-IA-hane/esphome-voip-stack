@@ -12,6 +12,9 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
     this->register_service(&VoipHAIntegration::start_call, "start_call", {"dest"});
     this->register_service(&VoipHAIntegration::start_call_via_ha, "start_call_via_ha", {"dest", "call_id"});
     this->register_service(&VoipHAIntegration::hangup_call_if_id, "hangup_call_if_id", {"call_id"});
+#ifdef USE_ESPHOME_VOIP_DTMF
+    this->register_service(&VoipHAIntegration::send_dtmf, "send_dtmf", {"digit"});
+#endif
     this->register_service(&VoipHAIntegration::answer_call, "answer_call");
     this->register_service(&VoipHAIntegration::decline_call, "decline_call", {"reason"});
     this->register_service(&VoipHAIntegration::hangup_call, "hangup_call");
@@ -59,6 +62,9 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
   void start_call(std::string dest) { this->parent_->call(dest); }
   void start_call_via_ha(std::string dest, std::string call_id) { this->parent_->call_via_ha(dest, call_id); }
   void hangup_call_if_id(std::string call_id) { this->parent_->hangup_call_if_id(call_id); }
+#ifdef USE_ESPHOME_VOIP_DTMF
+  void send_dtmf(std::string digit) { if (digit.size() == 1) this->parent_->send_dtmf(digit[0]); }
+#endif
   void answer_call() { this->parent_->answer_call(); }
   void decline_call(std::string reason) { this->parent_->decline_call(reason); }
   void hangup_call() { this->parent_->stop(); }

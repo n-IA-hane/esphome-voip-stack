@@ -31,6 +31,9 @@ using TransportConnectionCallback = void (*)(void *ctx, bool connected);
 using TransportAcceptCallback = bool (*)(void *ctx);
 using TransportDialogActiveCallback = bool (*)(void *ctx);
 using TransportMediaQuiescedCallback = void (*)(void *ctx);
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+using TransportDtmfCallback = void (*)(void *, char, uint32_t);
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 using TransportVideoSendStateCallback =
     void (*)(void *ctx, bool enabled, bool pending);
@@ -95,6 +98,12 @@ class SipPhoneTransport {
   /// Best-effort send. Payload is one PCM frame in the negotiated RTP format.
   /// Safe from a high-priority audio task; may drop on backpressure.
   virtual void send_audio_frame(const uint8_t *pcm, size_t bytes) = 0;
+  virtual bool can_send_dtmf() const { return false; }
+  virtual bool send_dtmf(char digit, uint16_t duration_ms = 160) { (void) digit; (void) duration_ms; return false; }
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  virtual uint32_t dtmf_generation() const { return 0; }
+  void set_dtmf_callback(TransportDtmfCallback cb, void *ctx) { this->on_dtmf_ = cb; this->on_dtmf_ctx_ = ctx; }
+#endif
 
   /// Decode one negotiated encoded RTP payload after jitter reordering. A
   /// null payload requests codec packet-loss concealment for one frame.
@@ -326,6 +335,11 @@ class SipPhoneTransport {
   void *should_accept_session_ctx_{nullptr};
   TransportDialogActiveCallback dialog_active_cb_{nullptr};
   void *dialog_active_ctx_{nullptr};
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  void emit_dtmf_(char digit, uint32_t generation) { if (this->on_dtmf_ != nullptr) this->on_dtmf_(this->on_dtmf_ctx_, digit, generation); }
+  TransportDtmfCallback on_dtmf_{nullptr};
+  void *on_dtmf_ctx_{nullptr};
+#endif
   TransportMediaQuiescedCallback on_media_quiesced_{nullptr};
   void *on_media_quiesced_ctx_{nullptr};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO

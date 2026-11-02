@@ -539,6 +539,12 @@ bool SipTransport::start() {
     this->stop();
     return false;
   }
+#ifdef USE_ESPHOME_VOIP_DTMF
+  if (this->dtmf_queue_ == nullptr)
+    this->dtmf_queue_ = xQueueCreateStatic(kDtmfQueueDepth, sizeof(DtmfRequest), this->dtmf_queue_buffer_, &this->dtmf_queue_storage_);
+  if (this->dtmf_queue_ == nullptr) { this->stop(); return false; }
+  xQueueReset(this->dtmf_queue_);
+#endif
   xSemaphoreTake(this->rtp_task_done_, 0);
   xSemaphoreTake(this->rtp_cleanup_done_, 0);
   this->rtp_task_quiesced_.store(true, std::memory_order_release);
@@ -974,6 +980,12 @@ bool SipTransport::prepare_media_path_locked_() {
   this->rtp_sequence_.store(static_cast<uint16_t>(esp_random()), std::memory_order_release);
   this->rtp_timestamp_.store(esp_random(), std::memory_order_release);
   this->rtp_ssrc_ = esp_random();
+#ifdef USE_ESPHOME_VOIP_DTMF
+  if (this->dtmf_queue_ != nullptr) xQueueReset(this->dtmf_queue_);
+  this->dtmf_generation_.fetch_add(1, std::memory_order_release);
+  this->rtp_tx_clock_timestamp_ = this->rtp_timestamp_.load(std::memory_order_relaxed);
+  this->rtp_tx_clock_ms_ = millis();
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   AudioFormat sink_format;
   RtpAudioPayloads rx_payloads;
@@ -1254,6 +1266,9 @@ void SipTransport::open_media_session_() {
 void SipTransport::close_media_session_() {
   if (this->refer_context_active_) return;
   this->media_active_.store(false, std::memory_order_release);
+#ifdef USE_ESPHOME_VOIP_DTMF
+  this->dtmf_generation_.fetch_add(1, std::memory_order_release);
+#endif
 }
 
 void SipTransport::reset_dialog_() {
@@ -1946,8 +1961,16 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
       this->negotiated_video_capability_;
 
   ScopedMediaProposal proposal_scope(this->media_proposal_epoch_);
+#ifdef USE_ESPHOME_VOIP_DTMF
+  DtmfConfig old_dtmf, proposed_dtmf;
+  this->get_dtmf_config_(&old_dtmf.tx, &old_dtmf.rx);
+#endif
   const bool parsed =
-      this->learn_remote_rtp_from_sdp_(sdp, default_ip, true);
+      this->learn_remote_rtp_from_sdp_(sdp, default_ip, true
+#ifdef USE_ESPHOME_VOIP_DTMF
+          , &proposed_dtmf
+#endif
+          );
   AudioFormat new_tx;
   AudioFormat new_rx;
   uint8_t new_tx_pt = 0;
@@ -2011,6 +2034,9 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
       new_video_rtcp_port == old_video_rtcp_port &&
       new_video_receive == old_video_receive;
   if (!same_audio || !same_video) return false;
+#ifdef USE_ESPHOME_VOIP_DTMF
+  if (!(old_dtmf == proposed_dtmf)) return false;
+#endif
   if (new_video_send != old_video_send &&
       (this->video_session_ == nullptr ||
        !this->video_session_->request_send_direction(new_video_send))) {
@@ -2242,6 +2268,10 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
   packet[5] = static_cast<uint8_t>((ts >> 16) & 0xFF);
   packet[6] = static_cast<uint8_t>((ts >> 8) & 0xFF);
   packet[7] = static_cast<uint8_t>(ts & 0xFF);
+#ifdef USE_ESPHOME_VOIP_DTMF
+  this->rtp_tx_clock_ms_ = millis();
+  this->rtp_tx_clock_timestamp_ = ts;
+#endif
   packet[8] = static_cast<uint8_t>(this->rtp_ssrc_ >> 24);
   packet[9] = static_cast<uint8_t>((this->rtp_ssrc_ >> 16) & 0xFF);
   packet[10] = static_cast<uint8_t>((this->rtp_ssrc_ >> 8) & 0xFF);
@@ -3125,7 +3155,14 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   };
 
   ScopedMediaProposal proposal_scope(this->media_proposal_epoch_);
-  if (!this->learn_remote_rtp_from_sdp_(message_body(message), src_ip)) {
+#ifdef USE_ESPHOME_VOIP_DTMF
+  DtmfConfig proposed_dtmf;
+#endif
+  if (!this->learn_remote_rtp_from_sdp_(message_body(message), src_ip, false
+#ifdef USE_ESPHOME_VOIP_DTMF
+          , &proposed_dtmf
+#endif
+          )) {
     restore_old_media();
     return this->send_stateless_response_(
         message, src, 488, "Not Acceptable Here", "media_incompatible",
@@ -3136,7 +3173,11 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   const uint32_t proposed_sdp_version = this->sdp_session_version_ + 1;
   this->sdp_session_version_ = proposed_sdp_version;
 #endif
-  const std::string answer = this->build_sdp_answer_();
+  const std::string answer = this->build_sdp_answer_(
+#ifdef USE_ESPHOME_VOIP_DTMF
+      &proposed_dtmf
+#endif
+      );
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->sdp_session_version_ = proposed_sdp_version - 1;
 #endif
@@ -3349,6 +3390,9 @@ bool SipTransport::handle_reinvite_(const std::string &message,
 #endif
 
   this->set_media_config_(new_tx, new_rx, new_tx_pt, new_rx_pt, &new_rx_payloads);
+#ifdef USE_ESPHOME_VOIP_DTMF
+  this->set_dtmf_config_(proposed_dtmf.tx, proposed_dtmf.rx);
+#endif
   this->remote_rtp_ip_v4_.store(new_audio_ip, std::memory_order_release);
   this->remote_rtp_port_.store(new_audio_port, std::memory_order_release);
   this->reset_rtp_latch_();
@@ -4932,6 +4976,15 @@ void SipTransport::rtp_task_() {
   // The wire payload is capped at 1488 bytes. L24-in-S32 expands by 4/3
   // while decoding, so 2 KiB covers every format accepted by the schema.
   uint8_t pcm[2048];
+#ifdef USE_ESPHOME_VOIP_DTMF
+  DtmfSender dtmf_sender;
+  uint32_t dtmf_session_epoch = 0, dtmf_ssrc = 0, dtmf_clock_ms = 0, dtmf_clock_ts = 0;
+  uint16_t dtmf_sequence = 0;
+  bool dtmf_separate = false;
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+  DtmfReceiver dtmf_receiver;
+#endif
+#endif
   while (true) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     while (!this->rtp_task_terminate_.load(std::memory_order_acquire) &&
@@ -4943,7 +4996,42 @@ void SipTransport::rtp_task_() {
       fd_set readfds;
       FD_ZERO(&readfds);
       FD_SET(socket, &readfds);
-      const int ready = ::select(socket + 1, &readfds, nullptr, nullptr, nullptr);
+      timeval timeout{};
+      timeval *timeout_ptr = nullptr;
+#ifdef USE_ESPHOME_VOIP_DTMF
+      const uint32_t dtmf_now = millis();
+      DtmfFormat dtmf_tx; uint32_t dtmf_epoch = 0;
+      this->get_dtmf_config_(&dtmf_tx, nullptr, &dtmf_epoch);
+      if (dtmf_epoch != dtmf_session_epoch) {
+        dtmf_sender.cancel(); dtmf_session_epoch = dtmf_epoch;
+        dtmf_ssrc = esp_random(); if (dtmf_ssrc == this->rtp_ssrc_) dtmf_ssrc ^= 0x80000000U;
+        dtmf_sequence = static_cast<uint16_t>(esp_random());
+        dtmf_clock_ms = dtmf_now; dtmf_clock_ts = esp_random();
+      }
+      const bool stable_proposal = !(this->media_proposal_epoch_.load(std::memory_order_acquire) & 1U);
+      if (!dtmf_tx.valid() || !this->media_active_.load(std::memory_order_acquire)) {
+        dtmf_sender.cancel(); if (this->dtmf_queue_ != nullptr) xQueueReset(this->dtmf_queue_);
+      } else if (stable_proposal && dtmf_sender.ready(dtmf_now) && this->dtmf_queue_ != nullptr) {
+        LockGuard socket_lock(this->rtp_socket_mutex_);
+        DtmfRequest request{};
+        while (xQueueReceive(this->dtmf_queue_, &request, 0) == pdTRUE) {
+          if (request.epoch != dtmf_epoch) continue;
+          AudioFormat audio_tx; this->get_media_config_(&audio_tx, nullptr, nullptr, nullptr);
+          dtmf_separate = audio_format_rtp_clock_rate(audio_tx) != dtmf_tx.clock;
+          const uint32_t timestamp = dtmf_separate
+              ? dtmf_clock_ts + uint64_t(dtmf_now - dtmf_clock_ms) * dtmf_tx.clock / 1000
+              : this->rtp_tx_clock_timestamp_ + uint64_t(dtmf_now - this->rtp_tx_clock_ms_) * dtmf_tx.clock / 1000;
+          dtmf_sender.start(request.event, request.duration_ms, dtmf_tx, timestamp, dtmf_epoch, dtmf_now);
+          break;
+        }
+      }
+      if (dtmf_sender.active() || (this->dtmf_queue_ != nullptr && uxQueueMessagesWaiting(this->dtmf_queue_) != 0)) {
+        const int32_t remaining = static_cast<int32_t>(dtmf_sender.next() - dtmf_now);
+        timeout.tv_usec = !stable_proposal ? 20000 : remaining > 0 ? remaining * 1000 : 0;
+        timeout_ptr = &timeout;
+      }
+#endif
+      const int ready = ::select(socket + 1, &readfds, nullptr, nullptr, timeout_ptr);
       if (ready < 0) {
         if (errno != EINTR) {
           const int err = errno;
@@ -4953,6 +5041,12 @@ void SipTransport::rtp_task_() {
         }
         continue;
       }
+#ifdef USE_ESPHOME_VOIP_DTMF
+      DtmfSender::Report report;
+      if (!(this->media_proposal_epoch_.load(std::memory_order_acquire) & 1U) && dtmf_sender.poll(millis(), &report))
+        this->send_dtmf_packet_(report, dtmf_sender.format, dtmf_sender.epoch,
+                                dtmf_ssrc, dtmf_separate ? &dtmf_sequence : nullptr);
+#endif
       if (ready == 0 || !FD_ISSET(socket, &readfds)) {
         continue;
       }
@@ -4992,8 +5086,6 @@ void SipTransport::rtp_task_() {
         if (pad == 0 || pad > payload_len) continue;
         payload_len -= pad;
       }
-      AudioFormat rx_format;
-      if (!this->received_audio_format_(buf[1] & 0x7F, &rx_format)) continue;
       const uint16_t sequence = static_cast<uint16_t>((buf[2] << 8) | buf[3]);
       const uint32_t timestamp = (static_cast<uint32_t>(buf[4]) << 24) |
                                  (static_cast<uint32_t>(buf[5]) << 16) |
@@ -5004,6 +5096,18 @@ void SipTransport::rtp_task_() {
                             (static_cast<uint32_t>(buf[9]) << 16) |
                             (static_cast<uint32_t>(buf[10]) << 8) |
                             static_cast<uint32_t>(buf[11]);
+#ifdef USE_ESPHOME_VOIP_DTMF
+      if (this->handle_dtmf_packet_(payload, payload_len, buf[1] & 0x7F, ssrc, timestamp,
+              src_port, proposal_epoch,
+#ifdef USE_ESPHOME_VOIP_DTMF_EVENTS
+              &dtmf_receiver
+#else
+              nullptr
+#endif
+              )) continue;
+#endif
+      AudioFormat rx_format;
+      if (!this->received_audio_format_(buf[1] & 0x7F, &rx_format)) continue;
       const uint8_t *audio_data = payload;
       size_t audio_bytes = payload_len;
       if (rx_format.codec == AudioCodec::PCM) {
@@ -5057,6 +5161,10 @@ void SipTransport::rtp_task_() {
                               source_changed, pack_audio_format(rx_format));
     }
 
+#ifdef USE_ESPHOME_VOIP_DTMF
+    dtmf_sender.cancel();
+    if (this->dtmf_queue_ != nullptr) xQueueReset(this->dtmf_queue_);
+#endif
     // A socket/select failure must not leave the transport claiming an active
     // media worker that has actually parked. Gate the path and clean every
     // subordinate video/socket resource through the same event-driven exit.

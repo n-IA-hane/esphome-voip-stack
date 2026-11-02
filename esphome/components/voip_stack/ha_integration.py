@@ -11,7 +11,7 @@ LEGACY_PACKAGE = "legacy_ha_package"
 ACTIONS = {
     "start_call", "start_call_via_ha", "hangup_call_if_id", "answer_call", "decline_call", "hangup_call", "set_media_route",
     "set_ha_peer_name", "set_roster_json", "set_contacts", "add_contact",
-    "remove_contact", "flush_contacts", "update_contacts",
+    "remove_contact", "flush_contacts", "update_contacts", "send_dtmf",
 }
 ROLES = ("endpoint", "state", "media_route", "caller", "destination", "last_reason", "contacts")
 TEXT_ROLES = ("extension", "ring_groups", "conference_groups")
