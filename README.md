@@ -428,7 +428,11 @@ voip_stack:
 
 `name` is required; everything else is optional. Static contacts serve offline installs, diagnostics and direct SIP peers. Normal installs receive the HA-managed roster through the native `set_roster_json` action.
 
-Inbound INVITEs carry caller and destination identity and are not rejected for being unknown. ESP devices never register to an HA or provider trunk; trunk numbers and inbound DTMF routes are mapped by HA to local phonebook targets.
+Inbound INVITEs carry caller and destination identity. Direct SIP remains enabled
+by default. Optional [registration](esphome/components/voip_stack/REGISTRATION.md)
+adds independent PBX accounts and a selected outgoing line; it does not replace
+Home Assistant's trunk settings. In calls routed through HA, trunk numbers and
+inbound DTMF routes are mapped by HA to local phonebook targets.
 
 ESP devices can also publish optional HA-managed group membership:
 
