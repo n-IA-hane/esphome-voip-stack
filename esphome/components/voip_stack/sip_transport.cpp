@@ -4368,54 +4368,65 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
     ESP_LOGW(TAG, "%s from %s, dropping connection", reason, ip);
     this->handle_tcp_peer_loss_(flow);
   };
-  bool peer_closed = false;
-  while (true) {
-    const int n = recv(socket, buf, 1024, 0);
-    if (n > 0) {
-      flow->rx_buffer.append(buf, static_cast<size_t>(n));
-      if (flow->rx_buffer.size() > MAX_SIP_TCP_RX_BUFFER) {
-        drop_tcp_stream("SIP TCP RX buffer overflow");
-        return;
-      }
-      continue;
-    }
-    if (n == 0) {
-      ESP_LOGI(TAG, "SIP TCP peer closed");
-      peer_closed = true;
-      break;
-    }
-    const int err = errno;
-    if (err == EINTR) continue;
-    if (err == EWOULDBLOCK || err == EAGAIN || err == ENOTCONN || err == EINPROGRESS || err == EALREADY) break;
-    ESP_LOGW(TAG, "SIP TCP RX failed: %s (%d: %s)", socket_errno_name(err), err, socket_errno_text(err));
-    peer_closed = true;
-    break;
-  }
-
+  size_t bytes_read = 0;
   while (true) {
     flow = this->tcp_flow_for_socket_(socket);
     if (flow == nullptr) return;
+    // Ignore CRLF before a stream start-line (RFC 3261 section 7.5), including
+    // across reads. Consume only that prefix, never bytes inside a SIP body.
+    size_t prefix = 0;
+    while (prefix + 1 < flow->rx_buffer.size() && flow->rx_buffer.data()[prefix] == '\r' &&
+           flow->rx_buffer.data()[prefix + 1] == '\n')
+      prefix += 2;
+    if (prefix != 0) flow->rx_buffer.erase(0, prefix);
     const size_t sep = flow->rx_buffer.find("\r\n\r\n");
-    if (sep == std::string::npos) {
-      if (peer_closed) this->handle_tcp_peer_loss_(flow);
-      return;
+    size_t total = 0;
+    if (sep != std::string::npos) {
+      size_t body_len = 0;
+      if (!sip_content_length(flow->rx_buffer, &body_len)) {
+        drop_tcp_stream("SIP TCP invalid or ambiguous Content-Length");
+        return;
+      }
+      if (body_len > MAX_SIP_BODY_BYTES) {
+        drop_tcp_stream("SIP TCP Content-Length exceeds limit");
+        return;
+      }
+      total = sep + 4 + body_len;
+      if (total > MAX_SIP_TCP_RX_BUFFER) {
+        drop_tcp_stream("SIP TCP framed message exceeds RX buffer");
+        return;
+      }
     }
-    size_t body_len = 0;
-    if (!sip_content_length(flow->rx_buffer, &body_len)) {
-      drop_tcp_stream("SIP TCP invalid or ambiguous Content-Length");
-      return;
-    }
-    if (body_len > MAX_SIP_BODY_BYTES) {
-      drop_tcp_stream("SIP TCP Content-Length exceeds limit");
-      return;
-    }
-    const size_t total = sep + 4 + body_len;
-    if (total > MAX_SIP_TCP_RX_BUFFER) {
-      drop_tcp_stream("SIP TCP framed message exceeds RX buffer");
-      return;
-    }
-    if (flow->rx_buffer.size() < total) {
-      if (peer_closed) this->handle_tcp_peer_loss_(flow);
+    if (total == 0 || flow->rx_buffer.size() < total) {
+      if (flow->rx_buffer.size() >= MAX_SIP_TCP_RX_BUFFER) {
+        drop_tcp_stream("SIP TCP RX buffer overflow");
+        return;
+      }
+      // Parse each chunk before reading again. A coalesced burst must not
+      // count against the per-record limit or monopolize the SIP worker.
+      if (bytes_read >= MAX_SIP_TCP_RX_BUFFER) return;
+      const size_t available = MAX_SIP_TCP_RX_BUFFER - flow->rx_buffer.size();
+      const size_t count = std::min<size_t>(1024, std::min(available, MAX_SIP_TCP_RX_BUFFER - bytes_read));
+      const int n = recv(socket, buf, count, 0);
+      if (n > 0) {
+        flow->rx_buffer.append(buf, static_cast<size_t>(n));
+        bytes_read += static_cast<size_t>(n);
+        continue;
+      }
+      if (n == 0) {
+        ESP_LOGI(TAG, "SIP TCP peer closed");
+        this->handle_tcp_peer_loss_(flow);
+        return;
+      }
+      const int err = errno;
+      if (err == EINTR) continue;
+      if (err == EWOULDBLOCK || err == EAGAIN || err == ENOTCONN || err == EINPROGRESS || err == EALREADY) {
+        // Only release the spare once no unread record remains in the socket.
+        if (flow == &this->inbound_tcp_flow_ && flow->rx_buffer.empty()) this->close_tcp_flow_(*flow);
+        return;
+      }
+      ESP_LOGW(TAG, "SIP TCP RX failed: %s (%d: %s)", socket_errno_name(err), err, socket_errno_text(err));
+      this->handle_tcp_peer_loss_(flow);
       return;
     }
     const std::string msg = flow->rx_buffer.substr(0, total);
@@ -4442,14 +4453,7 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
       this->dispatch_socket_ = -2;
     }
     // The authorized INVITE may have exchanged the two storage slots.
-    flow = this->tcp_flow_for_socket_(socket);
-    if (flow == nullptr) return;
-    // Release the spare after complete control records. An unread or partial
-    // record in the other slot keeps its own storage and absolute deadline.
-    if (flow == &this->inbound_tcp_flow_ && flow->rx_buffer.empty()) {
-      this->close_tcp_flow_(*flow);
-      return;
-    }
+    // Reacquire by socket before the next record or read.
   }
 }
 

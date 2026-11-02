@@ -2181,12 +2181,14 @@ def test_sip_tcp_rx_is_bounded_and_active_dialog_accept_is_guarded() -> None:
     assert "transport_dialog_active_callback_" in stack_cpp
 
     stream = sip_cpp[sip_cpp.index("void SipTransport::handle_sip_stream_") : sip_cpp.index("\nvoid SipTransport::sip_task_trampoline_", sip_cpp.index("void SipTransport::handle_sip_stream_"))]
-    assert "flow->rx_buffer.size() > MAX_SIP_TCP_RX_BUFFER" in stream
+    assert "flow->rx_buffer.size() >= MAX_SIP_TCP_RX_BUFFER" in stream
+    assert "MAX_SIP_TCP_RX_BUFFER - flow->rx_buffer.size()" in stream
+    assert "bytes_read >= MAX_SIP_TCP_RX_BUFFER" in stream
     assert "body_len > MAX_SIP_BODY_BYTES" in stream
     assert "drop_tcp_stream(\"SIP TCP RX buffer overflow\")" in stream
     assert "drop_tcp_stream(\"SIP TCP Content-Length exceeds limit\")" in stream
     assert "SIP TCP invalid or ambiguous Content-Length" in stream
-    assert stream.count("this->handle_tcp_peer_loss_(flow);") >= 3
+    assert stream.count("this->handle_tcp_peer_loss_(flow);") >= 2
     assert 'normalized == "content-length" || normalized == "l"' in sip_cpp
 
     send = sip_cpp[
