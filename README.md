@@ -81,7 +81,7 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 **Compile-time pruning.** A speaker-only build contains no VoIP TX path and a mic-only build contains no RX-to-speaker path.
 
-**Optional video.** Native ESP32-S3 cameras can transmit JPEG during calls; rendering received video on S3 screens remains future work. ESP32-P4 adapters support camera transmission and remote-video decode/display. JPEG and H.264 remain separate compile-time profiles. The camera component owns capture and borrowed frames, the codec-specific source owns encoding or compressed-frame forwarding, and `p4_video_renderer` owns receive decode and panel presentation. Audio-only builds do not include these components or their codec dependencies.
+**Optional video.** Native ESP32-S3 cameras can transmit JPEG during calls. Supported S3 LVGL displays can receive JPEG through the separate `esp_video_renderer` sink adapter. Camera and receive-display roles are independent; S3 does not decode H.264. ESP32-P4 adapters support camera transmission and remote-video decode/display. JPEG and H.264 remain separate compile-time profiles. The camera component owns capture and borrowed frames, the codec-specific source owns encoding or compressed-frame forwarding, and `p4_video_renderer` owns receive decode and panel presentation. Audio-only builds do not include these components or their codec dependencies.
 
 **Full ESPHome automation surface.** Triggers, actions and conditions are normal ESPHome automations.
 

@@ -1,9 +1,11 @@
 # Optional SIP registration
 
-This recovery candidate adds manually configured PBX accounts to the stable
-2026.11 VoIP component. ESP-IDF is required. Omitting `registration` emits no
+The VoIP component supports optional manually configured PBX accounts alongside
+its direct HA route. Compatible managed firmware can also receive an HA account.
+ESP-IDF is required. With neither `registration` nor
+`ha_integration.auto_register` enabled, the firmware emits no
 registration define, account pool, persistence state, DNS contexts or extra TCP
-slot. Direct Home Assistant media and video keep the stable SDP implementation.
+slot. All accounts use the shared SIP/SDP and media implementation.
 
 ```yaml
 voip_stack:
@@ -43,7 +45,10 @@ Each account has these fields:
 | `enabled` | true |
 
 An enabled manual account starts REGISTER through the existing SIP worker.
-There is no managed Home Assistant account provisioning. The engine handles
+With `ha_integration.auto_register: true`, the managed `ha` account uses one
+reserved slot in the same pool. Leave capacity for that account alongside
+manual PBX accounts. HA delivers its configuration privately over the existing
+ESPHome API connection. The engine handles
 renewal, UDP retransmission, response deadlines, bounded retry, 401/407 Digest
 and 423 minimum expiry. Supported Digest algorithms are MD5 and SHA-256,
 including their session variants, with `qop=auth` or the legacy no-qop form.
@@ -144,9 +149,14 @@ the same normal audio/video workload, including persistence operations and
 failed commits at every supported compiled capacity. No stack-size increase or
 hardware qualification is implied by the host tests.
 
-The candidate contains no subscription, mailbox, directory, OPTIONS discovery,
-managed account or renderer feature. Registered enhanced asymmetric 48/16 kHz
-negotiation is deferred to the next media stage. Ordinary registered calls must
-use real shared supported formats. Stage-2 P4 test profiles need an explicit
-supported 16 kHz / 20 ms format alongside preferred 10 ms formats where the PBX
-requires it; production SDP and audio capabilities are unchanged here.
+Registration coexists with optional per-account MWI, BLF, managed HA account
+provisioning and the LDAP directory provider. These features keep their own
+compile-time configuration and use the existing account and SIP worker.
+Voicemail audio is accessed through an ordinary SIP call or the HA interface;
+MWI reports message state, not recordings.
+
+Media follows the actual directional SDP offer and answer. OPTIONS discovery
+is advisory and does not have to succeed before an INVITE. Registered status
+does not impose a different codec or packet time on an otherwise compatible
+phone. Keep real supported fallback formats for conventional PBXs; selecting a
+preferred HA/ESP format does not add unsupported capacities to that endpoint.
