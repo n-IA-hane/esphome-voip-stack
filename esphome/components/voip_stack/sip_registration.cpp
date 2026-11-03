@@ -341,6 +341,7 @@ std::string SipDigest::authorization(const SipAccountConfig& c, const std::strin
 }
 
 int SipRegistration::find(const std::string& id) const {
+  if (!this->initialized()) return -1;
   for (size_t i = 0; i < CAPACITY; ++i)
     if (this->accounts_[i].occupied && this->accounts_[i].config.id == id) return i;
   return -1;
@@ -350,7 +351,7 @@ std::string SipRegistration::token_() {
          std::to_string(this->hooks_.random == nullptr ? 1 : this->hooks_.random());
 }
 bool SipRegistration::set_account(const SipAccountConfig& c, uint32_t now) {
-  if (!c.valid()) return false;
+  if (!this->initialized() || !c.valid()) return false;
   int i = this->find(c.id);
   if (i < 0)
     for (size_t slot = 0; slot < CAPACITY; ++slot)
@@ -541,6 +542,7 @@ bool SipRegistration::begin_keepalive_(size_t i, uint32_t now, bool capabilities
   return this->begin_(i, now);
 }
 void SipRegistration::tick(uint32_t now) {
+  if (!this->initialized()) return;
   for (size_t i = 0; i < CAPACITY; ++i) {
     auto& a = this->accounts_[i];
     if (!a.occupied) continue;
@@ -594,9 +596,11 @@ void SipRegistration::tick(uint32_t now) {
   }
 }
 bool SipRegistration::next_deadline(uint32_t now, uint32_t* remaining) const {
+  if (!this->initialized()) return false;
   bool found = false;
   uint32_t best = 0;
-  for (const auto& a : this->accounts_) {
+  for (size_t i = 0; i < CAPACITY; ++i) {
+    const auto& a = this->accounts_[i];
     if (!a.occupied) continue;
     if (a.bound) {
       const uint32_t expiry = reached(now, a.binding_expires_ms) ? 0 : a.binding_expires_ms - now;
@@ -622,6 +626,7 @@ bool SipRegistration::next_deadline(uint32_t now, uint32_t* remaining) const {
 }
 bool SipRegistration::handle_response(const std::string& message, uint32_t ip, uint16_t port, bool tcp,
                                       int flow_index, uint32_t now) {
+  if (!this->initialized()) return false;
   if (message.rfind("SIP/2.0 ", 0) != 0) return false;
   const auto sequence = header_view(message, "CSeq");
   const auto separator = sequence.find(' ');
@@ -765,7 +770,7 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
   return method != "OPTIONS";
 }
 void SipRegistration::connection_lost(size_t i, uint32_t now) {
-  if (i >= CAPACITY || !this->accounts_[i].occupied) return;
+  if (!this->initialized() || i >= CAPACITY || !this->accounts_[i].occupied) return;
   const bool healthy = this->accounts_[i].state == RegistrationState::REGISTERED;
   this->accounts_[i].peer_directional_audio_v1 = false;
   this->accounts_[i].capabilities_due = this->hooks_.directional_audio_supported != nullptr;
@@ -774,7 +779,7 @@ void SipRegistration::connection_lost(size_t i, uint32_t now) {
   if (healthy && this->accounts_[i].desired) this->accounts_[i].next_ms = now;
 }
 void SipRegistration::resolution_complete(size_t i, uint32_t ip, uint32_t now, bool obsolete) {
-  if (i >= CAPACITY || !this->accounts_[i].occupied || !this->accounts_[i].resolving) return;
+  if (!this->initialized() || i >= CAPACITY || !this->accounts_[i].occupied || !this->accounts_[i].resolving) return;
   auto& a = this->accounts_[i];
   a.resolving = false;
   if (!obsolete && ip == 0) {
@@ -786,6 +791,7 @@ void SipRegistration::resolution_complete(size_t i, uint32_t ip, uint32_t now, b
   a.next_ms = now;
 }
 int SipRegistration::match_incoming(const std::string& user, uint32_t ip, bool tcp, int flow_index) const {
+  if (!this->initialized()) return -1;
   // The current binding identifies an account, independent of request transport.
   // An existing account-owned TCP flow must still belong to that account.
   for (size_t i = 0; i < CAPACITY; ++i) {

@@ -287,17 +287,18 @@ bool VoipStack::setup_transport_() {
   }
 #endif
 #ifdef USE_ESPHOME_VOIP_SIP_TRANSPORT
-  this->transport_ = std::make_unique<SipTransport>(
+  auto transport = std::make_unique<SipTransport>(
       this->sip_port_, this->rtp_port_, this->udp_max_payload_, "",
       this->task_stacks_in_psram_);
+  if (!transport || !transport->initialized()) {
+    ESP_LOGE(TAG, "Failed to allocate SIP transport signaling storage");
+    return false;
+  }
+  this->transport_ = std::move(transport);
 #else
   ESP_LOGE(TAG, "SIP transport was not compiled into this firmware");
   return false;
 #endif
-  if (!this->transport_) {
-    ESP_LOGE(TAG, "Failed to allocate transport");
-    return false;
-  }
   this->transport_->set_sip_signaling_transport(this->protocol_ == TransportType::TCP);
 
 #ifdef USE_ESPHOME_VOIP_REGISTRATION

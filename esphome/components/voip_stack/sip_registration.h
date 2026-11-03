@@ -5,6 +5,8 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <new>
 #include <string>
 #include <string_view>
 #ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
@@ -88,6 +90,15 @@ class SipRegistration {
     uint16_t local_port{5060};
   };
   struct Account {
+#ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
+    static void *operator new[](size_t bytes, const std::nothrow_t &) noexcept {
+      return RAMAllocator<uint8_t>(RAMAllocator<uint8_t>::ALLOC_EXTERNAL).allocate(bytes);
+    }
+    static void operator delete[](void *pointer) noexcept {
+      RAMAllocator<uint8_t>().deallocate(static_cast<uint8_t *>(pointer), 0);
+    }
+    static void operator delete[](void *pointer, const std::nothrow_t &) noexcept { operator delete[](pointer); }
+#endif
     SipAccountConfig config;
     uint32_t config_revision{0};
     RegistrationState state{RegistrationState::DISABLED};
@@ -106,6 +117,13 @@ class SipRegistration {
     bool capabilities_due{false}, peer_directional_audio_v1{false};
   };
 
+  bool initialized() const {
+#ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
+    return this->accounts_ != nullptr;
+#else
+    return true;
+#endif
+  }
   void set_hooks(const Hooks& hooks) { this->hooks_ = hooks; }
   void set_keepalive_interval(uint32_t milliseconds) { this->keepalive_interval_ms_ = milliseconds; }
   int find(const std::string& id) const;
@@ -125,7 +143,12 @@ class SipRegistration {
   Account& account(size_t index) { return this->accounts_[index]; }
 
  protected:
+#ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
+  // Stable slots are borrowed by MWI until transport destruction after join.
+  std::unique_ptr<Account[]> accounts_{new (std::nothrow) Account[CAPACITY]{}};
+#else
   std::array<Account, CAPACITY> accounts_{};
+#endif
   Hooks hooks_{};
   uint32_t next_config_revision_{0};
   uint32_t keepalive_interval_ms_{15000};

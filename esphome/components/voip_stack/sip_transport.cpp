@@ -539,6 +539,10 @@ bool SipTransport::bind_tcp_(int *fd, uint16_t port, const char *label) {
 }
 
 bool SipTransport::start() {
+  if (!this->initialized()) {
+    ESP_LOGE(TAG, "SIP signaling storage is unavailable");
+    return false;
+  }
   if (this->running_.load(std::memory_order_acquire)) return true;
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   if (!this->opus_codec_ready_) {
@@ -924,6 +928,8 @@ void SipTransport::wake_rtp_task_() {
 }
 
 void SipTransport::stop() {
+  // An incomplete constructor has never published sockets, tasks or borrowers.
+  if (!this->initialized()) return;
   this->transport_stopping_.store(true, std::memory_order_release);
   const bool was_running =
       this->running_.exchange(false, std::memory_order_acq_rel);

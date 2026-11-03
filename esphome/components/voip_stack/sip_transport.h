@@ -42,6 +42,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <new>
 #include <string>
 #include <vector>
 #include <utility>
@@ -75,6 +76,16 @@ class SipTransport : public SipPhoneTransport {
                bool task_stacks_in_psram);
   ~SipTransport() override;
 
+  bool initialized() const {
+#ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
+    if (!this->sip_rx_scratch_.initialized()) return false;
+#endif
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    return this->registration_.initialized();
+#else
+    return true;
+#endif
+  }
   bool start() override;
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   void initialize_registration();
@@ -650,7 +661,22 @@ class SipTransport : public SipPhoneTransport {
   bool terminate_after_invite_ack_{false};
   // Only the SIP task reads sockets. Share its TCP/UDP receive scratch so
   // nested parsing and logging do not retain 3 KiB of task-local buffers.
+#ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
+  struct SipRxScratch {
+    using Buffer = std::array<char, 2048>;
+    std::unique_ptr<Buffer, ReferDeleter> storage;
+    SipRxScratch() {
+      auto *memory = RAMAllocator<Buffer>(RAMAllocator<Buffer>::ALLOC_EXTERNAL).allocate(1);
+      if (memory != nullptr) this->storage.reset(::new (memory) Buffer{});
+    }
+    bool initialized() const { return this->storage != nullptr; }
+    char *data() { return this->storage == nullptr ? nullptr : this->storage->data(); }
+    size_t size() const { return 2048; }
+  };
+  SipRxScratch sip_rx_scratch_;
+#else
   std::array<char, 2048> sip_rx_scratch_{};
+#endif
   AudioFormatList offer_tx_formats_{};
   AudioFormatList offer_rx_formats_{};
   RtpAudioPayloads negotiated_rx_payloads_{};
