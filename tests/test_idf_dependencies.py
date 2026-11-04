@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 from esphome.components import esp32
+from esphome.const import KEY_CORE, KEY_TARGET_FRAMEWORK
 from esphome.core import CORE
 
 
@@ -20,7 +21,18 @@ def test_codegen_keeps_cjson_available_with_idf_exclusions(monkeypatch):
     monkeypatch.setattr(module.ha_integration, "to_code", AsyncMock())
 
     excluded = {"json", "console"}
-    monkeypatch.setitem(CORE.data, esp32.KEY_ESP32, {esp32.KEY_EXCLUDE_COMPONENTS: excluded})
+    sdkconfig = {}
+    monkeypatch.setattr(
+        CORE,
+        "data",
+        {
+            KEY_CORE: {KEY_TARGET_FRAMEWORK: "esp-idf"},
+            esp32.KEY_ESP32: {
+                esp32.KEY_EXCLUDE_COMPONENTS: excluded,
+                esp32.KEY_SDKCONFIG_OPTIONS: sdkconfig,
+            },
+        },
+    )
     monkeypatch.setattr(module.cg, "new_Pvariable", Mock(return_value=object()))
     monkeypatch.setattr(module.cg, "register_component", AsyncMock())
     for name in (
@@ -36,3 +48,4 @@ def test_codegen_keeps_cjson_available_with_idf_exclusions(monkeypatch):
     asyncio.run(module.to_code({module.CONF_ID: "phone"}))
 
     assert excluded == {"console"}
+    assert sdkconfig["CONFIG_LWIP_IP4_REASSEMBLY"] is True
