@@ -3383,10 +3383,10 @@ bool SipTransport::handle_reinvite_(const std::string &message,
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   // Keep one authoritative media child. A video attachment can be admitted
   // before the final response when this re-INVITE adds it to an audio-only
-  // dialog. Once established, codec, PT and transport endpoints stay fixed:
-  // an ordinary session refresh is harmless, while a mutation is rejected
-  // without disturbing the working media negotiated by the prior offer.
-  const bool same_video_media =
+  // dialog. Codec/PT changes and active endpoint retargeting remain unsupported.
+  // RFC3264 permits inactive endpoint changes: admit them only while both
+  // directions are inactive and commit through the existing prepared child.
+  const bool same_video_format =
       old_video_capability.payload_type == new_video_capability.payload_type &&
       old_video_capability.clock_rate == new_video_capability.clock_rate &&
       old_video_capability.max_fps == new_video_capability.max_fps &&
@@ -3402,7 +3402,8 @@ bool SipTransport::handle_reinvite_(const std::string &message,
       old_video_capability.rtcp_feedback_pli ==
           new_video_capability.rtcp_feedback_pli &&
       old_video_capability.rtcp_feedback_fir ==
-          new_video_capability.rtcp_feedback_fir &&
+          new_video_capability.rtcp_feedback_fir;
+  const bool same_video_media = same_video_format &&
       old_video_ip == new_video_ip &&
       old_video_port == new_video_port &&
       old_video_rtcp_ip == new_video_rtcp_ip &&
@@ -3410,8 +3411,13 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   const bool same_video_direction =
       old_video_send == new_video_send &&
       old_video_receive == new_video_receive;
+  const bool inactive_video_retarget =
+      old_video_negotiated && new_video_negotiated && same_video_format &&
+      !old_video_send && !old_video_receive && !new_video_send && !new_video_receive &&
+      !same_video_media && this->video_session_ != nullptr &&
+      this->video_session_->can_retarget_inactive_remote();
   if (old_video_negotiated && new_video_negotiated &&
-      !same_video_media) {
+      !same_video_media && !inactive_video_retarget) {
     restore_old_media();
     return this->send_stateless_response_(
         message, src, 488, "Not Acceptable Here",
@@ -3520,10 +3526,13 @@ bool SipTransport::handle_reinvite_(const std::string &message,
     // camera and renderer leave video mode immediately on m=video 0.
     this->video_session_->request_media_direction(false, false);
     this->video_session_->request_stop();
-  } else if (video_direction_requested &&
-      !this->video_session_->request_media_direction(
-          new_video_negotiated && new_video_send,
-          new_video_negotiated && new_video_receive)) {
+  } else if ((inactive_video_retarget &&
+              !this->video_session_->retarget_inactive_remote(
+                  new_video_ip, new_video_port, new_video_rtcp_ip, new_video_rtcp_port)) ||
+             (video_direction_requested &&
+              !this->video_session_->request_media_direction(
+                  new_video_negotiated && new_video_send,
+                  new_video_negotiated && new_video_receive))) {
     ESP_LOGE(TAG,
              "Prepared video direction failed after 200; terminating dialog");
     // A UAS must not originate BYE before the ACK for its 2xx response. Gate

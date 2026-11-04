@@ -559,7 +559,7 @@ def test_video_rtp_keeps_directional_endpoint_capabilities() -> None:
     assert "new_video_capability, true" in add_video
     assert "new_video_capability, false" in add_video
     wire_identity = reinvite[
-        reinvite.index("const bool same_video_media =") :
+        reinvite.index("const bool same_video_format =") :
         reinvite.index("const bool same_video_direction =")
     ]
     assert ".width ==" not in wire_identity

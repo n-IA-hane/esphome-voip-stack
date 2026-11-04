@@ -107,6 +107,10 @@ class VideoRtpSession {
   bool can_request_media_direction(bool send_enabled,
                                    bool receive_enabled) const;
   bool request_media_direction(bool send_enabled, bool receive_enabled);
+  bool can_retarget_inactive_remote() const;
+  /// Commit new SDP endpoints without restarting the prepared, inactive child.
+  bool retarget_inactive_remote(uint32_t remote_ip_v4, uint16_t remote_rtp_port,
+                                uint32_t remote_rtcp_ip_v4, uint16_t remote_rtcp_port);
   bool negotiation_matches(const VideoCapability &capability,
                            const VideoCapability &send_capability,
                            const VideoCapability &receive_capability,
@@ -190,6 +194,8 @@ class VideoRtpSession {
 #endif
   bool handle_rtcp_packet_(const uint8_t *packet, size_t size,
                            bool *request_key_frame);
+  bool handle_rtcp_from_(const uint8_t *packet, size_t size, uint32_t source_ip,
+                         uint16_t source_port, bool *request_key_frame);
   size_t build_rtcp_report_sdes_(uint8_t *packet, size_t capacity) const;
   void send_rtcp_packet_(const uint8_t *packet, size_t size);
   void send_rtcp_report_();

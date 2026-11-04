@@ -673,6 +673,37 @@ bool VideoRtpSession::can_request_media_direction(
           this->receive_prepared_.load(std::memory_order_acquire));
 }
 
+bool VideoRtpSession::can_retarget_inactive_remote() const {
+  return this->running_.load(std::memory_order_acquire) &&
+         !this->terminate_.load(std::memory_order_acquire) &&
+         !this->send_enabled_.load(std::memory_order_acquire) &&
+         !this->receive_enabled_.load(std::memory_order_acquire) &&
+         !this->source_started_.load(std::memory_order_acquire);
+}
+
+bool VideoRtpSession::retarget_inactive_remote(
+    uint32_t remote_ip_v4, uint16_t remote_rtp_port,
+    uint32_t remote_rtcp_ip_v4, uint16_t remote_rtcp_port) {
+  LockGuard direction_lock(this->direction_mutex_);
+  if (!this->can_retarget_inactive_remote() || remote_ip_v4 == 0 ||
+      remote_rtp_port == 0 || remote_rtcp_ip_v4 == 0 || remote_rtcp_port == 0)
+    return false;
+  {
+    LockGuard socket_lock(this->socket_mutex_);
+    this->remote_ip_v4_.store(remote_ip_v4, std::memory_order_release);
+    this->remote_rtp_port_.store(remote_rtp_port, std::memory_order_release);
+    this->remote_rtcp_ip_v4_.store(remote_rtcp_ip_v4, std::memory_order_release);
+    this->remote_rtcp_port_.store(remote_rtcp_port, std::memory_order_release);
+    this->remote_ssrc_latched_.store(false, std::memory_order_release);
+    this->remote_ssrc_.store(0, std::memory_order_release);
+    this->latched_remote_rtp_port_.store(0, std::memory_order_release);
+    this->latched_remote_rtcp_port_.store(0, std::memory_order_release);
+    this->rx_reset_requested_.store(true, std::memory_order_release);
+  }
+  this->wake_task_();
+  return true;
+}
+
 bool VideoRtpSession::request_media_direction(bool send_enabled,
                                               bool receive_enabled) {
   LockGuard direction_lock(this->direction_mutex_);
@@ -1621,13 +1652,9 @@ void VideoRtpSession::task_() {
           reinterpret_cast<struct sockaddr *>(&source), &source_size);
       const uint32_t source_ip = ntohl(source.sin_addr.s_addr);
       bool request_key_frame = false;
-      if (received > 0 &&
-          source_ip ==
-              this->remote_rtcp_ip_v4_.load(std::memory_order_acquire) &&
-          this->handle_rtcp_packet_(
-              packet, static_cast<size_t>(received), &request_key_frame)) {
-        this->latched_remote_rtcp_port_.store(
-            ntohs(source.sin_port), std::memory_order_release);
+      if (received > 0 && this->handle_rtcp_from_(
+              packet, static_cast<size_t>(received), source_ip,
+              ntohs(source.sin_port), &request_key_frame)) {
         if (request_key_frame && this->source_ != nullptr) {
           LockGuard source_lock(this->source_control_mutex_);
           this->source_->request_key_frame();
@@ -2170,6 +2197,23 @@ bool VideoRtpSession::handle_rtcp_packet_(const uint8_t *packet, size_t size,
   return offset == size && saw_report && saw_sdes;
 }
 
+bool VideoRtpSession::handle_rtcp_from_(const uint8_t *packet, size_t size,
+                                       uint32_t source_ip, uint16_t source_port,
+                                       bool *request_key_frame) {
+  LockGuard lock(this->socket_mutex_);
+  if (source_ip != this->remote_rtcp_ip_v4_.load(std::memory_order_acquire) ||
+      !this->handle_rtcp_packet_(packet, size, request_key_frame))
+    return false;
+  // Symmetric RTCP is an implementation heuristic, not an SDP override.
+  // After an inactive retarget, an old queued RR must not restore the retired
+  // port before valid media identifies the new peer (RFC 3550, RFC 4961).
+  if (this->send_enabled_.load(std::memory_order_acquire) ||
+      this->receive_enabled_.load(std::memory_order_acquire) ||
+      this->remote_ssrc_latched_.load(std::memory_order_acquire))
+    this->latched_remote_rtcp_port_.store(source_port, std::memory_order_release);
+  return true;
+}
+
 size_t VideoRtpSession::build_rtcp_report_sdes_(uint8_t *packet,
                                                 size_t capacity) const {
   if (packet == nullptr || capacity < 64) return 0;
@@ -2228,6 +2272,7 @@ size_t VideoRtpSession::build_rtcp_report_sdes_(uint8_t *packet,
 
 void VideoRtpSession::send_rtcp_packet_(const uint8_t *packet, size_t size) {
   if (packet == nullptr || size == 0) return;
+  LockGuard lock(this->socket_mutex_);
   const uint32_t ip =
       this->remote_rtcp_ip_v4_.load(std::memory_order_acquire);
   const uint16_t latched_port =
@@ -2241,7 +2286,6 @@ void VideoRtpSession::send_rtcp_packet_(const uint8_t *packet, size_t size) {
   remote.sin_family = AF_INET;
   remote.sin_addr.s_addr = htonl(ip);
   remote.sin_port = htons(port);
-  LockGuard lock(this->socket_mutex_);
   if (this->rtcp_socket_ >= 0)
     sendto(this->rtcp_socket_, packet, size, 0,
            reinterpret_cast<struct sockaddr *>(&remote), sizeof(remote));
