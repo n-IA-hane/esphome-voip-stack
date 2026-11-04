@@ -1,5 +1,4 @@
 """Public line selection through real deferred FSM and registered wire client."""
-from pathlib import Path
 import subprocess
 
 import pytest
@@ -55,7 +54,7 @@ def app_source():
     for marker in ['bool VoipStack::select_line(', 'void VoipStack::start_call_on_line(',
                    'void VoipStack::start_call_on_line_(']:
         methods += '\n' + block(registration,marker)
-    parser=(SOURCE/'sip_message.cpp').read_text()
+    _parser=(SOURCE/'sip_message.cpp').read_text()
     # URI helpers are defined in the existing wire fixture where available.
     return app + '\n' + methods
 
@@ -151,7 +150,9 @@ int main(int argc,char**argv){
  for(auto&flow:s.registration_flows_)s.close_tcp_flow_(flow);close(s.sip_socket_);
 }
 '''
-    cpp=folder/'deferred.cpp';cpp.write_text(code);binary=folder/'deferred'
+    cpp=folder/'deferred.cpp'
+    cpp.write_text(code)
+    binary=folder/'deferred'
     built=subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-g','-fsanitize=address,undefined','-fno-pie','-no-pie',
         '-DUSE_ESPHOME_VOIP_REGISTRATION','-I',str(folder),'-I',str(ROOT),'-I',str(SOURCE),str(cpp),
         str(SOURCE/'sip_registration.cpp'),'-lcrypto','-o',str(binary)],capture_output=True,text=True)

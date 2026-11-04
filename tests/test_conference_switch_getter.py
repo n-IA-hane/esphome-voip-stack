@@ -1,7 +1,7 @@
 """The optional conference setting remains a borrowed nullable switch."""
 import subprocess
 import pytest
-from test_refer_dialog_runtime import SOURCE, block
+from test_refer_dialog_runtime import SOURCE
 from test_sip_registration_transport import conditional_body
 
 

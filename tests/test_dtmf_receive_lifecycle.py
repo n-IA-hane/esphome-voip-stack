@@ -1,6 +1,5 @@
 """The actual receiver and main-loop delivery retain their generation contracts."""
 import subprocess
-from pathlib import Path
 from test_dtmf_worker_runtime import worker_source
 from test_refer_dialog_runtime import SOURCE, block
 
@@ -63,7 +62,9 @@ int main(){
  puts("LIMITATION: delayed RTP on an identically reused tuple has no SIP identity");
 }
 '''
-    cpp=tmp_path/'receiver.cpp';cpp.write_text(source);binary=tmp_path/'receiver'
+    cpp=tmp_path/'receiver.cpp'
+    cpp.write_text(source)
+    binary=tmp_path/'receiver'
     built=subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',
         '-fsanitize=address,undefined','-fno-pie','-no-pie','-pthread','-I',str(SOURCE),str(cpp),'-o',str(binary)],capture_output=True,text=True)
     assert built.returncode==0,built.stderr

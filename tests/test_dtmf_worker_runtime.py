@@ -1,8 +1,7 @@
 """Production RTP worker and independent loopback packet peer, without ESP hardware."""
-from pathlib import Path
 import subprocess
 import pytest
-from test_refer_dialog_runtime import SOURCE, ROOT, block
+from test_refer_dialog_runtime import SOURCE, block
 
 
 def worker_source():
@@ -175,7 +174,8 @@ int main(int argc,char**argv){
 @pytest.fixture(scope="module")
 def worker_binary(tmp_path_factory):
     folder=tmp_path_factory.mktemp("dtmf-worker")
-    cpp=folder/'worker.cpp';cpp.write_text(worker_source())
+    cpp=folder/'worker.cpp'
+    cpp.write_text(worker_source())
     binary=folder/'worker'
     built=subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-g',
         '-fsanitize=address,undefined','-fno-pie','-no-pie','-pthread','-I',str(SOURCE),str(cpp),'-o',str(binary)],capture_output=True,text=True)

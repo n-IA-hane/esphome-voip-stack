@@ -1,5 +1,4 @@
 """MWI and REGISTER share actual ingress, bytes and account-flow retirement."""
-from pathlib import Path
 import re
 import subprocess
 import pytest

@@ -83,7 +83,9 @@ int main(){
  transport.set_dtmf_config_(proposed.tx,proposed.rx);assert(transport.commits==1&&transport.committed==proposed);
 }
 '''
-    cpp=tmp_path/'proposal.cpp';cpp.write_text(source);binary=tmp_path/'proposal'
+    cpp=tmp_path/'proposal.cpp'
+    cpp.write_text(source)
+    binary=tmp_path/'proposal'
     built=subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',
         '-fno-pie','-no-pie','-I',str(ROOT),str(cpp),'-o',str(binary)],capture_output=True,text=True)
     assert built.returncode==0,built.stderr
@@ -118,7 +120,9 @@ int main(){
  }
 }
 '''
-    cpp=tmp_path/'conflict.cpp';cpp.write_text(source);binary=tmp_path/'conflict'
+    cpp=tmp_path/'conflict.cpp'
+    cpp.write_text(source)
+    binary=tmp_path/'conflict'
     built=subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',
         '-fno-pie','-no-pie','-I',str(ROOT),str(cpp),'-o',str(binary)],capture_output=True,text=True)
     assert built.returncode==0,built.stderr

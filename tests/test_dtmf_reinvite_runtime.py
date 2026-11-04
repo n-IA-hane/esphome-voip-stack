@@ -79,7 +79,9 @@ int main(int argc,char**argv){
  assert(transport.media_active_);
 }
 '''
-    cpp=folder/'reinvite.cpp';cpp.write_text(source);binary=folder/'reinvite'
+    cpp=folder/'reinvite.cpp'
+    cpp.write_text(source)
+    binary=folder/'reinvite'
     built=subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',
         '-fsanitize=address,undefined','-fno-pie','-no-pie','-pthread','-I',str(ROOT),str(cpp),'-o',str(binary)],capture_output=True,text=True)
     assert built.returncode==0,built.stderr

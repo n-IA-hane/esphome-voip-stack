@@ -12,7 +12,7 @@ def options_source():
     code = code.replace("struct SipTransport: SipPhoneTransport {", "struct SipTransport: SipPhoneTransport {\nsize_t udp_max_payload_=1200;\n", 1)
     source = (SOURCE / "sip_transport.cpp").read_text()
     sdp = (SOURCE / "sip_sdp.cpp").read_text()
-    parser = (SOURCE / "sip_message.cpp").read_text()
+    _parser = (SOURCE / "sip_message.cpp").read_text()
     code = code.replace('void local_ip_for_peer_(uint32_t,std::string*out)', 'void local_ip_for_peer_(uint32_t,std::string*out) const')
     # Compose newly available production helpers; the unchanged base still
     # compiles and exposes its original empty OPTIONS reply for the RED witness.

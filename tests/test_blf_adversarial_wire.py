@@ -1,5 +1,4 @@
 """Independent wire oracles preserved from the two quarantine RED cases."""
-from pathlib import Path
 import resource
 import subprocess
 import pytest

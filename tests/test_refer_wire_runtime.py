@@ -144,7 +144,7 @@ def complete_invite_owner(code):
     """Use the actual INVITE owner with controlled hardware/media adapters."""
     source = (SOURCE / "sip_transport.cpp").read_text()
     requests = (SOURCE / "sip_request_response.cpp").read_text()
-    parser = (SOURCE / "sip_message.cpp").read_text()
+    _parser = (SOURCE / "sip_message.cpp").read_text()
     code = code.replace(
         "struct SipTransport: SipPhoneTransport {",
         "struct SipTransport: SipPhoneTransport {\n"

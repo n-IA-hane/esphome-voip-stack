@@ -1,6 +1,5 @@
 """Run actual call/snapshot consumers with the real optional Phonebook types."""
 import json
-from pathlib import Path
 import subprocess
 
 import pytest
