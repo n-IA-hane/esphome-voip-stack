@@ -603,13 +603,20 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
                                                             this->udp_max_payload_);
         uint8_t receive_pt = pt;
         if (remote_is_answer) {
-          AudioFormat offered;
-          tx_ok = tx_ok && audio_format_list_match_udp_safe(
-              this->local_offered_tx_formats_, fmt, &offered, this->udp_max_payload_);
+          // Configured duration and UDP budget were checked above. The answer
+          // may request another ptime while retaining an offered RTP mapping.
+          bool offered_tx = false;
+          for (uint8_t i = 0; i < this->local_offered_tx_formats_.count; ++i) {
+            if (audio_formats_share_rtp_mapping(this->local_offered_tx_formats_.formats[i], fmt)) {
+              offered_tx = true;
+              break;
+            }
+          }
+          tx_ok = tx_ok && offered_tx;
           bool offered_rx = false;
           for (uint8_t i = 0; i < this->local_offered_rx_payloads_.count; ++i) {
             const auto &entry = this->local_offered_rx_payloads_.entries[i];
-            if (audio_formats_share_wire_encoding(entry.format, fmt)) {
+            if (audio_formats_share_rtp_mapping(entry.format, fmt)) {
               receive_pt = entry.payload_type;
               offered_rx = true;
               break;

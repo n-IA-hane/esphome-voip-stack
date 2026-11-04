@@ -259,6 +259,13 @@ inline bool audio_formats_share_wire_encoding(const AudioFormat &left, const Aud
          left.pcm_format == right.pcm_format;
 }
 
+inline bool audio_formats_share_rtp_mapping(const AudioFormat &left, AudioFormat right) {
+  // RFC 3264 section 6.1: ptime is a receive preference, independent of rtpmap.
+  // Callers must still validate the chosen duration and its payload budget.
+  right.frame_ms = left.frame_ms;
+  return audio_formats_share_wire_encoding(left, right);
+}
+
 inline bool audio_format_list_contains(const AudioFormatList &list, const AudioFormat &format) {
   for (uint8_t i = 0; i < list.count; i++) {
     if (list.formats[i] == format) return true;

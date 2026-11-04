@@ -2,6 +2,8 @@
 from pathlib import Path
 import subprocess
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -123,3 +125,82 @@ int main(){
     subprocess.run(["g++", "-std=c++17", "-fsanitize=address,undefined", "-I", str(ROOT),
                     str(cpp), "-o", str(binary)], check=True, capture_output=True, text=True)
     subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+
+
+@pytest.fixture(scope="module")
+def answer_ptime_binary(tmp_path_factory):
+    source = sdp_fixture_source() + r'''
+AudioFormat pcm(unsigned rate,unsigned ptime){AudioFormat f;f.sample_rate=rate;f.frame_ms=ptime;return f;}
+int main(int argc,char **argv){
+ assert(argc==2);const std::string scenario=argv[1];SipTransport s;
+ s.offer_tx_formats_.count=s.offer_rx_formats_.count=2;
+ s.offer_tx_formats_.formats[0]=s.offer_rx_formats_.formats[0]=pcm(16000,10);
+ s.offer_tx_formats_.formats[1]=s.offer_rx_formats_.formats[1]=pcm(16000,20);
+ unsigned rate=16000,ptime=20;bool expected=false,configured=true;
+ if(scenario=="same-time"){ptime=10;expected=true;}
+ else if(scenario=="supported-time")expected=true;
+ else if(scenario=="unsupported-time"){ptime=32;configured=false;}
+ else if(scenario=="unoffered-mapping"){
+  rate=32000;s.offer_tx_formats_.count=s.offer_rx_formats_.count=3;
+  s.udp_max_payload_=1400; // 32 kHz/20 ms is 1280 bytes, within this configured LAN budget.
+  s.offer_tx_formats_.formats[2]=s.offer_rx_formats_.formats[2]=pcm(rate,20);
+ }else{
+  assert(scenario=="unsafe-payload");rate=48000;configured=false;
+  s.offer_tx_formats_.count=s.offer_rx_formats_.count=4;
+  s.offer_tx_formats_.formats[2]=s.offer_rx_formats_.formats[2]=pcm(rate,10);
+  s.offer_tx_formats_.formats[3]=s.offer_rx_formats_.formats[3]=pcm(rate,20);
+  assert(pcm(rate,20).nominal_rtp_payload_bytes()>s.udp_max_payload_);
+ }
+ const auto offer=s.build_sdp_offer_();assert(!offer.empty());
+ assert(offer.find("a=ptime:10\r\n")!=std::string::npos);
+ assert(offer.find("L16/32000/1")==std::string::npos);
+ const uint8_t pt=scenario=="unsafe-payload"?97:96;
+ assert(offer.find("a=rtpmap:"+std::to_string(pt)+" L16/"+
+                   std::to_string(scenario=="unsafe-payload"?48000:16000)+"/1\r\n")!=std::string::npos);
+ for(uint8_t i=0;i<s.local_offered_tx_formats_.count;++i)assert(s.local_offered_tx_formats_.formats[i].frame_ms==10);
+ for(uint8_t i=0;i<s.local_offered_rx_payloads_.count;++i)assert(s.local_offered_rx_payloads_.entries[i].format.frame_ms==10);
+ const auto snapshots=s.local_offered_rx_payloads_;
+ AudioFormat match;const auto candidate=pcm(rate,ptime);
+ assert(audio_format_list_match_udp_safe(s.offer_tx_formats_,candidate,&match,s.udp_max_payload_)==configured);
+ assert(audio_format_list_match_udp_safe(s.offer_rx_formats_,candidate,&match,s.udp_max_payload_)==configured);
+ // Rejections must preserve an existing media configuration and endpoint.
+ s.tx=s.rx=pcm(16000,10);s.tx_pt=s.rx_pt=110;
+ assert(s.accepted.add(110,s.rx));
+ s.remote_rtp_ip_v4_=ntohl(inet_addr("192.0.2.9"));s.remote_rtp_port_=45000;
+ const auto prior_tx=s.tx,prior_rx=s.rx;const auto prior_maps=s.accepted;
+ const auto prior_ip=s.remote_rtp_ip_v4_.load();const auto prior_port=s.remote_rtp_port_.load();
+ const std::string answer="v=0\r\no=- 2 2 IN IP4 192.0.2.2\r\ns=-\r\nc=IN IP4 192.0.2.2\r\nt=0 0\r\n"
+  "m=audio 40002 RTP/AVP "+std::to_string(pt)+"\r\na=rtpmap:"+std::to_string(pt)+
+  " L16/"+std::to_string(rate)+"/1\r\na=ptime:"+std::to_string(ptime)+"\r\na=sendrecv\r\n";
+ const bool accepted=s.learn_remote_rtp_from_sdp_(answer,ntohl(inet_addr("192.0.2.2")),true);
+ assert(accepted==expected);
+ assert(s.local_offered_rx_payloads_==snapshots);
+ if(accepted){
+  assert(s.tx==candidate&&s.rx==candidate&&s.tx_pt==pt&&s.rx_pt==pt);
+  assert(s.accepted.count==1&&s.accepted.find(pt,&match)&&match==candidate);
+  assert(s.remote_rtp_ip_v4_==ntohl(inet_addr("192.0.2.2"))&&s.remote_rtp_port_==40002);
+ }else{
+  assert(s.tx==prior_tx&&s.rx==prior_rx&&s.tx_pt==110&&s.rx_pt==110&&s.accepted==prior_maps);
+  assert(s.remote_rtp_ip_v4_==prior_ip&&s.remote_rtp_port_==prior_port);
+ }
+}
+'''
+    folder = tmp_path_factory.mktemp("answer-ptime")
+    cpp = folder / "answer.cpp"
+    cpp.write_text(source)
+    binary = folder / "answer"
+    built = subprocess.run(
+        ["g++", "-std=c++17", "-fsanitize=address,undefined", "-fno-pie", "-no-pie",
+         "-I", str(ROOT), str(cpp), "-o", str(binary)],
+        capture_output=True, text=True,
+    )
+    assert built.returncode == 0, built.stderr
+    return binary
+
+
+@pytest.mark.parametrize("scenario", [
+    "same-time", "supported-time", "unsupported-time", "unoffered-mapping", "unsafe-payload",
+])
+def test_answer_packet_time_keeps_offered_mapping_and_config_budget(answer_ptime_binary, scenario):
+    result = subprocess.run([answer_ptime_binary, scenario], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
