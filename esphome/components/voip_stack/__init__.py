@@ -1334,6 +1334,9 @@ async def _bind_ha_phonebook_sensor(var, config):
 
 
 async def to_code(config):
+    if CORE.target_framework == "esp-idf":
+        # SIP/UDP SDP offers can exceed the link MTU before reaching our parser.
+        esp32.add_idf_sdkconfig_option("CONFIG_LWIP_IP4_REASSEMBLY", True)
     # Settings and SIP phonebook serialization use ESP-IDF's cJSON component.
     esp32.include_builtin_idf_component("json")
     var = cg.new_Pvariable(config[CONF_ID])

@@ -447,6 +447,18 @@ voip_stack:
 TCP signaling is useful where UDP SIP is filtered or unreliable; per-contact
 `transport` allows mixing.
 
+SIP/UDP also requires IPv4 reassembly when a peer's request exceeds the link
+MTU. The component enables `CONFIG_LWIP_IP4_REASSEMBLY` in ESP-IDF builds for
+both direct and registered calls. Without it, a fragmented INVITE can be
+discarded before the SIP parser even though REGISTER succeeds. Rebuild the
+firmware to apply this SDK configuration.
+
+Reassembly retains ESP-IDF's bounded default pool, with 10 pending pbufs in
+[ESP-IDF 5.5.6](https://github.com/espressif/esp-idf/blob/v5.5.6/components/lwip/Kconfig).
+This does not increase the 2047-byte SIP/UDP receive limit or enable IPv6
+reassembly. Larger messages still require an appropriate transport and message
+size; see [RFC 3261 section 18.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-18.1.1).
+
 ## Phonebook and routing
 
 ```yaml
