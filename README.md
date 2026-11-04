@@ -706,7 +706,7 @@ Removed options rejected with migration guidance: `processor_id`, `aec_reference
 
 ## Scope and known boundaries
 
-- No SIP registration or digest authentication. Calls that hit an auth challenge terminate in `AUTH_REQUIRED_UNSUPPORTED`.
+- Optional SIP registration supports Digest authentication for managed HA and manual PBX accounts; direct calling remains available without registration.
 - SIP over UDP/TCP only; no TLS signaling and no SRTP.
 - RTP media is UDP in both signaling modes and requires UDP reachability.
 - Audio supports PCM and compile-time optional Opus within the supported
@@ -873,8 +873,8 @@ Include:
 - ESPHome version and ESP VoIP Stack tag or commit.
 - Complete relevant VoIP YAML and the microphone/speaker configuration.
 - Calling direction, SIP transport (`udp` or `tcp`), and peer/PBX software and
-  version. If a registrar belongs to the other system, identify it there;
-  the ESP component itself operates without SIP registration.
+  version. Identify the route exercised: `direct`, managed `ha`, or a manual PBX
+  account; include its `account_id` and registrar when registration is enabled.
 - Negotiated codec and packet time (`ptime`), if known.
 - Category: signaling, RTP, audio, DTMF, re-INVITE, video, teardown or other.
 - Reproduction steps, expected behavior, actual behavior, boot log, diagnostic

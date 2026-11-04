@@ -160,3 +160,57 @@ is advisory and does not have to succeed before an INVITE. Registered status
 does not impose a different codec or packet time on an otherwise compatible
 phone. Keep real supported fallback formats for conventional PBXs; selecting a
 preferred HA/ESP format does not add unsupported capacities to that endpoint.
+
+## Log registration state from a packaged device
+
+If your device YAML already imports a VoIP package, keep that `packages:` block
+and add the following at the root, at the same indentation as `packages:`.
+ESPHome [merges package settings](https://esphome.io/components/packages/) with
+this mapping, so the package still supplies its component ID and media setup.
+If a root `voip_stack:` block already exists, extend it instead of adding a
+duplicate. Keep each manual account in the merged account list only once.
+
+```yaml
+voip_stack:
+  ha_integration:
+    auto_register: true
+  registration:
+    max_accounts: 2
+    default_line: ha
+    accounts:
+      - account_id: fusion
+        registrar: !secret fusion_registrar
+        username: !secret fusion_sip_username
+        password: !secret fusion_sip_password
+        transport: udp
+  on_registration_state:
+    then:
+      - lambda: |-
+          ESP_LOGI("sip_accounts", "account=%s state=%s SIP=%d",
+                   account_id.c_str(), state.c_str(), status_code);
+```
+
+The two slots hold the managed `ha` account and the manual `fusion` PBX account.
+`default_line: ha` keeps HA as the outgoing default; use `start_call_on_line`
+with `line: fusion` to select the PBX for an individual call. The callback is a
+sibling of `registration`, not nested inside it, and receives `std::string`
+values `account_id` and `state`, plus integer `status_code`.
+
+With INFO logging enabled, a successful PBX registration can produce:
+
+```text
+account=fusion state=registered SIP=200
+```
+
+- `0`: a local state transition without a SIP response for that transition,
+  such as starting registration.
+- `registered` with `200`: the account's REGISTER binding was accepted.
+- [`401`](https://www.rfc-editor.org/rfc/rfc3261.html#section-21.4.2): an initial
+  Digest challenge is normal in the SIP exchange. Valid challenges are handled
+  internally; this callback is not a log of every SIP response. A final
+  `failed`/`401` needs investigation of the challenge and authentication exchange.
+- [`403`](https://www.rfc-editor.org/rfc/rfc3261.html#section-21.4.4): the registrar
+  refused the request. This alone does not prove a wrong password; check the
+  account, domain, permissions and registrar logs.
+
+The callback logs only account ID, state and status, without credentials.
