@@ -42,7 +42,7 @@ struct SipTransport {
  struct SubscriptionAdapter {
   void invalidate_account(size_t){}
   void update_registered_account(size_t,const SipRegistration::Account&,uint32_t){}
- } mwi_;
+ } mwi_{};
  std::atomic<uint16_t> managed_retirement_status_{0};
  std::atomic<bool> running_{true},transport_stopping_{false},main_wake{false};
  void (*registration_wake_callback_)(void*,SipTransport*)=nullptr;void *registration_context_=nullptr;
