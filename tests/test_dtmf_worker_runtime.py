@@ -8,8 +8,10 @@ def worker_source():
     code = r'''
 #define USE_ESPHOME_VOIP_DTMF
 #define USE_ESPHOME_VOIP_DTMF_EVENTS
+#define USE_ESPHOME_VOIP_STACK_PCM
 #include "rtp_dtmf.h"
 #include "sip_types.h"
+#include "rtp_audio_payloads.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -64,7 +66,8 @@ struct SipTransport {
  std::atomic<uint16_t>remote_rtp_port_{0},rtp_sequence_{100};std::atomic<uint32_t>rtp_timestamp_{10000};
  uint32_t rtp_ssrc_=1234,rtp_tx_clock_ms_=0,rtp_tx_clock_timestamp_=10000;
  bool refer_context_active_=false;size_t udp_max_payload_=1200;
- AudioFormat audio;int rtp_socket_=-1;uint16_t rtp_port_=0;
+ AudioFormat audio;AudioFormatList offer_rx_formats_;RtpAudioPayloads negotiated_rx_payloads_;
+ int rtp_socket_=-1;uint16_t rtp_port_=0;
  Queue queue;Queue*dtmf_queue_=&queue;
  std::atomic<bool>media_active_{true},rtp_running_{true},rtp_task_terminate_{false},rtp_task_quiesced_{false};
  std::atomic<uint32_t>rtp_tx_packets_{0},rtp_rx_packets_{0},rtp_tx_bytes_{0},rtp_rx_bytes_{0},rtp_rx_datagrams_{0};
@@ -82,7 +85,7 @@ struct SipTransport {
  bool handle_dtmf_packet_(const uint8_t*,size_t,uint8_t,uint32_t,uint32_t,uint16_t,uint32_t,DtmfReceiver*);
  void get_media_config_(AudioFormat*t,AudioFormat*r,uint8_t*tp,uint8_t*rp)const{
   LockGuard l(media_config_lock_);if(t)*t=audio;if(r)*r=audio;if(tp)*tp=96;if(rp)*rp=96;}
- bool received_audio_format_(uint8_t pt,AudioFormat*f)const{if(pt!=96)return false;*f=audio;return true;}
+ bool received_audio_format_(uint8_t,AudioFormat*,const uint8_t* =nullptr,size_t=0)const;
  void emit_dtmf_(char c,uint32_t){digits.push_back(c);}
  void emit_audio_frame_(const uint8_t*p,size_t n,uint16_t seq,uint32_t,bool,uint32_t){
   assert(n==320);for(unsigned i=0;i<160;++i){uint16_t got;std::memcpy(&got,p+i*2,2);assert(got==uint16_t(seq+i));}audio_seen.push_back(seq);}
@@ -104,7 +107,7 @@ struct SipTransport {
                       'bool SipTransport::handle_dtmf_packet_(']:
         code += block(impl,signature)+'\n'
     impl=(SOURCE/'sip_transport.cpp').read_text()
-    for signature in ['void SipTransport::close_media_session_(', 'void SipTransport::wake_rtp_task_(',
+    for signature in ['bool SipTransport::received_audio_format_(', 'void SipTransport::close_media_session_(', 'void SipTransport::wake_rtp_task_(',
                       'void SipTransport::request_audio_path_stop_locked_(', 'void SipTransport::finish_audio_path_stop_(',
                       'void SipTransport::send_audio_frame(', 'void SipTransport::rtp_task_(']:
         code += block(impl,signature)+'\n'
@@ -116,6 +119,7 @@ struct Event {uint32_t timestamp=0;unsigned ends=0,packets=0;};
 int main(int argc,char**argv){
  assert(argc==2);const bool same=std::string(argv[1])=="shared";const bool terminate=std::string(argv[1])=="terminate";
  SipTransport dut;dut.audio.frame_ms=10;dut.audio.sample_rate=16000;
+ dut.offer_rx_formats_.count=1;dut.offer_rx_formats_.formats[0]=dut.audio;assert(dut.negotiated_rx_payloads_.add(96,dut.audio));
  dut.dtmf_tx_format_.clock=same?16000:8000;
  dut.rtp_socket_=socket(AF_INET,SOCK_DGRAM,0);int peer=socket(AF_INET,SOCK_DGRAM,0);assert(peer>=0&&dut.rtp_socket_>=0);
  dut.rtp_port_=bind_udp(dut.rtp_socket_);dut.remote_rtp_port_=bind_udp(peer);
@@ -158,7 +162,9 @@ int main(int argc,char**argv){
  if(terminate){assert(next_key==1&&events.size()==1&&events.begin()->second.ends==0);for(char digit:{'1','2','3'})assert(dut.send_dtmf(digit));assert(uxQueueMessagesWaiting(dut.dtmf_queue_)==3);}
  else{assert(next_key==keys.size()&&events.size()==keys.size());for(const auto&row:events)assert(row.second.ends==3);}
  assert(audio_received==audio_sent&&audio_sent>=(terminate?4U:170U));
- {LockGuard lock(dut.media_lifecycle_mutex_);dut.rtp_task_terminate_=true;dut.request_audio_path_stop_locked_();}
+ // Match stop(): publish media-stop before task termination. Otherwise the
+ // worker can observe termination while media still claims to be running.
+ {LockGuard lock(dut.media_lifecycle_mutex_);dut.request_audio_path_stop_locked_();dut.rtp_task_terminate_=true;}
  worker.join();assert(dut.rtp_socket_==-1&&dut.rtp_task_quiesced_&&dut.media_lifecycle_phase_==SipTransport::MediaLifecyclePhase::IDLE);
  assert(dut.quiescent==1&&dut.digits==(terminate?std::vector<char>{}:std::vector<char>{'7'})&&dut.audio_seen.size()==audio_sent&&dut.queue.count==0);
  assert(!dut.send_dtmf('1'));uint8_t remaining[1600];while(recv(peer,remaining,sizeof(remaining),MSG_DONTWAIT)>0){}

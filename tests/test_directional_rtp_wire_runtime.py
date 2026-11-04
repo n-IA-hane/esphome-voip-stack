@@ -51,7 +51,7 @@ std::vector<uint8_t> samples(unsigned count,bool network){
 }
 int main(int argc,char**argv){
  assert(argc==2);const std::string profile=argv[1];SipTransport s;unsigned tx=16000,rx=16000,frame=10;
- if(profile=="ha"){rx=48000;s.peer_directional_audio_v1_=true;}
+ if(profile=="ha"||profile=="ha-asymmetric"||profile=="ha-legacy"){rx=48000;s.peer_directional_audio_v1_=true;}
  else if(profile=="ha-reverse"){tx=48000;s.peer_directional_audio_v1_=true;}
  else if(profile=="standard")frame=20;
  else if(profile=="legacy"||profile=="legacy-no-tx"){}
@@ -60,16 +60,24 @@ int main(int argc,char**argv){
  s.offer_tx_formats_.formats[0]=fmt(tx,frame);s.offer_rx_formats_.formats[0]=fmt(rx,frame);
  if(profile=="legacy"||profile=="legacy-no-tx"){s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[0]=fmt(48000,10);s.offer_rx_formats_.formats[1]=fmt(16000,10);}
  if(profile=="standard"){s.offer_tx_formats_.count=2;s.offer_tx_formats_.formats[0]=fmt(tx,10);s.offer_tx_formats_.formats[1]=fmt(tx,20);}
+ const unsigned tx_frame=profile=="ha-asymmetric"?20:frame,rx_frame=frame;
+ if(profile=="ha-asymmetric"||profile=="ha-legacy"){
+  s.offer_tx_formats_.count=2;s.offer_tx_formats_.formats[0]=fmt(16000,20);s.offer_tx_formats_.formats[1]=fmt(16000,10);
+  s.offer_rx_formats_.count=3;s.offer_rx_formats_.formats[0]=fmt(48000,10);
+  s.offer_rx_formats_.formats[1]=fmt(16000,20);s.offer_rx_formats_.formats[2]=fmt(16000,10);
+ }
  uint16_t local=0,remote=0;s.rtp_socket_=endpoint(&local);int peer=endpoint(&remote);s.rtp_port_=local;
  auto offer=s.build_sdp_offer_();assert(!offer.empty());
+ assert(offer.find("a=x-voip-stack-independent-ptime:1\r\n")!=std::string::npos);
  const std::string base="v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio "+std::to_string(remote)+" RTP/AVP 96";
  std::string answer=base+(tx!=rx?" 97":"")+"\r\na=rtpmap:96 L16/"+std::to_string(rx)+"/1\r\n";
  if(tx!=rx)answer+="a=rtpmap:97 L16/"+std::to_string(tx)+"/1\r\na=x-voip-stack-flow:96 send\r\na=x-voip-stack-flow:97 recv\r\n";
- answer+="a=ptime:"+std::to_string(frame)+"\r\na=sendrecv\r\n";
+ answer+="a=ptime:"+std::to_string(tx_frame)+"\r\na=sendrecv\r\n";
+ if(profile=="ha-asymmetric")answer+="a=x-voip-stack-independent-ptime:1\r\n";
  std::cout<<"PROFILE "<<profile<<"\nOFFER\n"<<offer<<"ANSWER\n"<<answer;
  if(profile=="legacy"||profile=="legacy-no-tx"){
   assert(offer.find("a=x-voip-stack-flow:")==std::string::npos);
-  assert(offer.find("L16/48000/1")!=std::string::npos&&offer.find("L16/16000/1")!=std::string::npos);
+  assert(offer.find("L16/48000/1")==std::string::npos&&offer.find("L16/16000/1")!=std::string::npos);
   assert(answer.find("L16/48000/1")==std::string::npos);
  }
  if(profile=="legacy-no-tx"){
@@ -81,20 +89,20 @@ int main(int argc,char**argv){
   std::cout<<"REJECTED_NO_TX\n"<<incompatible<<"FALLBACK_TO_COMMON_TX\n";
  }
  assert(s.learn_remote_rtp_from_sdp_(answer,INADDR_LOOPBACK,true));
- assert(s.tx.sample_rate==tx&&s.rx.sample_rate==rx&&s.tx.frame_ms==frame&&s.rx.frame_ms==frame);
+ assert(s.tx.sample_rate==tx&&s.rx.sample_rate==rx&&s.tx.frame_ms==tx_frame&&s.rx.frame_ms==rx_frame);
  std::cout<<"SELECTED tx="<<s.tx.sample_rate<<" rx="<<s.rx.sample_rate<<" tx_pt="<<unsigned(s.tx_pt)<<" rx_pt="<<unsigned(s.rx_pt)<<" frame_ms="<<frame<<"\n";
- const auto pcm=samples(tx*frame/1000,false),network=samples(tx*frame/1000,true);
+ const auto pcm=samples(tx*tx_frame/1000,false),network=samples(tx*tx_frame/1000,true);
  std::array<uint8_t,1500> packet{};uint32_t first=0;
  for(unsigned n=0;n<2;++n){
   s.send_audio_frame(pcm.data(),pcm.size());const auto length=recv(peer,packet.data(),packet.size(),0);
   assert(length==ssize_t(12+network.size())&&packet[0]==0x80&&packet[1]==s.tx_pt);
   assert(std::memcmp(packet.data()+12,network.data(),network.size())==0);
   std::cout<<"TX_RTP payload_bytes="<<length-12<<" pt="<<unsigned(packet[1])<<" timestamp="<<stamp(packet.data())<<"\n";
-  if(n==0)first=stamp(packet.data());else assert(stamp(packet.data())-first==tx*frame/1000);
+  if(n==0)first=stamp(packet.data());else assert(stamp(packet.data())-first==tx*tx_frame/1000);
  }
  assert(s.rtp_tx_packets_==2);
  // An independent peer authors the receive packet, including negotiated PT.
- const auto incoming=samples(rx*frame/1000,true),expected=samples(rx*frame/1000,false);
+ const auto incoming=samples(rx*rx_frame/1000,true),expected=samples(rx*rx_frame/1000,false);
  std::vector<uint8_t> authored(12+incoming.size());authored[0]=0x80;authored[1]=s.rx_pt;
  std::copy(incoming.begin(),incoming.end(),authored.begin()+12);sockaddr_in address{};address.sin_family=AF_INET;address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);address.sin_port=htons(local);
  assert(sendto(peer,authored.data(),authored.size(),0,reinterpret_cast<sockaddr*>(&address),sizeof(address))==ssize_t(authored.size()));
@@ -112,7 +120,7 @@ int main(int argc,char**argv){
     return exe
 
 
-@pytest.mark.parametrize("profile", ["ha", "ha-reverse", "standard", "s3", "legacy", "legacy-no-tx"])
+@pytest.mark.parametrize("profile", ["ha", "ha-asymmetric", "ha-legacy", "ha-reverse", "standard", "s3", "legacy", "legacy-no-tx"])
 def test_selected_native_media_bytes_and_clock(media_binary, profile):
     result = subprocess.run([media_binary, profile], capture_output=True, text=True, timeout=6)
     assert result.returncode == 0, result.stderr

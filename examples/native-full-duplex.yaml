@@ -24,7 +24,7 @@ wifi:
   power_save_mode: NONE
 
 external_components:
-  - source: github://n-IA-hane/esphome-voip-stack@main
+  - source: github://n-IA-hane/esphome-voip-stack@dev
     components: [voip_stack]
 
 i2s_audio:
@@ -66,13 +66,11 @@ voip_stack:
     channels: [0]
   speaker: native_speaker
   audio:
-    tx:
-      sample_rate: 48000
-      pcm_format: s16le
-      channels: 1
-      frame_ms: 10
-    rx:
-      sample_rate: 48000
-      pcm_format: s16le
-      channels: 1
-      frame_ms: 10
+    codecs:
+      - codec: pcm
+        tx:
+          - sample_rate: 48000
+            frame_ms: 10
+        rx:
+          - sample_rate: 48000
+            frame_ms: 10

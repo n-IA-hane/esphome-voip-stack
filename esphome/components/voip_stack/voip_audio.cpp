@@ -583,8 +583,11 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
   }
 }
 
-void VoipStack::play_silence_frame_(SilenceReason reason, TickType_t ticks_to_wait, uint32_t revision) {
-  const size_t silence_bytes = this->get_current_rx_audio_format_().nominal_frame_bytes();
+void VoipStack::play_silence_frame_(SilenceReason reason, TickType_t ticks_to_wait, uint32_t revision,
+                                  uint16_t frame_ms) {
+  AudioFormat format = this->get_current_rx_audio_format_();
+  if (frame_ms != 0) format.frame_ms = frame_ms;
+  const size_t silence_bytes = format.nominal_frame_bytes();
   if (this->rx_audio_chunk_ != nullptr && silence_bytes <= this->rx_audio_chunk_alloc_bytes_) {
     memset(this->rx_audio_chunk_, 0, silence_bytes);
     this->play_rx_frame_(this->rx_audio_chunk_, silence_bytes, reason, ticks_to_wait, revision);
@@ -609,7 +612,9 @@ void VoipStack::rx_task_() {
       previous_format_packed = 0;
       previous_revision = revision;
     }
-    const AudioFormat rx_format = this->get_current_rx_audio_format_();
+    AudioFormat rx_format = this->get_current_rx_audio_format_();
+    if (previous_format_packed != 0)
+      rx_format.frame_ms = unpack_audio_format(previous_format_packed).frame_ms;
     if (!rx_format.is_valid()) {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
       continue;
@@ -645,7 +650,10 @@ void VoipStack::rx_task_() {
       size_t frame_bytes = network_bytes;
       const uint8_t *playout = network_buffer;
       const uint32_t current_format_packed = pack_audio_format(frame_format);
-      if (source_changed || previous_format_packed != current_format_packed) {
+      AudioFormat previous_geometry = previous_format_packed != 0
+          ? unpack_audio_format(previous_format_packed) : frame_format;
+      previous_geometry.frame_ms = frame_format.frame_ms;
+      if (source_changed || previous_format_packed == 0 || !(previous_geometry == frame_format)) {
         this->transport_->reset_audio_decoder();
         if (frame_format.codec == AudioCodec::PCM)
           ESP_LOGD(TAG, "RX wire PCM=%uHz playout=%uHz frame=%ums",
@@ -653,23 +661,43 @@ void VoipStack::rx_task_() {
                    (unsigned) frame_format.frame_ms);
       }
       previous_format_packed = current_format_packed;
-#ifdef USE_ESPHOME_VOIP_STACK_OPUS
-      if (frame_format.codec == AudioCodec::OPUS) {
+      const AudioFormat source_pcm = decoded_pcm_format(frame_format);
+      AudioFormat target_pcm = decoded_pcm_format(rx_format);
+      target_pcm.frame_ms = frame_format.frame_ms;
+#if defined(USE_ESPHOME_VOIP_STACK_OPUS) || defined(USE_ESPHOME_VOIP_STACK_G722)
+      if (frame_format.codec != AudioCodec::PCM) {
+        const uint8_t *encoded = network_buffer;
+        uint8_t *decoded = this->rx_audio_chunk_;
+        size_t capacity = this->rx_audio_chunk_alloc_bytes_;
+        if (!(source_pcm == target_pcm)) {
+          // Retain the compressed input in the existing output buffer, then
+          // decode into the input buffer. The resampler can expand into the
+          // larger output buffer without doubling network/jitter storage.
+          if (network_bytes > this->rx_audio_chunk_alloc_bytes_ ||
+              source_pcm.nominal_frame_bytes() > this->rx_jitter_frame_alloc_bytes_) continue;
+          memcpy(this->rx_audio_chunk_, network_buffer, network_bytes);
+          encoded = this->rx_audio_chunk_;
+          decoded = network_buffer;
+          capacity = this->rx_jitter_frame_alloc_bytes_;
+        }
         frame_bytes = this->transport_->decode_audio_payload(
-            network_buffer, network_bytes, frame_format,
-            this->rx_audio_chunk_, this->rx_audio_chunk_alloc_bytes_);
-        if (frame_bytes != rx_format.nominal_frame_bytes()) continue;
-        playout = this->rx_audio_chunk_;
+            encoded, network_bytes, frame_format, decoded, capacity);
+        if (frame_bytes != decoded_pcm_format(frame_format).nominal_frame_bytes()) continue;
+        playout = decoded;
       }
 #endif
-      if (frame_format.codec == AudioCodec::PCM && !(frame_format == decoded_pcm_format(rx_format))) {
+      if (!(source_pcm == target_pcm)) {
+        // Decoded codecs already occupy audio_chunk. Reuse the other setup
+        // buffer as output so a resampler never aliases its input.
+        uint8_t *converted = playout == this->rx_audio_chunk_ ? network_buffer : this->rx_audio_chunk_;
         frame_bytes = this->transport_->convert_received_pcm(
-            frame_format, network_buffer, network_bytes,
-            this->rx_audio_chunk_, this->rx_audio_chunk_alloc_bytes_);
-        playout = this->rx_audio_chunk_;
+            source_pcm, playout, frame_bytes, converted, this->rx_audio_chunk_alloc_bytes_);
+        playout = converted;
       }
       if (frame_bytes == 0) continue;
-      this->play_rx_frame_(playout, frame_bytes, SilenceReason::NONE, frame_ticks, revision);
+      const TickType_t packet_ticks = static_cast<TickType_t>(std::max<uint64_t>(1,
+          (static_cast<uint64_t>(frame_format.frame_ms) * configTICK_RATE_HZ + 999) / 1000));
+      this->play_rx_frame_(playout, frame_bytes, SilenceReason::NONE, packet_ticks, revision);
     } else {
       // Initial prebuffering must stay quiet, but BUFFERING is also returned
       // after an established stream drains completely. In that second case we
@@ -731,7 +759,7 @@ void VoipStack::rx_task_() {
           }
         }
 #endif
-        this->play_silence_frame_(SilenceReason::NETWORK_GAP, 0, revision);
+        this->play_silence_frame_(SilenceReason::NETWORK_GAP, 0, revision, rx_format.frame_ms);
       }
       continue;
     }

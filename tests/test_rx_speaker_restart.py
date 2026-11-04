@@ -65,7 +65,7 @@ struct VoipStack {
  RxPlayoutPhase rx_playout_phase_(uint32_t revision)const{return revision==rx_audio_revision_.load()&&call_state_==CallState::IN_CALL?RxPlayoutPhase::ACTIVE:RxPlayoutPhase::STOPPED;}
  bool play_rx_preroll_(uint32_t,TickType_t){return false;}
  void play_rx_frame_(const uint8_t*,size_t,SilenceReason,TickType_t,uint32_t);
- void play_silence_frame_(SilenceReason,TickType_t,uint32_t);
+ void play_silence_frame_(SilenceReason,TickType_t,uint32_t,uint16_t=0);
  void rx_task_();
 };
 """

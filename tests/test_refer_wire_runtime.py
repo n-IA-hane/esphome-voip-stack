@@ -136,7 +136,7 @@ template<class T>void reset_string(T&s){s.clear();}
                 else 'bool remote_audio_expected() const { return true; }')
     code = code.replace('struct SipTransport: SipPhoneTransport {',
                         block(header, 'struct DeferredUdpResponse {') + ';\n' +
-                        'struct SipTransport: SipPhoneTransport {\n' + expected + '\n' + block(header, 'bool dispatch_is_udp_() const') + '\n')
+                        'struct SipTransport: SipPhoneTransport {\nsize_t udp_max_payload_=UDP_SAFE_AUDIO_PAYLOAD_BYTES;\n' + expected + '\n' + block(header, 'bool dispatch_is_udp_() const') + '\n')
     return complete_invite_owner(code) if full_invite else code
 
 

@@ -52,7 +52,6 @@ def delayed_source():
     declarations = declarations.replace("const char *direction) const;", 'const char *direction = "sendrecv") const;')
     code = code.replace(" uint16_t sip_port_=5060;", declarations + r'''
  AudioFormatList offer_tx_formats_,offer_rx_formats_;int media_config_lock_=0;
- size_t udp_max_payload_=1200;
  PcmReceiveConverter pcm_receive_converter_;
  bool prepare_media_path(){return pcm_receive_converter_.prepare(negotiated_rx_payloads_,selected_rx_format_);}
  bool commit_media_path(){open_media_session_();return true;}
@@ -112,7 +111,11 @@ int main(int argc,char**argv){
  s.offer_tx_formats_.count=s.offer_rx_formats_.count=2;
  s.offer_tx_formats_.formats[0]=s.offer_rx_formats_.formats[0]=fmt(16);
  s.offer_tx_formats_.formats[1]=s.offer_rx_formats_.formats[1]=fmt(10);
- if(scenario=="resample"){auto f=fmt(10);f.sample_rate=48000;s.offer_rx_formats_.formats[2]=f;s.offer_rx_formats_.count=3;}
+ if(scenario=="resample"){
+  auto f=fmt(10);f.sample_rate=48000;s.offer_rx_formats_.formats[0]=f;
+  s.offer_tx_formats_.formats[2]=f;s.offer_tx_formats_.count=3; // Explicit ordinary48k fallback, after16k TX.
+  s.offer_rx_formats_.formats[1]=fmt(16);s.offer_rx_formats_.formats[2]=fmt(10);s.offer_rx_formats_.count=3;
+ }
  VoipStack phone;phone.tx_audio_formats_=s.offer_tx_formats_;phone.rx_audio_formats_=s.offer_rx_formats_;
  phone.auto_answer_=scenario!="manual";
  if(scenario=="sendfail")phone.t.final_ok=false;
@@ -130,6 +133,8 @@ int main(int argc,char**argv){
   phone.answer_call();phone.drain();accepted=peer.drain();
  }
  assert(accepted.size()==1&&accepted[0].rfind("SIP/2.0 200",0)==0);
+ const auto ptime_header=accepted[0].find("\r\na=ptime:");assert(ptime_header!=std::string::npos);
+ const unsigned advertised_rx_time=std::stoul(accepted[0].substr(ptime_header+10));
  assert(phone.incoming_answer_accepted_);
  assert(phone.call_state_==CallState::CONNECTING&&!phone.mic_owned&&phone.mic_starts==0&&"Provisional formats must not activate devices or establish a call");
  auto ack=request(peer,"ACK",1,"","delayed",s.local_tag_,s.remote_tag_);
@@ -171,7 +176,7 @@ int main(int argc,char**argv){
  assert(phone.call_state_==CallState::IN_CALL&&s.media_active_);
  assert(phone.tx.is_valid()==(direction!="sendonly"));assert(phone.rx.is_valid()==(direction!="recvonly"));
  assert(phone.mic_owned==phone.tx.is_valid());
- if(phone.rx.is_valid())assert(phone.rx.frame_ms==10);
+ if(phone.rx.is_valid())assert(phone.rx.frame_ms==advertised_rx_time);
  if(phone.tx.is_valid())assert(phone.tx.nominal_frame_bytes()==320);
  if(scenario=="resample"){
   assert(phone.rx.sample_rate==48000);std::vector<uint8_t> source(320,1),output(960);

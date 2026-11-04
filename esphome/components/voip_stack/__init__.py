@@ -8,7 +8,6 @@ from esphome.core import CORE
 from esphome.const import (
     CONF_ID,
     CONF_MICROPHONE,
-    CONF_NUM_CHANNELS,
     CONF_SPEAKER,
     CONF_NAME,
 )
@@ -122,9 +121,9 @@ CONF_PCM_FORMAT = "pcm_format"
 CONF_CHANNELS = "channels"
 CONF_FRAME_MS = "frame_ms"
 CONF_AUDIO_CODEC = "codec"
+CONF_AUDIO_CODECS = "codecs"
 CONF_NETWORK_SOCKET_HEADROOM = "network_socket_headroom"
 CONF_UDP_MAX_PAYLOAD = "udp_max_payload"
-CONF_AUTO = "auto"
 CONF_STATIC_CONTACTS = "static_contacts"
 CONF_ENTRY = "entry"
 CONF_CONTACT = "contact"
@@ -143,6 +142,7 @@ VIDEO_CODEC_JPEG = "jpeg"
 VIDEO_CODEC_H264 = "h264"
 AUDIO_CODEC_PCM = "pcm"
 AUDIO_CODEC_OPUS = "opus"
+AUDIO_CODEC_G722 = "g722"
 
 voip_stack_ns = cg.esphome_ns.namespace("voip_stack")
 VoipStack = voip_stack_ns.class_("VoipStack", cg.Component)
@@ -162,15 +162,12 @@ PCM_FORMAT_IDS = {
 AUDIO_CODEC_IDS = {
     AUDIO_CODEC_PCM: 0,
     AUDIO_CODEC_OPUS: 1,
+    AUDIO_CODEC_G722: 2,
 }
 
 SUPPORTED_PHONE_SAMPLE_RATES = (8000, 12000, 16000, 24000, 32000, 44100, 48000)
 UDP_SAFE_PAYLOAD_BYTES = 1200
 UDP_IMPLEMENTATION_MAX_PAYLOAD_BYTES = 1488
-
-
-def _is_auto(value):
-    return isinstance(value, str) and value.lower() == CONF_AUTO
 
 
 def _validate_endpoint_label(value):
@@ -219,10 +216,6 @@ def resolve_parent_id(config):
 
 
 def _validate_voip_audio_format(value):
-    if _is_auto(value):
-        return CONF_AUTO
-    if any(_is_auto(value[key]) for key in (CONF_SAMPLE_RATE, CONF_PCM_FORMAT, CONF_CHANNELS, CONF_FRAME_MS)):
-        return value
     if (value[CONF_SAMPLE_RATE] * value[CONF_FRAME_MS]) % 1000 != 0:
         raise cv.Invalid(
             f"sample_rate {value[CONF_SAMPLE_RATE]} and frame_ms {value[CONF_FRAME_MS]} "
@@ -235,60 +228,70 @@ def _validate_voip_audio_format(value):
             raise cv.Invalid("Opus RTP requires mono s16le PCM at the ESP audio boundary")
         if value[CONF_FRAME_MS] not in (10, 20):
             raise cv.Invalid("Opus RTP currently supports frame_ms 10 or 20")
+    if value[CONF_AUDIO_CODEC] == AUDIO_CODEC_G722:
+        if (value[CONF_SAMPLE_RATE], value[CONF_PCM_FORMAT], value[CONF_CHANNELS]) != (16000, "s16le", 1):
+            raise cv.Invalid("G722 requires mono s16le PCM at 16000 Hz; its RTP clock is 8000 Hz")
+        if value[CONF_FRAME_MS] not in (10, 20):
+            raise cv.Invalid("G722 currently supports frame_ms 10 or 20 at 64 kbit/s")
     return value
 
 
 def _validate_voip_audio_config(value):
-    for primary, extra_key in (
-        (CONF_TX, CONF_TX_FORMATS),
-        (CONF_RX, CONF_RX_FORMATS),
-    ):
-        if 1 + len(value[extra_key]) > 8:
-            raise cv.Invalid(
-                f"voip_stack.audio.{extra_key} supports at most 7 extra formats "
-                f"because audio.{primary} is always included first"
-            )
+    seen = set()
+    formats = {CONF_TX: [], CONF_RX: []}
+    for codec in value[CONF_AUDIO_CODECS]:
+        name = codec[CONF_AUDIO_CODEC]
+        if name in seen:
+            raise cv.Invalid(f"audio.codecs contains more than one {name} entry")
+        seen.add(name)
+        if not codec[CONF_TX] and not codec[CONF_RX]:
+            raise cv.Invalid(f"audio.codecs {name} must declare tx, rx, or both")
+        for direction in (CONF_TX, CONF_RX):
+            for declared in codec[direction]:
+                fmt = _validate_voip_audio_format({**declared, CONF_AUDIO_CODEC: name})
+                if fmt in formats[direction]:
+                    raise cv.Invalid(f"audio.codecs contains a duplicate {direction} format")
+                formats[direction].append(fmt)
+    for direction, extra in ((CONF_TX, CONF_TX_FORMATS), (CONF_RX, CONF_RX_FORMATS)):
+        if len(formats[direction]) > 8:
+            raise cv.Invalid(f"audio.codecs supports at most 8 {direction} formats across all codecs")
+        value[direction] = formats[direction][0] if formats[direction] else None
+        value[extra] = formats[direction][1:]
     return value
 
 
-def _has_auto_audio_field(fmt: dict) -> bool:
-    return any(_is_auto(fmt[key]) for key in (CONF_SAMPLE_RATE, CONF_PCM_FORMAT, CONF_CHANNELS, CONF_FRAME_MS))
+def _reject_legacy_audio_config(value):
+    if isinstance(value, dict) and any(key in value for key in (CONF_TX, CONF_RX, CONF_TX_FORMATS, CONF_RX_FORMATS)):
+        raise cv.Invalid("Legacy audio.tx/rx/tx_formats/rx_formats were replaced by audio.codecs. "
+                         "Declare a list of codec objects, each with codec and ordered tx/rx format lists.")
+    return value
 
 
 def _validate_tx_reframe_formats(tx_fmt: dict, tx_formats: list[dict]) -> None:
     for fmt in tx_formats:
-        if _has_auto_audio_field(fmt):
-            raise cv.Invalid(
-                "voip_stack.audio.tx_formats entries must be explicit. "
-                "Only audio.tx can derive fields automatically from the microphone."
-            )
         for key in (CONF_SAMPLE_RATE, CONF_PCM_FORMAT, CONF_CHANNELS):
             if fmt[key] != tx_fmt[key]:
                 raise cv.Invalid(
-                    "voip_stack.audio.tx_formats can only declare packet-time reframes "
-                    "of audio.tx. sample_rate, pcm_format and channels must match audio.tx."
+                    "voip_stack.audio.codecs TX formats can only declare packet-time reframes "
+                    "of the microphone PCM. sample_rate, pcm_format and channels must match the first TX format."
                 )
 
 
-PHONE_AUDIO_FORMAT_SCHEMA = cv.All(cv.Any(cv.one_of(CONF_AUTO, lower=True), cv.Schema(
-    {
-        cv.Optional(CONF_SAMPLE_RATE, default=CONF_AUTO): cv.Any(
-            cv.one_of(CONF_AUTO, lower=True), cv.one_of(*SUPPORTED_PHONE_SAMPLE_RATES, int=True)
-        ),
-        cv.Optional(CONF_PCM_FORMAT, default=CONF_AUTO): cv.Any(
-            cv.one_of(CONF_AUTO, lower=True), cv.one_of(*PCM_FORMAT_IDS.keys(), lower=True)
-        ),
-        cv.Optional(CONF_CHANNELS, default=CONF_AUTO): cv.Any(
-            cv.one_of(CONF_AUTO, lower=True), cv.one_of(1, 2, int=True)
-        ),
-        cv.Optional(CONF_FRAME_MS, default=CONF_AUTO): cv.Any(
-            cv.one_of(CONF_AUTO, lower=True), cv.one_of(10, 16, 20, 32, int=True)
-        ),
-        cv.Optional(CONF_AUDIO_CODEC, default=AUDIO_CODEC_PCM): cv.one_of(
-            *AUDIO_CODEC_IDS.keys(), lower=True
-        ),
-    }
-)), _validate_voip_audio_format)
+CODEC_PCM_FORMAT_SCHEMA = cv.Schema({
+    cv.Required(CONF_SAMPLE_RATE): cv.one_of(*SUPPORTED_PHONE_SAMPLE_RATES, int=True),
+    cv.Optional(CONF_PCM_FORMAT, default="s16le"): cv.one_of(*PCM_FORMAT_IDS.keys(), lower=True),
+    cv.Optional(CONF_CHANNELS, default=1): cv.one_of(1, 2, int=True),
+    cv.Required(CONF_FRAME_MS): cv.one_of(10, 16, 20, 32, int=True),
+})
+PHONE_CODECS_SCHEMA = cv.All(
+    _reject_legacy_audio_config,
+    cv.Schema({cv.Required(CONF_AUDIO_CODECS): cv.All(cv.ensure_list(cv.Schema({
+        cv.Required(CONF_AUDIO_CODEC): cv.one_of(*AUDIO_CODEC_IDS.keys(), lower=True),
+        cv.Optional(CONF_TX, default=[]): cv.ensure_list(CODEC_PCM_FORMAT_SCHEMA),
+        cv.Optional(CONF_RX, default=[]): cv.ensure_list(CODEC_PCM_FORMAT_SCHEMA),
+    })), cv.Length(min=1))}),
+    _validate_voip_audio_config,
+)
 
 def _validate_video_payload_type(value):
     value = cv.int_(value)
@@ -382,21 +385,11 @@ def _validate_opus_geometry(formats: list[dict], *, receive: bool) -> None:
 def _format_rtp_payload_bytes(fmt: dict) -> int:
     if fmt[CONF_AUDIO_CODEC] == AUDIO_CODEC_OPUS:
         return 0
+    if fmt[CONF_AUDIO_CODEC] == AUDIO_CODEC_G722:
+        return 8 * fmt[CONF_FRAME_MS]  # 64 kbit/s, independently of 16 kHz PCM.
     samples = (fmt[CONF_SAMPLE_RATE] * fmt[CONF_FRAME_MS]) // 1000
     sample_bytes = 3 if fmt[CONF_PCM_FORMAT] == "s24le_in_s32" else (_format_container_bits(fmt) // 8)
     return samples * fmt[CONF_CHANNELS] * sample_bytes
-
-
-def _pcm_from_bits(bits: int) -> str:
-    if bits == 16:
-        return "s16le"
-    if bits == 24:
-        return "s24le"
-    if bits == 32:
-        # Most ESP I2S 24-bit microphone paths are transported in 32-bit slots.
-        # Users with true 32-bit PCM can still declare pcm_format: s32le.
-        return "s24le_in_s32"
-    raise cv.Invalid(f"voip_stack audio auto cannot map {bits} bits per sample to a PCM format")
 
 
 def _declared_config_for_id(id_value):
@@ -451,90 +444,11 @@ def _speaker_output_feedback_provider(speaker_id):
     return None
 
 
-def _single_stream_value(declaration: dict, key: str, min_key: str, max_key: str):
-    if key in declaration:
-        return declaration[key]
-    low = declaration.get(min_key)
-    high = declaration.get(max_key)
-    if low is not None and high is not None and low == high:
-        return low
-    return None
-
-
 def _esp_audio_stack_parent_config(declaration: dict):
     parent_id = declaration.get("esp_audio_stack_id")
     if parent_id is None:
         return None
     return _declared_config_for_id(parent_id)
-
-
-def _derive_stream_format_from_device(device_config: dict, *, direction: str) -> dict | None:
-    parent = _esp_audio_stack_parent_config(device_config)
-    if parent is not None:
-        if direction == CONF_TX:
-            sample_rate = parent.get("output_sample_rate") or parent.get(CONF_SAMPLE_RATE)
-            channels = 1
-            bits = 16
-        else:
-            sample_rate = parent.get(CONF_SAMPLE_RATE)
-            channels = device_config.get(CONF_NUM_CHANNELS) or parent.get("speaker_channels") or 1
-            bits = 16
-        if sample_rate:
-            return {
-                CONF_SAMPLE_RATE: sample_rate,
-                CONF_PCM_FORMAT: _pcm_from_bits(bits),
-                CONF_CHANNELS: channels,
-                CONF_FRAME_MS: 16,
-                CONF_AUDIO_CODEC: AUDIO_CODEC_PCM,
-            }
-
-    sample_rate = _single_stream_value(
-        device_config,
-        CONF_SAMPLE_RATE,
-        audio.CONF_MIN_SAMPLE_RATE,
-        audio.CONF_MAX_SAMPLE_RATE,
-    )
-    bits = _single_stream_value(
-        device_config,
-        "bits_per_sample",
-        audio.CONF_MIN_BITS_PER_SAMPLE,
-        audio.CONF_MAX_BITS_PER_SAMPLE,
-    )
-    channels = _single_stream_value(
-        device_config,
-        CONF_NUM_CHANNELS,
-        audio.CONF_MIN_CHANNELS,
-        audio.CONF_MAX_CHANNELS,
-    )
-    if sample_rate is None or bits is None or channels is None:
-        return None
-    return {
-        CONF_SAMPLE_RATE: sample_rate,
-        CONF_PCM_FORMAT: _pcm_from_bits(int(bits)),
-        CONF_CHANNELS: channels,
-        CONF_FRAME_MS: 16,
-        CONF_AUDIO_CODEC: AUDIO_CODEC_PCM,
-    }
-
-
-def _derive_tx_format(config: dict) -> dict | None:
-    if CONF_MICROPHONE_SOURCE in config:
-        source = config[CONF_MICROPHONE_SOURCE]
-        mic_config = _declared_config_for_id(source[CONF_MICROPHONE])
-        base = _derive_stream_format_from_device(mic_config, direction=CONF_TX)
-        if base is None:
-            return None
-        bits = int(source.get("bits_per_sample", 16))
-        channels = len(source.get(CONF_CHANNELS, [0]))
-        base[CONF_PCM_FORMAT] = _pcm_from_bits(bits)
-        base[CONF_CHANNELS] = channels
-        return base
-    if CONF_MICROPHONE in config:
-        return _derive_stream_format_from_device(
-            _declared_config_for_id(config[CONF_MICROPHONE]),
-            direction=CONF_TX,
-        )
-    return None
 
 
 def _tx_uses_esp_audio_stack(config: dict) -> bool:
@@ -547,45 +461,6 @@ def _tx_uses_esp_audio_stack(config: dict) -> bool:
         return _esp_audio_stack_parent_config(mic_config) is not None
     return False
 
-
-def _derive_rx_format(config: dict) -> dict | None:
-    if CONF_SPEAKER not in config:
-        return None
-    return _derive_stream_format_from_device(
-        _declared_config_for_id(config[CONF_SPEAKER]),
-        direction=CONF_RX,
-    )
-
-
-def _resolve_audio_format(config: dict, direction: str, value) -> dict | None:
-    present = (CONF_MICROPHONE in config or CONF_MICROPHONE_SOURCE in config) if direction == CONF_TX else CONF_SPEAKER in config
-    if not present:
-        # Historical settings for absent hardware remain parseable, but do not
-        # declare local media capabilities or impose a codec or packet time.
-        return None
-    derive = _derive_tx_format if direction == CONF_TX else _derive_rx_format
-    derived = derive(config)
-    if _is_auto(value):
-        if derived is not None:
-            return derived
-        source = "microphone/source" if direction == CONF_TX else "speaker"
-        raise cv.Invalid(
-            f"voip_stack.audio.{direction}: auto could not derive the PCM format from the referenced "
-            f"{source}. Declare audio.{direction}.sample_rate/pcm_format/channels/frame_ms manually."
-        )
-
-    resolved = dict(value)
-    if any(_is_auto(resolved[key]) for key in (CONF_SAMPLE_RATE, CONF_PCM_FORMAT, CONF_CHANNELS, CONF_FRAME_MS)):
-        if derived is None:
-            source = "microphone/source" if direction == CONF_TX else "speaker"
-            raise cv.Invalid(
-                f"voip_stack.audio.{direction}: one or more fields are auto, but the referenced {source} "
-                "does not expose a concrete stream format. Declare every audio field manually."
-            )
-        for key in (CONF_SAMPLE_RATE, CONF_PCM_FORMAT, CONF_CHANNELS, CONF_FRAME_MS):
-            if _is_auto(resolved[key]):
-                resolved[key] = derived[key]
-    return _validate_voip_audio_format(resolved)
 
 # === Action classes (for YAML: voip_stack.next_contact, etc.) ===
 NextContactAction = voip_stack_ns.class_("NextContactAction", automation.Action)
@@ -711,18 +586,7 @@ CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), ha_integration.p
         # VoIP wire PCM contract. `tx` is microphone/source -> wire;
         # `rx` is wire -> speaker/sink. They are intentionally independent:
         # an AFE mic can publish 16 kHz while the speaker sink accepts 48 kHz.
-        cv.Optional(CONF_AUDIO, default={}): cv.All(cv.Schema(
-            {
-                cv.Optional(CONF_TX, default={}): PHONE_AUDIO_FORMAT_SCHEMA,
-                cv.Optional(CONF_RX, default={}): PHONE_AUDIO_FORMAT_SCHEMA,
-                cv.Optional(CONF_TX_FORMATS, default=[]): cv.ensure_list(
-                    PHONE_AUDIO_FORMAT_SCHEMA
-                ),
-                cv.Optional(CONF_RX_FORMATS, default=[]): cv.ensure_list(
-                    PHONE_AUDIO_FORMAT_SCHEMA
-                ),
-            }
-        ), _validate_voip_audio_config),
+        cv.Required(CONF_AUDIO): PHONE_CODECS_SCHEMA,
         cv.Optional(CONF_VIDEO): PHONE_VIDEO_SCHEMA,
         # Compile-time gate for per-frame/packet diagnostics. Disabled builds
         # contain neither hot-path log branches nor their format strings.
@@ -925,9 +789,15 @@ def _final_validate(config):
         raise cv.Invalid("voip_stack.video_debug requires voip_stack.video.")
 
     audio_cfg = config[CONF_AUDIO]
-    audio_cfg[CONF_TX] = _resolve_audio_format(config, CONF_TX, audio_cfg[CONF_TX])
-    audio_cfg[CONF_RX] = _resolve_audio_format(config, CONF_RX, audio_cfg[CONF_RX])
-    config[CONF_TX_USES_ESP_AUDIO_STACK] = _tx_uses_esp_audio_stack(config)
+    if CONF_MICROPHONE not in config and CONF_MICROPHONE_SOURCE not in config:
+        audio_cfg[CONF_TX] = None
+        audio_cfg[CONF_TX_FORMATS] = []
+    if CONF_SPEAKER not in config:
+        audio_cfg[CONF_RX] = None
+        audio_cfg[CONF_RX_FORMATS] = []
+    if audio_cfg[CONF_TX] is None and audio_cfg[CONF_RX] is None:
+        raise cv.Invalid("audio.codecs must declare a format for at least one configured microphone or speaker direction")
+    config[CONF_TX_USES_ESP_AUDIO_STACK] = audio_cfg[CONF_TX] is not None and _tx_uses_esp_audio_stack(config)
     tx_fmt = audio_cfg[CONF_TX]
     rx_fmt = audio_cfg[CONF_RX]
     if tx_fmt is not None:
@@ -974,7 +844,7 @@ def _final_validate(config):
         if "psram" not in fv.full_config.get():
             raise cv.Invalid("voip_stack Opus requires PSRAM for codec state and working memory")
 
-    if CONF_MICROPHONE in config:
+    if CONF_MICROPHONE in config and tx_fmt is not None:
         try:
             audio.final_validate_audio_schema(
                 "voip_stack",
@@ -992,12 +862,12 @@ def _final_validate(config):
                 "voip_stack.audio.tx format."
             )
 
-    if CONF_MICROPHONE_SOURCE in config:
+    if CONF_MICROPHONE_SOURCE in config and tx_fmt is not None:
         microphone.final_validate_microphone_source_schema(
             "voip_stack", sample_rate=tx_fmt[CONF_SAMPLE_RATE]
         )(config[CONF_MICROPHONE_SOURCE])
 
-    if CONF_SPEAKER in config:
+    if CONF_SPEAKER in config and rx_fmt is not None:
         config["_speaker_output_feedback"] = _speaker_output_feedback_provider(config[CONF_SPEAKER])
         try:
             audio.final_validate_audio_schema(
@@ -1039,12 +909,12 @@ FINAL_VALIDATE_SCHEMA = _final_validate
 
 
 async def _add_core_settings(var, config):
-    if CONF_MICROPHONE in config:
+    if CONF_MICROPHONE in config and config[CONF_AUDIO][CONF_TX] is not None:
         cg.add_define("USE_ESPHOME_VOIP_STACK_MIC")
         mic = await cg.get_variable(config[CONF_MICROPHONE])
         cg.add(var.set_microphone(mic))
 
-    if CONF_MICROPHONE_SOURCE in config:
+    if CONF_MICROPHONE_SOURCE in config and config[CONF_AUDIO][CONF_TX] is not None:
         cg.add_define("USE_ESPHOME_VOIP_STACK_MIC")
         mic_source = await microphone.microphone_source_to_code(config[CONF_MICROPHONE_SOURCE])
         cg.add(var.set_microphone_source(mic_source))
@@ -1052,7 +922,7 @@ async def _add_core_settings(var, config):
     if config.get(CONF_TX_USES_ESP_AUDIO_STACK, False):
         cg.add_define("USE_ESPHOME_VOIP_STACK_AUDIO_STACK_MIC")
 
-    if CONF_SPEAKER in config:
+    if CONF_SPEAKER in config and config[CONF_AUDIO][CONF_RX] is not None:
         cg.add_define("USE_ESPHOME_VOIP_STACK_SPEAKER")
         spk = await cg.get_variable(config[CONF_SPEAKER])
         cg.add(var.set_speaker(spk))
@@ -1168,6 +1038,16 @@ async def _add_core_settings(var, config):
                     AUDIO_CODEC_IDS[fmt[CONF_AUDIO_CODEC]],
                 )
             )
+    enabled_codecs = {
+        fmt[CONF_AUDIO_CODEC]
+        for key, extra in ((CONF_TX, CONF_TX_FORMATS), (CONF_RX, CONF_RX_FORMATS))
+        if audio_cfg[key] is not None
+        for fmt in (audio_cfg[key], *audio_cfg[extra])
+    }
+    for codec in enabled_codecs:
+        cg.add_define("USE_ESPHOME_VOIP_STACK_" + codec.upper())
+    if AUDIO_CODEC_G722 in enabled_codecs:
+        esp32.add_idf_component(name="espressif/esp_audio_codec", ref="2.5.0")
     if any(
         fmt[CONF_AUDIO_CODEC] == AUDIO_CODEC_OPUS
         for key, extra in ((CONF_TX, CONF_TX_FORMATS), (CONF_RX, CONF_RX_FORMATS))
@@ -1412,7 +1292,6 @@ async def decline_call_action_to_code(config, action_id, template_arg, args):
 
 _register_simple_action("voip_stack.call_toggle", CallToggleAction)
 _register_simple_action("voip_stack.publish_entity_states", PublishEntityStatesAction)
-
 
 
 @automation.register_action(

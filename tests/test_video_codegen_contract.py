@@ -100,6 +100,10 @@ p4_video_renderer:
 voip_stack:
   id: phone
   ha_integration: false
+  audio:
+    codecs:
+      - codec: pcm
+        tx: [{{sample_rate: 16000, frame_ms: 20}}]
   microphone_source:
     microphone: mic
   video:

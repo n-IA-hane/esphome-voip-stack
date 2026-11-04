@@ -125,7 +125,17 @@ int main(int argc,char**argv){
  f.frame_ms=16;t.offer_rx_formats_.formats[3]=f;f.frame_ms=32;t.offer_rx_formats_.formats[4]=f;
  f.frame_ms=20;t.offer_rx_formats_.formats[5]=f;t.peer_directional_audio_v1_=true;
  const auto built=t.build_sdp_offer_();
- assert(built.substr(built.find("m=audio"))==initial_offer.substr(initial_offer.find("m=audio")));
+ assert(built.find("a=x-voip-stack-independent-ptime:1\r\n")!=std::string::npos);
+ assert(built.find("L16/32000/1\r\n")!=std::string::npos);
+ // Replay the historical established dialog with its exact original PT map.
+ // The current offer also advertises configured mappings at other durations,
+ // so its newly assigned PTs cannot be paired with this frozen old answer.
+ assert(initial_offer.find("a=rtpmap:96 L16/48000/1\r\n")!=std::string::npos);
+ assert(initial_offer.find("a=rtpmap:97 L16/16000/1\r\n")!=std::string::npos);
+ t.local_offered_rx_payloads_.count=0;t.local_offered_tx_formats_.count=1;
+ f.sample_rate=48000;f.frame_ms=10;assert(t.local_offered_rx_payloads_.add(96,f));
+ f.sample_rate=16000;assert(t.local_offered_rx_payloads_.add(97,f));
+ t.local_offered_tx_formats_.formats[0]=f;
  auto initial=initial_answer;
  if(mode=="active-retarget")initial.replace(initial.find("a=inactive"),10,"a=sendonly");
  assert(t.learn_remote_rtp_from_sdp_(initial,0xc0a801c8,true));

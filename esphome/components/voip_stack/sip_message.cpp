@@ -752,6 +752,12 @@ bool parse_rtpmap_format(const std::string &line, AudioFormat *fmt, uint8_t *pay
     candidate.sample_rate = rate;
     candidate.channels = static_cast<uint8_t>(channels);
     candidate.pcm_format = PcmFormat::S24LE;
+  } else if (enc == "G722" || enc == "g722") {
+    if (rate != 8000 || channels != 1) return false;
+    candidate.sample_rate = 16000;
+    candidate.channels = 1;
+    candidate.pcm_format = PcmFormat::S16LE;
+    candidate.codec = AudioCodec::G722;
   } else if (enc == "opus" || enc == "OPUS") {
     // RFC 7587 fixes the SDP/RTP clock and channel token independently of
     // the mono PCM rate selected by each local encoder or decoder.

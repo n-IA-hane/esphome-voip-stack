@@ -197,11 +197,41 @@ void SipTransport::get_media_config_(AudioFormat *tx, AudioFormat *rx,
   portEXIT_CRITICAL(&this->media_config_lock_);
 }
 
-bool SipTransport::received_audio_format_(uint8_t pt, AudioFormat *format) const {
+bool SipTransport::received_audio_format_(uint8_t pt, AudioFormat *format,
+                                          const uint8_t *payload, size_t payload_bytes) const {
+  AudioFormat mapping;
   portENTER_CRITICAL(&this->media_config_lock_);
-  const bool found = this->negotiated_rx_payloads_.find(pt, format);
+  const bool found = this->negotiated_rx_payloads_.find(pt, &mapping);
   portEXIT_CRITICAL(&this->media_config_lock_);
-  return found;
+  if (!found) return false;
+  if (payload == nullptr) {
+    if (format != nullptr) *format = mapping;
+    return true;
+  }
+  if (payload_bytes == 0 || payload_bytes > this->udp_max_payload_) return false;
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  const int opus_samples = mapping.codec == AudioCodec::OPUS
+      ? opus_packet_get_nb_samples(payload, static_cast<opus_int32>(payload_bytes), 48000) : 0;
+#endif
+  // The PT fixes encoding/clock/channels, not packet duration. Configured
+  // variants are immutable while RTP runs, so this bounded scan needs no lock.
+  for (uint8_t i = 0; i < this->offer_rx_formats_.count; ++i) {
+    const auto &candidate = this->offer_rx_formats_.formats[i];
+    if (!candidate.is_valid() || !audio_formats_share_rtp_mapping(candidate, mapping) ||
+        audio_format_rtp_encoding(candidate, this->udp_max_payload_) == nullptr) continue;
+    bool matches = false;
+    if (candidate.codec == AudioCodec::PCM || candidate.codec == AudioCodec::G722)
+      matches = candidate.nominal_rtp_payload_bytes() == payload_bytes;
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+    else if (candidate.codec == AudioCodec::OPUS)
+      matches = opus_samples > 0 && static_cast<uint32_t>(opus_samples) == 48U * candidate.frame_ms;
+#endif
+    if (matches) {
+      if (format != nullptr) *format = candidate;
+      return true;
+    }
+  }
+  return false;
 }
 
 void SipTransport::set_audio_formats(const AudioFormatList &tx, const AudioFormatList &rx) {
@@ -218,6 +248,15 @@ void SipTransport::set_audio_formats(const AudioFormatList &tx, const AudioForma
       opus_rx = &this->offer_rx_formats_.formats[i];
   this->opus_codec_ready_ = this->opus_codec_.configure(
       opus_tx, opus_rx, this->udp_max_payload_);
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_G722
+  const AudioFormat *g722_tx = nullptr;
+  const AudioFormat *g722_rx = nullptr;
+  for (uint8_t i = 0; i < tx.count && g722_tx == nullptr; ++i)
+    if (tx.formats[i].codec == AudioCodec::G722) g722_tx = &tx.formats[i];
+  for (uint8_t i = 0; i < rx.count && g722_rx == nullptr; ++i)
+    if (rx.formats[i].codec == AudioCodec::G722) g722_rx = &rx.formats[i];
+  this->g722_codec_ready_ = this->g722_codec_.configure(g722_tx, g722_rx, this->udp_max_payload_);
 #endif
   ESP_LOGI(TAG, "SIP media capabilities: tx=%u rx=%u",
            (unsigned) this->offer_tx_formats_.count,
@@ -547,6 +586,12 @@ bool SipTransport::start() {
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   if (!this->opus_codec_ready_) {
     ESP_LOGE(TAG, "Opus codec resources are unavailable");
+    return false;
+  }
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_G722
+  if (!this->g722_codec_ready_) {
+    ESP_LOGE(TAG, "G722 codec resources are unavailable");
     return false;
   }
 #endif
@@ -1083,7 +1128,8 @@ bool SipTransport::prepare_media_path_locked_() {
   this->get_media_config_(nullptr, &sink_format, nullptr, nullptr, &rx_payloads);
   if (sink_format.is_valid() &&
       !this->pcm_receive_converter_.prepare(
-          rx_payloads.pcm_only(), decoded_pcm_format(pcm_playout_format(sink_format, this->offer_rx_formats_)))) {
+          configured_decoded_receive_formats(rx_payloads, this->offer_rx_formats_, this->udp_max_payload_),
+          decoded_pcm_format(pcm_playout_format(sink_format, this->offer_rx_formats_)))) {
     ESP_LOGE(TAG, "Unable to prepare negotiated PCM receive formats");
     return false;
   }
@@ -1097,7 +1143,9 @@ bool SipTransport::prepare_media_path_locked_() {
   // uses the same PCM sink. Validate every decoder that can receive packets.
   for (uint8_t i = 0; i < prepared_payloads.count; ++i) {
     if (prepared_payloads.entries[i].format.codec == AudioCodec::OPUS) {
-      if (!same_decoded_audio_geometry(prepared_payloads.entries[i].format, prepared_rx)) return false;
+      AudioFormat packet_sink = prepared_rx;
+      packet_sink.frame_ms = prepared_payloads.entries[i].format.frame_ms;
+      if (!same_decoded_audio_geometry(prepared_payloads.entries[i].format, packet_sink)) return false;
       prepared_rx = prepared_payloads.entries[i].format;
       break;
     }
@@ -1107,6 +1155,21 @@ bool SipTransport::prepare_media_path_locked_() {
     return false;
   }
   this->opus_codec_.reset();
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_G722
+  AudioFormat g722_tx, g722_rx;
+  RtpAudioPayloads g722_payloads;
+  this->get_media_config_(&g722_tx, &g722_rx, nullptr, nullptr, &g722_payloads);
+  for (uint8_t i = 0; i < g722_payloads.count; ++i)
+    if (g722_payloads.entries[i].format.codec == AudioCodec::G722) {
+      g722_rx = g722_payloads.entries[i].format;
+      break;
+    }
+  if (!this->g722_codec_.ready_for(g722_tx, g722_rx)) {
+    ESP_LOGE(TAG, "Negotiated G722 format was not preallocated at setup");
+    return false;
+  }
+  this->g722_codec_.reset();
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   this->audio_tx_slow_send_calls_ = 0;
@@ -2367,18 +2430,26 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
   const uint32_t pcm_samples = bps == 0 || tx_format.channels == 0
       ? 0
       : static_cast<uint32_t>(input_bytes / bps / tx_format.channels);
-  const uint32_t timestamp_samples = tx_format.codec == AudioCodec::OPUS
-      ? static_cast<uint32_t>((48000ULL * tx_format.frame_ms) / 1000U)
-      : pcm_samples;
+  const uint32_t timestamp_samples = tx_format.codec == AudioCodec::PCM ? pcm_samples
+      : static_cast<uint32_t>((static_cast<uint64_t>(audio_format_rtp_clock_rate(tx_format)) * tx_format.frame_ms) / 1000U);
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   if (tx_format.codec == AudioCodec::OPUS) {
     bytes = this->opus_codec_.encode(pcm, bytes, tx_format, packet + 12,
                                      sizeof(packet) - 12);
   } else
 #endif
+#ifdef USE_ESPHOME_VOIP_STACK_G722
+  if (tx_format.codec == AudioCodec::G722) {
+    bytes = this->g722_codec_.encode(pcm, bytes, tx_format, packet + 12, sizeof(packet) - 12);
+  } else
+#endif
   {
+#ifdef USE_ESPHOME_VOIP_STACK_PCM
     bytes = pcm_to_rtp_payload(pcm, bytes, tx_format, packet + 12,
                                sizeof(packet) - 12);
+#else
+    bytes = 0;
+#endif
   }
   if (bytes == 0 || bytes > this->udp_max_payload_) {
     // Sequence numbers count packets, while timestamps follow the sampling
@@ -2458,21 +2529,30 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
   }
 }
 
-#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+#if defined(USE_ESPHOME_VOIP_STACK_OPUS) || defined(USE_ESPHOME_VOIP_STACK_G722)
 size_t SipTransport::decode_audio_payload(const uint8_t *payload,
                                           size_t payload_bytes,
                                           const AudioFormat &format,
                                           uint8_t *pcm,
                                           size_t pcm_capacity) {
-  if (format.codec != AudioCodec::OPUS) return 0;
-  return this->opus_codec_.decode(payload, payload_bytes, format, pcm,
-                                  pcm_capacity);
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  if (format.codec == AudioCodec::OPUS)
+    return this->opus_codec_.decode(payload, payload_bytes, format, pcm, pcm_capacity);
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_G722
+  if (format.codec == AudioCodec::G722)
+    return this->g722_codec_.decode(payload, payload_bytes, format, pcm, pcm_capacity);
+#endif
+  return 0;
 }
 
 #endif
 void SipTransport::reset_audio_decoder() {
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   this->opus_codec_.reset_decoder();
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_G722
+  this->g722_codec_.reset_decoder();
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   this->pcm_receive_converter_.reset();
@@ -5308,15 +5388,19 @@ void SipTransport::rtp_task_() {
               )) continue;
 #endif
       AudioFormat rx_format;
-      if (!this->received_audio_format_(buf[1] & 0x7F, &rx_format)) continue;
+      if (!this->received_audio_format_(buf[1] & 0x7F, &rx_format, payload, payload_len)) continue;
       const uint8_t *audio_data = payload;
       size_t audio_bytes = payload_len;
       if (rx_format.codec == AudioCodec::PCM) {
+#ifndef USE_ESPHOME_VOIP_STACK_PCM
+        continue;
+#else
         audio_bytes = rtp_payload_to_pcm(payload, payload_len, rx_format, pcm,
                                          sizeof(pcm));
         audio_data = pcm;
         if (audio_bytes == 0 ||
             audio_bytes != rx_format.nominal_frame_bytes()) continue;
+#endif
       }
       if (this->media_proposal_epoch_.load(std::memory_order_acquire) !=
           proposal_epoch) {

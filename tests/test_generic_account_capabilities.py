@@ -55,7 +55,7 @@ int main(int argc,char **argv){assert(argc==3);const bool d1=std::string(argv[2]
  VoipStack phone{&transport};phone.pending_line_=argv[1];phone.configured_d1=phone.pending_line_=="direct"&&d1;phone.run();
  auto offer=transport.build_sdp_offer_();
  assert((offer.find("a=x-voip-stack-flow:")!=std::string::npos)==d1);
- assert(offer.find("L16/48000/1")!=std::string::npos);
+ assert((offer.find("L16/48000/1")!=std::string::npos)==d1);
  assert(offer.find("L16/16000/1")!=std::string::npos);
  assert(offer.find("a=ptime:10")!=std::string::npos);
 }
@@ -132,7 +132,7 @@ bool offer(SipTransport &line,const std::string &id,bool expected){
  s.offer_tx_formats_.count=1;s.offer_tx_formats_.formats[0]=pcm(16000);
  s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[0]=pcm(48000);s.offer_rx_formats_.formats[1]=pcm(16000);
  auto wire=s.build_sdp_offer_();assert(!wire.empty());
- assert(wire.find("L16/48000/1")!=std::string::npos);
+ assert((wire.find("L16/48000/1")!=std::string::npos)==expected);
  assert((wire.find("a=x-voip-stack-flow:")!=std::string::npos)==expected);
  // The answer is independently framed and remains authoritative.
  const std::string body="v=0\r\nc=IN IP4 192.0.2.1\r\nm=audio 40002 RTP/AVP 96"+

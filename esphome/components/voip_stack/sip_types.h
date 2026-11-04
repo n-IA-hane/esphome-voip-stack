@@ -24,6 +24,7 @@ enum class PcmFormat : uint8_t {
 enum class AudioCodec : uint8_t {
   PCM = 0,
   OPUS = 1,
+  G722 = 2,
 };
 
 struct AudioFormat {
@@ -61,6 +62,7 @@ struct AudioFormat {
   }
 
   size_t nominal_rtp_payload_bytes() const {
+    if (this->codec == AudioCodec::G722) return static_cast<size_t>(this->frame_ms) * 8;
     return this->nominal_frame_samples() * this->channels * this->rtp_bytes_per_sample();
   }
 
@@ -77,6 +79,9 @@ struct AudioFormat {
                                  this->sample_rate == 16000 || this->sample_rate == 24000 ||
                                  this->sample_rate == 48000;
     const bool valid_codec = this->codec == AudioCodec::PCM ||
+                             (this->codec == AudioCodec::G722 && this->sample_rate == 16000 &&
+                              this->pcm_format == PcmFormat::S16LE && this->channels == 1 &&
+                              (this->frame_ms == 10 || this->frame_ms == 20)) ||
                              (this->codec == AudioCodec::OPUS && valid_opus_rate &&
                               this->pcm_format == PcmFormat::S16LE && this->channels == 1 &&
                               (this->frame_ms == 10 || this->frame_ms == 20));
@@ -238,13 +243,15 @@ inline const char *audio_format_rtp_encoding(const AudioFormat &format,
                                              size_t max_payload = UDP_SAFE_AUDIO_PAYLOAD_BYTES) {
   if (format.codec == AudioCodec::OPUS) return "opus";
   if (format.nominal_rtp_payload_bytes() > max_payload) return nullptr;
+  if (format.codec == AudioCodec::G722) return "G722";
   if (format.pcm_format == PcmFormat::S16LE) return "L16";
   if (format.pcm_format == PcmFormat::S24LE || format.pcm_format == PcmFormat::S24LE_IN_S32) return "L24";
   return nullptr;
 }
 
 inline uint32_t audio_format_rtp_clock_rate(const AudioFormat &format) {
-  return format.codec == AudioCodec::OPUS ? 48000U : format.sample_rate;
+  return format.codec == AudioCodec::OPUS ? 48000U :
+         format.codec == AudioCodec::G722 ? 8000U : format.sample_rate;
 }
 
 inline uint8_t audio_format_rtp_channels(const AudioFormat &format) {
@@ -264,6 +271,27 @@ inline bool audio_formats_share_rtp_mapping(const AudioFormat &left, AudioFormat
   // Callers must still validate the chosen duration and its payload budget.
   right.frame_ms = left.frame_ms;
   return audio_formats_share_wire_encoding(left, right);
+}
+
+inline bool audio_format_list_match_rtp_mapping(const AudioFormatList &list, const AudioFormat &remote,
+                                               uint16_t ptime, AudioFormat *local, size_t max_payload) {
+  for (uint8_t i = 0; i < list.count; ++i) {
+    const auto &candidate = list.formats[i];
+    if ((ptime == 0 || candidate.frame_ms == ptime) &&
+        audio_formats_share_rtp_mapping(candidate, remote) &&
+        audio_format_rtp_encoding(candidate, max_payload) != nullptr) {
+      if (local != nullptr) *local = candidate;
+      return true;
+    }
+  }
+  return false;
+}
+
+inline uint8_t preferred_audio_ptime(const AudioFormatList &formats, size_t max_payload) {
+  for (uint8_t i = 0; i < formats.count; ++i)
+    if (audio_format_rtp_encoding(formats.formats[i], max_payload) != nullptr)
+      return static_cast<uint8_t>(formats.formats[i].frame_ms);
+  return 0;
 }
 
 inline bool audio_format_list_contains(const AudioFormatList &list, const AudioFormat &format) {

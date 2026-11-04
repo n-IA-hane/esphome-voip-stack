@@ -45,6 +45,7 @@ def test_partial_setup_ownership_and_retry(tmp_path, microphone, speaker, opus):
             "-Werror",
             "-Wno-unused-parameter",
             "-fsanitize=address,undefined",
+            "-I", str(ROOT),
             *defines,
             str(cpp),
             "-o",

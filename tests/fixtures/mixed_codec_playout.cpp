@@ -69,7 +69,7 @@ struct VoipStack {
  RxPlayoutPhase rx_playout_phase_(uint32_t)const{return RxPlayoutPhase::ACTIVE;}
  bool play_rx_preroll_(uint32_t,unsigned){return false;}
  void play_rx_frame_(const uint8_t*,size_t,SilenceReason,unsigned,uint32_t);
- void play_silence_frame_(SilenceReason,unsigned,uint32_t);
+ void play_silence_frame_(SilenceReason,unsigned,uint32_t,uint16_t=0);
  void rx_task_();
 };
 VoipStack *phone=nullptr;

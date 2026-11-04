@@ -5,6 +5,8 @@
 #include <cstring>
 #include <memory>
 #include <map>
+#include "esphome/components/voip_stack/rtp_audio_payloads.h"
+using namespace esphome::voip_stack;
 #define ESP_LOGE(...) ((void)0)
 #define tskNO_AFFINITY -1
 constexpr const char *TAG="test";
@@ -22,9 +24,8 @@ std::unique_ptr<Ring> create_prefer_psram(size_t n,const char*s){return create_i
 bool start_pinned_task(void(*)(void*),const char*,size_t n,void*,int,int,bool,const char*,void**handle,void*,void**stack){*stack=allocate(n);if(!*stack)return false;*handle=*stack;return true;}
 void force_delete_pinned_task(void**handle,void**stack,size_t n){if(*stack)release(*stack,n);*handle=*stack=nullptr;}
 }
-enum class PcmFormat{S16LE};
-struct Format {PcmFormat pcm_format=PcmFormat::S16LE;size_t nominal_frame_bytes()const{return 320;}};
-struct Formats {uint8_t count=1;Format formats[1];};
+using Format=AudioFormat;
+using Formats=AudioFormatList;
 struct VoipStack {
  static constexpr unsigned kRxQueuedFrames=16,kRxPrebufferFrames=2,kTxTaskPriority=15,kRxTaskPriority=15;
  bool buffers_in_psram_=false,dc_offset_removal_=true,audio_task_stacks_in_psram_=false;
@@ -53,6 +54,12 @@ struct VoipStack {
  size_t tx_audio_chunk_alloc_bytes_=0,rx_audio_chunk_alloc_bytes_=0,rx_jitter_frame_alloc_bytes_=0;
  void *tx_task_handle_=nullptr,*tx_task_stack_=nullptr,*rx_task_handle_=nullptr,*rx_task_stack_=nullptr;
  int tx_task_tcb_=0,rx_task_tcb_=0;size_t tx_task_stack_bytes_=256,rx_task_stack_bytes_=256;
+ VoipStack(){
+  rx_audio_format_.sample_rate=48000;rx_audio_format_.frame_ms=10;
+  rx_audio_formats_.count=3;rx_audio_formats_.formats[0]=rx_audio_format_;
+  rx_audio_formats_.formats[1].sample_rate=16000;rx_audio_formats_.formats[1].frame_ms=20;
+  rx_audio_formats_.formats[2].sample_rate=16000;rx_audio_formats_.formats[2].frame_ms=10;
+ }
  static void tx_task(void*){}static void rx_task(void*){}
  bool allocate_setup_buffers_();bool start_runtime_tasks_();void cleanup_partial_setup_();
  bool initialize(){
@@ -72,6 +79,14 @@ struct VoipStack {
 // PRODUCTION_METHODS
 int main(){
  VoipStack baseline;assert(baseline.initialize());const unsigned stages=allocations;
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+ assert(baseline.rx_audio_chunk_alloc_bytes_==1920);
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+ assert(baseline.rx_jitter_frame_alloc_bytes_==1275);
+#else
+ assert(baseline.rx_jitter_frame_alloc_bytes_==960);
+#endif
+#endif
  baseline.cleanup_partial_setup_();baseline.assert_clean();
  for(unsigned failure=1;failure<=stages;failure++){
   allocations=0;fail_at=failure;VoipStack stack;

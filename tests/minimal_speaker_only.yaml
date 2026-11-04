@@ -31,13 +31,11 @@ voip_stack:
   id: phone
   speaker: spk_main
   audio:
-    tx:
-      sample_rate: 48000
-      pcm_format: s16le
-      channels: 1
-      frame_ms: 10
-    rx:
-      sample_rate: 48000
-      pcm_format: s16le
-      channels: 1
-      frame_ms: 10
+    codecs:
+      - codec: pcm
+        tx:
+          - sample_rate: 48000
+            frame_ms: 10
+        rx:
+          - sample_rate: 48000
+            frame_ms: 10

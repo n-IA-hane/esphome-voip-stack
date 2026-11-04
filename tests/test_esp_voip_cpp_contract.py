@@ -1893,7 +1893,7 @@ def test_audio_stack_tx_queue_is_optimized_without_changing_native_mic_path() ->
     assert 'CONF_TX_USES_ESP_AUDIO_STACK = "_tx_uses_esp_audio_stack"' in init_py
     assert 'mic_config.get("platform") == "esp_audio_stack"' in init_py
     assert "_esp_audio_stack_parent_config(mic_config) is not None" in init_py
-    assert "config[CONF_TX_USES_ESP_AUDIO_STACK] = _tx_uses_esp_audio_stack(config)" in init_py
+    assert "config[CONF_TX_USES_ESP_AUDIO_STACK] = audio_cfg[CONF_TX] is not None and _tx_uses_esp_audio_stack(config)" in init_py
     assert 'cg.add_define("USE_ESPHOME_VOIP_STACK_AUDIO_STACK_MIC")' in init_py
     assert "set_microphone_source_is_audio_stack" not in header
     assert "microphone_source_is_audio_stack_" not in header
@@ -2261,7 +2261,7 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
     assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s%s%s"' in endpoint
     assert 'audio_extra += " | at=" + rtp_tx' in endpoint
     assert 'audio_extra += " | ar=" + rtp_rx' in endpoint
-    assert 'audio_extra += " | sf=d1"' in endpoint
+    assert 'audio_extra += " | sf=d1 | ip=1"' in endpoint
     assert "if (has_non_pcm)" in endpoint
     assert "tx.clear()" in endpoint
     assert "rx.clear()" in endpoint
@@ -2386,7 +2386,7 @@ def test_rx_gap_playout_has_only_one_blocking_frame_budget() -> None:
 
     rx_task = audio[audio.index("void VoipStack::rx_task_()") : audio.index("\nvoid VoipStack::reset_rx_audio_(")]
     assert "ulTaskNotifyTake(pdTRUE, frame_ticks);" in rx_task
-    assert "play_silence_frame_(SilenceReason::NETWORK_GAP, 0, revision);" in rx_task
+    assert "play_silence_frame_(SilenceReason::NETWORK_GAP, 0, revision, rx_format.frame_ms);" in rx_task
     assert "play_silence_frame_(SilenceReason::NETWORK_GAP, frame_ticks, revision);" not in rx_task
     assert "const TickType_t wait_started = xTaskGetTickCount();" in rx_task
     assert "remaining = frame_ticks - elapsed;" in rx_task
@@ -3410,7 +3410,8 @@ def test_current_media_formats_are_atomic_on_realtime_readers() -> None:
     assert "std::atomic<uint32_t> current_tx_audio_format_packed_" in header
     assert "std::atomic<uint32_t> current_rx_audio_format_packed_" in header
     assert "CurrentMediaFormats snapshot_current_media_formats_() const" in header
-    assert "const AudioFormat rx_format = this->get_current_rx_audio_format_();" in audio
+    assert "AudioFormat rx_format = this->get_current_rx_audio_format_();" in audio
+    assert "rx_format.frame_ms = unpack_audio_format(previous_format_packed).frame_ms;" in audio
     assert "this->set_current_media_formats_(" in fsm
     assert "current_rx_audio_format_." not in audio
 

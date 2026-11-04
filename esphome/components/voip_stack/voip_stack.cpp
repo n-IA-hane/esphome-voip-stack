@@ -214,7 +214,7 @@ bool VoipStack::allocate_setup_buffers_() {
     for (uint8_t i = 0; i < this->rx_audio_formats_.count; i++) {
       rx_frame_bytes = std::max(rx_frame_bytes, this->rx_audio_formats_.formats[i].nominal_frame_bytes());
     }
-    this->rx_audio_chunk_alloc_bytes_ = rx_frame_bytes;
+    this->rx_audio_chunk_alloc_bytes_ = pcm_receive_buffer_capacity(this->rx_audio_formats_);
     this->rx_jitter_frame_alloc_bytes_ = rx_frame_bytes;
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
     this->rx_jitter_frame_alloc_bytes_ =
@@ -887,7 +887,7 @@ std::string VoipStack::build_endpoint_string_() const {
   }
   // Capability negotiation is independent of codec selection. PCM-only P4
   // also supports the explicitly negotiated asymmetric SDP extension.
-  audio_extra += " | sf=d1";
+  audio_extra += " | sf=d1 | ip=1";
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   constexpr const char *video_extra = " | video=jpeg";
 #elif defined(USE_ESPHOME_VOIP_STACK_VIDEO_H264)

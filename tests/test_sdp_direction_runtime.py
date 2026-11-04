@@ -142,7 +142,7 @@ def directional_wire_binary(tmp_path_factory):
         if marker not in code:
             extra += block(parser, marker) + '\n'
     code = code.replace('struct SipPhoneTransport {', extra + '\nstruct SipPhoneTransport {')
-    code = code.replace(' uint16_t sip_port_=5060;', ' AudioFormatList offer_tx_formats_,offer_rx_formats_;int media_config_lock_=0;size_t udp_max_payload_=1200;\n uint16_t sip_port_=5060;')
+    code = code.replace(' uint16_t sip_port_=5060;', ' AudioFormatList offer_tx_formats_,offer_rx_formats_;int media_config_lock_=0;\n uint16_t sip_port_=5060;')
     code = '#define portENTER_CRITICAL(...) ((void)0)\n#define portEXIT_CRITICAL(...) ((void)0)\n' + code
     code = code.replace('void local_ip_for_peer_(uint32_t,std::string*out){', 'void local_ip_for_peer_(uint32_t,std::string*out)const{')
     methods = [

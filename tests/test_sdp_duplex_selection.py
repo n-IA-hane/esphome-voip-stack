@@ -1,64 +1,39 @@
-"""Actual SDP selection must agree with the advertised duplex contract."""
-
-from pathlib import Path
+"""Actual SDP selection follows explicit direction preferences."""
 import subprocess
 
-ROOT = Path(__file__).resolve().parents[1]
+from test_sdp_receive_payloads import ROOT, sdp_fixture_source
 
 
 def test_plain_pcm_negotiates_independent_rates_and_opus_keeps_local_rates(tmp_path):
-    source = (ROOT / "esphome/components/voip_stack/sip_sdp.cpp").read_text()
-    start = source.index("        AudioFormat local_rx;")
-    end = source.index("        } else if (!selected_tx && !selected_rx)", start)
-    selection = source[start:end] + "        }\n"
-    harness = r'''
-#include "esphome/components/voip_stack/rtp_audio_payloads.h"
-#include <cassert>
-#include <vector>
-#define ESP_LOGI(...) ((void)0)
-using namespace esphome::voip_stack;
-struct Selector {
- AudioFormatList offer_tx_formats_,offer_rx_formats_,local_offered_tx_formats_;
- RtpAudioPayloads local_offered_rx_payloads_;
- bool remote_directional_audio_v1_=false;
- size_t udp_max_payload_=1200;
- AudioFormat selected_rx_format,selected_tx_format;
- uint8_t selected_rx_payload_type=0,selected_tx_payload_type=0;
- bool run(std::vector<AudioFormat> offer) {
-  bool selected_rx=false,selected_tx=false,shared_format=false,remote_is_answer=false;
-  RtpAudioPayloads received_payloads;
-  uint8_t payload_flow[128]{},payload_rank[128]{},media_flow=3,pt=95,selected_tx_rank=255;
-  for(const auto &fmt:offer) { ++pt;
-'''
-    tail = r'''
-  }
-  return selected_rx && selected_tx && (remote_directional_audio_v1_ || shared_format);
- }
-};
+    source = sdp_fixture_source() + r'''
 AudioFormat pcm(unsigned rate) {AudioFormat f;f.sample_rate=rate;f.frame_ms=10;return f;}
+std::string remote(unsigned rate,bool d1){
+ return std::string("v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 96 97\r\n")+
+  "a=rtpmap:96 L16/48000/1\r\na=rtpmap:97 L16/"+std::to_string(rate)+"/1\r\na=ptime:10\r\n"+
+  (d1?"a=x-voip-stack-flow:96 sendrecv\r\na=x-voip-stack-flow:97 sendrecv\r\n":"");
+}
 int main(){
  for(unsigned rate:{16000,24000,32000}) {
-  Selector s;s.offer_tx_formats_.count=1;s.offer_tx_formats_.formats[0]=pcm(rate);
+  SipTransport s;s.offer_tx_formats_.count=1;s.offer_tx_formats_.formats[0]=pcm(rate);
   s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[0]=pcm(48000);s.offer_rx_formats_.formats[1]=pcm(rate);
-  assert(s.run({pcm(48000),pcm(rate)}));
-  assert(s.selected_tx_format.sample_rate==rate && s.selected_rx_format.sample_rate==48000);
-  assert(s.selected_rx_payload_type!=s.selected_tx_payload_type);
-  s.remote_directional_audio_v1_=true;assert(s.run({pcm(48000),pcm(rate)}));
-  assert(s.selected_tx_format.sample_rate==rate && s.selected_rx_format.sample_rate==48000);
+  assert(s.learn_remote_rtp_from_sdp_(remote(rate,false),0));
+  assert(s.tx.sample_rate==rate && s.rx.sample_rate==48000 && s.rx_pt!=s.tx_pt);
+  assert(s.learn_remote_rtp_from_sdp_(remote(rate,true),0));
+  assert(s.tx.sample_rate==rate && s.rx.sample_rate==48000);
  }
- Selector none;none.offer_tx_formats_.count=none.offer_rx_formats_.count=1;
+ SipTransport none;none.offer_tx_formats_.count=none.offer_rx_formats_.count=1;
  none.offer_tx_formats_.formats[0]=pcm(16000);none.offer_rx_formats_.formats[0]=pcm(48000);
- assert(!none.run({pcm(48000),pcm(16000)}));
- Selector opus;auto tx=pcm(16000),rx=pcm(48000),wire=pcm(48000);
- tx.codec=rx.codec=wire.codec=AudioCodec::OPUS;tx.frame_ms=rx.frame_ms=wire.frame_ms=20;wire.channels=2;
+ assert(!none.learn_remote_rtp_from_sdp_(remote(16000,false),0));
+ SipTransport opus;auto tx=pcm(16000),rx=pcm(48000);
+ tx.codec=rx.codec=AudioCodec::OPUS;tx.frame_ms=rx.frame_ms=20;
  opus.offer_tx_formats_.count=opus.offer_rx_formats_.count=1;
  opus.offer_tx_formats_.formats[0]=tx;opus.offer_rx_formats_.formats[0]=rx;
- assert(opus.run({wire}));assert(opus.selected_tx_format.sample_rate==16000 && opus.selected_rx_format.sample_rate==48000);
+ assert(opus.learn_remote_rtp_from_sdp_("v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 96\r\na=rtpmap:96 opus/48000/2\r\na=ptime:20\r\n",0));
+ assert(opus.tx.sample_rate==16000 && opus.rx.sample_rate==48000);
 }
 '''
     cpp = tmp_path / "sdp.cpp"
-    cpp.write_text(harness + selection + tail)
-    exe = tmp_path / "sdp"
-    subprocess.run(["g++", "-std=c++17", "-DUSE_ESPHOME_VOIP_STACK_SPEAKER", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT),
-                    str(cpp), "-o", str(exe)], check=True)
-    subprocess.run([str(exe)], check=True)
+    cpp.write_text(source)
+    binary = tmp_path / "sdp"
+    subprocess.run(["g++", "-std=c++17", "-I", str(ROOT), str(cpp), "-o", str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)

@@ -21,6 +21,12 @@ static const char *const TAG = "voip_stack.sip";
 std::string SipTransport::wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
                                              const std::string &maps, const std::string &flows,
                                              uint8_t ptime, const char *direction) const {
+  uint16_t maxptime = 0;
+  for (uint8_t i = 0; i < this->offer_rx_formats_.count; ++i) {
+    const auto &format = this->offer_rx_formats_.formats[i];
+    if (audio_format_rtp_encoding(format, this->udp_max_payload_) != nullptr)
+      maxptime = std::max(maxptime, format.frame_ms);
+  }
   return "v=0\r\n"
          "o=- " + std::to_string(this->sdp_session_id_) + " " +
          std::to_string(this->sdp_session_version_) + " IN IP4 " +
@@ -31,7 +37,9 @@ std::string SipTransport::wrap_sdp_envelope_(const std::string &local_ip, const 
          "m=audio " + std::to_string(this->rtp_port_) + " RTP/AVP " + payloads + "\r\n" +
          maps +
          flows +
-         (ptime == 0 ? std::string() : "a=ptime:" + std::to_string(ptime) + "\r\na=maxptime:" + std::to_string(ptime) + "\r\n") +
+         "a=x-voip-stack-independent-ptime:1\r\n" +
+         (ptime == 0 ? std::string() : "a=ptime:" + std::to_string(ptime) + "\r\n" +
+              (maxptime == 0 ? std::string() : "a=maxptime:" + std::to_string(maxptime) + "\r\n")) +
          "a=" + std::string(direction) + "\r\n";
 }
 
@@ -208,7 +216,7 @@ std::string SipTransport::build_sdp_capabilities_(uint32_t peer_ip) const {
   std::string payloads, maps, flows;
   for (uint8_t i = 0; i < formats.count && i < 24; ++i) {
     const auto &format = formats.formats[i];
-    const uint8_t pt = 96 + i;
+    const uint8_t pt = format.codec == AudioCodec::G722 ? 9 : 96 + i;
     if (!payloads.empty()) payloads.push_back(' ');
     payloads += std::to_string(pt);
     maps += "a=rtpmap:" + std::to_string(pt) + " " + audio_format_rtp_encoding(format, this->udp_max_payload_) +
@@ -220,6 +228,25 @@ std::string SipTransport::build_sdp_capabilities_(uint32_t peer_ip) const {
     flows += "a=x-voip-stack-flow:" + std::to_string(pt) + " " + flow + "\r\n";
   }
 
+  // Capability catalogs retain each direction's ordered packet-time choices.
+  // The stream ptime below describes RX only and cannot describe TX choices.
+  const auto capability_tokens = [&](const AudioFormatList &input) {
+    std::string tokens;
+    for (uint8_t i = 0; i < input.count; ++i) {
+      const auto &format = input.formats[i];
+      const char *encoding = audio_format_rtp_encoding(format, this->udp_max_payload_);
+      if (!format.is_valid() || encoding == nullptr) continue;
+      if (!tokens.empty()) tokens += ',';
+      tokens += std::string(encoding) + "/" + std::to_string(audio_format_rtp_clock_rate(format)) +
+                "/" + std::to_string(audio_format_rtp_channels(format)) + "/" + std::to_string(format.frame_ms);
+    }
+    return tokens;
+  };
+  const auto tx_capabilities = capability_tokens(this->offer_tx_formats_);
+  const auto rx_capabilities = capability_tokens(this->offer_rx_formats_);
+  if (!tx_capabilities.empty()) flows += "a=x-voip-stack-audio-tx:" + tx_capabilities + "\r\n";
+  if (!rx_capabilities.empty()) flows += "a=x-voip-stack-audio-rx:" + rx_capabilities + "\r\n";
+
 #ifdef USE_ESPHOME_VOIP_DTMF
   uint8_t clocks = 1;
   for (uint8_t i = 0; i < formats.count; ++i) {
@@ -230,7 +257,7 @@ std::string SipTransport::build_sdp_capabilities_(uint32_t peer_ip) const {
 #endif
   std::string local_ip = "0.0.0.0";
   this->local_ip_for_peer_(peer_ip, &local_ip);
-  uint8_t ptime = choose_common_audio_ptime(this->offer_tx_formats_, this->offer_rx_formats_, this->udp_max_payload_);
+  uint8_t ptime = preferred_audio_ptime(this->offer_rx_formats_, this->udp_max_payload_);
   // A capability union may contain codecs with different packet-time sets.
   // Omit the hint unless every described direction can use that one value.
   const auto supports_time = [&](const AudioFormatList &list, const AudioFormat &format) {
@@ -239,8 +266,7 @@ std::string SipTransport::build_sdp_capabilities_(uint32_t peer_ip) const {
     return false;
   };
   for (uint8_t i = 0; i < formats.count && ptime != 0; ++i)
-    if (((directions[i] & 1) && !supports_time(this->offer_tx_formats_, formats.formats[i])) ||
-        ((directions[i] & 2) && !supports_time(this->offer_rx_formats_, formats.formats[i]))) ptime = 0;
+    if ((directions[i] & 2) && !supports_time(this->offer_rx_formats_, formats.formats[i])) ptime = 0;
   std::string result = this->wrap_sdp_envelope_(local_ip, payloads, maps, flows, ptime,
       audio_direction_attribute(this->offer_tx_formats_.count != 0, this->offer_rx_formats_.count != 0));
   // RFC 3264 section 9 gives each capability description its own origin.
@@ -276,64 +302,60 @@ std::string SipTransport::build_sdp_offer_() {
   uint8_t pt = 96;
   const AudioFormat *retained_tx = this->offer_tx_formats_.count != 0 && this->refer_context_active_ && this->refer_dialog_
       ? &this->refer_dialog_->selected_tx_format_ : nullptr;
-  const uint8_t selected_ptime = retained_tx != nullptr ? retained_tx->frame_ms
-      : choose_common_audio_ptime(this->offer_tx_formats_, this->offer_rx_formats_, this->udp_max_payload_);
+  uint8_t selected_ptime = preferred_audio_ptime(
+      this->offer_rx_formats_.count != 0 ? this->offer_rx_formats_ : this->offer_tx_formats_, this->udp_max_payload_);
   if (selected_ptime == 0) {
     ESP_LOGW(TAG, "SIP SDP offer has no RTP packet time for its active directions");
     return "";
   }
+  AudioFormat offered_mappings[VOIP_STACK_MAX_AUDIO_FORMATS * 2]{};
+  uint8_t offered_count = 0;
   auto append_format = [&](const AudioFormat &fmt, const char *flow) {
     if (pt >= 120) return;
-    if (fmt.frame_ms != selected_ptime) return;
+    for (uint8_t i = 0; i < offered_count; ++i)
+      if (audio_formats_share_rtp_mapping(offered_mappings[i], fmt)) return;
     // A REFER handoff retains the running transmitter until the new dialog commits.
     // Its sendrecv offer must not let the answer select a receive-only format.
-    if (retained_tx != nullptr && !audio_formats_share_wire_encoding(fmt, *retained_tx)) return;
+    if (retained_tx != nullptr && !audio_formats_share_rtp_mapping(fmt, *retained_tx)) return;
     const char *enc = audio_format_rtp_encoding(fmt, this->udp_max_payload_);
     if (enc == nullptr) return;
+    const uint8_t payload_pt = fmt.codec == AudioCodec::G722 ? 9 : pt;
+    offered_mappings[offered_count++] = fmt;
     if (!payloads.empty()) payloads.push_back(' ');
-    payloads += std::to_string(pt);
-    maps += "a=rtpmap:" + std::to_string(pt) + " " + enc + "/" +
+    payloads += std::to_string(payload_pt);
+    maps += "a=rtpmap:" + std::to_string(payload_pt) + " " + enc + "/" +
             std::to_string(audio_format_rtp_clock_rate(fmt)) + "/" +
             std::to_string(audio_format_rtp_channels(fmt)) + "\r\n";
     if (fmt.codec == AudioCodec::OPUS)
-      maps += "a=fmtp:" + std::to_string(pt) +
+      maps += "a=fmtp:" + std::to_string(payload_pt) +
               " stereo=0;sprop-stereo=0;maxaveragebitrate=28000\r\n";
     AudioFormat local_format;
-    if (audio_format_list_match_udp_safe(this->offer_rx_formats_, fmt, &local_format, this->udp_max_payload_))
-      this->local_offered_rx_payloads_.add(pt, local_format);
-    if (audio_format_list_match_udp_safe(this->offer_tx_formats_, fmt, &local_format, this->udp_max_payload_) &&
+    if (audio_format_list_match_rtp_mapping(this->offer_rx_formats_, fmt, 0, &local_format, this->udp_max_payload_))
+      this->local_offered_rx_payloads_.add(payload_pt, local_format);
+    if (audio_format_list_match_rtp_mapping(this->offer_tx_formats_, fmt, 0, &local_format, this->udp_max_payload_) &&
         this->local_offered_tx_formats_.count < VOIP_STACK_MAX_AUDIO_FORMATS)
       this->local_offered_tx_formats_.formats[this->local_offered_tx_formats_.count++] = local_format;
     if (this->peer_directional_audio_v1_)
-      flows += "a=x-voip-stack-flow:" + std::to_string(pt) + " " + flow + "\r\n";
+      flows += "a=x-voip-stack-flow:" + std::to_string(payload_pt) + " " + flow + "\r\n";
     pt++;
   };
   for (uint8_t i = 0; i < this->offer_rx_formats_.count && pt < 120; i++) {
     bool shared = false;
     for (uint8_t j = 0; j < this->offer_tx_formats_.count; j++)
-      if (audio_formats_share_wire_encoding(this->offer_tx_formats_.formats[j],
-                                            this->offer_rx_formats_.formats[i])) {
+      if (audio_formats_share_rtp_mapping(this->offer_tx_formats_.formats[j],
+                                          this->offer_rx_formats_.formats[i])) {
         shared = true;
         break;
       }
-    bool standard_receive = false;
-#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
-    const auto &rx = this->offer_rx_formats_.formats[i];
-    for (uint8_t j = 0; j < this->offer_tx_formats_.count; ++j) {
-      const auto &tx = this->offer_tx_formats_.formats[j];
-      standard_receive |= rx.pcm_format == PcmFormat::S16LE && tx.pcm_format == PcmFormat::S16LE &&
-                          rx.channels == tx.channels && rx.frame_ms == tx.frame_ms;
-    }
-#endif
-    if (shared || this->offer_tx_formats_.count == 0 || this->peer_directional_audio_v1_ || standard_receive)
+    if (shared || this->offer_tx_formats_.count == 0 || this->peer_directional_audio_v1_)
       append_format(this->offer_rx_formats_.formats[i], shared ? "sendrecv" : "recv");
   }
   for (uint8_t i = 0; (this->peer_directional_audio_v1_ || this->offer_rx_formats_.count == 0) &&
                       i < this->offer_tx_formats_.count && pt < 120; i++) {
     bool already_offered = false;
     for (uint8_t j = 0; j < this->offer_rx_formats_.count; j++)
-      if (audio_formats_share_wire_encoding(this->offer_rx_formats_.formats[j],
-                                            this->offer_tx_formats_.formats[i])) already_offered = true;
+      if (audio_formats_share_rtp_mapping(this->offer_rx_formats_.formats[j],
+                                          this->offer_tx_formats_.formats[i])) already_offered = true;
     if (already_offered) continue;
     append_format(this->offer_tx_formats_.formats[i], "send");
   }
@@ -341,6 +363,11 @@ std::string SipTransport::build_sdp_offer_() {
     ESP_LOGW(TAG, "SIP SDP offer has no common UDP-safe RTP PCM format");
     return "";
   }
+  // Advertise the preference of an actual offered receiver, rather than a
+  // receive-only mapping omitted from an ordinary sendrecv offer.
+  selected_ptime = this->local_offered_rx_payloads_.count != 0
+      ? this->local_offered_rx_payloads_.entries[0].format.frame_ms
+      : this->local_offered_tx_formats_.formats[0].frame_ms;
 #ifdef USE_ESPHOME_VOIP_DTMF
   this->dtmf_offered_clocks_ = 1;
   for (const auto *list : {&this->local_offered_tx_formats_, &this->offer_rx_formats_})
@@ -473,9 +500,7 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
                                               , DtmfConfig *dtmf_proposal
 #endif
                                               ) {
-  this->remote_directional_audio_v1_ =
-      sdp.find("a=x-voip-stack-flow:") != std::string::npos &&
-      (!remote_is_answer || this->local_offered_directional_audio_v1_);
+  this->remote_directional_audio_v1_ = false;
   this->capture_remote_media_shape_(sdp);
   if (this->remote_media_shape_.overflow) {
     ESP_LOGW(TAG, "SIP SDP rejected: too many media lines");
@@ -483,7 +508,7 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
   }
   uint16_t media_port = 0;
   uint32_t media_ip = default_ip;
-  uint8_t media_ptime = 20;
+  uint8_t media_ptime = 0; // Missing ptime leaves the explicit local TX preference available.
   bool selected_tx = false;
   bool selected_rx = false;
   bool shared_format = false;
@@ -503,6 +528,7 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
   size_t selected_audio_line = std::string::npos;
   bool seen_any_media = false;
   bool in_audio = false;
+  bool independent_audio_ptime = false;
   size_t ptime_pos = 0;
   while (ptime_pos < sdp.size()) {
     size_t end = sdp.find("\r\n", ptime_pos);
@@ -533,6 +559,8 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
           in_audio = true;
         }
       }
+    } else if (in_audio && line == "a=x-voip-stack-independent-ptime:1") {
+      independent_audio_ptime = true;
     } else if (in_audio && line.rfind("a=ptime:", 0) == 0) {
       uint32_t parsed = 0;
       if (parse_decimal_u32(line.substr(8), UINT8_MAX, &parsed) &&
@@ -568,6 +596,116 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
     if (end == sdp.size()) break;
     ptime_pos = end + 2;
   }
+  for (uint8_t pt = 0; pt < 128; ++pt)
+    if (offered_payload[pt] && payload_flow[pt] != 0 &&
+        (!remote_is_answer || this->local_offered_directional_audio_v1_))
+      this->remote_directional_audio_v1_ = true;
+  // Only the earlier private D1 contract coupled both directions. Ordinary
+  // SIP and peers explicitly declaring this version use RFC 3264 semantics.
+  const bool legacy_directional_ptime = this->remote_directional_audio_v1_ && !independent_audio_ptime;
+  const uint16_t transmit_ptime = legacy_directional_ptime && media_ptime == 0
+      ? choose_common_audio_ptime(this->offer_tx_formats_, this->offer_rx_formats_, this->udp_max_payload_)
+      : media_ptime;
+  if (legacy_directional_ptime && transmit_ptime == 0) return false;
+  auto consider_mapping = [&](AudioFormat fmt, uint8_t pt) {
+    if (pt == 9 && fmt.codec != AudioCodec::G722) return false;
+    fmt.frame_ms = media_ptime;
+    const uint32_t packed_mapping = pack_audio_format(fmt);
+    if (seen_mapping[pt] != 0 && seen_mapping[pt] != packed_mapping) return false;
+    seen_mapping[pt] = packed_mapping;
+    AudioFormat local_rx;
+    AudioFormat local_tx;
+    const uint8_t flow = !this->remote_directional_audio_v1_ || payload_flow[pt] == 0
+                             ? media_flow : payload_flow[pt];
+    const bool peer_can_send = (flow & 0x01) != 0;
+    const bool peer_can_recv = (flow & 0x02) != 0;
+    bool tx_ok = peer_can_recv &&
+                       audio_format_list_match_rtp_mapping(this->offer_tx_formats_, fmt, transmit_ptime, &local_tx,
+                                                           this->udp_max_payload_);
+    // The peer's ptime is its receive preference, hence our TX duration.
+    // Our receive duration belongs to our own offer/answer, not that hint.
+    const uint16_t offered_rx_ptime = legacy_directional_ptime ? transmit_ptime : remote_is_answer
+        ? preferred_audio_ptime(this->offer_rx_formats_, this->udp_max_payload_) : 0;
+    bool rx_ok = peer_can_send &&
+                       (audio_format_list_match_rtp_mapping(this->offer_rx_formats_, fmt, offered_rx_ptime, &local_rx,
+                                                            this->udp_max_payload_) ||
+                        (!legacy_directional_ptime &&
+                         audio_format_list_match_rtp_mapping(this->offer_rx_formats_, fmt, 0, &local_rx,
+                                                             this->udp_max_payload_)));
+    const auto local_rank = [](const AudioFormatList &list, const AudioFormat &format) {
+      for (uint8_t i = 0; i < list.count; ++i) if (list.formats[i] == format) return i;
+      return static_cast<uint8_t>(VOIP_STACK_MAX_AUDIO_FORMATS);
+    };
+    uint8_t receive_pt = pt;
+    if (remote_is_answer) {
+      // Configured duration and UDP budget were checked above. The answer
+      // may request another ptime while retaining an offered RTP mapping.
+      bool offered_tx = false;
+      for (uint8_t i = 0; i < this->local_offered_tx_formats_.count; ++i) {
+        if (audio_formats_share_rtp_mapping(this->local_offered_tx_formats_.formats[i], fmt)) {
+          offered_tx = true;
+          break;
+        }
+      }
+      tx_ok = tx_ok && offered_tx;
+      bool offered_rx = false;
+      for (uint8_t i = 0; i < this->local_offered_rx_payloads_.count; ++i) {
+        const auto &entry = this->local_offered_rx_payloads_.entries[i];
+        if (audio_formats_share_rtp_mapping(entry.format, fmt)) {
+          receive_pt = entry.payload_type;
+          offered_rx = true;
+          break;
+        }
+      }
+      rx_ok = rx_ok && offered_rx;
+    }
+    shared_format |= tx_ok && rx_ok;
+    bool alternate_pcm = false;
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+    alternate_pcm = local_rx.codec == AudioCodec::PCM && local_rx.pcm_format == PcmFormat::S16LE;
+#endif
+    const bool unidirectional = this->offer_tx_formats_.count == 0 || this->offer_rx_formats_.count == 0;
+    const bool eligible = unidirectional || this->remote_directional_audio_v1_ || media_flow != 0x03 ||
+                          (tx_ok && rx_ok) || alternate_pcm;
+    // RFC 3264 allows independent send preferences. Keep every accepted
+    // receive mapping; select the first compatible local preference.
+    // Accepted lower S16 rates use the existing audio-library resampler.
+    if (rx_ok && eligible && !received_payloads.add(receive_pt, local_rx)) return false;
+    if (rx_ok && eligible && (!selected_rx ||
+        local_rank(this->offer_rx_formats_, local_rx) < local_rank(this->offer_rx_formats_, selected_rx_format))) {
+      selected_rx_format = local_rx;
+      selected_rx_payload_type = receive_pt;
+      selected_rx = true;
+      ESP_LOGI(TAG, "SIP SDP selected RX PT=%u %s/%u/%u frame=%ums",
+               (unsigned) pt, audio_format_rtp_encoding(selected_rx_format),
+               (unsigned) audio_format_rtp_clock_rate(selected_rx_format),
+               (unsigned) audio_format_rtp_channels(selected_rx_format),
+               (unsigned) selected_rx_format.frame_ms);
+    }
+    if (tx_ok && eligible && (unidirectional || this->remote_directional_audio_v1_ || media_flow != 0x03 || rx_ok) &&
+        (!selected_tx ||
+         local_rank(this->offer_tx_formats_, local_tx) < local_rank(this->offer_tx_formats_, selected_tx_format) ||
+         (local_rank(this->offer_tx_formats_, local_tx) == local_rank(this->offer_tx_formats_, selected_tx_format) &&
+          payload_rank[pt] < selected_tx_rank))) {
+      selected_tx_format = local_tx;
+      selected_tx_payload_type = pt;
+      selected_tx_rank = payload_rank[pt];
+      selected_tx = true;
+      ESP_LOGI(TAG, "SIP SDP selected TX PT=%u %s/%u/%u frame=%ums",
+               (unsigned) pt, audio_format_rtp_encoding(selected_tx_format),
+               (unsigned) audio_format_rtp_clock_rate(selected_tx_format),
+               (unsigned) audio_format_rtp_channels(selected_tx_format),
+               (unsigned) selected_tx_format.frame_ms);
+    } else if (!selected_tx && !selected_rx) {
+      ESP_LOGD(TAG, "SIP SDP skipping unsupported PT=%u rate=%u pcm=%u channels=%u",
+               (unsigned) pt,
+               (unsigned) fmt.sample_rate,
+               (unsigned) fmt.pcm_format,
+               (unsigned) fmt.channels);
+    }
+
+    return true;
+  };
   size_t pos = 0;
   bool seen_media = false;
   in_audio = false;
@@ -584,95 +722,21 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
     } else if (in_audio && line.rfind("a=rtpmap:", 0) == 0) {
       AudioFormat fmt;
       uint8_t pt = 0;
-      if (parse_rtpmap_format(line, &fmt, &pt) && offered_payload[pt]) {
-        fmt.frame_ms = media_ptime;
-        const uint32_t packed_mapping = pack_audio_format(fmt);
-        if (seen_mapping[pt] != 0 && seen_mapping[pt] != packed_mapping) return false;
-        seen_mapping[pt] = packed_mapping;
-        AudioFormat local_rx;
-        AudioFormat local_tx;
-        const uint8_t flow = !this->remote_directional_audio_v1_ || payload_flow[pt] == 0
-                                 ? media_flow : payload_flow[pt];
-        const bool peer_can_send = (flow & 0x01) != 0;
-        const bool peer_can_recv = (flow & 0x02) != 0;
-        bool tx_ok = peer_can_recv &&
-                           audio_format_list_match_udp_safe(this->offer_tx_formats_, fmt, &local_tx,
-                                                            this->udp_max_payload_);
-        bool rx_ok = peer_can_send &&
-                           audio_format_list_match_udp_safe(this->offer_rx_formats_, fmt, &local_rx,
-                                                            this->udp_max_payload_);
-        uint8_t receive_pt = pt;
-        if (remote_is_answer) {
-          // Configured duration and UDP budget were checked above. The answer
-          // may request another ptime while retaining an offered RTP mapping.
-          bool offered_tx = false;
-          for (uint8_t i = 0; i < this->local_offered_tx_formats_.count; ++i) {
-            if (audio_formats_share_rtp_mapping(this->local_offered_tx_formats_.formats[i], fmt)) {
-              offered_tx = true;
-              break;
-            }
-          }
-          tx_ok = tx_ok && offered_tx;
-          bool offered_rx = false;
-          for (uint8_t i = 0; i < this->local_offered_rx_payloads_.count; ++i) {
-            const auto &entry = this->local_offered_rx_payloads_.entries[i];
-            if (audio_formats_share_rtp_mapping(entry.format, fmt)) {
-              receive_pt = entry.payload_type;
-              offered_rx = true;
-              break;
-            }
-          }
-          rx_ok = rx_ok && offered_rx;
-        }
-        shared_format |= tx_ok && rx_ok;
-        bool alternate_pcm = false;
-#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
-        alternate_pcm = local_rx.codec == AudioCodec::PCM && local_rx.pcm_format == PcmFormat::S16LE;
-#endif
-        const bool unidirectional = this->offer_tx_formats_.count == 0 || this->offer_rx_formats_.count == 0;
-        const bool eligible = unidirectional || this->remote_directional_audio_v1_ || media_flow != 0x03 ||
-                              (tx_ok && rx_ok) || alternate_pcm;
-        // RFC 3264 allows independent send preferences. Keep every accepted
-        // receive mapping; prefer the highest available S16 sink rate so all
-        // accepted lower rates can use the existing audio-library resampler.
-        if (rx_ok && eligible && !received_payloads.add(receive_pt, local_rx)) return false;
-        if (rx_ok && eligible && (!selected_rx ||
-            (!this->remote_directional_audio_v1_ && alternate_pcm && local_rx.codec == AudioCodec::PCM &&
-             local_rx.pcm_format == PcmFormat::S16LE &&
-             selected_rx_format.pcm_format == PcmFormat::S16LE &&
-             local_rx.channels == selected_rx_format.channels &&
-             local_rx.sample_rate > selected_rx_format.sample_rate))) {
-          selected_rx_format = local_rx;
-          selected_rx_payload_type = receive_pt;
-          selected_rx = true;
-          ESP_LOGI(TAG, "SIP SDP selected RX PT=%u %s/%u/%u frame=%ums",
-                   (unsigned) pt, audio_format_rtp_encoding(selected_rx_format),
-                   (unsigned) audio_format_rtp_clock_rate(selected_rx_format),
-                   (unsigned) audio_format_rtp_channels(selected_rx_format),
-                   (unsigned) selected_rx_format.frame_ms);
-        }
-        if (tx_ok && eligible && (unidirectional || this->remote_directional_audio_v1_ || media_flow != 0x03 || rx_ok) &&
-            (!selected_tx || payload_rank[pt] < selected_tx_rank)) {
-          selected_tx_format = local_tx;
-          selected_tx_payload_type = pt;
-          selected_tx_rank = payload_rank[pt];
-          selected_tx = true;
-          ESP_LOGI(TAG, "SIP SDP selected TX PT=%u %s/%u/%u frame=%ums",
-                   (unsigned) pt, audio_format_rtp_encoding(selected_tx_format),
-                   (unsigned) audio_format_rtp_clock_rate(selected_tx_format),
-                   (unsigned) audio_format_rtp_channels(selected_tx_format),
-                   (unsigned) selected_tx_format.frame_ms);
-        } else if (!selected_tx && !selected_rx) {
-          ESP_LOGD(TAG, "SIP SDP skipping unsupported PT=%u rate=%u pcm=%u channels=%u",
-                   (unsigned) pt,
-                   (unsigned) fmt.sample_rate,
-                   (unsigned) fmt.pcm_format,
-                   (unsigned) fmt.channels);
-        }
+      const bool valid_mapping = parse_rtpmap_format(line, &fmt, &pt);
+      uint32_t declared_pt = 0;
+      const size_t separator = line.find_first_of(" \t", 9);
+      if (offered_payload[9] && parse_decimal_u32(line.substr(9, separator - 9), 127, &declared_pt) &&
+          declared_pt == 9 && !valid_mapping) return false;
+      if (valid_mapping && offered_payload[pt]) {
+        if (!consider_mapping(fmt, pt)) return false;
       }
     }
     if (end == sdp.size()) break;
     pos = end + 2;
+  }
+  if (offered_payload[9] && seen_mapping[9] == 0) {
+    const AudioFormat g722{16000, PcmFormat::S16LE, 1, 20, AudioCodec::G722};
+    if (!consider_mapping(g722, 9)) return false;
   }
   const bool want_tx = this->offer_tx_formats_.count != 0 && (media_flow & 0x02) != 0;
   const bool want_rx = this->offer_rx_formats_.count != 0 && (media_flow & 0x01) != 0;
@@ -686,41 +750,15 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
              selected_rx ? "yes" : "no");
     return false;
   }
-#if defined(USE_ESPHOME_VOIP_STACK_SPEAKER) && !defined(USE_ESPHOME_VOIP_STACK_OPUS)
-  if (selected_tx && selected_rx && !this->remote_directional_audio_v1_ && media_flow == 0x03) {
-    // Do not promise channel/bit-depth conversion. Start from the shared wire
-    // format, then prefer higher S16 rates in that same channel layout.
-    for (uint8_t i = 0; i < received_payloads.count; ++i) {
-      const auto &entry = received_payloads.entries[i];
-      if (audio_formats_share_wire_encoding(entry.format, selected_tx_format)) {
-        selected_rx_format = entry.format;
-        selected_rx_payload_type = entry.payload_type;
-        break;
-      }
-    }
-    for (uint8_t i = 0; i < received_payloads.count; ++i) {
-      const auto &entry = received_payloads.entries[i];
-      if (entry.format.sample_rate > selected_rx_format.sample_rate &&
-          pcm_receive_conversion_supported(selected_rx_format, entry.format)) {
-        selected_rx_format = entry.format;
-        selected_rx_payload_type = entry.payload_type;
-      }
-    }
-  }
-#endif
-  if (selected_tx && selected_rx && selected_tx_format.frame_ms != selected_rx_format.frame_ms) {
-    ESP_LOGW(TAG, "SIP SDP rejected: TX/RX ptime mismatch tx=%ums rx=%ums",
-             (unsigned) selected_tx_format.frame_ms,
-             (unsigned) selected_rx_format.frame_ms);
-    return false;
-  }
   RtpAudioPayloads accepted_rx;
   for (uint8_t i = 0; i < received_payloads.count; ++i) {
     const auto &entry = received_payloads.entries[i];
     bool usable = entry.format == selected_rx_format;
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+    AudioFormat target_pcm = decoded_pcm_format(selected_rx_format);
+    target_pcm.frame_ms = entry.format.frame_ms;
     usable |= !this->remote_directional_audio_v1_ &&
-              pcm_receive_conversion_supported(entry.format, selected_rx_format);
+              pcm_receive_conversion_supported(decoded_pcm_format(entry.format), target_pcm);
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
     usable |= !this->remote_directional_audio_v1_ &&

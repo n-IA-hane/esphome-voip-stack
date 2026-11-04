@@ -300,7 +300,8 @@ bool SipTransport::prepare_refer_media_(ReferDialog &other) {
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   if (!rx.is_valid()) return !other.selected_rx_format_.is_valid();
-  if (!this->pcm_receive_converter_.prepare_additional(other.negotiated_rx_payloads_.pcm_only(),
+  if (!this->pcm_receive_converter_.prepare_additional(
+          configured_decoded_receive_formats(other.negotiated_rx_payloads_, this->offer_rx_formats_, this->udp_max_payload_),
                                                        decoded_pcm_format(pcm_playout_format(rx, this->offer_rx_formats_)))) return false;
   other.selected_rx_format_ = rx;
   return true;

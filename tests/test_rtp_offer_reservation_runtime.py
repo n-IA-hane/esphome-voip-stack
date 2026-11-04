@@ -31,8 +31,8 @@ def reservation_binary(tmp_path_factory):
  AudioFormatList offer_rx_formats_;
  struct Converter {
   unsigned prepares=0;uint32_t last_rate=0;
-  bool prepare(const RtpAudioPayloads&,const AudioFormat&format){++prepares;last_rate=format.sample_rate;return true;}
-  bool prepare_additional(const RtpAudioPayloads&,const AudioFormat&){assert(false);return false;}
+  bool prepare(const AudioFormatList&,const AudioFormat&format){++prepares;last_rate=format.sample_rate;return true;}
+  bool prepare_additional(const AudioFormatList&,const AudioFormat&){assert(false);return false;}
  }pcm_receive_converter_;
  bool prepare_media_path_locked_();bool commit_media_path_locked_();void finish_audio_path_stop_();
  void drain_cleanup(){

@@ -25,6 +25,9 @@
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
 #include "opus_rtp_codec.h"
 #endif
+#ifdef USE_ESPHOME_VOIP_STACK_G722
+#include "g722_rtp_codec.h"
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 #include "video_rtp.h"
 #endif
@@ -149,7 +152,7 @@ class SipTransport : public SipPhoneTransport {
   uint32_t dtmf_generation() const override { return this->dtmf_generation_.load(std::memory_order_acquire); }
 #endif
 #endif
-#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+#if defined(USE_ESPHOME_VOIP_STACK_OPUS) || defined(USE_ESPHOME_VOIP_STACK_G722)
   size_t decode_audio_payload(const uint8_t *payload, size_t payload_bytes,
                               const AudioFormat &format, uint8_t *pcm,
                               size_t pcm_capacity) override;
@@ -447,7 +450,8 @@ class SipTransport : public SipPhoneTransport {
   void get_media_config_(AudioFormat *tx, AudioFormat *rx,
                          uint8_t *tx_payload_type, uint8_t *rx_payload_type,
                          RtpAudioPayloads *rx_payloads = nullptr) const;
-  bool received_audio_format_(uint8_t pt, AudioFormat *format) const;
+  bool received_audio_format_(uint8_t pt, AudioFormat *format,
+                               const uint8_t *payload = nullptr, size_t payload_bytes = 0) const;
 
   struct UdpTransaction {
     SipSignalingString request;
@@ -717,6 +721,10 @@ class SipTransport : public SipPhoneTransport {
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   OpusRtpCodec opus_codec_{};
   bool opus_codec_ready_{false};
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_G722
+  G722RtpCodec g722_codec_{};
+  bool g722_codec_ready_{false};
 #endif
   // Even values are stable; odd values mean an SDP proposal is being parsed
   // into temporary live fields. Realtime readers compare the epoch before

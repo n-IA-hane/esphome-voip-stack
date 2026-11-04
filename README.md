@@ -11,7 +11,7 @@ optional external components for configurations that use them.
 
 Stable release: [2026.11.0](https://github.com/n-IA-hane/esphome-voip-stack/releases/tag/v2026.11.0).
 See the [changes since 2026.10.1](CHANGELOG.md) and the
-[upgrade steps](#upgrading-from-2026101).
+[upgrade steps](#codec-schema-migration).
 
 A native SIP phone component for ESPHome. `voip_stack` turns an ESP32 device into a real SIP endpoint: SIP signaling over UDP or TCP, SDP offer/answer, RTP media, a local phonebook and dial plan, explicit per-direction PCM negotiation, and a full set of ESPHome entities, triggers, actions and conditions on top.
 
@@ -71,7 +71,7 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 **Explicit per-direction PCM negotiation.** TX and RX formats are declared independently: sample rate from 8000 to 48000 Hz, RTP-mappable PCM format `s16le`/`s24le`/`s24le_in_s32`, 1 or 2 channels, packet time 10/16/20/32 ms. Devices advertise their real capabilities instead of pretending everything is 8 kHz telephony audio.
 
-**Auto-derivation from the audio graph.** `audio.tx: auto` reads the configured microphone/microphone_source and derives rate, format and channels from what that source actually publishes, with validation errors when the source cannot answer.
+**Explicit codec declarations.** `audio.codecs` declares each supported codec and its ordered TX/RX formats. Validation checks those PCM boundaries against the microphone and speaker. Maintained packages supply the declarations, so their defaults need no user edits.
 
 **A phonebook that is a dial plan, not a gatekeeper.** Contacts define where outbound calls go. Inbound calls are not rejected just because the caller is unknown; the INVITE carries caller and destination identity, and HA-side resolution handles routed/NAT installs.
 
@@ -111,8 +111,8 @@ Before sending an original INVITE, the endpoint binds its advertised audio RTP
 port. Final media preparation adopts that socket, retaining packets received
 before the answer. Cancellation, rejection and timeout release it through the
 existing media cleanup barrier. Decoders and audio devices still start only
-after negotiation. Existing 48 kHz RX / 16 kHz TX at 10 ms and S3 16 ms formats
-remain available alongside an explicitly configured 16 kHz / 20 ms profile.
+after negotiation. Packet times and alternatives come from the declared codec
+lists. Maintained FULL packages prefer 16 kHz/20 ms TX and 48 kHz/10 ms RX.
 
 ## Blind audio call transfer
 
@@ -176,7 +176,7 @@ Other hardware and PBX combinations still need their own runtime tests.
 
 **Phonebook.** The outbound dial plan: an ordered list of contacts the device can call, navigated by `next_contact`/`prev_contact` or addressed by name. Sources are static YAML contacts, runtime actions, and the HA-managed roster.
 
-**Audio format contract.** `audio.tx` describes what the device sends, `audio.rx` what it accepts. The internal no-audio placeholder is never used to repair missing endpoint formats.
+**Audio format contract.** Each codec's `tx` list describes what the device sends, and its `rx` list what it accepts. Packet times are independent. Missing codec declarations are configuration errors.
 
 **Call FSM.** One explicit state machine drives the lifecycle. Every state is observable through the `state` text sensor, triggers and conditions. Terminal outcomes are published through `last_reason`.
 
@@ -184,7 +184,7 @@ Other hardware and PBX combinations still need their own runtime tests.
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-voip-stack@main
+  - source: github://n-IA-hane/esphome-voip-stack@dev
     components: [voip_stack]
 ```
 
@@ -196,20 +196,28 @@ When pairing with the audio stack, pull both:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@main
+  - source: github://n-IA-hane/esphome-audio-stack@dev
     components: [esp_audio_stack, esp_aec]
-  - source: github://n-IA-hane/esphome-voip-stack@main
+  - source: github://n-IA-hane/esphome-voip-stack@dev
     components: [voip_stack]
 ```
 
-### Upgrading from 2026.10.1
+### Codec schema migration
+
+Custom configurations now declare `audio.codecs` explicitly. Move their primary
+formats and alternatives into each codec's ordered `tx` and `rx` lists. The old
+`audio.tx/rx` and `tx_formats/rx_formats` syntax is rejected. Maintained packages
+already supply the declarations. Follow the
+[migration guide](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_AUDIO_CODECS.md#migrate-an-existing-custom-yaml).
+
+### Earlier upgrades from 2026.10.1
 
 - Update the builder to **ESPHome 2026.10.0 or newer**, then rebuild and upload.
-- If custom YAML supplies multiple Opus formats, keep their decoded PCM sample
+- If custom S3 VoIP-only YAML supplies multiple Opus formats, keep their decoded PCM sample
   rate, sample format and channel count identical within each direction. When
-  RX advertises both PCM and Opus, its PCM alternatives must share that same
-  geometry. Packet times may differ. PCM-only receive-rate conversion remains
-  supported.
+  Opus is declared for RX, all receive formats must share its decoded PCM
+  geometry. Packet times may differ. This Opus restriction does not apply to
+  mixed PCM/G.722 receive-rate conversion without Opus.
 - With native HA integration enabled, remove manually declared API actions
   named `start_call_via_ha` or `hangup_call_if_id`; the component provides them.
   Existing `start_call`, answer and hangup action names remain valid.
@@ -303,8 +311,12 @@ voip_stack:
     channels: [0]
   speaker: native_speaker
   audio:
-    tx: { sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 10 }
-    rx: { sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 10 }
+    codecs:
+      - codec: pcm
+        tx:
+          - { sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 10 }
+        rx:
+          - { sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 10 }
 ```
 
 Use `microphone_source:` when the ESPHome microphone is wider than the VoIP
@@ -314,7 +326,7 @@ above the I2S microphone is 32-bit stereo, while the SIP/RTP TX stream is
 sample width before VoIP sends it.
 
 Use `microphone:` when the referenced microphone already exposes the exact PCM
-stream you want to advertise in `audio.tx`. This is the normal shape with
+stream you declare in the applicable `audio.codecs[].tx` list. This is the normal shape with
 `esp_audio_stack`, because its microphone platform already publishes the
 post-AEC/AFE clean microphone stream.
 
@@ -324,9 +336,9 @@ This is the maintained path when software AEC/AFE, media player, Voice Assistant
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@main
+  - source: github://n-IA-hane/esphome-audio-stack@dev
     components: [esp_audio_stack, esp_aec]
-  - source: github://n-IA-hane/esphome-voip-stack@main
+  - source: github://n-IA-hane/esphome-voip-stack@dev
     components: [voip_stack]
 
 esp_aec:
@@ -352,8 +364,15 @@ voip_stack:
   microphone: clean_mic
   speaker: stack_speaker
   audio:
-    tx: auto
-    rx: auto
+    codecs:
+      - codec: pcm
+        tx:
+          - { sample_rate: 16000, frame_ms: 20 }
+          - { sample_rate: 16000, frame_ms: 10 }
+        rx:
+          - { sample_rate: 48000, frame_ms: 10 }
+          - { sample_rate: 16000, frame_ms: 20 }
+          - { sample_rate: 16000, frame_ms: 10 }
 ```
 
 Audio Stack currently supports one instance per ESP. Its microphone and speaker
@@ -367,9 +386,9 @@ point `processor_id` at that processor:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@main
+  - source: github://n-IA-hane/esphome-audio-stack@dev
     components: [esp_audio_stack, esp_afe]
-  - source: github://n-IA-hane/esphome-voip-stack@main
+  - source: github://n-IA-hane/esphome-voip-stack@dev
     components: [voip_stack]
 
 esp_afe:
@@ -404,25 +423,27 @@ Per-direction format blocks accept `auto` per field or as the whole block:
 
 | Field | Values | Default |
 |---|---|---|
-| `sample_rate` | 8000, 12000, 16000, 24000, 32000, 44100, 48000 | `auto` |
-| `pcm_format` | `s16le`, `s24le`, `s24le_in_s32` (`s32le` is rejected because RTP has no mapping) | `auto` |
-| `channels` | 1, 2 | `auto` |
-| `frame_ms` | 10, 16, 20, 32 | `auto` |
+| `sample_rate` | Codec-supported local PCM rate | required |
+| `pcm_format` | `s16le`, `s24le`, `s24le_in_s32` for applicable PCM profiles | `s16le` |
+| `channels` | Codec-supported channel count | `1` |
+| `frame_ms` | PCM 10/16/20/32; G.722 and Opus 10/20 | required |
 
-`tx_formats` / `rx_formats` declare up to seven additional advertised formats
-per direction. Extra entries are explicit. TX extras retain the microphone's
-PCM sample rate, sample format and channels; supported codec and packet-time
-alternatives use that same input geometry. RX extras may describe other supported
-speaker-side formats, subject to the mixed PCM/Opus restriction below. Validation
-rejects the eighth extra entry.
+`audio.codecs` is required and contains one object per declared codec. Each
+object has ordered `tx` and `rx` format lists. `sample_rate` and `frame_ms` are
+explicit; `pcm_format` defaults to `s16le`, and `channels` to 1. Up to eight
+formats are allowed per direction across all codecs. Only declared codecs and formats are enabled.
+The old `audio.tx/rx` and `tx_formats/rx_formats` syntax is rejected with
+migration instructions.
 
-For standard SIP peers, S16 PCM reception can negotiate a higher sample rate
-than microphone transmission, such as RX 48 kHz and TX 16 kHz. A duplex SDP must
-retain a shared bidirectional format. The receiver keeps the accepted payload
-mappings, and converts alternate negotiated rates to the selected speaker
-rate after jitter reordering. Payload numbers outside that negotiation remain
-invalid. Opus continues to use its standard 48 kHz RTP clock independently of
-the local PCM rates.
+Transmit and receive packetization are negotiated independently. Local SDP
+`ptime` describes our receive preference; the remote value guides transmission.
+The maintained FULL packages prefer PCM TX at 16 kHz/20 ms and RX at 48 kHz/10 ms,
+with explicit compatible alternatives. RX at 16 kHz must not displace the
+preferred 48 kHz HA-to-ESP stream when it is supported.
+
+See the [codec and migration guide](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_AUDIO_CODECS.md)
+for complete PCM, G.722 and Opus examples and the distinction between local
+PCM rate and RTP clock rate.
 
 With Asterisk, use `allow=slin48:10,slin16:10`, `asymmetric_rtp_codec=yes`,
 `direct_media=no` and `use_ptime=yes` on the static ESP endpoint. See the
@@ -683,8 +704,7 @@ button:
 | `udp_max_payload` | `1200` | RTP payload budget. |
 | `microphone` / `microphone_source` | none | TX audio source. |
 | `speaker` | none | RX audio sink. |
-| `audio.tx` / `audio.rx` | `auto` | Per-direction PCM contract. |
-| `audio.tx_formats` / `audio.rx_formats` | `[]` | Extra explicit capabilities; TX retains its PCM geometry, RX supports other formats within the mixed-codec constraints. |
+| `audio.codecs` | required | Ordered declared codecs with separate ordered TX/RX format lists. |
 | `static_contacts` | `[]` | YAML dial plan. |
 | `extension` | `""` | Local SIP extension/user part. |
 | `conference_groups` | `""` | Optional HA-managed conference group membership, single name or comma-separated list. |
@@ -721,8 +741,9 @@ Removed options rejected with migration guidance: `processor_id`, `aec_reference
 - Optional SIP registration supports Digest authentication for managed HA and manual PBX accounts; direct calling remains available without registration.
 - SIP over UDP/TCP only; no TLS signaling and no SRTP.
 - RTP media is UDP in both signaling modes and requires UDP reachability.
-- Audio supports PCM and compile-time optional Opus within the supported
-  rate/format matrix. Opus is restricted to ESP32-S3 VoIP-only profiles.
+- Audio supports explicitly declared PCM and optional G.722/Opus within the
+  supported rate/format matrix. Opus is currently admitted only on supported S3
+  VoIP-only profiles; the validator rejects FULL/P4 while qualification is pending.
 - In-dialog re-INVITE, including ordinary hold or codec renegotiation, receives
   `488 Not Acceptable Here`. The established dialog/media remains active and a
   later BYE still terminates the original call.
@@ -742,34 +763,23 @@ MIT license.
 
 ## Codec profiles and media route
 
-Maintained ESP32-S3 VoIP-only examples prefer Opus with 20 ms packets. Their
-commented PCM blocks preserve the alternative configuration. Full profiles
-use PCM. ESP32-P4 always uses PCM. Its maintained profiles configure a
-16 kHz microphone/TX stream, a 48 kHz speaker and preferred 10 ms packets.
-These are profile choices, not fixed rates in the media engine. The 16 kHz
-RX alternative remains available through the existing
-resampler for direct PCM calls with other ESP devices. Opus is rejected at
-configuration time on P4 or with Voice Assistant, micro wake word or Sendspin.
-Only PCM and Opus are supported by the ESP codec implementation.
+Maintained FULL packages explicitly declare PCM: 16 kHz TX with 20 ms preferred
+and 10 ms available, 48 kHz RX with 10 ms preferred and 16 kHz receive alternatives.
+Opus remains the maintained S3 VoIP-only choice. G.722 is an optional 64 kbit/s
+wideband codec using 16 kHz PCM and an 8 kHz RTP timestamp clock. Its direct
+Espressif backend is pinned to `esp_audio_codec` 2.5.0 for early P4 compatibility.
 
-PCM accepts the documented 8/12/16/24/32/44.1/48 kHz rates. The Opus PCM
-boundary accepts 8/12/16/24/48 kHz, matching the
-[Opus encoder API](https://opus-codec.org/docs/opus_api-1.5/group__opus__encoder.html).
-For other hardware rates, configure the existing microphone/speaker resampler
-to expose a supported codec rate; `audio.tx` or `audio.rx` set directly to
-32 kHz Opus is rejected. Opus RTP always uses `opus/48000/2`, even for mono
-16 kHz input, as required by
-[RFC 7587](https://www.rfc-editor.org/rfc/rfc7587). This RTP clock does not
-imply that the microphone captured fullband audio. Neither codec silently
-changes to the other when a peer is incompatible.
+Optional codec modules are compile-gated. Adding G.722 or Opus alongside PCM
+retains both only when both are declared. No codec is inserted as a fallback.
+The existing microphone and speaker adapters keep PCM boundaries separate
+from network codecs. Resource preparation must succeed before starting media.
 
-A VoIP-only profile may advertise PCM and Opus together as negotiated fallback
-formats. Mixed receive formats must expose the same decoded PCM sample rate,
-sample format and channel count. Packet duration is selected by SDP from the
-configured choices. Each received payload selects its own decoder; a change
-between PCM and Opus does not require a new SIP call. Unsupported mixed PCM
-geometries fail configuration validation instead of advertising an unusable
-fallback. PCM-only profiles retain their supported receive-rate conversion.
+Opus PCM accepts 8/12/16/24/48 kHz and 10/20 ms frames. RTP always advertises
+`opus/48000/2`, including mono streams, as required by
+[RFC 7587](https://www.rfc-editor.org/rfc/rfc7587.html#section-7).
+The current validator rejects FULL/P4 Opus; qualification is pending for those profiles.
+See the [codec guide](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_AUDIO_CODECS.md)
+for declaration, package defaults, resource implications and migration.
 
 An incoming INVITE without SDP is answered with an offer in the 200 response.
 Capture and playout remain inactive until the matching ACK supplies a compatible

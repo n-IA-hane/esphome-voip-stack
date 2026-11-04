@@ -15,3 +15,7 @@ logger:
 
 voip_stack:
   id: phone
+  audio:
+    codecs:
+      - codec: pcm
+        tx: [{sample_rate: 16000, frame_ms: 20}]

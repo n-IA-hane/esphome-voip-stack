@@ -9,7 +9,6 @@ from test_refer_wire_runtime import wire_source
 
 def options_source():
     code = wire_source(full_invite=True)
-    code = code.replace("struct SipTransport: SipPhoneTransport {", "struct SipTransport: SipPhoneTransport {\nsize_t udp_max_payload_=1200;\n", 1)
     source = (SOURCE / "sip_transport.cpp").read_text()
     sdp = (SOURCE / "sip_sdp.cpp").read_text()
     _parser = (SOURCE / "sip_message.cpp").read_text()
@@ -38,7 +37,7 @@ AudioFormat pcm(unsigned rate,unsigned frame=10){AudioFormat f;f.sample_rate=rat
 int main(int argc,char **argv){
  assert(argc==4);const std::string state=argv[2],accept=argv[3];
  Peer peer(std::string(argv[1])=="tcp");SipTransport s;setup(s,peer);
- s.offer_tx_formats_.count=1;s.offer_tx_formats_.formats[0]=pcm(16000);
+ s.offer_tx_formats_.count=2;s.offer_tx_formats_.formats[0]=pcm(16000,20);s.offer_tx_formats_.formats[1]=pcm(16000,10);
  s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[0]=pcm(48000);
  s.offer_rx_formats_.formats[1]=pcm(16000,accept=="known"?10:20);
  if(state=="idle"){s.call_id_.clear();s.local_tag_.clear();s.remote_tag_.clear();s.media_active_=false;}
@@ -104,5 +103,9 @@ def test_options_body_and_admission_preserve_owner(options_binary, transport, st
     maps = {line.split()[1] for line in fields if line.startswith("a=rtpmap:")}
     assert maps == {"L16/16000/1", "L16/48000/1"}
     assert sum(line.startswith("a=x-voip-stack-flow:") for line in fields) == 2
+    assert "a=x-voip-stack-independent-ptime:1" in fields
+    assert "a=x-voip-stack-audio-tx:L16/16000/1/20,L16/16000/1/10" in fields
+    assert ("a=x-voip-stack-audio-rx:L16/48000/1/10,L16/16000/1/" +
+            ("10" if accept == "known" else "20")) in fields
     hints = [line for line in fields if line.startswith(("a=ptime:", "a=maxptime:"))]
     assert hints == (["a=ptime:10", "a=maxptime:10"] if accept == "known" else [])

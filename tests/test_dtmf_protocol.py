@@ -14,6 +14,7 @@ def dtmf_binary(tmp_path_factory):
     helper.write_text('#pragma once\nnamespace esphome { using Mutex=std::mutex; using LockGuard=::LockGuard; }\n')
     cpp = folder / "dtmf.cpp"
     code = r'''
+#define USE_ESPHOME_VOIP_STACK_PCM
 #include "rtp_dtmf.h"
 #include "sip_types.h"
 #include <array>

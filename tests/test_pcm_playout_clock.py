@@ -73,7 +73,7 @@ int main(int argc,char**argv){
  if(mode=="native16")preferred.sample_rate=16000;
  else if(mode=="different-ptime")preferred.frame_ms=20;
  else if(mode=="opus")wire={48000,PcmFormat::S16LE,1,10,AudioCodec::OPUS};
- else if(mode=="capacity-fallback"){wire.frame_ms=20;preserve=false;}
+ else if(mode=="declared-20ms"){wire.frame_ms=20;}
  else if(mode=="s32-fallback"){wire.pcm_format=PcmFormat::S32LE;preserve=false;}
  else if(mode=="mixed-pool"||mode=="mixed-s32")preserve=false;
  else assert(mode=="uac48-to16");
@@ -125,7 +125,7 @@ int main(int argc,char**argv){
 
 
 @pytest.mark.parametrize("mode", ["uac48-to16", "different-ptime", "native16", "opus",
-                                  "capacity-fallback", "s32-fallback", "mixed-pool", "mixed-s32"])
+                                  "declared-20ms", "s32-fallback", "mixed-pool", "mixed-s32"])
 def test_actual_uac_answer_preserves_local_pcm_clock(pcm_clock_binary, mode):
     run = subprocess.run(
         ["bash", "-c", 'ulimit -c 0; exec "$1" "$2"', "bash", str(pcm_clock_binary), mode],
@@ -258,7 +258,7 @@ def test_actual_refer_reuses_pcm_target_and_retains_mixed_codec_boundary(tmp_pat
 using namespace esphome::voip_stack;
 struct ReferDialog {AudioFormat selected_tx_format_,selected_rx_format_;RtpAudioPayloads negotiated_rx_payloads_;};
 struct SipTransport {
- AudioFormat tx,rx;AudioFormatList offer_rx_formats_;PcmReceiveConverter pcm_receive_converter_;
+ AudioFormat tx,rx;AudioFormatList offer_rx_formats_;PcmReceiveConverter pcm_receive_converter_;size_t udp_max_payload_=1200;
  void get_media_config_(AudioFormat*t,AudioFormat*r,void*,void*){*t=tx;*r=rx;}
  bool prepare_refer_media_(ReferDialog&);
 };
@@ -271,9 +271,9 @@ int main(){
  auto pcm32=pcm16;pcm32.sample_rate=32000;
  auto opus16=pcm16;opus16.codec=AudioCodec::OPUS;
  for(bool mixed:{false,true}){
-  SipTransport s;s.tx=s.rx=pcm16;s.offer_rx_formats_.count=mixed?3:2;
+  SipTransport s;s.tx=s.rx=pcm16;s.offer_rx_formats_.count=3;
   s.offer_rx_formats_.formats[0]=pcm48;s.offer_rx_formats_.formats[1]=pcm16;
-  if(mixed)s.offer_rx_formats_.formats[2]=opus16;
+  s.offer_rx_formats_.formats[2]=mixed?opus16:pcm32;
   const auto target=pcm_playout_format(s.rx,s.offer_rx_formats_);
   assert(target==(mixed?pcm16:pcm48));
   RtpAudioPayloads original;original.add(97,pcm16);

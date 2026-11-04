@@ -676,7 +676,8 @@ class VoipStack : public Component {
   };
   void play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason silence_reason, TickType_t ticks_to_wait,
                       uint32_t revision);
-  void play_silence_frame_(SilenceReason reason, TickType_t ticks_to_wait, uint32_t revision);
+  void play_silence_frame_(SilenceReason reason, TickType_t ticks_to_wait, uint32_t revision,
+                           uint16_t frame_ms = 0);
   void reset_rx_audio_(bool preserve_playout = false);
   enum class RxPlayoutPhase : uint8_t { STOPPED, PREPARING, WAITING_OUTPUT, READY, ACTIVE };
   RxPlayoutPhase rx_playout_phase_(uint32_t revision) const;

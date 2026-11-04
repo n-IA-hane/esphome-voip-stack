@@ -42,8 +42,8 @@ struct MediaOwner {
  std::atomic<bool>rtp_running_{false},rtp_task_terminate_{false},rtp_task_quiesced_{true};
  void *rtp_task_handle_=this;std::atomic<uint16_t>rtp_sequence_{0};std::atomic<uint32_t>rtp_timestamp_{0};uint32_t rtp_ssrc_=0;
  int rtp_socket_=-1,rtp_cleanup_done_=0;uint16_t rtp_port_=0;
- AudioFormatList offer_rx_formats_;
- struct Converter {bool ok=true;bool prepare(const RtpAudioPayloads&,const AudioFormat&){return ok;}}pcm_receive_converter_;
+ AudioFormatList offer_rx_formats_;size_t udp_max_payload_=UDP_SAFE_AUDIO_PAYLOAD_BYTES;
+ struct Converter {bool ok=true;bool prepare(const AudioFormatList&,const AudioFormat&){return ok;}}pcm_receive_converter_;
  void reset_rtp_latch_(){}
  template<class...T>void get_media_config_(T...){ }
  bool prepare_media_path_locked_();bool bind_udp_(int*,uint16_t,const char*);

@@ -110,7 +110,7 @@ struct VoipStack {
  uint32_t rx_prepared_format_packed_=0;Component*speaker_feedback_source_=nullptr;void*rx_task_handle_=this;
  RxPlayoutPhase rx_playout_phase_(uint32_t)const;bool prepare_rx_playout_();bool activate_rx_playout_();
  void speaker_output_progress_(uint32_t,int64_t);bool play_rx_preroll_(uint32_t,TickType_t);
- void play_silence_frame_(SilenceReason,TickType_t,uint32_t);
+ void play_silence_frame_(SilenceReason,TickType_t,uint32_t,uint16_t=0);
  void enqueue_rx_frame_(const TransportAudioFrame&);void on_audio_received_(const TransportAudioFrame&);
  void play_rx_frame_(const uint8_t*,size_t,SilenceReason,TickType_t,uint32_t);
 };

@@ -1,5 +1,7 @@
 """Run production offer generation and SDP parsing without ESP hardware."""
 from pathlib import Path
+import json
+import re
 import subprocess
 
 import pytest
@@ -23,6 +25,7 @@ def sdp_fixture_source():
 #include <arpa/inet.h>
 #include "esphome/components/voip_stack/rtp_audio_payloads.h"
 #define USE_ESPHOME_VOIP_STACK_SPEAKER
+#define USE_ESPHOME_VOIP_STACK_PCM
 #define ESP_LOGI(...) ((void)0)
 #define ESP_LOGD(...) ((void)0)
 #define ESP_LOGW(...) ((void)0)
@@ -82,8 +85,10 @@ AudioFormat fmt(unsigned rate){AudioFormat f;f.sample_rate=rate;f.frame_ms=10;re
 int main(){
  SipTransport s;s.offer_tx_formats_.count=1;s.offer_tx_formats_.formats[0]=fmt(16000);
  s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[0]=fmt(48000);s.offer_rx_formats_.formats[1]=fmt(16000);
- auto offer=s.build_sdp_offer_();assert(offer.find("x-voip-stack")==std::string::npos);
- assert(offer.find("L16/48000/1")!=std::string::npos);
+ auto offer=s.build_sdp_offer_();assert(offer.find("a=x-voip-stack-flow:")==std::string::npos);
+ assert(offer.find("a=x-voip-stack-independent-ptime:1\r\n")!=std::string::npos);
+ assert(offer.find("L16/48000/1")==std::string::npos);
+ assert(offer.find("L16/16000/1")!=std::string::npos);
  const std::string base="v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 126 118\r\na=ptime:10\r\n";
  // Deliberately reverse rtpmap order relative to the m-line.
  const std::string maps="a=rtpmap:118 L16/16000/1\r\na=rtpmap:126 L16/48000/1\r\n";
@@ -97,16 +102,20 @@ int main(){
  // Answerer remaps TX payloads. RX still uses our offered payload numbers.
  assert(s.learn_remote_rtp_from_sdp_(base+maps,0,true));
  assert(s.tx_pt==118&&s.rx_pt==96);
- assert(s.accepted.find(97,&f)&&f.sample_rate==16000);
+ assert(s.rx.sample_rate==16000&&s.accepted.find(96,&f)&&f.sample_rate==16000);
+ assert(!s.accepted.find(97,&f));
  assert(!s.accepted.find(118,&f));
  assert(!s.learn_remote_rtp_from_sdp_("v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 119\r\na=ptime:10\r\na=rtpmap:119 L16/32000/1\r\n",0,true));
- // Transmit preference follows the m-line despite reversed rtpmap order.
+ // Transmit preference follows the explicit local format order.
  s.offer_tx_formats_.formats[1]=fmt(48000);s.offer_tx_formats_.count=2;
- assert(s.learn_remote_rtp_from_sdp_(base+maps,0));assert(s.tx.sample_rate==48000);
+ assert(s.learn_remote_rtp_from_sdp_(base+maps,0));assert(s.tx.sample_rate==16000);
  s.offer_tx_formats_.count=1;
  // A peer selecting one common codec retains the old 16/16 behavior.
  assert(s.learn_remote_rtp_from_sdp_("v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 118\r\na=ptime:10\r\na=rtpmap:118 L16/16000/1\r\n",0,true));
  assert(s.tx.sample_rate==16000&&s.rx.sample_rate==16000&&s.accepted.count==1);
+ // D1 may advertise RX-only alternatives; REFER still retains its transmitter.
+ s.peer_directional_audio_v1_=true;
+ assert(s.build_sdp_offer_().find("L16/48000/1")!=std::string::npos);
  // The retained transmitter cannot change rate while its old call is live.
  RetainedCall old{fmt(16000)};s.refer_context_active_=true;s.refer_dialog_=&old;
  auto replacement=s.build_sdp_offer_();
@@ -141,9 +150,8 @@ int main(int argc,char **argv){
  else if(scenario=="supported-time")expected=true;
  else if(scenario=="unsupported-time"){ptime=32;configured=false;}
  else if(scenario=="unoffered-mapping"){
-  rate=32000;s.offer_tx_formats_.count=s.offer_rx_formats_.count=3;
+  rate=32000;
   s.udp_max_payload_=1400; // 32 kHz/20 ms is 1280 bytes, within this configured LAN budget.
-  s.offer_tx_formats_.formats[2]=s.offer_rx_formats_.formats[2]=pcm(rate,20);
  }else{
   assert(scenario=="unsafe-payload");rate=48000;configured=false;
   s.offer_tx_formats_.count=s.offer_rx_formats_.count=4;
@@ -160,6 +168,11 @@ int main(int argc,char **argv){
  for(uint8_t i=0;i<s.local_offered_tx_formats_.count;++i)assert(s.local_offered_tx_formats_.formats[i].frame_ms==10);
  for(uint8_t i=0;i<s.local_offered_rx_payloads_.count;++i)assert(s.local_offered_rx_payloads_.entries[i].format.frame_ms==10);
  const auto snapshots=s.local_offered_rx_payloads_;
+ if(scenario=="unoffered-mapping"){
+  // Later capability changes cannot authorize a mapping absent from this offer.
+  s.offer_tx_formats_.count=s.offer_rx_formats_.count=3;
+  s.offer_tx_formats_.formats[2]=s.offer_rx_formats_.formats[2]=pcm(rate,20);
+ }
  AudioFormat match;const auto candidate=pcm(rate,ptime);
  assert(audio_format_list_match_udp_safe(s.offer_tx_formats_,candidate,&match,s.udp_max_payload_)==configured);
  assert(audio_format_list_match_udp_safe(s.offer_rx_formats_,candidate,&match,s.udp_max_payload_)==configured);
@@ -176,8 +189,8 @@ int main(int argc,char **argv){
  assert(accepted==expected);
  assert(s.local_offered_rx_payloads_==snapshots);
  if(accepted){
-  assert(s.tx==candidate&&s.rx==candidate&&s.tx_pt==pt&&s.rx_pt==pt);
-  assert(s.accepted.count==1&&s.accepted.find(pt,&match)&&match==candidate);
+  assert(s.tx==candidate&&s.rx==pcm(rate,10)&&s.tx_pt==pt&&s.rx_pt==pt);
+  assert(s.accepted.count==1&&s.accepted.find(pt,&match)&&match==pcm(rate,10));
   assert(s.remote_rtp_ip_v4_==ntohl(inet_addr("192.0.2.2"))&&s.remote_rtp_port_==40002);
  }else{
   assert(s.tx==prior_tx&&s.rx==prior_rx&&s.tx_pt==110&&s.rx_pt==110&&s.accepted==prior_maps);
@@ -204,3 +217,115 @@ int main(int argc,char **argv){
 def test_answer_packet_time_keeps_offered_mapping_and_config_budget(answer_ptime_binary, scenario):
     result = subprocess.run([answer_ptime_binary, scenario], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_independent_ptime_capability_keeps_only_legacy_d1_coupled(tmp_path):
+    source = sdp_fixture_source() + r'''
+AudioFormat pcm(unsigned time){AudioFormat f;f.frame_ms=time;return f;}
+int main(){
+ for(const std::string mode:{"ordinary","legacy","new","wrong-version","session","video"}){
+  SipTransport s;s.offer_tx_formats_.count=s.offer_rx_formats_.count=2;
+  s.offer_tx_formats_.formats[0]=s.offer_rx_formats_.formats[0]=pcm(20);
+  s.offer_tx_formats_.formats[1]=s.offer_rx_formats_.formats[1]=pcm(10);
+  const auto standalone=s.build_sdp_offer_();
+  assert(standalone.find("a=x-voip-stack-independent-ptime:1\r\n")!=std::string::npos);
+  std::string peer="v=0\r\nc=IN IP4 192.0.2.2\r\n";
+  if(mode=="session")peer+="a=x-voip-stack-independent-ptime:1\r\n";
+  peer+="m=audio 40002 RTP/AVP 96\r\na=rtpmap:96 L16/16000/1\r\na=ptime:10\r\n";
+  if(mode!="ordinary")peer+="a=x-voip-stack-flow:96 sendrecv\r\n";
+  if(mode=="new")peer+="a=x-voip-stack-independent-ptime:1\r\n";
+  if(mode=="wrong-version")peer+="a=x-voip-stack-independent-ptime:0\r\n";
+  if(mode=="video")peer+="m=video 40004 RTP/AVP 97\r\na=x-voip-stack-independent-ptime:1\r\n";
+  assert(s.learn_remote_rtp_from_sdp_(peer,0));
+  const unsigned receive_time=mode=="ordinary"||mode=="new"?20:10;
+  assert(s.tx==pcm(10)&&s.rx==pcm(receive_time));
+  const auto answer=s.build_sdp_answer_();
+  assert(answer.find("a=ptime:"+std::to_string(receive_time)+"\r\n")!=std::string::npos);
+  assert(answer.find("a=x-voip-stack-independent-ptime:1\r\n")!=std::string::npos);
+ }
+}
+'''
+    cpp = tmp_path / "compat.cpp"
+    cpp.write_text(source)
+    binary = tmp_path / "compat"
+    subprocess.run(["g++", "-std=c++17", "-I", str(ROOT), str(cpp), "-o", str(binary)], check=True)
+    subprocess.run([binary], check=True, capture_output=True, text=True)
+
+
+@pytest.mark.parametrize("peer_ptime", [10, 20])
+def test_actual_ha_bridge_receiver_hint_controls_only_native_tx(tmp_path, peer_ptime):
+    # Captured HA bridge offer, with addresses and origin identifier anonymized.
+    peer = (ROOT / "tests/fixtures/ha_independent_bridge_offer.sdp").read_text()
+    peer = peer.replace("a=ptime:10\n", f"a=ptime:{peer_ptime}\n").replace("\n", "\r\n")
+    source = sdp_fixture_source() + "\nint main(){const std::string peer=" + json.dumps(peer) + r''';
+ SipTransport s;AudioFormat f;f.sample_rate=16000;f.frame_ms=20;
+ s.offer_tx_formats_.count=4;s.offer_tx_formats_.formats[0]=f;f.frame_ms=10;s.offer_tx_formats_.formats[1]=f;
+ f.codec=AudioCodec::G722;f.frame_ms=20;s.offer_tx_formats_.formats[2]=f;f.frame_ms=10;s.offer_tx_formats_.formats[3]=f;
+ s.offer_rx_formats_.count=5;f.codec=AudioCodec::PCM;f.sample_rate=48000;f.frame_ms=10;s.offer_rx_formats_.formats[0]=f;
+ f.sample_rate=16000;f.frame_ms=20;s.offer_rx_formats_.formats[1]=f;f.frame_ms=10;s.offer_rx_formats_.formats[2]=f;
+ f.codec=AudioCodec::G722;f.frame_ms=20;s.offer_rx_formats_.formats[3]=f;f.frame_ms=10;s.offer_rx_formats_.formats[4]=f;
+ assert(s.learn_remote_rtp_from_sdp_(peer,0xc0000201));
+ assert(s.tx.codec==AudioCodec::PCM&&s.tx.sample_rate==16000&&s.tx.frame_ms==PEER_PTIME&&s.tx_pt==96);
+ assert(s.rx.codec==AudioCodec::PCM&&s.rx.sample_rate==48000&&s.rx.frame_ms==10&&s.rx_pt==100);
+ assert(s.build_sdp_answer_().find("a=ptime:10\r\n")!=std::string::npos);
+}
+'''.replace("PEER_PTIME", str(peer_ptime))
+    cpp = tmp_path / "bridge.cpp"
+    cpp.write_text(source)
+    binary = tmp_path / "bridge"
+    subprocess.run(["g++", "-std=c++17", "-I", str(ROOT), str(cpp), "-o", str(binary)], check=True)
+    subprocess.run([binary], check=True, capture_output=True, text=True)
+
+
+@pytest.fixture(scope="module")
+def offer_modes_binary(tmp_path_factory):
+    folder = tmp_path_factory.mktemp("offer-modes")
+    cpp = folder / "offer.cpp"
+    cpp.write_text(sdp_fixture_source() + r'''
+#include <iostream>
+int main(int argc,char**argv){
+ assert(argc==2);const std::string mode=argv[1];SipTransport s;AudioFormat f;
+ f.sample_rate=16000;f.frame_ms=20;
+ s.offer_tx_formats_.count=4;s.offer_tx_formats_.formats[0]=f;f.frame_ms=10;s.offer_tx_formats_.formats[1]=f;
+ f.codec=AudioCodec::G722;f.frame_ms=20;s.offer_tx_formats_.formats[2]=f;f.frame_ms=10;s.offer_tx_formats_.formats[3]=f;
+ s.offer_rx_formats_.count=5;f.codec=AudioCodec::PCM;f.sample_rate=48000;f.frame_ms=10;s.offer_rx_formats_.formats[0]=f;
+ f.sample_rate=16000;f.frame_ms=20;s.offer_rx_formats_.formats[1]=f;f.frame_ms=10;s.offer_rx_formats_.formats[2]=f;
+ f.codec=AudioCodec::G722;f.frame_ms=20;s.offer_rx_formats_.formats[3]=f;f.frame_ms=10;s.offer_rx_formats_.formats[4]=f;
+ if(mode=="d1")s.peer_directional_audio_v1_=true;
+ if(mode=="sendonly")s.offer_rx_formats_.count=0;
+ if(mode=="recvonly")s.offer_tx_formats_.count=0;
+ if(mode=="asymmetric"){
+  s.offer_tx_formats_.count=s.offer_rx_formats_.count=1;
+  f.codec=AudioCodec::PCM;f.sample_rate=16000;f.frame_ms=20;s.offer_tx_formats_.formats[0]=f;
+  f.frame_ms=10;s.offer_rx_formats_.formats[0]=f;
+ }
+ const auto offer=s.build_sdp_offer_();assert(!offer.empty());
+ if(mode=="asymmetric"){
+  assert(s.local_offered_tx_formats_.count==1&&s.local_offered_tx_formats_.formats[0].frame_ms==20);
+  assert(s.local_offered_rx_payloads_.count==1&&s.local_offered_rx_payloads_.entries[0].format.frame_ms==10);
+ }
+ std::cout<<offer;
+}
+''')
+    binary = folder / "offer"
+    subprocess.run(["g++", "-std=c++17", "-I", str(ROOT), str(cpp), "-o", str(binary)], check=True)
+    return binary
+
+
+@pytest.mark.parametrize("mode,wide,ptime,direction", [
+    ("standard", False, 20, "sendrecv"), ("d1", True, 10, "sendrecv"),
+    ("sendonly", False, 20, "sendonly"), ("recvonly", True, 10, "recvonly"),
+    ("asymmetric", False, 10, "sendrecv"),
+])
+def test_offer_modes_share_only_declared_rtp_mappings(offer_modes_binary, mode, wide, ptime, direction):
+    result = subprocess.run([offer_modes_binary, mode], capture_output=True, text=True, check=True)
+    mappings = dict(re.findall(r"^a=rtpmap:(\d+) ([^\r\n]+)", result.stdout, re.MULTILINE))
+    expected = {"L16/16000/1"} if mode == "asymmetric" else {"L16/16000/1", "G722/8000/1"}
+    if wide:
+        expected.add("L16/48000/1")
+    assert set(mappings.values()) == expected
+    assert f"a=ptime:{ptime}\n" in result.stdout and f"a={direction}\n" in result.stdout
+    flows = dict(re.findall(r"^a=x-voip-stack-flow:(\d+) ([^\r\n]+)", result.stdout, re.MULTILINE))
+    assert bool(flows) is (mode == "d1")
+    if mode == "d1":
+        assert flows[next(pt for pt, encoding in mappings.items() if encoding == "L16/48000/1")] == "recv"
