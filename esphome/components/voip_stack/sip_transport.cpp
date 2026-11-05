@@ -3674,11 +3674,12 @@ bool SipTransport::handle_reinvite_(const std::string &message,
 #endif
   this->remote_rtp_ip_v4_.store(new_audio_ip, std::memory_order_release);
   this->remote_rtp_port_.store(new_audio_port, std::memory_order_release);
-  this->reset_rtp_latch_();
+  // same_audio admitted the existing RTP tuple. Preserve its source identity
+  // and any resume notification until the receive worker consumes it.
   this->audio_send_enabled_.store(audio_direction.send, std::memory_order_release);
   this->audio_receive_enabled_.store(audio_direction.receive, std::memory_order_release);
-  this->audio_receive_reset_pending_.store(
-      audio_direction.receive && !old_audio_receive, std::memory_order_release);
+  if (audio_direction.receive && !old_audio_receive)
+    this->audio_receive_reset_pending_.store(true, std::memory_order_release);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->video_offered_ = new_video_offered;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG

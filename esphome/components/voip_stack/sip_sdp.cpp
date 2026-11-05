@@ -672,6 +672,9 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
       ? choose_common_audio_ptime(this->offer_tx_formats_, this->offer_rx_formats_, this->udp_max_payload_)
       : media_ptime;
   if (legacy_directional_ptime && transmit_ptime == 0) return false;
+  AudioFormat retained_tx_format = disabled_audio_format();
+  if (audio_direction != nullptr && !remote_is_answer && media_ptime == 0)
+    this->get_media_config_(&retained_tx_format, nullptr, nullptr, nullptr, nullptr);
   auto consider_mapping = [&](AudioFormat fmt, uint8_t pt) {
     if (pt == 9 && fmt.codec != AudioCodec::G722) return false;
     fmt.frame_ms = media_ptime;
@@ -699,8 +702,15 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
       }
       return false;
     };
-    bool tx_ok = peer_can_recv && (match_tx(transmit_ptime) ||
-        (!legacy_directional_ptime && transmit_ptime != 0 && match_tx(0)));
+    uint16_t preferred_tx_ptime = transmit_ptime;
+    // Omitting an optional preference in a direction-only reoffer must not
+    // invent a TX quantum change. match_tx still enforces the declared
+    // mapping, peer maxptime and UDP budget before retaining that duration.
+    if (preferred_tx_ptime == 0 && retained_tx_format.is_valid() &&
+        audio_formats_share_rtp_mapping(retained_tx_format, fmt))
+      preferred_tx_ptime = retained_tx_format.frame_ms;
+    bool tx_ok = peer_can_recv && (match_tx(preferred_tx_ptime) ||
+        (!legacy_directional_ptime && preferred_tx_ptime != 0 && match_tx(0)));
     // The peer's ptime is its receive preference, hence our TX duration.
     // Our receive duration belongs to our own offer/answer, not that hint.
     const uint16_t offered_rx_ptime = legacy_directional_ptime ? transmit_ptime : remote_is_answer
