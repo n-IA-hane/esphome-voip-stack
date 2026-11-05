@@ -94,6 +94,11 @@ def resume_source():
      const bool initial_preference=mode=="initial-preference";
      const bool wide_rx=mode=="resume-wide-rx";
      const bool same_source=mode.find("same-source")!=std::string::npos;
+     const bool change_port=mode.find("port-change")!=std::string::npos;
+     const bool bad_ip=mode.find("bad-ip")!=std::string::npos;
+     const bool bad_pt=mode.find("bad-pt")!=std::string::npos;
+     const bool bad_size=mode.find("bad-size")!=std::string::npos;
+     const bool no_resume=mode.rfind("no-resume",0)==0;
      const bool ptime_case=mode.rfind("resume-",0)==0||initial_preference;
      const bool omitted=mode!="resume-explicit-ptime"&&mode!="resume-explicit20";
      const bool extra=mode.rfind("extra-reinvite",0)==0;
@@ -103,7 +108,8 @@ def resume_source():
      t.offer_rx_formats_.count=wide_rx?2:1;t.offer_rx_formats_.formats[0]=receive;
      if(wide_rx)t.offer_rx_formats_.formats[1]=pcm;t.remote_ip_v4_=INADDR_LOOPBACK;
      t.rtp_socket_=socket(AF_INET,SOCK_DGRAM,0);int peer=socket(AF_INET,SOCK_DGRAM,0);assert(t.rtp_socket_>=0&&peer>=0);
-     auto bind_port=[](int fd){sockaddr_in p{};p.sin_family=AF_INET;p.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+     bool wrong_ip=false;
+     auto bind_port=[&](int fd){sockaddr_in p{};p.sin_family=AF_INET;p.sin_addr.s_addr=htonl(wrong_ip?0x7f000002:INADDR_LOOPBACK);
       assert(bind(fd,reinterpret_cast<sockaddr*>(&p),sizeof(p))==0);socklen_t n=sizeof(p);assert(getsockname(fd,reinterpret_cast<sockaddr*>(&p),&n)==0);return p;};
      const auto target=bind_port(t.rtp_socket_);auto source=bind_port(peer);
      const int sip_peer=socket(AF_INET,SOCK_DGRAM,0);t.sip_server_=socket(AF_INET,SOCK_DGRAM,0);assert(sip_peer>=0&&t.sip_server_>=0);
@@ -162,24 +168,57 @@ def resume_source():
      auto consume=[&](){size_t actual=0;uint16_t seq=0;const auto got=jitter.read(output,sizeof(output),&seq,nullptr,nullptr,&actual);
       if(got==RtpJitterBuffer::ReadResult::FRAME){assert(actual==320);for(unsigned i=0;i<160;++i){uint16_t v;std::memcpy(&v,output+i*2,2);assert(v==uint16_t(seq+i));}++played;}
       if(got==RtpJitterBuffer::ReadResult::MISSING)++missing;clock_ms+=10;};
-     auto packet=[&](uint16_t seq,uint8_t ssrc,uint32_t offset=0){uint8_t p[332]{};p[0]=0x80;p[1]=96;p[2]=seq>>8;p[3]=seq;p[11]=ssrc;const uint32_t ts=uint32_t(seq)*160+offset;
+     bool invalid_phase=false;
+     auto packet=[&](uint16_t seq,uint8_t ssrc,uint32_t offset=0,bool admitted=true){uint8_t p[332]{};p[0]=0x80;p[1]=invalid_phase&&bad_pt?97:96;p[2]=seq>>8;p[3]=seq;p[11]=ssrc;const uint32_t ts=uint32_t(seq)*160+offset;
       p[4]=ts>>24;p[5]=ts>>16;p[6]=ts>>8;p[7]=ts;for(unsigned i=0;i<160;++i){const uint16_t v=seq+i;p[12+2*i]=v>>8;p[13+2*i]=v;}
-      assert(sendto(peer,p,sizeof(p),0,reinterpret_cast<const sockaddr*>(&target),sizeof(target))==sizeof(p));wait_for(++total);};
+      const auto before_datagrams=t.rtp_rx_datagrams_.load();const size_t bytes=sizeof(p)-(invalid_phase&&bad_size?1:0);
+      assert(sendto(peer,p,bytes,0,reinterpret_cast<const sockaddr*>(&target),sizeof(target))==ssize_t(bytes));
+      if(admitted){wait_for(++total);}else{
+       const auto start=std::chrono::steady_clock::now();
+       while(t.rtp_rx_datagrams_==before_datagrams&&std::chrono::steady_clock::now()-start<std::chrono::seconds(2))std::this_thread::sleep_for(std::chrono::milliseconds(1));
+       assert(t.rtp_rx_datagrams_==before_datagrams+1);std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }};
      for(unsigned n=0;n<4;++n){packet(500+n,42);consume();}assert(played==4);
-     auto hold=initial;hold.replace(hold.find("a=sendrecv"),10,"a=inactive");assert(reinvite(hold,2)==200&&!t.audio_receive_enabled_);
-     for(unsigned n=0;n<20;++n)consume();assert(played==4&&missing==0);
-     assert(reinvite(initial,3)==200&&t.audio_receive_enabled_);const bool pending_after_resume=t.audio_receive_reset_pending_;
+     if(!no_resume){
+      auto hold=initial;hold.replace(hold.find("a=sendrecv"),10,"a=inactive");assert(reinvite(hold,2)==200&&!t.audio_receive_enabled_);
+      for(unsigned n=0;n<20;++n)consume();assert(played==4&&missing==0);
+      assert(reinvite(initial,3)==200&&t.audio_receive_enabled_);
+     }
+     const bool pending_after_resume=t.audio_receive_reset_pending_;
+     const bool reacquire_after_resume=t.rtp_source_reacquire_pending_;
      if(extra)assert(reinvite(initial,4)==200);
      const bool pending_before_rtp=t.audio_receive_reset_pending_;const unsigned played_before=played;
+     const bool reacquire_before_rtp=t.rtp_source_reacquire_pending_;
+     const auto old_port=ntohs(source.sin_port);
+     auto rebind=[&](bool bad){const int retired=peer;peer=socket(AF_INET,SOCK_DGRAM,0);assert(peer>=0);
+      wrong_ip=bad;source=bind_port(peer);close(retired);};
+     if(change_port||bad_ip)rebind(bad_ip);
+     unsigned rejected_admitted=0;bool pending_after_rejected=pending_before_rtp,reacquire_after_rejected=reacquire_before_rtp;
+     if(bad_ip||bad_pt||bad_size){
+      invalid_phase=true;const auto before=t.delivered.load();
+      for(unsigned n=0;n<4;++n)packet(90+n,99,0,false);
+      rejected_admitted=t.delivered.load()-before;pending_after_rejected=t.audio_receive_reset_pending_;
+      reacquire_after_rejected=t.rtp_source_reacquire_pending_;invalid_phase=false;if(bad_ip)rebind(false);
+     }
      // A restarted RTP source chooses a new SSRC and an independent sequence.
      // Both control and witness receive the identical new source and packets.
-     for(unsigned n=0;n<4;++n){packet(same_source?504+n:100+n,same_source?42:99,same_source?3200:0);consume();}
+     for(unsigned n=0;n<4;++n){packet(same_source?504+n:100+n,same_source?42:99,same_source?3200:0,!no_resume);if(!no_resume)consume();}
+     const auto resumed_admitted=t.rtp_rx_packets_.load();
+     const bool reacquire_after_rtp=t.rtp_source_reacquire_pending_,pending_after_rtp=t.audio_receive_reset_pending_;
+     // Once the first real packet consumed resume admission, another simultaneous
+     // port+SSRC change cannot use the downstream reset as a permanent exemption.
+     rebind(false);for(unsigned n=0;n<4;++n)packet(300+n,77,0,false);
+     const auto post_admission_rebind_admitted=t.rtp_rx_packets_.load()-resumed_admitted;
      const auto counters=jitter.counters();assert(t.tx==pcm&&t.rx==pcm&&t.accepted==before_payload&&t.call_id_==before_call&&t.rtp_socket_==before_fd);
      t.rtp_running_=false;t.rtp_task_terminate_=true;uint8_t wake=0;sendto(peer,&wake,1,0,reinterpret_cast<const sockaddr*>(&target),sizeof(target));worker.join();
      assert(t.rtp_task_quiesced_&&t.quiescent==1);close_sip();close(peer);close(t.rtp_socket_);
      std::cout<<"{\"mode\":\""<<mode<<"\",\"pending_after_resume\":"<<pending_after_resume<<",\"pending_before_RTP\":"<<pending_before_rtp
+      <<",\"reacquire_after_resume\":"<<reacquire_after_resume<<",\"reacquire_before_RTP\":"<<reacquire_before_rtp
+      <<",\"rejected_admitted\":"<<rejected_admitted<<",\"pending_after_rejected\":"<<pending_after_rejected<<",\"reacquire_after_rejected\":"<<reacquire_after_rejected
+      <<",\"reacquire_after_RTP\":"<<reacquire_after_rtp<<",\"pending_after_RTP\":"<<pending_after_rtp
+      <<",\"old_port\":"<<old_port<<",\"new_port\":"<<ntohs(source.sin_port)<<",\"post_admission_rebind_admitted\":"<<post_admission_rebind_admitted
       <<",\"resumed_played\":"<<played-played_before<<",\"late\":"<<counters.late<<",\"RTP_admitted\":"<<t.rtp_rx_packets_
-      <<",\"last_four_source_changed\":[";for(unsigned n=4;n<8;++n)std::cout<<(n==4?"":",")<<source_changes[n];std::cout<<"]}\n";
+      <<",\"last_four_source_changed\":[";for(unsigned n=4;n<source_changes.size();++n)std::cout<<(n==4?"":",")<<source_changes[n];std::cout<<"]}\n";
     }
     '''
     return code
@@ -218,6 +257,45 @@ def test_resumed_source_reaches_jitter_after_each_distinct_acked_reinvite(resume
     assert measured["last_four_source_changed"] == [1, 0, 0, 0]
 
 
+@pytest.mark.parametrize("extra", [False, True])
+@pytest.mark.parametrize("port_change,same_ssrc", [(False, True), (False, False), (True, True), (True, False)])
+def test_resume_reacquires_only_first_valid_negotiated_source(resume_binary, extra, port_change, same_ssrc):
+    mode = "extra-reinvite" if extra else "control"
+    mode += "-port-change" if port_change else ""
+    mode += "-same-source" if same_ssrc else ""
+    measured = result(resume_binary, mode)
+    assert measured["reacquire_after_resume"] == measured["reacquire_before_RTP"] == 1
+    assert measured["resumed_played"] == 4
+    assert measured["RTP_admitted"] == 8
+    assert measured["late"] == 0
+    assert measured["last_four_source_changed"] == [1, 0, 0, 0]
+    assert measured["pending_after_RTP"] == measured["reacquire_after_RTP"] == 0
+    assert measured["post_admission_rebind_admitted"] == 0
+
+
+@pytest.mark.parametrize("extra", [False, True])
+@pytest.mark.parametrize("invalid", ["bad-ip", "bad-pt", "bad-size"])
+def test_rejected_packets_cannot_consume_resume_reacquisition(resume_binary, extra, invalid):
+    mode = ("extra-reinvite" if extra else "control") + "-port-change-" + invalid
+    measured = result(resume_binary, mode)
+    assert measured["rejected_admitted"] == 0
+    assert measured["pending_after_rejected"] == measured["reacquire_after_rejected"] == 1
+    assert measured["resumed_played"] == 4
+    assert measured["RTP_admitted"] == 8
+    assert measured["last_four_source_changed"] == [1, 0, 0, 0]
+    assert measured["pending_after_RTP"] == measured["reacquire_after_RTP"] == 0
+    assert measured["post_admission_rebind_admitted"] == 0
+
+
+def test_simultaneous_port_and_ssrc_change_without_resume_is_still_rejected(resume_binary):
+    measured = result(resume_binary, "no-resume-port-change")
+    assert measured["reacquire_after_resume"] == measured["reacquire_before_RTP"] == 0
+    assert measured["resumed_played"] == 0
+    assert measured["RTP_admitted"] == 4
+    assert measured["last_four_source_changed"] == []
+    assert measured["post_admission_rebind_admitted"] == 0
+
+
 @pytest.mark.parametrize("mode", ["resume-explicit-ptime", "resume-omits-ptime", "resume-bound10", "resume-wide-rx"])
 def test_same_dialog_resume_preserves_admitted_tx_when_preference_is_absent(resume_binary, mode):
     measured = result(resume_binary, mode)
@@ -247,17 +325,18 @@ def test_dialog_cleanup_and_new_media_preparation_clear_stale_resume_notificatio
     code = code.replace("struct SipTransport: SipPhoneTransport {", r'''struct SipTransport: SipPhoneTransport {
  std::atomic<uint32_t>latched_rtp_ip_v4_{0},latched_rtp_ssrc_{0};
  std::atomic<uint16_t>latched_rtp_port_{0};std::atomic<bool>rtp_ssrc_latched_{false};
+ std::atomic<bool>rtp_source_reacquire_pending_{false};
 ''', 1)
     code += "\n" + block((SOURCE / "sip_transport.cpp").read_text(), "void SipTransport::reset_rtp_latch_(")
     code += r'''
 int main(){
- SipTransport s;s.call_id_="completed";s.rtp_port_=0;s.audio_receive_reset_pending_=true;
- assert(s.prepare_media_path_locked_()&&!s.audio_receive_reset_pending_);
- assert(s.commit_media_path_locked_());s.audio_receive_reset_pending_=true;
- s.reset_dialog_();assert(s.call_id_.empty()&&!s.audio_receive_reset_pending_);
+ SipTransport s;s.call_id_="completed";s.rtp_port_=0;s.audio_receive_reset_pending_=true;s.rtp_source_reacquire_pending_=true;
+ assert(s.prepare_media_path_locked_()&&!s.audio_receive_reset_pending_&&!s.rtp_source_reacquire_pending_);
+ assert(s.commit_media_path_locked_());s.audio_receive_reset_pending_=true;s.rtp_source_reacquire_pending_=true;
+ s.reset_dialog_();assert(s.call_id_.empty()&&!s.audio_receive_reset_pending_&&!s.rtp_source_reacquire_pending_);
  s.drain_cleanup();
- s.audio_receive_reset_pending_=true;s.rtp_port_=0;
- assert(s.prepare_media_path_locked_()&&!s.audio_receive_reset_pending_);
+ s.audio_receive_reset_pending_=true;s.rtp_source_reacquire_pending_=true;s.rtp_port_=0;
+ assert(s.prepare_media_path_locked_()&&!s.audio_receive_reset_pending_&&!s.rtp_source_reacquire_pending_);
  assert(s.rtp_socket_>=0&&!s.rtp_ssrc_latched_);
  const auto fd=s.rtp_socket_;released(s,fd);
 }

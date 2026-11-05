@@ -750,6 +750,9 @@ Removed options rejected with migration guidance: `processor_id`, `aec_reference
   `recvonly`, `inactive` or legacy `c=IN IP4 0.0.0.0`, retaining the existing call and
   media owners and the negotiated codec/RTP mappings. Ordinary inactive streams
   retain RTCP; streams with a zero connection address send neither RTP nor RTCP.
+  After reception resumes, a valid source on the negotiated IP may restart with
+  both a new RTP source port and a new SSRC. Further accepted reoffers preserve
+  the pending receive reset until the first valid audio packet is admitted.
 - Initial audio offers with `inactive` or `c=IN IP4 0.0.0.0` still receive
   `488 Not Acceptable Here`. In-dialog codec migration is unsupported. Rejected
   proposals preserve the established dialog and media configuration for a later

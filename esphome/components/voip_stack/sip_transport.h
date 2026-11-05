@@ -705,6 +705,9 @@ class SipTransport : public SipPhoneTransport {
   std::atomic<bool> audio_send_enabled_{true};
   std::atomic<bool> audio_receive_enabled_{true};
   std::atomic<bool> audio_receive_reset_pending_{false};
+  // One validated RTP source may be reacquired after an actual RX resume.
+  // Separate from the downstream jitter/decoder reset notification.
+  std::atomic<bool> rtp_source_reacquire_pending_{false};
   AudioFormat selected_tx_format_{DEFAULT_AUDIO_FORMAT};
   AudioFormat selected_rx_format_{DEFAULT_AUDIO_FORMAT};
   uint8_t rtp_tx_payload_type_{96};

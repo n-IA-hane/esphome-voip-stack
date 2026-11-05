@@ -69,6 +69,7 @@ struct SipTransport {
         direction = block(header, "struct AudioSdpDirection {") + ";\n"
         source = source.replace("struct SipTransport {", "struct SipTransport {\n" + direction + r'''
  std::atomic<bool> audio_send_enabled_{true},audio_receive_enabled_{true},audio_receive_reset_pending_{false};
+ std::atomic<bool> rtp_source_reacquire_pending_{false};
 ''')
         source = source.replace("struct SipTransport {", "struct SipTransport {\n" +
                                 block(header, "bool audio_receive_paused() const override").replace(" override", ""))

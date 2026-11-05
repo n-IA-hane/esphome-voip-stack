@@ -1416,6 +1416,7 @@ void SipTransport::clear_udp_transactions_() {
 
 void SipTransport::reset_rtp_latch_() {
   this->audio_receive_reset_pending_.store(false, std::memory_order_release);
+  this->rtp_source_reacquire_pending_.store(false, std::memory_order_release);
   this->latched_rtp_ip_v4_.store(0, std::memory_order_release);
   this->latched_rtp_port_.store(0, std::memory_order_release);
   this->latched_rtp_ssrc_.store(0, std::memory_order_release);
@@ -3674,12 +3675,14 @@ bool SipTransport::handle_reinvite_(const std::string &message,
 #endif
   this->remote_rtp_ip_v4_.store(new_audio_ip, std::memory_order_release);
   this->remote_rtp_port_.store(new_audio_port, std::memory_order_release);
-  // same_audio admitted the existing RTP tuple. Preserve its source identity
-  // and any resume notification until the receive worker consumes it.
+  // Preserve both pending notifications across further accepted re-INVITEs
+  // until a codec-valid RTP packet is admitted by the receive worker.
   this->audio_send_enabled_.store(audio_direction.send, std::memory_order_release);
-  this->audio_receive_enabled_.store(audio_direction.receive, std::memory_order_release);
-  if (audio_direction.receive && !old_audio_receive)
+  if (audio_direction.receive && !old_audio_receive) {
     this->audio_receive_reset_pending_.store(true, std::memory_order_release);
+    this->rtp_source_reacquire_pending_.store(true, std::memory_order_release);
+  }
+  this->audio_receive_enabled_.store(audio_direction.receive, std::memory_order_release);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->video_offered_ = new_video_offered;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
@@ -5459,16 +5462,19 @@ void SipTransport::rtp_task_() {
       if (ssrc_latched &&
           this->latched_rtp_ssrc_.load(std::memory_order_acquire) != ssrc) {
         // RFC 3550 permits a restarted endpoint to choose a new SSRC. The
-        // already-latched IP:port is the one-to-one SIP media identity; accept
-        // a codec-valid source change on that exact tuple and reset downstream
-        // sequence state instead of rejecting the new source forever.
+        // already-latched IP:port normally remains the media identity. After
+        // an actual RX resume, permit one validated source to also change its
+        // port (RFC 3550 section 8.2), then restore the ordinary source guard.
         if (this->latched_rtp_port_.load(std::memory_order_acquire) !=
-            src_port) {
+                src_port &&
+            !this->rtp_source_reacquire_pending_.load(std::memory_order_acquire)) {
           continue;
         }
         const uint32_t previous_ssrc =
             this->latched_rtp_ssrc_.load(std::memory_order_acquire);
         this->latched_rtp_ssrc_.store(ssrc, std::memory_order_release);
+        this->latched_rtp_port_.store(src_port, std::memory_order_release);
+        this->remote_rtp_port_.store(src_port, std::memory_order_release);
         source_changed = true;
         ESP_LOGI(TAG, "RTP source changed SSRC %08" PRIx32 " -> %08" PRIx32,
                  previous_ssrc, ssrc);
@@ -5485,6 +5491,7 @@ void SipTransport::rtp_task_() {
       }
       this->rtp_rx_packets_.fetch_add(1, std::memory_order_acq_rel);
       this->rtp_rx_bytes_.fetch_add(static_cast<uint32_t>(n), std::memory_order_acq_rel);
+      this->rtp_source_reacquire_pending_.store(false, std::memory_order_release);
       source_changed |= this->audio_receive_reset_pending_.exchange(false, std::memory_order_acq_rel);
       this->emit_audio_frame_(audio_data, audio_bytes, sequence, timestamp,
                               source_changed, pack_audio_format(rx_format));
