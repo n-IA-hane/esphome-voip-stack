@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "esphome/components/voip_stack"
 
 
-@pytest.mark.parametrize("audio_debug", [False, True])
-def test_dump_is_paced_private_and_releases_its_snapshot(tmp_path, audio_debug):
+@pytest.mark.parametrize("audio_debug,microphone", [(False, False), (True, False), (False, True)])
+def test_dump_is_paced_private_and_releases_its_snapshot(tmp_path, audio_debug, microphone):
     source = (COMPONENT / "voip_diagnostics.cpp").read_text()
     source = "\n".join(
         line for line in source.splitlines() if not line.startswith("#include")
@@ -47,6 +47,9 @@ void log(const char*,const char*fmt,...){assert(!locked);char b[384];va_list a;v
 #define ESP_LOGI(tag,...) log(tag,__VA_ARGS__)
 #define ESP_LOGW ESP_LOGI
 uint32_t tick=2000;uint32_t millis(){return tick;}
+unsigned stack_reads=0;
+using UBaseType_t=unsigned;
+UBaseType_t uxTaskGetStackHighWaterMark(void *task){assert(task);++stack_reads;return 3072;}
 namespace esphome::voip_stack {
 struct Mutex{};struct LockGuard{explicit LockGuard(Mutex&){++locked;}~LockGuard(){--locked;}};
 """
@@ -63,6 +66,10 @@ struct VoipStack{
  std::unique_ptr<RtpJitterBuffer>rx_jitter_buffer_=std::make_unique<RtpJitterBuffer>();
  bool buffers_in_psram_=true,task_stacks_in_psram_=true,audio_task_stacks_in_psram_=true;
  unsigned sip_port_=5060,rtp_port_=40000;static constexpr unsigned kRxQueuedFrames=16;
+ void *rx_task_handle_=this;unsigned rx_task_stack_bytes_=12288;
+#ifdef USE_ESPHOME_VOIP_STACK_MIC
+ void *tx_task_handle_=this;unsigned tx_task_stack_bytes_=8192;
+#endif
  bool failed=false;bool is_failed(){return failed;}
  struct Formats{AudioFormat tx,rx;};Formats snapshot_current_media_formats_(){return {};}
  const char*configured_sip_transport_name(){return "udp";}const char*audio_capability_(){return "full_duplex";}const char*get_media_route_str(){return "direct";}
@@ -84,7 +91,7 @@ int main(){
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
  auto &event=s.audio_debug_rx_startup_[0];event.revision=5;event.present=true;event.data.us=123456;event.data.flags=0;
 #endif
- s.dump_diagnostics();assert(s.diagnostic_dump_);assert(lines.size()==1);
+ s.dump_diagnostics();assert(s.diagnostic_dump_);assert(lines.size()==1);assert(stack_reads==0);
  s.dump_diagnostics();assert(lines.size()==1);
  // A hangup during output must not rewrite the already captured report.
  s.current_call_id_.clear();s.call_state_=CallState::IDLE;s.transport_->value.rtp_tx_packets=999;s.last_reason_="different";
@@ -97,6 +104,17 @@ int main(){
  held.busy.clear();
 #endif
  s.finish();assert(!s.diagnostic_dump_&&!s.pending);
+#ifdef USE_ESPHOME_VOIP_STACK_MIC
+ assert(stack_reads==2);
+#else
+ assert(stack_reads==1);
+#endif
+ bool stack=false;for(auto &line:lines)stack|=line.find("rx_stack_bytes=12288 rx_min_free_bytes=3072")!=std::string::npos;
+ assert(stack);
+#ifdef USE_ESPHOME_VOIP_STACK_MIC
+ bool tx_stack=false;for(auto &line:lines)tx_stack|=line.find("tx_present=YES tx_stack_bytes=8192 tx_min_free_bytes=3072")!=std::string::npos;
+ assert(tx_stack);
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
  bool startup=false,quality=false;
  for(auto&line:lines){startup|=line.find("AudioStartup rev=5 event=speaker_start_request us=123456")!=std::string::npos;
@@ -120,6 +138,7 @@ int main(){
             "-Werror",
             "-fsanitize=address,undefined",
             *(["-DUSE_ESPHOME_VOIP_STACK_AUDIO_DEBUG"] if audio_debug else []),
+            *(["-DUSE_ESPHOME_VOIP_STACK_MIC"] if microphone else []),
             "-I",
             str(COMPONENT),
             str(cpp),

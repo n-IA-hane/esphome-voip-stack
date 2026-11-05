@@ -39,18 +39,21 @@ inline bool pcm_receive_conversion_supported(const AudioFormat &source, const Au
 // Packet duration still belongs to the negotiated stream. The setup-time RX
 // buffers already cover the configured formats; do not exceed that capacity.
 inline AudioFormat pcm_playout_format(const AudioFormat &wire, const AudioFormatList &configured) {
-  if (!wire.is_valid() || configured.count == 0 || wire.codec != AudioCodec::PCM ||
+  if (!wire.is_valid() || configured.count == 0 ||
+      (wire.codec != AudioCodec::PCM && wire.codec != AudioCodec::G722) ||
       wire.pcm_format != PcmFormat::S16LE)
     return wire;
   AudioFormat target = configured.formats[0];
   target.frame_ms = wire.frame_ms;
+  const AudioFormat decoded = decoded_pcm_format(wire);
+  if (decoded == target) return wire;
   if (!target.is_valid() || target.codec != AudioCodec::PCM || target.pcm_format != PcmFormat::S16LE ||
-      !pcm_receive_conversion_supported(wire, target))
+      !pcm_receive_conversion_supported(decoded, target))
     return wire;
   const size_t capacity = pcm_receive_buffer_capacity(configured);
   for (uint8_t i = 0; i < configured.count; ++i) {
     const auto &format = configured.formats[i];
-    // Mixed-codec decoding retains its established PCM geometry contract.
+    // Opus and other mixed codecs retain their established geometry contract.
     if (format.codec != AudioCodec::PCM && format.codec != AudioCodec::G722) return wire;
     if (format.pcm_format != PcmFormat::S16LE) return wire;
   }

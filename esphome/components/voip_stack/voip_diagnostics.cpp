@@ -189,11 +189,28 @@ void VoipStack::emit_diagnostic_section_() {
       }
 #endif
       break;
-    case 9:
+    case 9: {
       ESP_LOGI(TAG, "audio: active=%s buffers_psram=%s task_stacks_psram=%s audio_stacks_psram=%s route=%s",
                YESNO(dump.audio_active), YESNO(this->buffers_in_psram_), YESNO(this->task_stacks_in_psram_),
                YESNO(this->audio_task_stacks_in_psram_), dump.route);
+      unsigned rx_bytes = 0, rx_free = 0, tx_bytes = 0, tx_free = 0;
+      bool rx_present = false, tx_present = false;
+      // ESP-IDF reports bytes, unlike upstream FreeRTOS stack words. Scan only
+      // on this requested dump, never in an audio worker or per-packet path.
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+      rx_bytes = this->rx_task_stack_bytes_;
+      rx_present = this->rx_task_handle_ != nullptr;
+      if (rx_present) rx_free = uxTaskGetStackHighWaterMark(this->rx_task_handle_);
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_MIC
+      tx_bytes = this->tx_task_stack_bytes_;
+      tx_present = this->tx_task_handle_ != nullptr;
+      if (tx_present) tx_free = uxTaskGetStackHighWaterMark(this->tx_task_handle_);
+#endif
+      ESP_LOGI(TAG, "audio_stacks: rx_present=%s rx_stack_bytes=%u rx_min_free_bytes=%u tx_present=%s tx_stack_bytes=%u tx_min_free_bytes=%u",
+               YESNO(rx_present), rx_bytes, rx_free, YESNO(tx_present), tx_bytes, tx_free);
       break;
+    }
     case 10:
       ESP_LOGI(TAG, "last_termination=%s", dump.last_reason);
 #if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_MIC)

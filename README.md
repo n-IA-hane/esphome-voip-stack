@@ -786,6 +786,11 @@ retains both only when both are declared. No codec is inserted as a fallback.
 The existing microphone and speaker adapters keep PCM boundaries separate
 from network codecs. Resource preparation must succeed before starting media.
 
+When PCM is the first configured RX format, compatible PCM and decoded G.722
+use that PCM rate for local speaker playback. Conversion reuses the receive
+worker and its prepared buffers; the negotiated network rate and packet time
+stay unchanged. G.722-only configurations keep their native 16 kHz playback.
+
 Opus PCM accepts 8/12/16/24/48 kHz and 10/20 ms frames. RTP always advertises
 `opus/48000/2`, including mono streams, as required by
 [RFC 7587](https://www.rfc-editor.org/rfc/rfc7587.html#section-7).
