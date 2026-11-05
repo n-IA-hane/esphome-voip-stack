@@ -766,7 +766,9 @@ The repository also carries a small internal `ring_buffer` component used by
 `voip_stack` for CAPS-aware RTP/audio buffering. It is not a user-facing YAML
 component.
 
-MIT license.
+Project-authored code is MIT-licensed. Optional codec dependencies retain their
+own licenses. See [Third-party notices](THIRD_PARTY_NOTICES.md) for the Opus
+copyrights, license texts and materials to include when distributing firmware.
 
 ## Codec profiles and media route
 
