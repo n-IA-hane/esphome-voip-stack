@@ -515,6 +515,14 @@ void VoipStack::setup() {
 
 void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_ms) {
   const CallState state = this->call_state_.load(std::memory_order_acquire);
+  // Preparing the local sink has its own bounded deadline. Until that owner
+  // submits INVITE, there is no remote response to time out.
+  const bool preparing_outgoing =
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+      this->pending_media_start_ == ApplicationMediaStart::ORIGINATE;
+#else
+      false;
+#endif
   if (this->ringing_timeout_ms_ > 0 && state == CallState::RINGING &&
       now_ms - this->ringing_start_time_ >= this->ringing_timeout_ms_) {
     const std::string cid = this->get_current_call_id_();
@@ -524,7 +532,7 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
     return;
   }
 
-  if (state == CallState::CALLING &&
+  if (!preparing_outgoing && state == CallState::CALLING &&
       now_ms - this->calling_start_time_ >= INVITE_NO_RESPONSE_TIMEOUT_MS) {
     bool saw_sip_response = false;
     if (this->transport_ != nullptr) {
@@ -541,7 +549,7 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
     }
   }
 
-  if (calling_timeout_ms > 0 && (state == CallState::CALLING || state == CallState::REMOTE_RINGING) &&
+  if (!preparing_outgoing && calling_timeout_ms > 0 && (state == CallState::CALLING || state == CallState::REMOTE_RINGING) &&
       now_ms - this->calling_start_time_ >= calling_timeout_ms) {
     const std::string cid = this->get_current_call_id_();
     ESP_LOGI(TAG, "Calling timeout after %" PRIu32 " ms - sending CANCEL (call_id=%s)",

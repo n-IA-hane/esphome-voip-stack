@@ -33,7 +33,9 @@ struct Speaker {
   size_t n=std::min(chunk,bytes);accepted.insert(accepted.end(),data,data+n);return n;
  }
 };
+struct Transport{bool audio_receive_paused()const{return false;}};
 struct VoipStack {
+ Transport *transport_=nullptr;
  Speaker *speaker_;uint8_t *rx_audio_chunk_=nullptr;size_t rx_audio_chunk_alloc_bytes_=0;
  std::atomic<float> volume_{1};
  std::atomic<bool> audio_devices_active_{true};

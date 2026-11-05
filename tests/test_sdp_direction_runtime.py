@@ -155,6 +155,7 @@ def directional_wire_binary(tmp_path_factory):
         declaration = body[:body.index('{')].replace('SipTransport::', '').strip()
         if 'learn_remote' in new_marker:
             declaration = declaration.replace('bool remote_is_answer', 'bool remote_is_answer = false')
+            declaration = declaration.replace('AudioSdpDirection *audio_direction)', 'AudioSdpDirection *audio_direction = nullptr)')
         if 'set_media_config' in new_marker:
             declaration = declaration.replace('const RtpAudioPayloads *rx_payloads)', 'const RtpAudioPayloads *rx_payloads = nullptr)')
         code = code.replace(block(code, old_marker), declaration + ';', 1)

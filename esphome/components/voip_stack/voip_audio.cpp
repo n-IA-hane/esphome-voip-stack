@@ -516,14 +516,15 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
   // The existing Opus PLC path also uses NONE; this does not prove RTP origin.
   const bool trace_pcm = silence_reason == SilenceReason::NONE;
 #endif
+  const bool receive_paused = this->transport_ != nullptr && this->transport_->audio_receive_paused();
   if (silence_reason == SilenceReason::NONE && this->rx_audio_chunk_ != nullptr &&
       bytes <= this->rx_audio_chunk_alloc_bytes_ &&
-      this->volume_.load(std::memory_order_relaxed) <= 0.001f) {
+      (receive_paused || this->volume_.load(std::memory_order_relaxed) <= 0.001f)) {
     // The RX task owns decode and playout serially, including partial writes.
     // Zero PCM after decoding so codec prediction/PLC state still advances.
     memset(this->rx_audio_chunk_, 0, bytes);
     pcm = this->rx_audio_chunk_;
-    silence_reason = SilenceReason::MUTED_SINK;
+    silence_reason = receive_paused ? SilenceReason::NETWORK_GAP : SilenceReason::MUTED_SINK;
   }
 
   size_t offset = 0;

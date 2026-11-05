@@ -48,6 +48,7 @@ jobs:
           python -m ruff check
           esphome/components
           tests
+          tools
 
       - name: Fetch the firmware's audio resampler for native DSP tests
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -77,13 +78,63 @@ jobs:
             test-results/audio-libs-sha.txt
           if-no-files-found: error
 
+  renderer-consumer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14.2"
+      - name: Fetch the real renderer consumer
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: n-IA-hane/esphome-video-renderer
+          ref: dev
+          path: .test-deps/esphome-video-renderer
+      - name: Install consumer test dependencies
+        run: python -m pip install -r .test-deps/esphome-video-renderer/requirements-dev.txt
+      - name: Generate real VoIP consumer examples and test the adapter
+        working-directory: .test-deps/esphome-video-renderer
+        env:
+          VOIP_STACK_SOURCE: ${{ github.workspace }}
+        run: >-
+          python -m pytest -q
+          tests/test_esp_video_renderer_config.py::test_renderer_voip_sink_is_explicit
+          'tests/test_esp_video_renderer_config.py::test_documented_display_examples_generate_with_real_sources[voip]'
+          tests/test_esp_video_renderer_adapter.py
+          --junitxml=${{ github.workspace }}/test-results/renderer-consumer.xml
+      - name: Preserve consumer regression results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-renderer-consumer-results
+          path: test-results/renderer-consumer.xml
+          if-no-files-found: error
+
   audio-directions-firmware:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        configuration: [minimal_no_text, minimal_speaker_only]
+        include:
+          - configuration: minimal_no_text
+            project: voip-minimal-no-text
+            target: esp32s3
+            g722: disabled
+          - configuration: minimal_speaker_only
+            project: voip-minimal-speaker
+            target: esp32s3
+            g722: disabled
+          - configuration: minimal_g722_s3
+            project: voip-g722-s3
+            target: esp32s3
+            g722: enabled
+          - configuration: minimal_g722_p4
+            project: voip-g722-p4
+            target: esp32p4
+            g722: enabled
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -91,17 +142,28 @@ jobs:
           python-version: "3.14.2"
       - name: Install official ESPHome
         run: python -m pip install esphome==2026.10.0
-      - name: Compile and link the single-direction firmware
+      - name: Compile and link the audio firmware
         env:
           CONFIGURATION: ${{ matrix.configuration }}
         run: |
           mkdir -p test-results
           set -o pipefail
           python -m esphome compile "tests/${CONFIGURATION}.yaml" 2>&1 | tee "test-results/${CONFIGURATION}.log"
+      - name: Verify linked codec directions and compile gates
+        run: >-
+          python tools/check_firmware_codecs.py
+          --project tests/.esphome/build/${{ matrix.project }}
+          --target ${{ matrix.target }}
+          --g722 ${{ matrix.g722 }}
+          --output test-results/${{ matrix.configuration }}-codec-proof.json
       - name: Preserve firmware build evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: firmware-${{ matrix.configuration }}
-          path: test-results/*.log
+          path: |
+            test-results/*.log
+            test-results/*-codec-proof.json
+            tests/.esphome/build/${{ matrix.project }}/build/firmware.elf
+            tests/.esphome/build/${{ matrix.project }}/src/esphome/core/defines.h
           if-no-files-found: error

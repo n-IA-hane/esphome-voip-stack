@@ -107,6 +107,7 @@ class VideoRtpSession {
   bool can_request_media_direction(bool send_enabled,
                                    bool receive_enabled) const;
   bool request_media_direction(bool send_enabled, bool receive_enabled);
+  void set_rtcp_send_enabled(bool enabled);
   bool can_retarget_inactive_remote() const;
   /// Commit new SDP endpoints without restarting the prepared, inactive child.
   bool retarget_inactive_remote(uint32_t remote_ip_v4, uint16_t remote_rtp_port,
@@ -222,6 +223,7 @@ class VideoRtpSession {
   std::atomic<uint16_t> remote_rtcp_port_{0};
   std::atomic<bool> send_enabled_{false};
   std::atomic<bool> receive_enabled_{false};
+  std::atomic<bool> rtcp_send_enabled_{true};
   std::atomic<bool> source_started_{false};
   std::atomic<bool> sink_started_{false};
   std::atomic<bool> send_prepared_{false};

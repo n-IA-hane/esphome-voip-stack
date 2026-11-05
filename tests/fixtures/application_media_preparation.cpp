@@ -55,6 +55,7 @@ struct Speaker {
  size_t play(const uint8_t*,size_t bytes,uint32_t){if(!is_running())return 0;accepted+=bytes;return bytes;}
 };
 struct Transport{
+ bool paused=false;bool audio_receive_paused()const{return paused;}
  void reset_audio_decoder(){}size_t convert_received_pcm(const AudioFormat&,const uint8_t*,size_t,uint8_t*,size_t){return 0;}
  unsigned stops=0,answers=0;void stop_audio_path(){++stops;}
  bool originate(const std::string&,uint16_t){return true;}void set_sip_signaling_transport(bool){}

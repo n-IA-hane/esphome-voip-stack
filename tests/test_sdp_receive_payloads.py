@@ -56,7 +56,7 @@ struct SipTransport {
  void local_ip_for_peer_(uint32_t,std::string *out) const {*out="192.0.2.1";}
  void capture_remote_media_shape_(const std::string&);
  std::string rejected_media_answer_(const std::string&) const;
- void get_media_config_(AudioFormat*a,AudioFormat*b,uint8_t*c,uint8_t*d,RtpAudioPayloads*e)const{*a=tx;*b=rx;*c=tx_pt;*d=rx_pt;*e=accepted;}
+ void get_media_config_(AudioFormat*a,AudioFormat*b,uint8_t*c,uint8_t*d,RtpAudioPayloads*e=nullptr)const{if(a)*a=tx;if(b)*b=rx;if(c)*c=tx_pt;if(d)*d=rx_pt;if(e)*e=accepted;}
  void set_media_config_(const AudioFormat&a,const AudioFormat&b,uint8_t c,uint8_t d,const RtpAudioPayloads*e){tx=a;rx=b;tx_pt=c;rx_pt=d;accepted=*e;}
  std::string wrap_sdp_envelope_(const std::string&,const std::string&,const std::string&,const std::string&,uint8_t,const char * = "sendrecv") const;
  std::string build_sdp_offer_();
@@ -64,6 +64,27 @@ struct SipTransport {
  bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false);
 };
 '''
+    if "struct AudioSdpDirection {" in header:
+        # Preserve the production conditional DTMF arity and final hold output.
+        direction = block(header, "struct AudioSdpDirection {") + ";\n"
+        source = source.replace("struct SipTransport {", "struct SipTransport {\n" + direction + r'''
+ std::atomic<bool> audio_send_enabled_{true},audio_receive_enabled_{true},audio_receive_reset_pending_{false};
+''')
+        source = source.replace("struct SipTransport {", "struct SipTransport {\n" +
+                                block(header, "bool audio_receive_paused() const override").replace(" override", ""))
+        for old, marker, end in (
+            ("std::string build_sdp_answer_() const;", "  std::string build_sdp_answer_(", ") const;"),
+            ("bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false);",
+             "  bool learn_remote_rtp_from_sdp_(", ");"),
+        ):
+            start = header.index(marker)
+            declaration = header[start:header.index(end, start) + len(end)]
+            source = source.replace(old, declaration.strip())
+        source = source.replace(
+            "{tx=a;rx=b;tx_pt=c;rx_pt=d;accepted=*e;}",
+            "{tx=a;rx=b;tx_pt=c;rx_pt=d;accepted=*e;"
+            "audio_send_enabled_=a.is_valid();audio_receive_enabled_=b.is_valid();}",
+        )
     for signature in ["std::string SipTransport::wrap_sdp_envelope_(",
                       "void SipTransport::capture_remote_media_shape_(",
                       "std::string SipTransport::rejected_media_answer_(",
@@ -148,12 +169,12 @@ int main(int argc,char **argv){
  unsigned rate=16000,ptime=20;bool expected=false,configured=true;
  if(scenario=="same-time"){ptime=10;expected=true;}
  else if(scenario=="supported-time")expected=true;
- else if(scenario=="unsupported-time"){ptime=32;configured=false;}
+ else if(scenario=="unsupported-time"){ptime=32;configured=false;expected=true;}
  else if(scenario=="unoffered-mapping"){
   rate=32000;
   s.udp_max_payload_=1400; // 32 kHz/20 ms is 1280 bytes, within this configured LAN budget.
  }else{
-  assert(scenario=="unsafe-payload");rate=48000;configured=false;
+  assert(scenario=="unsafe-payload");rate=48000;configured=false;expected=true;
   s.offer_tx_formats_.count=s.offer_rx_formats_.count=4;
   s.offer_tx_formats_.formats[2]=s.offer_rx_formats_.formats[2]=pcm(rate,10);
   s.offer_tx_formats_.formats[3]=s.offer_rx_formats_.formats[3]=pcm(rate,20);
@@ -189,7 +210,11 @@ int main(int argc,char **argv){
  assert(accepted==expected);
  assert(s.local_offered_rx_payloads_==snapshots);
  if(accepted){
-  assert(s.tx==candidate&&s.rx==pcm(rate,10)&&s.tx_pt==pt&&s.rx_pt==pt);
+  // A hint cannot authorize undeclared or oversized packets. Prefer the
+  // configured safe10ms alternative when the requested duration is unusable.
+  const auto expected_tx=pcm(rate,configured?ptime:10);
+  assert(s.tx==expected_tx&&s.tx.nominal_rtp_payload_bytes()<=s.udp_max_payload_);
+  assert(s.rx==pcm(rate,10)&&s.tx_pt==pt&&s.rx_pt==pt);
   assert(s.accepted.count==1&&s.accepted.find(pt,&match)&&match==pcm(rate,10));
   assert(s.remote_rtp_ip_v4_==ntohl(inet_addr("192.0.2.2"))&&s.remote_rtp_port_==40002);
  }else{

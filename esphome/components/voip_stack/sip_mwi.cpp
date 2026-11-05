@@ -633,7 +633,9 @@ bool SipMwi::begin_(size_t index, uint32_t now) {
   std::array<std::string, 2> auth;
   size_t auth_index = 0;
   for (SipDigest *digest : {&a.digest, &a.proxy_digest}) {
-    if (!digest->empty()) {
+    // Only a challenge in this transaction enables its authorization header.
+    // Retain nonce counters if the server challenges again with the same nonce.
+    if ((auth_index == 0 ? a.auth_attempts : a.proxy_auth_attempts) != 0 && !digest->empty()) {
       auth[auth_index] = digest->authorization(
           a.config(), "SUBSCRIBE", target, this->token_(), this->hooks_.hash);
       if (auth[auth_index].empty()) {
@@ -751,8 +753,10 @@ void SipMwi::tick(uint32_t now) {
         a.interval_ms = std::min<uint32_t>(a.interval_ms * 2, 4000);
         a.next_ms = now + a.interval_ms;
       }
-    } else if (a.scheduled && reached(now, a.next_ms))
+    } else if (a.scheduled && reached(now, a.next_ms)) {
+      a.auth_attempts = a.proxy_auth_attempts = 0;
       this->begin_(i, now);
+    }
   }
 }
 bool SipMwi::next_deadline(uint32_t now, uint32_t *remaining) const {
@@ -820,7 +824,7 @@ bool SipMwi::handle_response(const std::string &message, uint32_t ip,
     a.pending = false;
     a.request.clear();
     if (status == 401 || status == 407) {
-      SipDigest challenge;
+      auto &challenge = status == 401 ? a.digest : a.proxy_digest;
       auto &attempts = status == 401 ? a.auth_attempts : a.proxy_auth_attempts;
       if (!challenge.parse_response(message, status == 407) ||
           ++attempts > (challenge.stale ? 3 : 2)) {
@@ -828,7 +832,6 @@ bool SipMwi::handle_response(const std::string &message, uint32_t ip,
         this->retry_(i, now);
         return true;
       }
-      (status == 401 ? a.digest : a.proxy_digest) = std::move(challenge);
       this->begin_(i, now);
       return true;
     }

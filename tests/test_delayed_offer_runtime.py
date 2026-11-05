@@ -34,6 +34,7 @@ def delayed_source():
         body = block(source, marker)
         declaration = body[:body.index("{")].replace("SipTransport::", "").strip()
         declaration = declaration.replace("bool remote_is_answer", "bool remote_is_answer = false")
+        declaration = declaration.replace("AudioSdpDirection *audio_direction)", "AudioSdpDirection *audio_direction = nullptr)")
         declaration = declaration.replace("const RtpAudioPayloads *rx_payloads)", "const RtpAudioPayloads *rx_payloads = nullptr)")
         if "send_response_" in marker:
             declaration = 'bool send_response_(uint16_t,const char*,const std::string & = "",const std::string & = "")'
@@ -50,6 +51,7 @@ def delayed_source():
         declarations += body[:body.index("{")].replace("SipTransport::", "").strip() + ";\n"
         code += "\n" + body
     declarations = declarations.replace("const char *direction) const;", 'const char *direction = "sendrecv") const;')
+    declarations = declarations.replace("const AudioSdpDirection *audio_direction) const;", "const AudioSdpDirection *audio_direction = nullptr) const;")
     code = code.replace(" uint16_t sip_port_=5060;", declarations + r'''
  AudioFormatList offer_tx_formats_,offer_rx_formats_;int media_config_lock_=0;
  PcmReceiveConverter pcm_receive_converter_;
@@ -111,6 +113,11 @@ int main(int argc,char**argv){
  s.offer_tx_formats_.count=s.offer_rx_formats_.count=2;
  s.offer_tx_formats_.formats[0]=s.offer_rx_formats_.formats[0]=fmt(16);
  s.offer_tx_formats_.formats[1]=s.offer_rx_formats_.formats[1]=fmt(10);
+ if(scenario=="asymmetric"){
+  s.offer_tx_formats_.count=s.offer_rx_formats_.count=1;
+  s.offer_tx_formats_.formats[0]=fmt(10);
+  s.offer_rx_formats_.formats[0]=fmt(20);
+ }
  if(scenario=="resample"){
   auto f=fmt(10);f.sample_rate=48000;s.offer_rx_formats_.formats[0]=f;
   s.offer_tx_formats_.formats[2]=f;s.offer_tx_formats_.count=3; // Explicit ordinary48k fallback, after16k TX.
@@ -120,7 +127,9 @@ int main(int argc,char**argv){
  phone.auto_answer_=scenario!="manual";
  if(scenario=="sendfail")phone.t.final_ok=false;
  auto invite=request(peer,"INVITE",1,"","delayed");auto tag=invite.find(";tag=local");invite.erase(tag,10);
- peer.send_to(s,invite);assert(peer.drain().size()==1);assert(s.delivered.size()==1);
+ peer.send_to(s,invite);const auto progress=peer.drain();assert(progress.size()==1);
+ assert(progress[0].rfind("SIP/2.0 100",0)==0&&"Offerless INVITE must retain independently configured TX/RX durations");
+ assert(s.delivered.size()==1);
  phone.on_sip_signal_received_(s.delivered[0]);phone.drain();auto accepted=peer.drain();
  if(scenario=="sendfail"){
   assert(accepted.empty()&&!phone.incoming_answer_accepted_&&s.pending_bye_.empty());
@@ -207,7 +216,7 @@ def test_delayed_ack_finalizes_application_format_and_device_ownership(delayed_b
 
 
 @pytest.mark.parametrize("transport", ["udp", "tcp"])
-@pytest.mark.parametrize("scenario", ["resample", "missing", "invalid", "prepare", "commit", "timeout", "cancel", "sendfail"])
+@pytest.mark.parametrize("scenario", ["asymmetric", "resample", "missing", "invalid", "prepare", "commit", "timeout", "cancel", "sendfail"])
 def test_delayed_ack_failure_or_resampler_uses_final_contract(delayed_binary, transport, scenario):
     result = subprocess.run([str(delayed_binary), transport, "sendrecv", scenario], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr

@@ -673,6 +673,8 @@ void VoipStack::finish_application_media_start_(ApplicationMediaStart action) {
 #endif
     const CallSnapshot call = this->snapshot_call_identity_();
     if (call.call_id.empty()) return;
+    // Local preparation must not consume the remote INVITE response budget.
+    this->calling_start_time_ = millis();
     if (!this->send_sip_invite_(call.call_id, call.caller_route, call.caller_name, call.dest_route, call.dest_name)) {
       ESP_LOGE(TAG, "SIP INVITE send failed");
       this->request_call_termination_({CallEndReason::PROTOCOL_ERROR, nullptr, SipTerminationAction::NONE, false});

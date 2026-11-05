@@ -112,6 +112,9 @@ struct SipTransport {
  std::string build_video_direction_offer_(bool,uint32_t)const;
 };
 '''
+    if 'bool *zero_connection' in sdp:
+        code = code.replace('bool learn_remote_video_from_sdp_(const std::string&,uint32_t,bool);',
+                            'bool learn_remote_video_from_sdp_(const std::string&,uint32_t,bool,bool* =nullptr);')
     for source, signature in [(owner, "void SipTransport::reset_video_negotiation_()"),
                               (sdp, "bool SipTransport::learn_remote_video_from_sdp_("),
                               (sdp, "std::string SipTransport::append_video_sdp_("),

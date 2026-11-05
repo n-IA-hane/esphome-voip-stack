@@ -41,7 +41,8 @@ constexpr unsigned MAX_SIP_BODY_BYTES=4096;
     # extracted production methods, with JPEG and DTMF enabled together.
     helpers += r'''
 struct Child {
- bool running=true,send=false,receive=false,fail_retarget=false;unsigned calls=0;
+ bool running=true,send=false,receive=false,fail_retarget=false,rtcp_send=true;unsigned calls=0;
+ void set_rtcp_send_enabled(bool enabled){rtcp_send=enabled;}
  uint32_t ip=0xc0a801c8,rtcp_ip=0xc0a801c8;uint16_t port=40040,rtcp_port=40041;
  bool is_running()const{return running;}
  bool can_retarget_inactive_remote()const{return running&&!send&&!receive;}
@@ -101,6 +102,9 @@ struct Child {
     code = code.replace('std::string build_sdp_answer_() const;', 'std::string build_sdp_answer_(const DtmfConfig* =nullptr) const;')
     code = code.replace('bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false);',
         'bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false,DtmfConfig* =nullptr);')
+    if 'bool *zero_connection' in sdp:
+        code = code.replace('bool learn_remote_video_from_sdp_(const std::string&,uint32_t,bool);',
+                            'bool learn_remote_video_from_sdp_(const std::string&,uint32_t,bool,bool* =nullptr);')
     for text, marker in [(owner,'void SipTransport::reset_video_negotiation_()'),
                          (owner,'VideoCapability SipTransport::local_video_direction_capability_('),
                          (sdp,'bool SipTransport::learn_remote_video_from_sdp_('),
@@ -115,18 +119,20 @@ struct Child {
 int main(int argc,char**argv){
  assert(argc==2);const std::string mode=argv[1];SipTransport t;
  t.video_rx_.encoding="JPEG";t.video_rx_.payload_type=26;t.video_rx_.width=320;t.video_rx_.height=240;t.video_rx_.max_fps=10;
- // Exact FULL10 generated format lists, including non-selected alternatives.
+ // Keep the captured FULL dialog below and a separately added32k capability.
+ // That extra mapping declares10ms so the whole new offer can honor max10.
  AudioFormat f;f.sample_rate=16000;t.offer_tx_formats_.count=3;
  f.frame_ms=16;t.offer_tx_formats_.formats[0]=f;f.frame_ms=10;t.offer_tx_formats_.formats[1]=f;
  f.frame_ms=20;t.offer_tx_formats_.formats[2]=f;t.offer_rx_formats_.count=6;
  f.sample_rate=48000;f.frame_ms=10;t.offer_rx_formats_.formats[0]=f;
- f.sample_rate=32000;f.frame_ms=16;t.offer_rx_formats_.formats[1]=f;
+ f.sample_rate=32000;f.frame_ms=10;t.offer_rx_formats_.formats[1]=f;
  f.sample_rate=16000;f.frame_ms=10;t.offer_rx_formats_.formats[2]=f;
  f.frame_ms=16;t.offer_rx_formats_.formats[3]=f;f.frame_ms=32;t.offer_rx_formats_.formats[4]=f;
  f.frame_ms=20;t.offer_rx_formats_.formats[5]=f;t.peer_directional_audio_v1_=true;
  const auto built=t.build_sdp_offer_();
  assert(built.find("a=x-voip-stack-independent-ptime:1\r\n")!=std::string::npos);
  assert(built.find("L16/32000/1\r\n")!=std::string::npos);
+ assert(built.find("a=maxptime:10\r\n")!=std::string::npos);
  // Replay the historical established dialog with its exact original PT map.
  // The current offer also advertises configured mappings at other durations,
  // so its newly assigned PTs cannot be paired with this frozen old answer.

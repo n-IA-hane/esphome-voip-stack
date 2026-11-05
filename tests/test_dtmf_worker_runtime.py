@@ -70,6 +70,7 @@ struct SipTransport {
  int rtp_socket_=-1;uint16_t rtp_port_=0;
  Queue queue;Queue*dtmf_queue_=&queue;
  std::atomic<bool>media_active_{true},rtp_running_{true},rtp_task_terminate_{false},rtp_task_quiesced_{false};
+ std::atomic<bool>audio_send_enabled_{true},audio_receive_enabled_{true},audio_receive_reset_pending_{false};
  std::atomic<uint32_t>rtp_tx_packets_{0},rtp_rx_packets_{0},rtp_tx_bytes_{0},rtp_rx_bytes_{0},rtp_rx_datagrams_{0};
  std::atomic<uint32_t>latched_rtp_ip_v4_{0},latched_rtp_ssrc_{0};std::atomic<uint16_t>latched_rtp_port_{0};std::atomic<bool>rtp_ssrc_latched_{false};
  enum class MediaLifecyclePhase {IDLE,ACTIVE,CLEANING,SHUTTING_DOWN};

@@ -36,7 +36,7 @@ uint32_t xTaskGetTickCount(){return tick;}
 void ulTaskNotifyTake(int,uint32_t duration){tick+=duration;if(++waits>100)throw Done{};}
 enum class CallState{IN_CALL,IDLE};
 enum class SilenceReason{NONE,MUTED_SINK,NETWORK_GAP,PREROLL};
-struct Transport{void reset_audio_decoder(){} size_t convert_received_pcm(const AudioFormat&,const uint8_t*,size_t,uint8_t*,size_t){return 0;}};
+struct Transport{bool audio_receive_paused()const{return false;}void reset_audio_decoder(){} size_t convert_received_pcm(const AudioFormat&,const uint8_t*,size_t,uint8_t*,size_t){return 0;}};
 struct Speaker {
  bool running=false;unsigned played=0,restarts=0;
  bool is_running(){return running;}

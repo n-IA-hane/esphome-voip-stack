@@ -437,6 +437,7 @@ migration instructions.
 
 Transmit and receive packetization are negotiated independently. Local SDP
 `ptime` describes our receive preference; the remote value guides transmission.
+The remote `maxptime` bounds transmission to declared formats within that limit.
 The maintained FULL packages prefer PCM TX at 16 kHz/20 ms and RX at 48 kHz/10 ms,
 with explicit compatible alternatives. RX at 16 kHz must not displace the
 preferred 48 kHz HA-to-ESP stream when it is supported.
@@ -445,11 +446,12 @@ See the [codec and migration guide](https://github.com/n-IA-hane/esphome-interco
 for complete PCM, G.722 and Opus examples and the distinction between local
 PCM rate and RTP clock rate.
 
-With Asterisk, use `allow=slin48:10,slin16:10`, `asymmetric_rtp_codec=yes`,
-`direct_media=no` and `use_ptime=yes` on the static ESP endpoint. See the
-[classic PBX guide](https://github.com/n-IA-hane/esphome-intercom/blob/main/docs/CLASSIC_PBX.md)
-for static routing without REGISTER and the separate codec choices for other
-phones.
+For a conventional PBX account, use optional SIP REGISTER. PCM remains the
+default; declare G.722 alongside it when the PBX permits that codec. See the
+[registration guide](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_REGISTRATION.md)
+for accounts and the
+[classic PBX guide](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/CLASSIC_PBX.md)
+for the separate legacy static L16 examples.
 
 RTP packet sizes are guarded by `udp_max_payload` (default 1200 bytes), enforced at validation.
 
@@ -744,9 +746,14 @@ Removed options rejected with migration guidance: `processor_id`, `aec_reference
 - Audio supports explicitly declared PCM and optional G.722/Opus within the
   supported rate/format matrix. Opus is currently admitted only on supported S3
   VoIP-only profiles; the validator rejects FULL/P4 while qualification is pending.
-- In-dialog re-INVITE, including ordinary hold or codec renegotiation, receives
-  `488 Not Acceptable Here`. The established dialog/media remains active and a
-  later BYE still terminates the original call.
+- Established calls accept audio hold/resume through re-INVITE with `sendonly`,
+  `recvonly`, `inactive` or legacy `c=IN IP4 0.0.0.0`, retaining the existing call and
+  media owners and the negotiated codec/RTP mappings. Ordinary inactive streams
+  retain RTCP; streams with a zero connection address send neither RTP nor RTCP.
+- Initial audio offers with `inactive` or `c=IN IP4 0.0.0.0` still receive
+  `488 Not Acceptable Here`. In-dialog codec migration is unsupported. Rejected
+  proposals preserve the established dialog and media configuration for a later
+  resume or BYE.
 - The phonebook is not an inbound allowlist. Any peer with network reachability
   may send an INVITE, so plaintext SIP/RTP belongs on a trusted LAN/VPN or
   behind firewall/SBC policy.

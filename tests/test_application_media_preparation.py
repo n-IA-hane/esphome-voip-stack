@@ -74,6 +74,7 @@ int main(){
  for(clock_ms=10;clock_ms<600;clock_ms+=10){sink.progress();phone.pump_application_media_start_();assert(!invites);}
  sink.progress();phone.pump_application_media_start_();assert(invites==1&&sink.is_running());
  assert(clock_ms==600&&"Only normal speaker progress, never an arbitrary extra delay");
+ assert(phone.calling_start_time_==clock_ms&&"The first-response budget starts at INVITE, after preparation");
 #else
  assert(invites==1&&!sink.starts);
 #endif

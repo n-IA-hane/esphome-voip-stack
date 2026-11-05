@@ -1,0 +1,65 @@
+# Shared compile-only media package, included by both architecture gates.
+external_components:
+  - source: ../esphome/components
+    components: [voip_stack]
+logger:
+api:
+  custom_services: true
+i2s_audio:
+  - id: rx_i2s
+    i2s_bclk_pin: GPIO9
+    i2s_lrclk_pin: GPIO10
+  - id: tx_i2s
+    i2s_bclk_pin: GPIO12
+    i2s_lrclk_pin: GPIO13
+microphone:
+  - platform: i2s_audio
+    id: mic_main
+    adc_type: external
+    i2s_audio_id: rx_i2s
+    i2s_din_pin: GPIO11
+    channel: left
+    sample_rate: 16000
+    bits_per_sample: 16bit
+speaker:
+  - platform: i2s_audio
+    id: spk_main
+    dac_type: external
+    i2s_audio_id: tx_i2s
+    i2s_dout_pin: GPIO14
+    channel: mono
+    sample_rate: 48000
+    bits_per_sample: 16bit
+voip_stack:
+  id: phone
+  microphone_source:
+    microphone: mic_main
+    bits_per_sample: 16
+    channels: [0]
+  speaker: spk_main
+  audio:
+    codecs:
+      - codec: pcm
+        tx:
+          - sample_rate: 16000
+            frame_ms: 20
+          - sample_rate: 16000
+            frame_ms: 10
+        rx:
+          - sample_rate: 48000
+            frame_ms: 10
+          - sample_rate: 16000
+            frame_ms: 20
+          - sample_rate: 16000
+            frame_ms: 10
+      - codec: g722
+        tx:
+          - sample_rate: 16000
+            frame_ms: 20
+          - sample_rate: 16000
+            frame_ms: 10
+        rx:
+          - sample_rate: 16000
+            frame_ms: 20
+          - sample_rate: 16000
+            frame_ms: 10

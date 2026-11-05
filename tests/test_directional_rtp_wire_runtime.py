@@ -27,10 +27,6 @@ struct Mutex{};struct LockGuard{explicit LockGuard(Mutex&){}};
  std::atomic<uint32_t>rtp_tx_packets_{0},rtp_tx_bytes_{0};int rtp_socket_=-1;Mutex rtp_socket_mutex_;
  void send_audio_frame(const uint8_t*,size_t);
 ''', 1)
-    old = "void get_media_config_(AudioFormat*a,AudioFormat*b,uint8_t*c,uint8_t*d,RtpAudioPayloads*e)const{*a=tx;*b=rx;*c=tx_pt;*d=rx_pt;*e=accepted;}"
-    new = "void get_media_config_(AudioFormat*a,AudioFormat*b,uint8_t*c,uint8_t*d,RtpAudioPayloads*e=nullptr)const{if(a)*a=tx;if(b)*b=rx;if(c)*c=tx_pt;if(d)*d=rx_pt;if(e)*e=accepted;}"
-    assert old in code
-    code = code.replace(old, new)
     parser = (SOURCE / "sip_message.cpp").read_text()
     for marker in ["size_t pcm_to_rtp_payload(", "size_t rtp_payload_to_pcm("]:
         body = block(parser, marker)

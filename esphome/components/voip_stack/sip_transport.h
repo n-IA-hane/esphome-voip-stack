@@ -212,6 +212,9 @@ class SipTransport : public SipPhoneTransport {
     return this->audio_receive_enabled_.load(std::memory_order_acquire) &&
         !this->refer_media_waiting_.load(std::memory_order_acquire);
   }
+  bool audio_receive_paused() const override {
+    return !this->audio_receive_enabled_.load(std::memory_order_acquire);
+  }
 
  protected:
   enum class SipEvent : uint8_t {
@@ -337,11 +340,19 @@ class SipTransport : public SipPhoneTransport {
   bool send_connected_identity_update_();
   std::string build_sdp_capabilities_(uint32_t peer_ip) const;
   std::string build_sdp_offer_();
+  // A re-INVITE can pause directions without releasing their codec geometry.
+  // This proposal lives on the signaling stack until the final response.
+  struct AudioSdpDirection {
+    bool send{false};
+    bool receive{false};
+    bool zero_connection{false};
+    bool video_zero_connection{false};
+  };
   std::string build_sdp_answer_(
 #ifdef USE_ESPHOME_VOIP_DTMF
-      const DtmfConfig *dtmf_proposal = nullptr
+      const DtmfConfig *dtmf_proposal = nullptr,
 #endif
-      ) const;
+      const AudioSdpDirection *audio_direction = nullptr) const;
   std::string wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
                                  const std::string &maps, const std::string &flows,
                                  uint8_t ptime, const char *direction = "sendrecv") const;
@@ -351,13 +362,14 @@ class SipTransport : public SipPhoneTransport {
 #ifdef USE_ESPHOME_VOIP_DTMF
                                   , DtmfConfig *dtmf_proposal = nullptr
 #endif
-                                  );
+                                  , AudioSdpDirection *audio_direction = nullptr);
   void capture_remote_media_shape_(const std::string &sdp);
   std::string rejected_media_answer_(const std::string &media_line) const;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   bool learn_remote_video_from_sdp_(const std::string &sdp,
                                     uint32_t default_ip,
-                                    bool remote_is_answer);
+                                    bool remote_is_answer,
+                                    bool *zero_connection = nullptr);
   std::string append_video_sdp_(const std::string &sdp,
                                 const std::string &local_ip,
                                 bool answer, bool capabilities = false) const;
@@ -690,7 +702,9 @@ class SipTransport : public SipPhoneTransport {
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   PcmReceiveConverter pcm_receive_converter_;
 #endif
+  std::atomic<bool> audio_send_enabled_{true};
   std::atomic<bool> audio_receive_enabled_{true};
+  std::atomic<bool> audio_receive_reset_pending_{false};
   AudioFormat selected_tx_format_{DEFAULT_AUDIO_FORMAT};
   AudioFormat selected_rx_format_{DEFAULT_AUDIO_FORMAT};
   uint8_t rtp_tx_payload_type_{96};

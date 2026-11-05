@@ -94,7 +94,9 @@ struct Speaker {
   running=true;return bytes;
  }
 };
+struct Transport{bool audio_receive_paused()const{return false;}};
 struct VoipStack {
+ Transport *transport_=nullptr;
  Speaker *speaker_=nullptr;RtpJitterBuffer *rx_jitter_buffer_=nullptr;
  bool audio_debug_=true;
  std::atomic<bool> audio_devices_active_{true};

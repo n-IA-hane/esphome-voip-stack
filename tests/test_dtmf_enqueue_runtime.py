@@ -113,7 +113,7 @@ struct SipTransport {
  mutable std::mutex dialog_mutex_,rtp_socket_mutex_,media_config_lock_;
  DtmfFormat dtmf_tx_format_{8000,0xFFFF,109},dtmf_rx_format_{};
  std::atomic<uint32_t>media_proposal_epoch_{8},dtmf_generation_{8},remote_rtp_ip_v4_{INADDR_LOOPBACK};
- std::atomic<uint16_t>remote_rtp_port_{40000};std::atomic<bool>media_active_{true},rtp_running_{true};
+ std::atomic<uint16_t>remote_rtp_port_{40000};std::atomic<bool>media_active_{true},rtp_running_{true},audio_send_enabled_{true};
  int rtp_socket_=-1;uint16_t rtp_port_=0;Queue queue;Queue*dtmf_queue_=&queue;uint8_t direction=3;
  uint8_t get_audio_direction_()const{return direction;}
  void get_media_config_(AudioFormat*f,void*,void*,void*)const{if(f)*f=direction&1?AudioFormat{}:disabled_audio_format();}

@@ -2899,13 +2899,7 @@ def test_unanswered_invite_timeout_does_not_send_cancel() -> None:
         component.index("void VoipStack::handle_call_timeouts_") :
         component.index("\nvoid VoipStack::loop()")
     ]
-    no_response = timeout_dispatch[
-        timeout_dispatch.index("if (!saw_sip_response)") :
-        timeout_dispatch.index(
-            "\n  if (calling_timeout_ms > 0",
-            timeout_dispatch.index("if (!saw_sip_response)"),
-        )
-    ]
+    no_response = braced_block_after(timeout_dispatch, "if (!saw_sip_response)")
     assert "fire_unanswered_invite_timeout_();" in no_response
     assert "fire_timeout_decline_();" not in no_response
 

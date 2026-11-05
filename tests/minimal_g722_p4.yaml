@@ -1,0 +1,10 @@
+esphome:
+  name: voip-g722-p4
+esp32:
+  board: esp32-p4-evboard
+  variant: esp32p4
+  framework:
+    type: esp-idf
+packages:
+  media: !include g722_duplex_base.yaml
+network:

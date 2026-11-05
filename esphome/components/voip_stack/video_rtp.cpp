@@ -367,6 +367,7 @@ bool VideoRtpSession::set_negotiated(
       std::memory_order_release);
   this->send_enabled_ = send_enabled;
   this->receive_enabled_ = receive_enabled;
+  this->rtcp_send_enabled_.store(true, std::memory_order_release);
   this->send_prepared_.store(false, std::memory_order_release);
   this->receive_prepared_.store(false, std::memory_order_release);
   this->rx_reset_requested_.store(false, std::memory_order_release);
@@ -2270,9 +2271,15 @@ size_t VideoRtpSession::build_rtcp_report_sdes_(uint8_t *packet,
   return size;
 }
 
+void VideoRtpSession::set_rtcp_send_enabled(bool enabled) {
+  LockGuard lock(this->socket_mutex_);
+  this->rtcp_send_enabled_.store(enabled, std::memory_order_release);
+}
+
 void VideoRtpSession::send_rtcp_packet_(const uint8_t *packet, size_t size) {
   if (packet == nullptr || size == 0) return;
   LockGuard lock(this->socket_mutex_);
+  if (!this->rtcp_send_enabled_.load(std::memory_order_acquire)) return;
   const uint32_t ip =
       this->remote_rtcp_ip_v4_.load(std::memory_order_acquire);
   const uint16_t latched_port =

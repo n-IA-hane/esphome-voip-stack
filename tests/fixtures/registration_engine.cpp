@@ -179,6 +179,67 @@ int main(int argc, char** argv) {
   Harness h(tcp);
   auto c = h.config();
   assert(c.valid());
+  if (scenario == "rfc-syntax") {
+    assert(argc == 5);
+    const std::string style = argv[3];
+    const bool auth = std::string(argv[4]) == "auth";
+    assert(h.manager.set_account(c, 0));
+    h.manager.tick(0);
+    auto request = h.first.receive();
+    const auto rewrite = [&](std::string message) {
+      const auto replace = [&](const std::string& from, const std::string& to) {
+        const auto at = message.find(from);
+        if (at != std::string::npos) message.replace(at, from.size(), to);
+      };
+      if (style == "contact-hcolon") replace("\r\nContact:", "\r\nContact \t:");
+      if (style == "contact-fold") replace("\r\nContact: ", "\r\nContact:\r\n\t");
+      if (style == "cseq-hcolon") replace("\r\nCSeq:", "\r\nCSeq \t:");
+      const auto sequence = field(request, "CSeq");
+      const auto separator = sequence.find(' ');
+      const std::string whitespace = style == "cseq-tab" ? "\t" :
+          style == "cseq-spaces" ? "  \t " : style == "cseq-fold" ? "\r\n\t" : " ";
+      replace("CSeq: " + sequence, "CSeq: " + sequence.substr(0, separator) + whitespace + "REGISTER");
+      return message;
+    };
+    if (auth) {
+      h.feed(h.first, rewrite(response(request, 401,
+          "WWW-Authenticate: Digest realm=\"syntax\",nonce=\"syntax\",algorithm=SHA-256,qop=\"auth\"\r\n")), 1);
+      request = h.first.receive();
+      assert(!field(request, "Authorization").empty());
+    }
+    auto accepted = h.success(request, 60);
+    const auto own_uri = h.manager.account(0).contact;
+    std::string contact;
+    if (style == "quoted-angle") contact = "\"Phone <door>\" <" + own_uri + ">;expires=60";
+    if (style == "escaped-angle") contact = "\"Phone \\\"<door>\\\"\" <" + own_uri + ">;expires=60";
+    if (style == "quoted-only") contact = "\"<" + own_uri + ">\"";
+    if (style == "wrong-real-uri") contact = "\"<" + own_uri + ">\" <sip:other@example.test:5060>;expires=60";
+    if (style == "suffix-junk") contact = "<" + own_uri + ">junk;expires=60";
+    if (style == "two-uris") contact = "<" + own_uri + "><sip:other@example.test:5060>;expires=60";
+    if (!contact.empty()) accepted = response(request, 200, "Contact: " + contact + "\r\n");
+    const bool bare = style.find("bare") != std::string::npos;
+    if (bare) {
+      assert(!tcp);
+      auto contact = h.manager.account(0).contact;
+      contact.resize(contact.find(';'));
+      const auto port = contact.substr(contact.rfind(':') + 1);
+      if (style == "wrong-bare-binding") contact.replace(4, 3, "999");
+      const bool expired = style == "expired-bare-binding";
+      accepted = response(request, 200, "Contact: " + contact +
+          (style == "bare-expiry-fallback" ? "" : expired ? ";expires=0" : ";expires=60") +
+          "\r\nExpires: 60\r\n");
+      const auto via = field(request, "Via");
+      const auto at = accepted.find("Via: " + via);
+      accepted.replace(at, 5 + via.size(), "Via: " + via + ";received=127.0.0.1;rport=" + port);
+    }
+    h.feed(h.first, rewrite(accepted), 2);
+    const bool expected = style != "wrong-bare-binding" && style != "expired-bare-binding" &&
+        style != "quoted-only" && style != "wrong-real-uri" && style != "suffix-junk" && style != "two-uris";
+    assert(h.manager.is_registered("office") == expected);
+    if (expected) assert(h.manager.account(0).negotiated_expires == 60);
+    std::cout << "PASS rfc-syntax " << (tcp ? "tcp" : "udp") << "\n";
+    return 0;
+  }
   if (scenario == "async") {
     h.hooks.resolve = [](void*, size_t, const std::string&) { return SipRegistration::RESOLUTION_PENDING; };
     h.manager.set_hooks(h.hooks);

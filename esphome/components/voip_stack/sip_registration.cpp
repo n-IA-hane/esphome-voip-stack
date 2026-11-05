@@ -156,13 +156,9 @@ bool contact_uri_equal(const std::string& left, const std::string& right) {
 }
 
 bool find_registered_contact(const std::string& message, const std::string& expected, std::string* expires) {
-  size_t line = message.find("\r\n");
-  while (line != std::string::npos) {
-    const size_t end = message.find("\r\n", line + 2);
-    if (end == std::string::npos || end == line + 2) break;
-    const size_t colon = message.find(':', line + 2);
-    if (colon < end && sip_header_name_equal(std::string_view(message).substr(line + 2, colon - line - 2), "Contact")) {
-      const std::string values = message.substr(colon + 1, end - colon - 1);
+  bool found = false;
+  sip_record_fields(message, "Contact", [&](std::string_view field) {
+      const std::string values = sip_record_unfold(field);
       size_t first = 0;
       bool quoted = false, angle = false, escaped = false;
       for (size_t p = 0; p <= values.size(); ++p) {
@@ -181,17 +177,47 @@ bool find_registered_contact(const std::string& message, const std::string& expe
         if (c != ',' || quoted || angle) continue;
         const std::string item = trim(values.substr(first, p - first));
         first = p + 1;
-        const size_t open = item.find('<'), close = item.find('>');
-        if (open == std::string::npos || close == std::string::npos || close <= open) continue;
-        if (contact_uri_equal(item.substr(open + 1, close - open - 1), expected)) {
-          *expires = parameter(item.substr(close + 1), "expires");
-          return true;
+        size_t open = std::string::npos, close = std::string::npos;
+        bool name_quoted = false, name_escaped = false, invalid_angles = false;
+        for (size_t index = 0; index < item.size(); ++index) {
+          const char current = item[index];
+          if (name_escaped) { name_escaped = false; continue; }
+          if (name_quoted && current == '\\') { name_escaped = true; continue; }
+          if (current == '"') { name_quoted = !name_quoted; continue; }
+          if (name_quoted) continue;
+          if (current == '<') {
+            if (open != std::string::npos || close != std::string::npos) invalid_angles = true;
+            else open = index;
+          } else if (current == '>') {
+            if (open == std::string::npos || close != std::string::npos) invalid_angles = true;
+            else close = index;
+          }
+        }
+        if (name_quoted || name_escaped || invalid_angles) continue;
+        std::string contact, parameters;
+        if (open != std::string::npos && close != std::string::npos && close > open) {
+          contact = item.substr(open + 1, close - open - 1);
+          parameters = trim(item.substr(close + 1));
+          if (!parameters.empty() && parameters.front() != ';') continue;
+        } else if (open == std::string::npos && close == std::string::npos) {
+          // Without angle brackets, semicolons delimit header parameters,
+          // not URI parameters (RFC 3261 section 20).
+          const auto semicolon = item.find(';');
+          contact = trim(item.substr(0, semicolon));
+          if (contact.find_first_of(" \t\"") != std::string::npos) continue;
+          if (semicolon != std::string::npos) parameters = item.substr(semicolon);
+        } else {
+          continue;
+        }
+        if (contact_uri_equal(contact, expected)) {
+          *expires = parameter(parameters, "expires");
+          found = true;
+          return false;
         }
       }
-    }
-    line = end;
-  }
-  return false;
+      return true;
+  });
+  return found;
 }
 
 bool find_registered_binding(const std::string &message, const SipRegistration::Account &account,
@@ -628,10 +654,12 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
                                       int flow_index, uint32_t now) {
   if (!this->initialized()) return false;
   if (message.rfind("SIP/2.0 ", 0) != 0) return false;
-  const auto sequence = header_view(message, "CSeq");
-  const auto separator = sequence.find(' ');
+  const auto sequence = sip_record_first(message, "CSeq");
+  const auto separator = sequence.find_first_of(" \t\r\n");
   if (separator == std::string_view::npos) return false;
-  const auto method = sequence.substr(separator + 1);
+  const auto method_start = sequence.find_first_not_of(" \t\r\n", separator);
+  if (method_start == std::string_view::npos) return false;
+  const auto method = sequence.substr(method_start);
   if (method != "REGISTER" && method != "OPTIONS") return false;
   const auto id = header_view(message, "Call-ID");
   for (size_t i = 0; i < CAPACITY; ++i) {

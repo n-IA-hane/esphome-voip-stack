@@ -32,7 +32,7 @@ struct LockGuard{std::mutex&m;explicit LockGuard(std::mutex&v):m(v){m.lock();}~L
 #include "rtp_jitter_buffer.h"
 struct SipTransport {
  std::mutex rtp_socket_mutex_;int rtp_socket_=-1;
- std::atomic<bool>rtp_running_{true},media_active_{true};
+ std::atomic<bool>rtp_running_{true},media_active_{true},audio_send_enabled_{true};
  std::atomic<uint32_t>media_proposal_epoch_{8},dtmf_generation_{8},remote_rtp_ip_v4_{INADDR_LOOPBACK};
  std::atomic<uint16_t>remote_rtp_port_{0},rtp_sequence_{100};
  std::atomic<uint32_t>rtp_timestamp_{0xFFFFFF00};size_t udp_max_payload_=1200;

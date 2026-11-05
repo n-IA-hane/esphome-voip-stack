@@ -49,6 +49,8 @@ class VoipStack {
   Transport *transport_{&backing};
   void *speaker_{nullptr};
   uint32_t ringing_timeout_ms_{0}, ringing_start_time_{0}, calling_start_time_{0};
+  enum class ApplicationMediaStart : uint8_t { NONE, ORIGINATE, ANSWER, CONFIRM, OFFER };
+  ApplicationMediaStart pending_media_start_{ApplicationMediaStart::NONE};
   static constexpr uint32_t INVITE_NO_RESPONSE_TIMEOUT_MS=5000, MEDIA_TIMEOUT_MS=15000;
   std::atomic<uint32_t> media_timeout_rtp_rx_packets_{0}, last_peer_audio_ms_{100};
   std::atomic<bool> first_audio_received_{false};
@@ -138,6 +140,23 @@ int main() {
   provisional.handle_call_timeouts_(10000, 10000);
   assert(provisional.dial_timeouts == 1);
   assert(provisional.backing.snapshot_reads == 0);
+
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+  // Dial preparation has its own deadline. No unanswered INVITE exists yet.
+  VoipStack preparing;
+  preparing.call_state_=CallState::CALLING;
+  preparing.pending_media_start_=VoipStack::ApplicationMediaStart::ORIGINATE;
+  preparing.handle_call_timeouts_(5000, 1000);
+  assert(preparing.dial_timeouts == 0);
+  // A slow but valid preparation must leave the complete response budget.
+  preparing.pending_media_start_=VoipStack::ApplicationMediaStart::NONE;
+  preparing.calling_start_time_=4900;
+  preparing.handle_call_timeouts_(5000, 0);
+  preparing.handle_call_timeouts_(9899, 0);
+  assert(preparing.dial_timeouts == 0);
+  preparing.handle_call_timeouts_(9900, 0);
+  assert(preparing.dial_timeouts == 1);
+#endif
 }
 """
     cpp = tmp_path / "media_timeout.cpp"

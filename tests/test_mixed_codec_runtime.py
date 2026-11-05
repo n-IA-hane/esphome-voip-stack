@@ -177,12 +177,20 @@ int main(int argc,char **argv){
  if(mixed)s.offer_rx_formats_.formats[1]=g722;
  if(variable){s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[1]=fmt(16000,10,AudioCodec::G722);}
  if(std::string(argv[1])=="mixed-undeclared")s.offer_rx_formats_.formats[1]=fmt(16000,10,AudioCodec::G722);
- if(std::string(argv[1])=="mixed-times"){
+ if(std::string(argv[1])=="mixed"||std::string(argv[1])=="mixed-times"){
   s.offer_rx_formats_.count=3;s.offer_rx_formats_.formats[2]=fmt(16000,10,AudioCodec::G722);
  }
  s.set_audio_formats(s.offer_tx_formats_,s.offer_rx_formats_);assert(s.g722_codec_ready_);
  if(mixed){s.offer_tx_formats_.count=3;s.offer_tx_formats_.formats[2]=pcm48;} // Ordinary sendrecv advertises only bidirectional mappings.
- const auto offer=s.build_sdp_offer_();assert(!offer.empty());
+ const auto offer=s.build_sdp_offer_();
+ if(std::string(argv[1])=="mixed-incompatible"){
+  // The original48k10+G72220-only receive union cannot honor one maxptime.
+  // Reject before any RTP admission, rather than inventing G72210 support.
+  assert(offer.empty()&&s.rtp_socket_==-1&&!s.rtp_running_);
+  assert(s.rtp_rx_packets_==0&&s.rtp_tx_packets_==0&&s.emitted==0&&s.decodes==0);
+  return 0;
+ }
+ assert(!offer.empty());
  const std::string answer=std::string("v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio 40002 RTP/AVP ")+
   (mixed?"96 97\r\na=rtpmap:96 L16/48000/1\r\na=rtpmap:97 G722/8000/1\r\n":"9\r\n")+
   "a=ptime:"+std::string(asymmetric?"10":"20")+"\r\na=sendrecv\r\n";
@@ -279,7 +287,7 @@ int main(int argc,char **argv){
     return binary
 
 
-@pytest.mark.parametrize("mode", ["g722", "mixed", "asymmetric", "mixed-times", "mixed-undeclared", "variable"])
+@pytest.mark.parametrize("mode", ["g722", "mixed", "asymmetric", "mixed-times", "mixed-undeclared", "mixed-incompatible", "variable"])
 def test_g722_real_rtp_clock_decode_and_mixed_pcm_playout(g722_playout_binary, mode):
     result = subprocess.run([g722_playout_binary, mode], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr

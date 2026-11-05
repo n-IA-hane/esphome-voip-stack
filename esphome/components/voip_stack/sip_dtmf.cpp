@@ -32,6 +32,7 @@ void SipTransport::append_dtmf_sdp_(std::string *payloads, std::string *maps, ui
 bool SipTransport::can_send_dtmf_locked_(const DtmfFormat &format, uint32_t epoch) const {
   AudioFormat audio_tx; this->get_media_config_(&audio_tx, nullptr, nullptr, nullptr);
   return format.valid() && this->dtmf_queue_ != nullptr && this->rtp_socket_ >= 0 &&
+      this->audio_send_enabled_.load(std::memory_order_acquire) &&
       this->media_active_.load(std::memory_order_acquire) && this->rtp_running_.load(std::memory_order_acquire) &&
       audio_tx.is_valid() && !(this->media_proposal_epoch_.load(std::memory_order_acquire) & 1U) &&
       this->dtmf_generation_.load(std::memory_order_acquire) == epoch &&
@@ -66,7 +67,8 @@ bool SipTransport::send_dtmf_packet_(const DtmfSender::Report &report, const Dtm
   AudioFormat audio_tx; this->get_media_config_(&audio_tx, nullptr, nullptr, nullptr);
   if (!this->rtp_running_.load(std::memory_order_acquire) || !this->media_active_.load(std::memory_order_acquire) ||
       this->rtp_socket_ < 0 || this->dtmf_generation_.load(std::memory_order_acquire) != epoch ||
-      !audio_tx.is_valid() || (this->media_proposal_epoch_.load(std::memory_order_acquire) & 1U)) return false;
+      !audio_tx.is_valid() || !this->audio_send_enabled_.load(std::memory_order_acquire) ||
+      (this->media_proposal_epoch_.load(std::memory_order_acquire) & 1U)) return false;
   const uint32_t ip = this->remote_rtp_ip_v4_.load(std::memory_order_acquire);
   const uint16_t port = this->remote_rtp_port_.load(std::memory_order_acquire);
   if (ip == 0 || port == 0) return false;

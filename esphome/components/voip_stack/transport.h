@@ -217,6 +217,7 @@ class SipPhoneTransport {
   /// An accepted REFER may retain its operation after the original INVITE
   /// ends. SIP setup, rather than the RTP watchdog, owns that waiting period.
   virtual bool remote_audio_expected() const { return true; }
+  virtual bool audio_receive_paused() const { return false; }
 
   // === Callbacks (set by VoipStack before start()) ===
 
