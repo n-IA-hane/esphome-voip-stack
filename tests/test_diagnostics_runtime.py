@@ -61,6 +61,7 @@ struct VoipStack{
  std::atomic<CallState>call_state_{CallState::IN_CALL};
  std::atomic<uint32_t>media_tx_queue_depth_{1},media_tx_queue_drops_{0},media_rx_queue_depth_{2},media_rx_queue_drops_{0};
  std::atomic<bool>audio_devices_active_{true};
+ std::atomic<float>volume_{.75f},mic_gain_{2.0f};
  Mutex call_state_mutex_;std::string current_call_id_="private-caller-token",last_reason_="local_hangup";
  std::unique_ptr<Transport>transport_=std::make_unique<Transport>();
  std::unique_ptr<RtpJitterBuffer>rx_jitter_buffer_=std::make_unique<RtpJitterBuffer>();
@@ -96,6 +97,7 @@ int main(){
  s.dump_diagnostics();assert(lines.size()==1);
  // A hangup during output must not rewrite the already captured report.
  s.current_call_id_.clear();s.call_state_=CallState::IDLE;s.transport_->value.rtp_tx_packets=999;s.last_reason_="different";
+ s.volume_=0;s.mic_gain_=1;
 
  s.audio_devices_active_=false;
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
@@ -105,6 +107,8 @@ int main(){
  held.busy.clear();
 #endif
  s.finish();assert(!s.diagnostic_dump_&&!s.pending);
+ bool original_gains=false;for(const auto &line:lines)original_gains|=line.find("rx_volume=0.750 tx_gain=2.000")!=std::string::npos;
+ assert(original_gains&&"Diagnostic gains must retain the requested snapshot after hangup");
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
  assert(stack_reads==2);
 #else

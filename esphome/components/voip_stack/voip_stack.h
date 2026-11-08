@@ -562,6 +562,7 @@ class VoipStack : public Component {
     AudioFormat tx, rx;
     uint32_t requested_ms{0}, call_hash{0};
     uint32_t tx_depth{0}, tx_drops{0}, rx_depth{0}, rx_drops{0};
+    float receive_volume{1.0f}, transmit_gain{1.0f};
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
     RtpJitterBuffer::Counters jitter{};
 #endif

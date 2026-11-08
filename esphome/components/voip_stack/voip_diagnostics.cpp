@@ -107,6 +107,8 @@ void VoipStack::dump_diagnostics() {
   dump->tx_drops = this->media_tx_queue_drops_.load(std::memory_order_relaxed);
   dump->rx_depth = this->media_rx_queue_depth_.load(std::memory_order_relaxed);
   dump->rx_drops = this->media_rx_queue_drops_.load(std::memory_order_relaxed);
+  dump->receive_volume = this->volume_.load(std::memory_order_relaxed);
+  dump->transmit_gain = this->mic_gain_.load(std::memory_order_relaxed);
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   if (this->rx_jitter_buffer_ != nullptr) {
     dump->jitter = this->rx_jitter_buffer_->counters();
@@ -193,9 +195,9 @@ void VoipStack::emit_diagnostic_section_() {
 #endif
       break;
     case 9: {
-      ESP_LOGI(TAG, "audio: active=%s buffers_psram=%s task_stacks_psram=%s audio_stacks_psram=%s route=%s",
+      ESP_LOGI(TAG, "audio: active=%s buffers_psram=%s task_stacks_psram=%s audio_stacks_psram=%s route=%s rx_volume=%.3f tx_gain=%.3f",
                YESNO(dump.audio_active), YESNO(this->buffers_in_psram_), YESNO(this->task_stacks_in_psram_),
-               YESNO(this->audio_task_stacks_in_psram_), dump.route);
+               YESNO(this->audio_task_stacks_in_psram_), dump.route, dump.receive_volume, dump.transmit_gain);
       unsigned rx_bytes = 0, rx_free = 0, tx_bytes = 0, tx_free = 0;
       bool rx_present = false, tx_present = false;
       // ESP-IDF reports bytes, unlike upstream FreeRTOS stack words. Scan only

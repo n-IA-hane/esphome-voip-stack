@@ -254,16 +254,20 @@ void VoipStack::load_settings_() {
     // Volume only when voip_stack owns the master_volume number;
     // template-number setups own their own DAC + AEC sync.
     const float volume = clamp_volume_(stored.volume_pct / 100.0f);
-    this->volume_.store(volume, std::memory_order_relaxed);
 #ifdef USE_NUMBER
     if (this->volume_number_ != nullptr) {
+      this->volume_.store(volume, std::memory_order_relaxed);
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
       if (this->speaker_ != nullptr) {
         this->speaker_->set_volume(volume);
       }
 #endif
       ESP_LOGD(TAG, "Loaded volume: %.0f%%", volume * 100.0f);
+    } else if (volume != 1.0f) {
+      ESP_LOGI(TAG, "External master owns output; ignored legacy VoIP RX volume %.0f%%", volume * 100.0f);
     }
+#else
+    (void) volume;
 #endif
 
     // Skip mic_gain when esp_audio_stack owns it (its own persistence).
