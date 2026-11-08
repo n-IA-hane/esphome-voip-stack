@@ -243,6 +243,20 @@ native ESPHome audio as well as Audio Stack. HA integration is enabled when
 API is configured; use `voip_stack.ha_integration: false` for standalone SIP.
 Routing through HA remains controlled separately by `use_ha_as_first_contact`.
 
+Automatic discovery exposes the short **VoIP State** entity. SIP Contact and SDP
+provide routing and media capabilities; **VoIP Endpoint** is not generated
+automatically. Older consumers can explicitly retain it alongside native HA:
+
+```yaml
+text_sensor:
+  - platform: voip_stack
+    type: endpoint
+    name: Legacy VoIP Endpoint
+```
+
+Update the HA integration to support state-based discovery before removing an
+existing legacy endpoint entity.
+
 Managed SIP registration with Home Assistant is optional:
 
 ```yaml
@@ -636,8 +650,10 @@ platform entities you need:
 | `text` | `conference_groups` | Editable comma-separated conference group memberships. |
 | `switch` | `conference_ring` | Ring this endpoint when another participant starts one of its conference groups. |
 
-For HA-managed installs, include the integration package from
-`esphome-intercom` or declare the equivalent entities manually:
+The following manual surface is for configurations with automatic HA integration
+disabled (`ha_integration: false`). With native HA enabled, its state and routing
+entities already exist; only optional legacy or diagnostic sensors need an
+explicit declaration:
 
 ```yaml
 text_sensor:

@@ -186,6 +186,9 @@ void VoipStack::emit_diagnostic_section_() {
                  (unsigned) dump.jitter.depth, (unsigned) kRxQueuedFrames, (unsigned) dump.jitter.missing,
                  (unsigned) dump.jitter.late, (unsigned) dump.jitter.duplicates, (unsigned) dump.jitter.drops,
                  (unsigned) dump.jitter.discarded_frames);
+        ESP_LOGI(TAG, "rx_storage: frame_bytes=%u exchange_aligned=%s", (unsigned) this->rx_jitter_frame_alloc_bytes_,
+                 YESNO(this->rx_jitter_buffer_ != nullptr &&
+                       this->rx_jitter_buffer_->has_exchange_alignment(this->rx_network_chunk_)));
       }
 #endif
       break;

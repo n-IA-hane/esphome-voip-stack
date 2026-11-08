@@ -47,6 +47,24 @@ class RtpJitterBuffer {
                   uint32_t *timestamp = nullptr, bool *has_metadata = nullptr,
                   size_t *actual_bytes = nullptr,
                   bool *source_changed = nullptr, uint32_t *format_packed = nullptr);
+  // To exchange, out supplies an exclusive writable block of exactly frame_capacity_ bytes,
+  // outside the current slot pool. Keep the returned pointer across reads and
+  // resets until the consumer task ends; never restore its original base.
+  // FRAME may exchange the block with a slot. BUFFERING/MISSING leave it intact.
+  // Only the consumer pointer moves; allocation bases stay fixed for cleanup.
+  // Other capacities or unaligned blocks retain read()'s copy/result contract.
+  ReadResult read_exchange(uint8_t *&out, size_t capacity, uint16_t *sequence = nullptr,
+                  uint32_t *timestamp = nullptr, bool *has_metadata = nullptr,
+                  size_t *actual_bytes = nullptr,
+                  bool *source_changed = nullptr, uint32_t *format_packed = nullptr);
+  // Check bases and stride against the original allocator's word alignment.
+  // This does not verify exclusive ownership or membership in the slot pool.
+  bool has_exchange_alignment(const uint8_t *out) const {
+    constexpr size_t alignment = alignof(uint32_t);
+    return out != nullptr && this->storage_ != nullptr &&
+           ((reinterpret_cast<uintptr_t>(out) | reinterpret_cast<uintptr_t>(this->storage_) |
+             this->frame_capacity_) & (alignment - 1U)) == 0;
+  }
   Counters counters() const;
   uint32_t depth() const;
 
@@ -65,6 +83,9 @@ class RtpJitterBuffer {
   static int16_t sequence_delta_(uint16_t sequence, uint16_t reference) {
     return static_cast<int16_t>(sequence - reference);
   }
+  ReadResult read_(uint8_t *out, size_t capacity, uint16_t *sequence,
+                   uint32_t *timestamp, bool *has_metadata, size_t *actual_bytes,
+                   bool *source_changed, uint32_t *format_packed, uint8_t **exchange);
   void clear_slots_();
   void keep_window_from_(uint16_t next_sequence);
 
@@ -219,6 +240,24 @@ inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t ca
                                                          uint32_t *timestamp, bool *has_metadata,
                                                          size_t *actual_bytes,
                                                          bool *source_changed, uint32_t *format_packed) {
+  return this->read_(out, capacity, sequence, timestamp, has_metadata, actual_bytes,
+                     source_changed, format_packed, nullptr);
+}
+
+inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read_exchange(uint8_t *&out, size_t capacity, uint16_t *sequence,
+                                                         uint32_t *timestamp, bool *has_metadata,
+                                                         size_t *actual_bytes,
+                                                         bool *source_changed, uint32_t *format_packed) {
+  if (capacity != this->frame_capacity_ || !this->has_exchange_alignment(out))
+    return this->read(out, capacity, sequence, timestamp, has_metadata, actual_bytes, source_changed, format_packed);
+  return this->read_(out, capacity, sequence, timestamp, has_metadata, actual_bytes,
+                     source_changed, format_packed, &out);
+}
+
+inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read_(uint8_t *out, size_t capacity, uint16_t *sequence,
+                                                         uint32_t *timestamp, bool *has_metadata,
+                                                         size_t *actual_bytes,
+                                                         bool *source_changed, uint32_t *format_packed, uint8_t **exchange) {
   if (this->slot_count_ == 0 || out == nullptr || capacity == 0 || capacity > this->frame_capacity_) {
     return ReadResult::BUFFERING;
   }
@@ -273,7 +312,13 @@ inline RtpJitterBuffer::ReadResult RtpJitterBuffer::read(uint8_t *out, size_t ca
         this->audio_timestamp_step_ = audio_format_rtp_clock_rate(format) * format.frame_ms / 1000U;
     }
     this->next_audio_timestamp_ = slot.timestamp + this->audio_timestamp_step_;
-    memcpy(out, slot.pcm, slot.bytes);
+    if (exchange != nullptr) {
+      uint8_t *old_slot = slot.pcm;
+      slot.pcm = out;
+      *exchange = old_slot;
+    } else {
+      memcpy(out, slot.pcm, slot.bytes);
+    }
     slot.valid = false;
     slot.bytes = 0;
     if (this->valid_count_ > 0) this->valid_count_--;

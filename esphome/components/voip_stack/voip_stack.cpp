@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cstring>
+#include <type_traits>
 
 #include "audio_core_ring_buffer_caps.h"
 #include "audio_core_task_utils.h"
@@ -253,15 +254,20 @@ bool VoipStack::setup_audio_helpers_() {
   }
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
+  // Select the callback contract at compile time. On newer ESPHome this accepts
+  // AudioCapture directly, avoiding its allocating legacy-vector adapter.
+  const auto on_microphone_data = [this](const auto &capture) {
+    if constexpr (std::is_same_v<std::decay_t<decltype(capture)>, std::vector<uint8_t>>) {
+      this->on_microphone_data_(capture.data(), capture.size());
+    } else {
+      this->on_microphone_data_(capture.data.data(), capture.data.size());
+    }
+  };
   if (this->microphone_ != nullptr) {
-    this->microphone_->add_data_callback([this](const std::vector<uint8_t> &data) {
-      this->on_microphone_data_(data.data(), data.size());
-    });
+    this->microphone_->add_data_callback(on_microphone_data);
   }
   if (this->microphone_source_ != nullptr) {
-    this->microphone_source_->add_data_callback([this](const std::vector<uint8_t> &data) {
-      this->on_microphone_data_(data.data(), data.size());
-    });
+    this->microphone_source_->add_data_callback(on_microphone_data);
   }
 #endif
   return true;

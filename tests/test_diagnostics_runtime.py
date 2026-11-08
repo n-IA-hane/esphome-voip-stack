@@ -56,7 +56,7 @@ struct Mutex{};struct LockGuard{explicit LockGuard(Mutex&){++locked;}~LockGuard(
         + snapshot
         + r"""
 struct Transport{SipTransportSnapshot value;SipTransportSnapshot snapshot(){return value;}};
-struct RtpJitterBuffer{struct Counters{uint32_t depth=1,drops=2,late=3,missing=4,duplicates=5,discarded_frames=7;};Counters counters(){return {};}};
+struct RtpJitterBuffer{struct Counters{uint32_t depth=1,drops=2,late=3,missing=4,duplicates=5,discarded_frames=7;};Counters counters(){return {};}bool has_exchange_alignment(const uint8_t*data)const{return data!=nullptr;}};
 struct VoipStack{
  std::atomic<CallState>call_state_{CallState::IN_CALL};
  std::atomic<uint32_t>media_tx_queue_depth_{1},media_tx_queue_drops_{0},media_rx_queue_depth_{2},media_rx_queue_drops_{0};
@@ -64,6 +64,7 @@ struct VoipStack{
  Mutex call_state_mutex_;std::string current_call_id_="private-caller-token",last_reason_="local_hangup";
  std::unique_ptr<Transport>transport_=std::make_unique<Transport>();
  std::unique_ptr<RtpJitterBuffer>rx_jitter_buffer_=std::make_unique<RtpJitterBuffer>();
+ uint8_t rx_storage[960]{};uint8_t*rx_network_chunk_=rx_storage;size_t rx_jitter_frame_alloc_bytes_=sizeof(rx_storage);
  bool buffers_in_psram_=true,task_stacks_in_psram_=true,audio_task_stacks_in_psram_=true;
  unsigned sip_port_=5060,rtp_port_=40000;static constexpr unsigned kRxQueuedFrames=16;
  void *rx_task_handle_=this;unsigned rx_task_stack_bytes_=12288;
@@ -129,7 +130,7 @@ int main(){
 """
     )
     exe = tmp_path / "dump"
-    subprocess.run(
+    compiled = subprocess.run(
         [
             "g++",
             "-std=c++17",
@@ -145,8 +146,8 @@ int main(){
             "-o",
             str(exe),
         ],
-        check=True,
         capture_output=True,
         text=True,
     )
+    assert compiled.returncode == 0, compiled.stderr
     subprocess.run([str(exe)], check=True, capture_output=True, text=True)

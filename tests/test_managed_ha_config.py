@@ -30,7 +30,8 @@ def test_omitted_or_false_auto_register_preserves_direct_legacy(tmp_path, option
     assert "USE_VOIP_HA_AUTO_REGISTER" not in defines
     assert "USE_ESPHOME_VOIP_REGISTRATION" not in defines
     assert "configure_registration" not in main
-    assert "VoipHAIntegration" in main and "voip_endpoint" in main
+    assert "VoipHAIntegration" in main and "voip_state" in main
+    assert "->set_endpoint_sensor(" not in main
 
 
 @pytest.mark.parametrize("line", ["ha", "direct", "office"])

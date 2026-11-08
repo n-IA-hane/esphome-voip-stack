@@ -13,7 +13,9 @@ ACTIONS = {
     "set_ha_peer_name", "set_roster_json", "set_contacts", "add_contact",
     "remove_contact", "flush_contacts", "update_contacts", "send_dtmf", "call_mailbox", "pickup_contact",
 }
-ROLES = ("endpoint", "state", "media_route", "caller", "destination", "last_reason", "contacts")
+# ESPHome device discovery uses the short state entity. SIP Contact and SDP
+# describe routing/media; the legacy endpoint string is no longer automatic.
+ROLES = ("state", "media_route", "caller", "destination", "last_reason", "contacts")
 TEXT_ROLES = ("extension", "ring_groups", "conference_groups")
 
 

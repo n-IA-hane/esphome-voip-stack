@@ -26,8 +26,11 @@ def test_native_ha_minimal_codegen(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     generated = next(tmp_path.rglob('main.cpp')).read_text()
     assert 'VoipHAIntegration' in generated
-    for role in ['endpoint', 'state', 'contacts', 'media_route', 'extension']:
+    for role in ['state', 'contacts', 'media_route', 'extension']:
         assert 'voip_' + role in generated
+    assert '->set_state_sensor(' in generated
+    assert '->set_endpoint_sensor(' not in generated
+    assert 'voip_endpoint' not in generated
 
 
 def test_standalone_has_no_ha_adapter(tmp_path):
@@ -98,4 +101,24 @@ def test_native_ha_speaker_only_codegen(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     generated = next(tmp_path.rglob('main.cpp')).read_text()
     assert 'VoipHAIntegration' in generated
-    assert 'voip_endpoint' in generated
+    assert 'voip_state' in generated
+    assert '->set_endpoint_sensor(' not in generated
+
+
+def test_explicit_legacy_endpoint_coexists_with_native_state(tmp_path):
+    result = validate(tmp_path, """
+api:
+  custom_services: true
+text_sensor:
+  - platform: voip_stack
+    type: endpoint
+    id: legacy_endpoint
+    name: Legacy VoIP Endpoint
+""", generate=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    generated = next(tmp_path.rglob('main.cpp')).read_text()
+    assert 'VoipHAIntegration' in generated
+    assert 'voip_state' in generated
+    assert generated.count('->set_state_sensor(') == 1
+    assert generated.count('->set_endpoint_sensor(legacy_endpoint)') == 1
+    assert 'voip_endpoint' not in generated

@@ -599,6 +599,9 @@ void VoipStack::rx_task_() {
   ESP_LOGD(TAG, "RX playout task started");
   uint32_t previous_format_packed = 0;
   uint32_t previous_revision = UINT32_MAX;
+  // This exclusive block rotates through the jitter slots. Retain it across
+  // revisions and call resets; rx_network_chunk_ remains the allocation owner.
+  uint8_t *network_buffer = this->rx_network_chunk_;
 
   while (true) {
     const uint32_t revision = this->rx_audio_revision_.load(std::memory_order_acquire);
@@ -628,12 +631,11 @@ void VoipStack::rx_task_() {
     // A sink may go idle before the first RTP packet arrives. Deliver media
     // through play(), whose speaker contract starts it again as needed; waiting
     // for is_running() here would prevent that restart indefinitely.
-    uint8_t *network_buffer = this->rx_network_chunk_;
     size_t network_bytes = 0;
     uint32_t format_packed = 0;
     bool source_changed = false;
     const auto read_result = this->rx_jitter_buffer_ != nullptr
-                                 ? this->rx_jitter_buffer_->read(network_buffer, this->rx_jitter_frame_alloc_bytes_,
+                                 ? this->rx_jitter_buffer_->read_exchange(network_buffer, this->rx_jitter_frame_alloc_bytes_,
                                        nullptr, nullptr, nullptr, &network_bytes,
                                        &source_changed, &format_packed)
                                  : RtpJitterBuffer::ReadResult::BUFFERING;
