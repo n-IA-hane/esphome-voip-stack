@@ -179,6 +179,39 @@ int main(int argc, char** argv) {
   Harness h(tcp);
   auto c = h.config();
   assert(c.valid());
+  if (scenario == "digest-syntax") {
+    assert(argc == 5);
+    const std::string style = argv[3];
+    const bool proxy = std::string(argv[4]) == "proxy";
+    const std::string name = proxy ? "Proxy-Authenticate" : "WWW-Authenticate";
+    const auto challenge = [&](const std::string &algorithm, const std::string &nonce) {
+      const auto colon = style == "hcolon" ? " \t: " : ": ";
+      const auto fold = style == "fold" ? "\r\n\t" : " ";
+      return name + colon + "Digest realm=\"pbx,office\", " + fold +
+          "nonce=\"" + nonce + "\", algorithm=" + algorithm + ", " + fold +
+          "qop=\"auth-int,auth\", opaque=\"one,\\\"two\\\"\"\r\n";
+    };
+    assert(h.manager.set_account(c, 0));
+    h.manager.tick(0);
+    const auto initial = h.first.receive();
+    std::string challenges = challenge("unsupported", "ignored");
+    if (style == "reverse") challenges += challenge("SHA-256-sess", "selected") + challenge("MD5", "weak");
+    else challenges += challenge("MD5", "weak") + challenge("SHA-256-sess", "selected");
+    challenges += challenge("SHA-256", "later");
+    h.feed(h.first, response(initial, proxy ? 407 : 401, challenges));
+    const auto authenticated = h.first.receive();
+    const auto auth = field(authenticated, proxy ? "Proxy-Authorization" : "Authorization");
+    assert(auth.find("algorithm=SHA-256-sess") != std::string::npos);
+    assert(auth.find("nonce=\"selected\"") != std::string::npos);
+    assert(auth.find("realm=\"pbx,office\"") != std::string::npos);
+    assert(auth.find("opaque=\"one,\\\"two\\\"\"") != std::string::npos);
+    assert(auth.find("qop=auth") != std::string::npos);
+    assert(field(authenticated, "CSeq") == "2 REGISTER");
+    h.feed(h.first, h.success(authenticated), 2);
+    assert(h.manager.is_registered("office"));
+    std::cout << "PASS digest-syntax " << (tcp ? "tcp" : "udp") << "\n";
+    return 0;
+  }
   if (scenario == "rfc-syntax") {
     assert(argc == 5);
     const std::string style = argv[3];

@@ -274,7 +274,12 @@ int main(int argc, char **argv) {
     start_account_call(s, pbx); auto sent = pbx.drain(); assert(sent.size() == 1);
     auto invite = sent[0]; assert(header_value(invite, "From").find("100@pbx.example") != std::string::npos);
     if (scenario == "authenticated-call") {
-      pbx.send_to(s, response(invite, 401)); sent = pbx.drain();
+      auto challenge = response(invite, 401);
+      const auto name = challenge.find("WWW-Authenticate:");
+      assert(name != std::string::npos);
+      challenge.replace(name, 17, "WWW-Authenticate \t:");
+      challenge.insert(challenge.find("nonce=\"one\""), "\r\n\t");
+      pbx.send_to(s, challenge); sent = pbx.drain();
       assert(sent.size() == 2 && sent[0].rfind("ACK ", 0) == 0 && sent[1].rfind("INVITE ", 0) == 0);
       assert(header_value(sent[0], "CSeq") == "1 ACK");
       assert(via_branch(header_value(sent[0], "Via")) == via_branch(header_value(invite, "Via")));
@@ -284,7 +289,12 @@ int main(int argc, char **argv) {
       assert(sent.size() == 1 && sent[0].rfind("ACK ", 0) == 0);
       assert(header_value(sent[0], "Authorization") == header_value(invite, "Authorization"));
       assert(s.send_bye_unlocked_("account-call")); sent = pbx.drain(); assert(sent.size() == 1);
-      pbx.send_to(s, response(sent[0], 407)); sent = pbx.drain(); assert(sent.size() == 1);
+      challenge = response(sent[0], 407);
+      const auto proxy = challenge.find("Proxy-Authenticate:");
+      assert(proxy != std::string::npos);
+      challenge.replace(proxy, 19, "Proxy-Authenticate \t:");
+      challenge.insert(challenge.find("nonce=\"one\""), "\r\n ");
+      pbx.send_to(s, challenge); sent = pbx.drain(); assert(sent.size() == 1);
       assert(sent[0].rfind("BYE ", 0) == 0 && !header_value(sent[0], "Proxy-Authorization").empty());
       assert(!header_value(sent[0], "Authorization").empty());
       pbx.send_to(s, response(sent[0], 200)); assert(s.call_id_.empty() && s.active_account_ == -1);

@@ -314,24 +314,18 @@ bool SipDigest::parse(const std::string& value, bool proxy_auth) {
   return true;
 }
 bool SipDigest::parse_response(const std::string& message, bool proxy_auth) {
-  const std::string wanted = proxy_auth ? "proxy-authenticate" : "www-authenticate";
-  size_t pos = message.find("\r\n");
+  const auto wanted = proxy_auth ? "Proxy-Authenticate" : "WWW-Authenticate";
   bool found = false;
   SipDigest best;
-  while (pos != std::string::npos) {
-    const size_t next = message.find("\r\n", pos + 2);
-    if (next == std::string::npos || next == pos + 2) break;
-    const size_t colon = message.find(':', pos + 2);
-    if (colon < next && lower(message.substr(pos + 2, colon - pos - 2)) == wanted) {
-      SipDigest candidate;
-      if (candidate.parse(trim(message.substr(colon + 1, next - colon - 1)), proxy_auth) &&
-          (!found || (candidate.algorithm.find("SHA-256") == 0 && best.algorithm.find("SHA-256") != 0))) {
-        best = std::move(candidate);
-        found = true;
-      }
+  sip_record_fields(message, wanted, [&](std::string_view field) {
+    SipDigest candidate;
+    if (candidate.parse(sip_record_unfold(field), proxy_auth) &&
+        (!found || (candidate.algorithm.find("SHA-256") == 0 && best.algorithm.find("SHA-256") != 0))) {
+      best = std::move(candidate);
+      found = true;
     }
-    pos = next;
-  }
+    return true;
+  });
   if (found) {
     if (best.nonce == this->nonce) best.nonce_count = this->nonce_count;
     *this = std::move(best);

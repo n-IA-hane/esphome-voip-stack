@@ -30,8 +30,8 @@ void verify_digest(const std::string &wire, const std::string &name,
 
 std::string challenge(bool proxy, const std::string &nonce) {
   return std::string(proxy ? "Proxy-Authenticate" : "WWW-Authenticate") +
-      ": Digest realm=\"example.test\", nonce=\"" + nonce +
-      "\", algorithm=SHA-256, qop=\"auth\"\r\n";
+      " \t: Digest realm=\"example.test\",\r\n\tnonce=\"" + nonce +
+      "\", algorithm=SHA-256,\r\n qop=\"auth\"\r\n";
 }
 
 void changed_request(const std::string &previous, const std::string &next) {
