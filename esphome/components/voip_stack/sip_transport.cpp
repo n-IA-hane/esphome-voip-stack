@@ -3434,18 +3434,14 @@ bool SipTransport::handle_reinvite_(const std::string &message,
         true);
   }
 
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   const uint32_t proposed_sdp_version = this->sdp_session_version_ + 1;
   this->sdp_session_version_ = proposed_sdp_version;
-#endif
   const std::string answer = this->build_sdp_answer_(
 #ifdef USE_ESPHOME_VOIP_DTMF
       &proposed_dtmf,
 #endif
       &audio_direction);
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->sdp_session_version_ = proposed_sdp_version - 1;
-#endif
   if (answer.empty()) {
     restore_old_media();
     return this->send_stateless_response_(
@@ -3699,8 +3695,8 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   this->remote_video_rtcp_port_ = new_video_rtcp_port;
   this->negotiated_video_capability_ = new_video_capability;
 #endif
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->sdp_session_version_ = proposed_sdp_version;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->confirmed_local_sdp_ = answer;
   this->emit_video_active_state_(
       this->video_negotiated_ && this->video_session_ != nullptr &&
