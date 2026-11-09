@@ -13,8 +13,13 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "esphome/components/voip_stack"
 
 
-def delayed_source():
-    code = wire_source()
+def delayed_source(*, registered=False):
+    if registered:
+        from test_sip_registration_transport import registration_transport_source
+
+        code = registration_transport_source()
+    else:
+        code = wire_source()
     parser = (COMPONENT / "sip_message.cpp").read_text()
     sdp = (COMPONENT / "sip_sdp.cpp").read_text()
     transport = (COMPONENT / "sip_transport.cpp").read_text()
