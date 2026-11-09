@@ -1784,7 +1784,7 @@ bool SipTransport::local_ip_for_peer_(uint32_t peer_ip_v4, std::string *out) con
     address.str_to(ip);
     if (std::strcmp(ip, "0.0.0.0") != 0) {
       *out = ip;
-      ESP_LOGW(TAG, "SIP local IP selected %s for peer %08x", ip, (unsigned) peer_ip_v4);
+      ESP_LOGD(TAG, "SIP local IP selected %s for peer %08x", ip, (unsigned) peer_ip_v4);
       return true;
     }
   }
@@ -1841,11 +1841,13 @@ bool SipTransport::send_sip_udp_bytes_(const char *data, size_t size,
              socket_errno_text(err));
     return false;
   }
+#ifdef ESPHOME_LOG_HAS_DEBUG
   char ip[16];
   struct in_addr a{};
   a.s_addr = htonl(ip_v4);
   inet_ntoa_r(a, ip, sizeof(ip));
-  ESP_LOGI(TAG, "SIP TX %u bytes to %s:%u", (unsigned) size, ip, (unsigned) port);
+  ESP_LOGD(TAG, "SIP TX %u bytes to %s:%u", (unsigned) size, ip, (unsigned) port);
+#endif
   return true;
 }
 
@@ -4348,7 +4350,7 @@ void SipTransport::handle_sip_datagram_unlocked_(const char *data, size_t len, c
   }
   const size_t first_space = msg.find(' ');
   const std::string method = first_space == std::string::npos ? "" : msg.substr(0, first_space);
-  ESP_LOGI(TAG, "SIP RX method=%s len=%u", method.c_str(), (unsigned) len);
+  ESP_LOGD(TAG, "SIP RX method=%s len=%u", method.c_str(), (unsigned) len);
   if ((method == "CANCEL" || method == "BYE" || method == "REFER") &&
       this->replay_completed_response_(msg, src, method,
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
