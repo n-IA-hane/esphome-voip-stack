@@ -45,7 +45,7 @@ struct Speaker {
 struct RtpJitterBuffer {
  enum class ReadResult{FRAME,BUFFERING,MISSING};
  unsigned reads=0;
- ReadResult read(uint8_t*,size_t,void*,void*,void*,size_t* bytes,bool*,uint32_t*){*bytes=320;if(++reads>3)throw Done{};return ReadResult::FRAME;}
+ ReadResult read_exchange(uint8_t*&,size_t,uint16_t*,uint32_t*,bool*,size_t* bytes,bool*,uint32_t*){*bytes=320;if(++reads>3)throw Done{};return ReadResult::FRAME;}
  unsigned depth(){return 2;}
 };
 struct VoipStack {
