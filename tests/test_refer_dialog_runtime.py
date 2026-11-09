@@ -31,6 +31,8 @@ def refer_fixture_source():
     fields = fields.replace('bool remote_sip_tcp_{false};', 'std::atomic<bool> remote_sip_tcp_{false};')
     fields = fields.replace('bool outgoing_invite_pending_{false}, cancel_requested_{false};',
                             'std::atomic<bool> outgoing_invite_pending_{false}, cancel_requested_{false};')
+    fields = fields.replace('bool audio_send_enabled_{true}, audio_receive_enabled_{true};',
+                            'std::atomic<bool> audio_send_enabled_{true},audio_receive_enabled_{true};')
     for typ, name in [('uint32_t', 'remote_ip_v4_'), ('uint16_t', 'remote_sip_port_'),
                       ('uint32_t', 'remote_rtp_ip_v4_'), ('uint16_t', 'remote_rtp_port_')]:
         fields = fields.replace(typ + ' ' + name, 'std::atomic<' + typ + '> ' + name)
@@ -65,6 +67,10 @@ template<class T> struct RAMAllocator {
 #define ESP_LOGW(...) ((void)0)
 #define VOIP_STARTUP_EVENT(...) ((void)0)
 #define TAG "test"
+#ifndef portENTER_CRITICAL
+#define portENTER_CRITICAL(...) ((void)0)
+#define portEXIT_CRITICAL(...) ((void)0)
+#endif
 std::string sip_header_token(const std::string &v,size_t=160){return v;}
 std::string sip_route_id(const std::string &v,size_t){return v;}
 '''
@@ -134,6 +140,15 @@ struct SipTransport: SipPhoneTransport {
   selected_tx_format_=t;selected_rx_format_=r;rtp_tx_payload_type_=tp;rtp_rx_payload_type_=rp;negotiated_rx_payloads_=*p;}
 };
 ''' + block((SOURCE/'sip_transport.cpp').read_text(), 'bool SipTransport::reject_if_stale_dialog_(') + '\n' + block((SOURCE/'sip_request_response.cpp').read_text(), 'bool SipTransport::send_request_(const std::string &method, const std::string &body,') + '\n' + production
+    # Keep the real configuration side effects: valid retained formats do not
+    # imply that their held directions are currently enabled.
+    owner = (SOURCE / 'sip_transport.cpp').read_text()
+    for marker in ('void set_media_config_(', 'void get_media_config_('):
+        implementation = block(owner, marker.replace('void ', 'void SipTransport::', 1))
+        implementation = implementation.replace('SipTransport::', '')
+        implementation = implementation.replace('RtpAudioPayloads *rx_payloads)', 'RtpAudioPayloads *rx_payloads = nullptr)')
+        implementation = implementation.replace('const RtpAudioPayloads *rx_payloads)', 'const RtpAudioPayloads *rx_payloads = nullptr)')
+        code = code.replace(block(code, marker), implementation, 1)
     return code
 
 

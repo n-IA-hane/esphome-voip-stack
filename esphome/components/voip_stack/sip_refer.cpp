@@ -264,8 +264,18 @@ void SipTransport::swap_negotiation_(ReferDialog &other) {
   uint8_t tx_pt, rx_pt;
   RtpAudioPayloads payloads;
   this->get_media_config_(&tx, &rx, &tx_pt, &rx_pt, &payloads);
+  const bool send = this->audio_send_enabled_.load(std::memory_order_acquire);
+  const bool receive = this->audio_receive_enabled_.load(std::memory_order_acquire);
   this->set_media_config_(other.selected_tx_format_, other.selected_rx_format_,
       other.rtp_tx_payload_type_, other.rtp_rx_payload_type_, &other.negotiated_rx_payloads_);
+  this->audio_send_enabled_.store(other.audio_send_enabled_, std::memory_order_release);
+  this->audio_receive_enabled_.store(other.audio_receive_enabled_, std::memory_order_release);
+  other.audio_send_enabled_ = send;
+  other.audio_receive_enabled_ = receive;
+  // RX reset and source-reacquisition notifications belong to the retained
+  // RTP worker, not the temporary signaling context. Do not snapshot them:
+  // restoring a consumed notification would reset a later packet twice.
+  // A completed transfer clears both through reset_rtp_latch_().
   other.selected_tx_format_ = tx;
   other.selected_rx_format_ = rx;
   other.rtp_tx_payload_type_ = tx_pt;

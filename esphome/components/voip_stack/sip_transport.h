@@ -943,6 +943,7 @@ class SipTransport : public SipPhoneTransport {
     UdpTransaction pending_invite_, pending_cancel_, pending_bye_, pending_update_;
     UdpTransaction pending_notify_, pending_notify_final_;
     AudioFormat selected_tx_format_{DEFAULT_AUDIO_FORMAT}, selected_rx_format_{DEFAULT_AUDIO_FORMAT};
+    bool audio_send_enabled_{true}, audio_receive_enabled_{true};
     uint8_t rtp_tx_payload_type_{96}, rtp_rx_payload_type_{96};
 #ifdef USE_ESPHOME_VOIP_DTMF
     DtmfFormat dtmf_tx_format_{}, dtmf_rx_format_{};
