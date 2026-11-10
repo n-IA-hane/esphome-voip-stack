@@ -227,6 +227,8 @@ int main(int argc, char** argv) {
       if (style == "contact-hcolon") replace("\r\nContact:", "\r\nContact \t:");
       if (style == "contact-fold") replace("\r\nContact: ", "\r\nContact:\r\n\t");
       if (style == "cseq-hcolon") replace("\r\nCSeq:", "\r\nCSeq \t:");
+      if (style == "via-hcolon") replace("\r\nVia:", "\r\nVia \t:");
+      if (style == "via-fold") replace(";branch=", "\r\n\t;branch=");
       const auto sequence = field(request, "CSeq");
       const auto separator = sequence.find(' ');
       const std::string whitespace = style == "cseq-tab" ? "\t" :

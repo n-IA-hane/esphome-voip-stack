@@ -10,7 +10,7 @@
 #include <lwip/sockets.h>
 
 #include "esphome/core/hal.h"
-#include "sip_header_name.h"
+#include "sip_record.h"
 
 namespace esphome {
 namespace voip_stack {
@@ -193,89 +193,59 @@ std::string sip_normalize_dial_target(const std::string &target, size_t max_byte
 }
 
 std::string header_value(const std::string &msg, const char *name) {
-  size_t pos = 0;
-  while (pos < msg.size()) {
-    const size_t end = msg.find("\r\n", pos);
-    const size_t line_end = end == std::string::npos ? msg.size() : end;
-    const std::string line = msg.substr(pos, line_end - pos);
-    if (line.empty()) break;
-    const size_t colon = line.find(':');
-    if (colon != std::string::npos && sip_header_name_equal(std::string_view(line).substr(0, colon), name))
-      return trim_copy(line.substr(colon + 1));
-    if (end == std::string::npos) break;
-    pos = end + 2;
-  }
-  return "";
+  return sip_record_unfold(sip_record_first(msg, name));
 }
 
 std::string header_values(const std::string &msg, const char *name) {
   std::string out;
-  size_t pos = 0;
-  while (pos < msg.size()) {
-    const size_t end = msg.find("\r\n", pos);
-    const size_t line_end = end == std::string::npos ? msg.size() : end;
-    const std::string line = msg.substr(pos, line_end - pos);
-    if (line.empty()) break;
-    const size_t colon = line.find(':');
-    if (colon != std::string::npos) {
-      std::string key = trim_copy(line.substr(0, colon));
-      if (sip_header_name_equal(key, name)) {
-        if (!out.empty()) out += "\r\nVia: ";
-        out += trim_copy(line.substr(colon + 1));
-      }
-    }
-    if (end == std::string::npos) break;
-    pos = end + 2;
-  }
+  sip_record_fields(msg, name, [&](std::string_view field) {
+    if (!out.empty()) out += "\r\nVia: ";
+    out += sip_record_unfold(field);
+    return true;
+  });
   return out;
 }
 
 bool sip_accepts_sdp(const std::string &message) {
   bool present = false, accepted = false;
   int best = -1;
-  size_t pos = message.find("\r\n");
-  while (pos != std::string::npos) {
-    const size_t end = message.find("\r\n", pos + 2);
-    if (end == std::string::npos || end == pos + 2) break;
-    const size_t colon = message.find(':', pos + 2);
-    if (colon < end && sip_header_name_equal(std::string_view(message).substr(pos + 2, colon - pos - 2), "Accept")) {
-      present = true;
-      const std::string value = message.substr(colon + 1, end - colon - 1);
-      for (size_t start = 0; start < value.size();) {
-        const size_t comma = value.find(',', start);
-        std::string item = trim_copy(value.substr(start, comma - start));
-        std::transform(item.begin(), item.end(), item.begin(), [](unsigned char ch) { return std::tolower(ch); });
-        const size_t semi = item.find(';');
-        const std::string type = trim_copy(item.substr(0, semi));
-        const int rank = type == "application/sdp" ? 2 : type == "application/*" ? 1 : type == "*/*" ? 0 : -1;
-        bool positive = true;
-        for (size_t at = semi; at != std::string::npos;) {
-          const size_t next = item.find(';', at + 1);
-          const std::string parameter = trim_copy(item.substr(at + 1, next - at - 1));
-          const size_t equals = parameter.find('=');
-          if (trim_copy(parameter.substr(0, equals)) == "q") {
-            const std::string q = equals == std::string::npos ? "" : trim_copy(parameter.substr(equals + 1));
-            bool valid = !q.empty() && (q[0] == '0' || q[0] == '1') &&
-                         (q.size() == 1 || (q.size() >= 2 && q.size() <= 5 && q[1] == '.'));
-            positive = !q.empty() && q[0] == '1';
-            for (size_t n = 2; n < q.size(); ++n) {
-              if (q[n] < '0' || q[n] > '9' || (q[0] == '1' && q[n] != '0')) valid = false;
-              if (q[n] != '0') positive = true;
-            }
-            positive = valid && positive;
+  sip_record_fields(message, "Accept", [&](std::string_view field) {
+    present = true;
+    const std::string value = sip_record_unfold(field);
+    for (size_t start = 0; start < value.size();) {
+      const size_t comma = value.find(',', start);
+      std::string item = trim_copy(value.substr(start, comma - start));
+      std::transform(item.begin(), item.end(), item.begin(), [](unsigned char ch) { return std::tolower(ch); });
+      const size_t semi = item.find(';');
+      const std::string type = trim_copy(item.substr(0, semi));
+      const int rank = type == "application/sdp" ? 2 : type == "application/*" ? 1 : type == "*/*" ? 0 : -1;
+      bool positive = true;
+      for (size_t at = semi; at != std::string::npos;) {
+        const size_t next = item.find(';', at + 1);
+        const std::string parameter = trim_copy(item.substr(at + 1, next - at - 1));
+        const size_t equals = parameter.find('=');
+        if (trim_copy(parameter.substr(0, equals)) == "q") {
+          const std::string q = equals == std::string::npos ? "" : trim_copy(parameter.substr(equals + 1));
+          bool valid = !q.empty() && (q[0] == '0' || q[0] == '1') &&
+                       (q.size() == 1 || (q.size() >= 2 && q.size() <= 5 && q[1] == '.'));
+          positive = !q.empty() && q[0] == '1';
+          for (size_t n = 2; n < q.size(); ++n) {
+            if (q[n] < '0' || q[n] > '9' || (q[0] == '1' && q[n] != '0')) valid = false;
+            if (q[n] != '0') positive = true;
           }
-          at = next;
+          positive = valid && positive;
         }
-        if (rank >= 0 && rank >= best) {
-          accepted = rank == best ? accepted || positive : positive;
-          best = rank;
-        }
-        if (comma == std::string::npos) break;
-        start = comma + 1;
+        at = next;
       }
+      if (rank >= 0 && rank >= best) {
+        accepted = rank == best ? accepted || positive : positive;
+        best = rank;
+      }
+      if (comma == std::string::npos) break;
+      start = comma + 1;
     }
-    pos = end;
-  }
+    return true;
+  });
   return !present || accepted;
 }
 
@@ -315,38 +285,23 @@ std::string message_body(const std::string &msg) {
 bool sip_content_length(const std::string &msg, size_t *out) {
   if (out == nullptr) return false;
   *out = 0;
-  const size_t sep = msg.find("\r\n\r\n");
-  const size_t header_end = sep == std::string::npos ? msg.size() : sep;
-  size_t pos = 0;
-  bool seen = false;
-  while (pos < header_end) {
-    const size_t end = msg.find("\r\n", pos);
-    const size_t line_end = end == std::string::npos ? header_end : std::min(end, header_end);
-    const std::string line = msg.substr(pos, line_end - pos);
-    const size_t colon = line.find(':');
-    if (colon != std::string::npos) {
-      std::string key = line.substr(0, colon);
-      for (char &ch : key) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-      const std::string normalized = trim_copy(key);
-      if (normalized == "content-length" || normalized == "l") {
-        if (seen) return false;
-        seen = true;
-        const std::string value = trim_copy(line.substr(colon + 1));
-        if (value.empty()) return false;
-        size_t parsed = 0;
-        for (char ch : value) {
-          if (!std::isdigit(static_cast<unsigned char>(ch))) return false;
-          const size_t digit = static_cast<size_t>(ch - '0');
-          if (parsed > (MAX_SIP_TCP_RX_BUFFER - digit) / 10) return false;
-          parsed = parsed * 10 + digit;
-        }
-        *out = parsed;
-      }
+  bool seen = false, valid = true;
+  sip_record_fields(msg, "Content-Length", [&](std::string_view field) {
+    if (seen) { valid = false; return false; }
+    seen = true;
+    const auto value = sip_record_unfold(field);
+    if (value.empty()) { valid = false; return false; }
+    size_t parsed = 0;
+    for (char ch : value) {
+      if (!std::isdigit(static_cast<unsigned char>(ch))) { valid = false; return false; }
+      const size_t digit = static_cast<size_t>(ch - '0');
+      if (parsed > (MAX_SIP_TCP_RX_BUFFER - digit) / 10) { valid = false; return false; }
+      parsed = parsed * 10 + digit;
     }
-    if (end == std::string::npos || end >= header_end) break;
-    pos = end + 2;
-  }
-  return true;
+    *out = parsed;
+    return true;
+  });
+  return valid;
 }
 
 std::string sip_header_token(const std::string &raw, size_t max_bytes) {

@@ -142,6 +142,19 @@ void account_refer_direct_case(SipTransport &s, Peer &pbx, bool target_tcp, bool
 int main(int argc, char **argv) {
   assert(argc == 3); const std::string scenario = argv[1]; const bool tcp = std::string(argv[2]) == "tcp";
   SipTransport s; Peer pbx(tcp); bind_account(s, pbx);
+  if (scenario == "record-route-syntax") {
+    start_account_call(s,pbx);const auto invite=pick(pbx.drain(),"INVITE");
+    const auto route=[&](const char*user){return std::string("<sip:")+user+"@127.0.0.1:"+std::to_string(ntohs(pbx.address.sin_port))+";lr>";};
+    const auto first=route("first"),second=route("second"),third=route("third");
+    auto accepted=response(invite,200);
+    accepted.insert(accepted.find("Content-Length:"),"Record-Route \t: "+first+",\r\n \t"+second+"\r\nRecord-Route: "+third+"\r\n");
+    pbx.send_to(s,accepted);const auto ack=pick(pbx.drain(),"ACK");
+    assert(s.dialog_route_count_==3&&s.dialog_routes_[0]==third&&s.dialog_routes_[1]==second&&s.dialog_routes_[2]==first);
+    assert(ack.find("Route: "+third)<ack.find("Route: "+second)&&ack.find("Route: "+second)<ack.find("Route: "+first));
+    assert(s.send_bye_unlocked_(s.call_id_));const auto bye=pick(pbx.drain(),"BYE");
+    pbx.send_to(s,response(bye,200));assert(s.call_id_.empty()&&!s.media_active_&&s.registration_.is_registered("office"));
+    for(auto&flow:s.registration_flows_)s.close_tcp_flow_(flow);close(s.sip_socket_);return 0;
+  }
   if (scenario.rfind("transaction-ack-",0)==0) {
     const unsigned status=std::stoul(scenario.substr(16));Peer hostile(false);
     start_account_call(s,pbx);auto original=pick(pbx.drain(),"INVITE");

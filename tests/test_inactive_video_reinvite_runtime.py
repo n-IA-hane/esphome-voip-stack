@@ -26,6 +26,7 @@ def source():
 #include "esphome/components/voip_stack/sdp_imageattr.h"
 #include "esphome/components/voip_stack/rtp_dtmf.h"
 #include "esphome/components/voip_stack/sip_header_name.h"
+#include "esphome/components/voip_stack/sip_record.h"
 constexpr unsigned MAX_SIP_BODY_BYTES=4096;
 '''+sdp_fixture_source()
     code = code.replace('\"192.0.2.1\"', '\"192.168.1.192\"')

@@ -107,6 +107,7 @@ def refer_fixture_source():
 #include <arpa/inet.h>
 #include "esphome/components/voip_stack/sip_types.h"
 #include "esphome/components/voip_stack/sip_header_name.h"
+#include "esphome/components/voip_stack/sip_record.h"
 #include "esphome/components/voip_stack/rtp_audio_payloads.h"
 using namespace esphome::voip_stack;
 using SipSignalingString=std::string;

@@ -37,11 +37,10 @@ std::string quote(const std::string& s) {
   return out + '"';
 }
 std::string_view header_view(std::string_view message, std::string_view name) {
-  const auto field = sip_record_first(message, name);
-  return field.substr(0, field.find("\r\n"));
+  return sip_record_first(message, name);
 }
 std::string header(const std::string& message, const std::string& name) {
-  return std::string(header_view(message, name));
+  return sip_record_unfold(sip_record_first(message, name));
 }
 bool decimal(std::string_view s, uint32_t* out) {
   if (s.empty()) return false;
@@ -62,17 +61,17 @@ std::string_view via_parameter(std::string_view via, std::string_view wanted) {
     auto item = via.substr(pos, end == std::string_view::npos ? end : end - pos);
     const auto eq = item.find('=');
     auto name = item.substr(0, eq);
-    const auto first = name.find_first_not_of(" \t");
+    const auto first = name.find_first_not_of(" \t\r\n");
     name = first == std::string_view::npos ? std::string_view{} :
-        name.substr(first, name.find_last_not_of(" \t") - first + 1);
+        name.substr(first, name.find_last_not_of(" \t\r\n") - first + 1);
     bool same = name.size() == wanted.size();
     for (size_t n = 0; same && n < name.size(); ++n)
       same = std::tolower(static_cast<unsigned char>(name[n])) == wanted[n];
     if (same && eq != std::string_view::npos) {
       auto value = item.substr(eq + 1);
-      const auto first_value = value.find_first_not_of(" \t");
+      const auto first_value = value.find_first_not_of(" \t\r\n");
       return first_value == std::string_view::npos ? std::string_view{} :
-          value.substr(first_value, value.find_last_not_of(" \t") - first_value + 1);
+          value.substr(first_value, value.find_last_not_of(" \t\r\n") - first_value + 1);
     }
     pos = end;
   }
@@ -681,11 +680,11 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
       a.next_ms = a.registration_next_ms;
       if (completed_kind == RequestKind::CAPABILITIES) {
         const auto split = message.find("\r\n\r\n");
-        auto type = header_view(message, "Content-Type");
+        auto type = header(message, "Content-Type");
         type = type.substr(0, type.find(';'));
         uint32_t length = 0;
         a.peer_directional_audio_v1 = status < 300 && split != std::string::npos &&
-            decimal(header_view(message, "Content-Length"), &length) && length == message.size() - split - 4 &&
+            decimal(header(message, "Content-Length"), &length) && length == message.size() - split - 4 &&
             lower(trim(std::string(type))) == "application/sdp" && this->hooks_.directional_audio_supported != nullptr &&
             this->hooks_.directional_audio_supported(std::string_view(message).substr(split + 4));
       } else a.keepalive_next_ms = now + this->keepalive_interval_ms_;

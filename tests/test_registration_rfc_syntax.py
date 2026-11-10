@@ -19,7 +19,7 @@ def test_digest_challenges_use_logical_header_fields(registration_binary, transp
 @pytest.mark.parametrize("transport,style", [
     (transport, style)
     for transport in ("udp", "tcp")
-    for style in ("contact-hcolon", "contact-fold", "cseq-hcolon", "cseq-tab", "cseq-spaces", "cseq-fold",
+    for style in ("contact-hcolon", "contact-fold", "cseq-hcolon", "cseq-tab", "cseq-spaces", "cseq-fold", "via-hcolon", "via-fold",
                   "quoted-angle", "escaped-angle", "quoted-only", "wrong-real-uri", "suffix-junk", "two-uris")
 ] + [("udp", style) for style in (
     "bare-binding", "bare-expiry-fallback", "wrong-bare-binding", "expired-bare-binding",

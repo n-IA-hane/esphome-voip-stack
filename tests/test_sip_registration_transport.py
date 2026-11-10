@@ -107,7 +107,7 @@ def registration_transport_binary(tmp_path_factory):
     return build_transport(tmp_path_factory.mktemp("sip-registration-transport"))
 
 
-@pytest.mark.parametrize("scenario", ["authenticated-call", "foreign-flow", "atomic-change", "reset-missing", "refer-authenticated", "refer-direct-udp", "refer-direct-tcp"])
+@pytest.mark.parametrize("scenario", ["authenticated-call", "foreign-flow", "atomic-change", "reset-missing", "refer-authenticated", "refer-direct-udp", "refer-direct-tcp", "record-route-syntax"])
 @pytest.mark.parametrize("transport", ["udp", "tcp"])
 def test_registration_dialog_contracts(registration_transport_binary, scenario, transport):
     result = subprocess.run([registration_transport_binary, scenario, transport], capture_output=True, text=True, timeout=10)

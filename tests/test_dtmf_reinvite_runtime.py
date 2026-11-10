@@ -9,7 +9,7 @@ from test_sdp_receive_payloads import sdp_fixture_source
 def reinvite_binary(tmp_path_factory):
     folder=tmp_path_factory.mktemp('dtmf-reinvite')
     source='#define USE_ESPHOME_VOIP_DTMF\n#include <mutex>\n#include "esphome/components/voip_stack/rtp_dtmf.h"\n'+sdp_fixture_source()
-    source='#include \"esphome/components/voip_stack/sip_header_name.h\"\nconstexpr unsigned MAX_SIP_BODY_BYTES=4096;\n'+source
+    source='#include \"esphome/components/voip_stack/sip_header_name.h\"\n#include \"esphome/components/voip_stack/sip_record.h\"\nconstexpr unsigned MAX_SIP_BODY_BYTES=4096;\n'+source
     source=source.replace('AudioFormat selected_tx_format_; };',
         'AudioFormat selected_tx_format_; bool owner_invite_ended=false; };')
     extra=r'''

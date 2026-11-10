@@ -2087,7 +2087,8 @@ def test_sip_header_parsing_stops_before_sdp_and_validates_datagram_framing() ->
         sip_cpp.index("std::string header_value") :
         sip_cpp.index("\nstd::string header_values")
     ]
-    assert "if (line.empty()) break;" in header_parser
+    assert "sip_record_first(msg, name)" in header_parser
+    assert "if (end == std::string_view::npos || end == start) break;" in read("sip_record.h")
     datagram = sip_cpp[
         sip_cpp.index("void SipTransport::handle_sip_datagram_") :
         sip_cpp.index("\nbool SipTransport::reject_if_stale_dialog_")
@@ -2168,7 +2169,8 @@ def test_sip_tcp_rx_is_bounded_and_active_dialog_accept_is_guarded() -> None:
     assert "drop_tcp_stream(\"SIP TCP Content-Length exceeds limit\")" in stream
     assert "SIP TCP invalid or ambiguous Content-Length" in stream
     assert stream.count("this->handle_tcp_peer_loss_(flow);") >= 3
-    assert 'normalized == "content-length" || normalized == "l"' in sip_cpp
+    assert 'sip_record_fields(msg, "Content-Length"' in sip_cpp
+    assert 'case \'l\': return "Content-Length";' in read("sip_header_name.h")
 
     send = sip_cpp[
         sip_cpp.index("bool SipTransport::send_sip_tcp_") :
@@ -2798,7 +2800,8 @@ def test_sip_compact_headers_and_tcp_close_are_centralized() -> None:
     sip_cpp = read("sip_transport.cpp")
 
     header_parser = sip_cpp[sip_cpp.index("std::string header_value") : sip_cpp.index("\nstd::string message_body")]
-    assert "sip_header_name_equal" in header_parser
+    assert "sip_record_first" in header_parser
+    assert "sip_header_name_equal" in read("sip_record.h")
     names = read("sip_header_name.h").lower()
     assert '"via"' in names and '"call-id"' in names and '"content-length"' in names
 

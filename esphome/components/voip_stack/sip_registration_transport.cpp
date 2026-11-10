@@ -10,6 +10,7 @@
 
 #include "esphome/core/hal.h"
 #include "sip_message.h"
+#include "sip_record.h"
 #include "sip_sdp_features.h"
 
 namespace esphome::voip_stack {
@@ -698,30 +699,19 @@ bool SipTransport::retry_authenticated_request_(const std::string& message, cons
 
 void SipTransport::remember_registration_routes_(const std::string& message, bool reverse) {
   this->dialog_route_count_ = 0;
-  size_t pos = message.find("\r\n");
-  while (pos != std::string::npos) {
-    const size_t end = message.find("\r\n", pos + 2);
-    if (end == std::string::npos || end == pos + 2) break;
-    const std::string line = message.substr(pos + 2, end - pos - 2);
-    const size_t colon = line.find(':');
-    if (colon != std::string::npos) {
-      std::string key = line.substr(0, colon);
-      for (char& c : key) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-      if (key == "record-route") {
-        size_t offset = colon + 1;
-        while (offset < line.size() && this->dialog_route_count_ < this->dialog_routes_.size()) {
-          const size_t close = line.find('>', offset);
-          const size_t comma = line.find(',', close == std::string::npos ? offset : close);
-          const std::string route =
-              trim_copy(line.substr(offset, comma == std::string::npos ? comma : comma - offset));
-          if (!route.empty()) this->dialog_routes_[this->dialog_route_count_++] = route;
-          if (comma == std::string::npos) break;
-          offset = comma + 1;
-        }
-      }
+  sip_record_fields(message, "Record-Route", [&](std::string_view field) {
+    const std::string value = sip_record_unfold(field);
+    size_t offset = 0;
+    while (offset < value.size() && this->dialog_route_count_ < this->dialog_routes_.size()) {
+      const size_t close = value.find('>', offset);
+      const size_t comma = value.find(',', close == std::string::npos ? offset : close);
+      const std::string route = trim_copy(value.substr(offset, comma == std::string::npos ? comma : comma - offset));
+      if (!route.empty()) this->dialog_routes_[this->dialog_route_count_++] = route;
+      if (comma == std::string::npos) break;
+      offset = comma + 1;
     }
-    pos = end;
-  }
+    return this->dialog_route_count_ < this->dialog_routes_.size();
+  });
   if (reverse)
     std::reverse(this->dialog_routes_.begin(), this->dialog_routes_.begin() + this->dialog_route_count_);
 }

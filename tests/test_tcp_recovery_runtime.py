@@ -37,6 +37,9 @@ def test_tcp_connect_retry_and_stream_transaction_ownership(tmp_path):
 #include <memory>
 #include <string>
 #include <utility>
+#include "esphome/components/voip_stack/sip_record.h"
+using esphome::voip_stack::sip_record_fields;
+using esphome::voip_stack::sip_record_unfold;
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
