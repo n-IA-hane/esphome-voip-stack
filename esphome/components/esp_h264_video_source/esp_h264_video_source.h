@@ -52,6 +52,7 @@ class EspH264VideoSource
   void set_gop(uint8_t value) { this->gop_ = value; }
 
   voip_stack::VideoCapability get_video_capability() const override;
+  size_t max_encoded_access_unit_bytes() const override { return kEncodedBufferBytes; }
   bool uses_access_unit_leases() const override { return true; }
   bool prepare_video(
       const voip_stack::VideoCapability &capability) override;

@@ -159,6 +159,9 @@ class EncodedVideoSource {
  public:
   virtual ~EncodedVideoSource() = default;
   virtual VideoCapability get_video_capability() const = 0;
+  /// Maximum bytes in any emitted access unit, independent of dimensions or
+  /// lease ownership. Zero means unknown and retains the codec's existing pool.
+  virtual size_t max_encoded_access_unit_bytes() const { return 0; }
   /// True only when every published access unit carries a release callback.
   virtual bool uses_access_unit_leases() const { return false; }
   /// Validate and reserve any source-side state needed by the negotiated

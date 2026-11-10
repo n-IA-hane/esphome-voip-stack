@@ -268,15 +268,32 @@ bool VideoRtpSession::allocate_persistent_buffers_() {
     if (!this->ensure_jpeg_quantization_cache_()) return false;
 #endif
   }
-  if (this->source_ != nullptr && !this->source_->uses_access_unit_leases()) {
-    for (auto &slot : this->tx_access_units_) {
-      if (slot.data == nullptr) {
-        slot.data = static_cast<uint8_t *>(heap_caps_malloc(
-            kMaxAccessUnitBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (this->source_ != nullptr) {
+    const size_t source_limit = this->source_->max_encoded_access_unit_bytes();
+    const size_t capacity = source_limit == 0 ? kMaxTxAccessUnitBytes :
+        std::min(kMaxTxAccessUnitBytes, source_limit);
+    const bool leased = this->source_->uses_access_unit_leases();
+    if (capacity != this->tx_access_unit_capacity_ || leased) {
+      // Changing a setup bound must not invalidate a queued AU or storage
+      // still owned by the sender. Leases and copy buffers remain distinct.
+      for (const auto &slot : this->tx_access_units_)
+        if (slot.state.load(std::memory_order_acquire) != 0) return false;
+      for (auto &slot : this->tx_access_units_) {
+        if (slot.data != nullptr) heap_caps_free(slot.data);
+        slot.data = nullptr;
       }
-      if (slot.data == nullptr) {
-        ESP_LOGE(TAG, "Video TX access-unit PSRAM allocation failed at setup");
-        return false;
+      this->tx_access_unit_capacity_ = capacity;
+    }
+    if (!leased) {
+      for (auto &slot : this->tx_access_units_) {
+        if (slot.data == nullptr) {
+          slot.data = static_cast<uint8_t *>(heap_caps_malloc(
+              this->tx_access_unit_capacity_, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        }
+        if (slot.data == nullptr) {
+          ESP_LOGE(TAG, "Video TX access-unit PSRAM allocation failed at setup");
+          return false;
+        }
       }
     }
   }
@@ -1057,7 +1074,7 @@ void VideoRtpSession::queue_access_unit_(
     release_input();
     return;
   }
-  if (access_unit.size > kMaxAccessUnitBytes) {
+  if (access_unit.size > this->tx_access_unit_capacity_) {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
     {
       this->tx_resync_needed_.store(true, std::memory_order_release);

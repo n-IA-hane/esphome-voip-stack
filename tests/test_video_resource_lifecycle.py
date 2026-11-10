@@ -153,7 +153,8 @@ void VideoRtpSession::quiesce_tasks_(){}
 void VideoRtpSession::close_sockets_(){}
 void VideoRtpSession::wake_task_(){}
 struct Source:EncodedVideoSource {
- bool leased=false;
+ bool leased=false;size_t limit=0;
+ size_t max_encoded_access_unit_bytes()const{return limit;}
  bool uses_access_unit_leases()const override{return leased;}
  VideoCapability get_video_capability()const override{return {};}
  bool prepare_video(const VideoCapability&)override{return true;}
@@ -178,6 +179,13 @@ int main(int argc,char **argv){
  using namespace esphome::voip_stack;
  assert(argc==3);unsigned role=std::stoul(argv[1]),failure=std::stoul(argv[2]);
  Source source;Sink sink;source.leased=role&8;sink.limit=(role&16)?1024:(role&32)?131072:0;
+ source.limit=(role&128)?16384:(role&256)?1024*1024:0;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+ const size_t existing_source_budget=128*1024;
+#else
+ const size_t existing_source_budget=512*1024;
+#endif
+ const size_t source_capacity=source.limit?std::min(existing_source_budget,source.limit):existing_source_budget;
  {
   VideoRtpSession session(false);
   assert(allocations.empty() && "bind endpoints before allocating media pools");
@@ -212,6 +220,29 @@ int main(int argc,char **argv){
   assert(rx==((role&2)?3U:0U));
 #endif
   assert(tx==((role&1)&&!source.leased?session.kTxAccessUnitSlots:0U));
+  if((role&1)&&!source.leased){
+   for(const auto &slot:session.tx_access_units_)assert(allocations.at(slot.data)==source_capacity);
+  }
+  if(role&(128|512)){
+   session.running_=true;session.sender_running_=true;session.send_enabled_=true;
+   const size_t size=(role&512)?std::min<size_t>(200*1024,source_capacity):source_capacity;
+   std::vector<uint8_t>frame(size+1,0x5a);const auto calls=allocation_calls;
+   if(role&128){session.queue_access_unit_(EncodedVideoAccessUnit{frame.data(),size+1,42,true});
+    for(const auto &slot:session.tx_access_units_)assert(slot.state==0);}
+   session.queue_access_unit_(EncodedVideoAccessUnit{frame.data(),size,42,true});
+   assert(session.tx_access_units_[0].state==1&&session.tx_access_units_[0].access_unit.size==size);
+   assert(std::memcmp(session.tx_access_units_[0].data,frame.data(),size)==0&&allocation_calls==calls);
+   for(auto &slot:session.tx_access_units_){slot.access_unit={};slot.state=0;}
+   session.running_=false;session.sender_running_=false;
+  }
+  if(role&1024){
+   auto &held=session.tx_access_units_[0];held.state=2;auto *original=held.data;const auto calls=allocation_calls;
+   Source replacement;replacement.limit=8192;session.set_source(&replacement);
+   assert(!session.PREPARE&&held.data==original&&allocation_calls==calls&&allocations.count(original)==1);
+   held.state=0;assert(session.PREPARE);
+   for(const auto &slot:session.tx_access_units_)assert(allocations.at(slot.data)==8192);
+   session.set_source(&source);assert(session.PREPARE);
+  }
   if((role&1)&&source.leased){
    session.running_=true;session.sender_running_=true;session.send_enabled_=true;
    uint8_t payload[]{1,2,3,4};unsigned releases=0;
@@ -245,7 +276,7 @@ int main(int argc,char **argv){
    sink.limit=1024;session.set_sink(&sink);assert(session.PREPARE);
   }
   size_t bytes=0;for(const auto &entry:allocations)bytes+=entry.second;
-  size_t expected=rx*(sink.limit?sink.limit:session.kMaxAccessUnitBytes)+tx*session.kMaxAccessUnitBytes;
+  size_t expected=rx*(sink.limit?sink.limit:session.kMaxAccessUnitBytes)+tx*source_capacity;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   if(role&2)expected+=RtpJpegDepacketizer::kQuantizationCacheBytes;
 #endif
@@ -262,9 +293,10 @@ int main(int argc,char **argv){
     return compile_harness(tmp_path, harness, defines=defines, sources=[VIDEO / "rtp_jpeg.cpp"] if codec == "JPEG" else [])
 
 
-@pytest.mark.parametrize("role", [0, 1, 2, 3, 9, 11, 18, 19, 34, 35, 66],
+@pytest.mark.parametrize("role", [0, 1, 2, 3, 9, 11, 18, 19, 34, 35, 66, 129, 131, 257, 513, 1153],
                          ids=["none", "source", "sink", "duplex", "leased-source", "leased-duplex", "bounded-sink", "bounded-duplex",
-                              "software-renderer-sink", "software-renderer-duplex", "held-lease-resize"])
+                              "software-renderer-sink", "software-renderer-duplex", "held-lease-resize", "bounded-source",
+                              "bounded-source-duplex", "oversized-source-limit", "unknown-large-source", "held-source-resize"])
 def test_video_pool_matches_codec_and_bound_endpoints(video_pool_binary, role):
     run(video_pool_binary, role, 0)
 

@@ -44,13 +44,14 @@ class VideoRtpSession {
   static constexpr BaseType_t kSenderTaskCore = 0;
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
-  // The local P4 encoder itself publishes through a 128 KiB output envelope,
-  // and the negotiated browser receive profile stays well below it.
+  // Preserve the qualified H.264 decoder receive envelope. Transmit storage
+  // follows its source contract independently of this receive budget.
   static constexpr size_t kMaxAccessUnitBytes = 128 * 1024;
 #else
   // RFC 2435 frames are independent but substantially larger.
   static constexpr size_t kMaxAccessUnitBytes = 512 * 1024;
 #endif
+  static constexpr size_t kMaxTxAccessUnitBytes = kMaxAccessUnitBytes;
   static constexpr size_t kMaxRtpPacketBytes = 1500;
   // One 800x800 RTP/JPEG access unit commonly spans 40-60 datagrams. Drain a
   // complete standards-compliant burst per wake while higher-priority audio
@@ -297,6 +298,7 @@ class VideoRtpSession {
     std::atomic<uint8_t> state{0};  // 0=free, 1=ready, 2=owned
   };
   TxAccessUnitSlot tx_access_units_[kTxAccessUnitSlots]{};
+  size_t tx_access_unit_capacity_{kMaxTxAccessUnitBytes};
   uint8_t tx_write_slot_{0};
   uint8_t tx_read_slot_{0};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
