@@ -1,5 +1,8 @@
 #include "sip_transport.h"
 #include "sip_message.h"
+#ifdef USE_ESPHOME_VOIP_PAGING
+#include "sip_answer_mode.h"
+#endif
 
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_SIP_TRANSPORT)
 
@@ -2990,6 +2993,23 @@ void SipTransport::remember_completed_invite_ack_(const std::string &request,
       !this->remote_sip_tcp_.load(std::memory_order_acquire);
 }
 
+#ifdef USE_ESPHOME_VOIP_PAGING
+void SipTransport::set_paging_auto_answer_peers(const std::vector<std::string> &peers) {
+  LockGuard lock(this->dialog_mutex_);
+  this->paging_auto_answer_peers_.clear();
+  for (const auto &peer : peers) {
+    in_addr address{};
+    if (this->paging_auto_answer_peers_.size() >= 16) break;
+    if (inet_pton(AF_INET, peer.c_str(), &address) == 1) {
+      const uint32_t value = ntohl(address.s_addr);
+      if (value != 0 && std::find(this->paging_auto_answer_peers_.begin(), this->paging_auto_answer_peers_.end(), value) ==
+                            this->paging_auto_answer_peers_.end())
+        this->paging_auto_answer_peers_.push_back(value);
+    }
+  }
+}
+#endif
+
 bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in &src) {
   const std::string body = message_body(message);
   const uint32_t src_ip = ntohl(src.sin_addr.s_addr);
@@ -3123,6 +3143,23 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   // the wire. Authorize/replay first, then apply the same gate to UDP and TCP.
   if (!this->should_accept_session_())
     return this->send_stateless_response_(message, src, 486, "Busy Here", "busy");
+#ifdef USE_ESPHOME_VOIP_PAGING
+  const auto answer_mode = sip_requested_answer_mode(message);
+  if (!answer_mode.valid)
+    return this->send_stateless_response_(message, src, 400, "Bad Request");
+  bool account_matched = false, account_allowed = false;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  account_matched = incoming_account >= 0;
+  if (account_matched)
+    account_allowed = this->registration_.account(incoming_account).config.allow_paging_auto_answer;
+#endif
+  const bool direct_peer_allowed = std::find(this->paging_auto_answer_peers_.begin(), this->paging_auto_answer_peers_.end(), src_ip) !=
+                                   this->paging_auto_answer_peers_.end();
+  const bool paging_auto_answer = sip_paging_auto_answer_authorized(
+      answer_mode.automatic, account_matched, account_allowed, direct_peer_allowed);
+  if (answer_mode.automatic && answer_mode.required && !paging_auto_answer)
+    return this->send_stateless_response_(message, src, 403, "Forbidden", "automatic_answer_forbidden");
+#endif
   {
     LockGuard media_lock(this->media_lifecycle_mutex_);
     const MediaLifecyclePhase phase =
@@ -3278,6 +3315,10 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   signal.selected_rx_format = selected_rx;
   signal.selected_tx_format = selected_tx;
   signal.media_answer_pending = this->delayed_offer_pending_;
+#ifdef USE_ESPHOME_VOIP_PAGING
+  signal.paging_auto_answer = paging_auto_answer;
+  signal.paging_manual_answer = answer_mode.manual;
+#endif
   this->emit_sip_signal_(std::move(signal));
   return true;
 }

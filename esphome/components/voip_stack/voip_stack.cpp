@@ -306,6 +306,9 @@ bool VoipStack::setup_transport_() {
   return false;
 #endif
   this->transport_->set_sip_signaling_transport(this->protocol_ == TransportType::TCP);
+#ifdef USE_ESPHOME_VOIP_PAGING
+  static_cast<SipTransport *>(this->transport_.get())->set_paging_auto_answer_peers(this->paging_auto_answer_peers_);
+#endif
 
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   this->initialize_registration_();
@@ -951,6 +954,18 @@ void VoipStack::set_ring_groups(const std::string &groups) {
   this->schedule_save_routing_settings_();
 }
 
+#ifdef USE_ESPHOME_VOIP_STACK_QUEUES
+void VoipStack::set_queues(const std::string &queues) {
+  const std::string normalized = normalize_group_list(queues);
+  if (normalized == this->queues_) return;
+  this->queues_ = normalized;
+#ifdef USE_TEXT
+  if (this->queues_text_ != nullptr) this->queues_text_->publish_state(normalized);
+#endif
+  this->schedule_save_routing_settings_();
+}
+#endif
+
 void VoipStack::set_conference_groups(const std::string &groups) {
   const std::string normalized = normalize_group_list(groups);
   if (normalized == this->conference_groups_) return;
@@ -1161,6 +1176,9 @@ void VoipStack::publish_entity_states() {
   if (this->ring_groups_text_ != nullptr) {
     this->ring_groups_text_->publish_state(this->ring_groups_);
   }
+#ifdef USE_ESPHOME_VOIP_STACK_QUEUES
+  if (this->queues_text_ != nullptr) this->queues_text_->publish_state(this->queues_);
+#endif
   if (this->conference_groups_text_ != nullptr) {
     this->conference_groups_text_->publish_state(this->conference_groups_);
   }

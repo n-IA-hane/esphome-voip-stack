@@ -489,6 +489,9 @@ bool SipTransport::queue_managed_account_(const SipAccountConfig &config, bool r
   auto &update = *this->managed_update_;
   if (!update.active) update.retiring = false;
   update.config = config;
+  // Only the authenticated private HA provisioning owner reaches this path.
+  // Its bound registrar peer may request paging without changing global AA.
+  if (!removing) update.config.allow_paging_auto_answer = true;
   update.commit = commit;
   update.context = context;
   update.removing = removing;

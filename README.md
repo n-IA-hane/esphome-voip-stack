@@ -286,6 +286,49 @@ the registration engine and its saved-account pool are compiled out. Managed
 registration adds no audio worker, media buffer or dependency on LDAP, BLF or an
 ESP mailbox client.
 
+### Per-call paging answer mode
+
+Paging uses the standard SIP `Answer-Mode` header from
+[RFC 5373](https://www.rfc-editor.org/rfc/rfc5373.html). An authorized
+`Answer-Mode: Auto` request can answer that call without changing the persistent
+**Auto Answer** switch. A `Manual` request, including `Manual;require`, waits for
+local acceptance even when that switch is on. Unknown mode tokens and extension
+parameters are ignored. An unauthorized `Auto;require` request is rejected with
+403; ordinary `Auto` falls back to the existing local answer policy. Busy and
+Do Not Disturb checks still apply.
+
+The managed HA account established by `ha_integration.auto_register: true`
+allows paging from its matched registrar peer. Manual PBX accounts must opt in:
+
+```yaml
+voip_stack:
+  registration:
+    accounts:
+      - account_id: office
+        registrar: pbx.example.org
+        username: "100"
+        password: !secret pbx_password
+        allow_paging_auto_answer: true
+```
+
+`registration.accounts[].allow_paging_auto_answer` defaults to `false`. The same
+account field is supported by the YAML `voip_stack.set_account` action. Account
+matching includes the registrar's bound signaling peer; a caller-supplied name
+alone does not grant paging access.
+
+For direct SIP without a matched account, opt in specific source IPv4 addresses:
+
+```yaml
+voip_stack:
+  paging_auto_answer_peers: [192.0.2.20]
+```
+
+This list is empty by default and retains at most 16 distinct addresses. It does
+not override a matched PBX account whose paging permission is disabled.
+`Priv-Answer-Mode` and vendor-specific auto-answer headers do not grant paging
+permission. Answer mode controls acceptance only; the negotiated SDP direction
+still determines whether the microphone transmits.
+
 For an HA action that selects an outgoing trunk for one call, the native API also
 provides `start_call_via_ha(dest, call_id)` and `hangup_call_if_id(call_id)`.
 The HA integration supplies a fresh SIP Call-ID, binds its selected line to that
@@ -549,6 +592,29 @@ contact by name. Home Assistant materializes the group entries, performs SIP
 forking for ring groups, mixes conference rooms, and pushes the updated roster
 back to the ESP devices.
 
+Queue declarations use the same per-phone ownership as ring groups:
+
+```yaml
+voip_stack:
+  queues: "Support, 700"
+```
+
+With native HA integration enabled, **VoIP Queues** is an editable configuration
+text. `ha_integration: { queues: false }` omits that entity. With
+`ha_integration: false`, an optional manual text uses `platform: voip_stack`,
+`type: queues` and a name, just like the group texts above. Queue names are
+limited to 32 UTF-8 bytes each, with a 240-byte comma-separated list. Their
+persisted value uses a separate preference key, preserving existing routing
+identity and group preferences.
+
+HA owns queue devices, routing and each agent's persistent available, paused or
+logged-out state. Membership updates do not re-register the SIP account. The HA
+editor can queue changes while an ESP is offline; a stale reconnect report does
+not overwrite pending HA changes. See the
+[HA group and queue guide](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/GROUPS_AND_QUEUES.md)
+for central member editing, manual and automatic group lifetime, services and
+queue login/pause BLF keys. This requires the matching HA integration version.
+
 ### Home Assistant inbound routing
 
 Provider/PBX trunks and automation routing belong to the optional Home
@@ -647,6 +713,7 @@ platform entities you need:
 | `text_sensor` | `transport` | Active signaling transport. |
 | `text_sensor` | `sip_snapshot` | Diagnostic snapshot of the SIP layer. |
 | `text` | `ring_groups` | Editable comma-separated ring group memberships. |
+| `text` | `queues` | Editable comma-separated queue declarations; HA owns agent login and pause. |
 | `text` | `conference_groups` | Editable comma-separated conference group memberships. |
 | `switch` | `conference_ring` | Ring this endpoint when another participant starts one of its conference groups. |
 
@@ -728,6 +795,10 @@ button:
 | `conference_groups` | `""` | Optional HA-managed conference group membership, single name or comma-separated list. |
 | `conference_ring` | `false` | Ring this device when another member starts its conference group. |
 | `ring_groups` | `""` | Optional HA-managed ring group membership, single name or comma-separated list. |
+| `queues` | empty | Optional HA queue declarations, single name or comma-separated list. |
+| `ha_integration.queues` | enabled with HA | Queue configuration text; `false` omits it. |
+| `paging_auto_answer_peers` | `[]` | Trusted source IPv4 addresses for per-call direct paging; at most 16 retained. |
+| `registration.accounts[].allow_paging_auto_answer` | `false` | Allow per-call paging from that matched manual PBX account. |
 | `use_ha_as_first_contact` | `false` | Pin the HA peer at the top of the dial plan. |
 | `ha_phonebook_text_sensor_id` | none | Bind the HA phonebook sensor. |
 | `delete_contact_missing_from` | none | Drop absent roster contact after N updates. |

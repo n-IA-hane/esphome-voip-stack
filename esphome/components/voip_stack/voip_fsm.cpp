@@ -1243,7 +1243,13 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
         this->incoming_call_trigger_.trigger(incoming_cid, in_caller_name, dest_name, remote_uri);
       });
 
-      if (this->auto_answer_) {
+      if (
+#ifdef USE_ESPHOME_VOIP_PAGING
+          !msg.paging_manual_answer && (this->auto_answer_ || msg.paging_auto_answer)
+#else
+          this->auto_answer_
+#endif
+      ) {
         this->complete_incoming_answer_(true);
       } else {
         if (!this->send_sip_ringing_(incoming_cid)) {

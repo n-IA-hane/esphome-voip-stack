@@ -91,6 +91,9 @@ class SipTransport : public SipPhoneTransport {
 #endif
   }
   bool start() override;
+#ifdef USE_ESPHOME_VOIP_PAGING
+  void set_paging_auto_answer_peers(const std::vector<std::string> &peers);
+#endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   void initialize_registration();
 #ifdef USE_ESPHOME_VOIP_MWI
@@ -680,6 +683,9 @@ class SipTransport : public SipPhoneTransport {
   uint32_t last_invite_cseq_number_{0};
   uint32_t remote_dialog_cseq_{0};
   uint32_t last_invite_peer_ip_v4_{0};
+#ifdef USE_ESPHOME_VOIP_PAGING
+  std::vector<uint32_t> paging_auto_answer_peers_;
+#endif
   uint16_t last_invite_peer_port_{0};
   struct SipIdentity {
     std::string route;

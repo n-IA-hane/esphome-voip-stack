@@ -16,7 +16,7 @@ ACTIONS = {
 # ESPHome device discovery uses the short state entity. SIP Contact and SDP
 # describe routing/media; the legacy endpoint string is no longer automatic.
 ROLES = ("state", "media_route", "caller", "destination", "last_reason", "contacts")
-TEXT_ROLES = ("extension", "ring_groups", "conference_groups")
+TEXT_ROLES = ("extension", "ring_groups", "conference_groups", "queues")
 
 
 def enabled(config):
@@ -39,7 +39,7 @@ def schema(value):
             CONF_ID: f"voip_{role}", CONF_NAME: sensors.TYPES[role][0], "type": role, **conf,
         })
     for role in TEXT_ROLES:
-        fields[cv.Optional(role, default={})] = lambda conf, role=role: texts.CONFIG_SCHEMA({
+        fields[cv.Optional(role, default={})] = lambda conf, role=role: False if role == "queues" and conf is False else texts.CONFIG_SCHEMA({
             CONF_ID: f"voip_{role}", CONF_NAME: texts.TYPES[role][1], "type": role, **conf,
         })
     fields[cv.Optional("conference_ring", default={})] = lambda conf: switches.CONFIG_SCHEMA({
@@ -98,5 +98,6 @@ async def to_code(parent, config):
     for role in ROLES:
         await sensors.to_code(config[CONF_HA_INTEGRATION][role])
     for role in TEXT_ROLES:
-        await texts.to_code(config[CONF_HA_INTEGRATION][role])
+        if config[CONF_HA_INTEGRATION][role] is not False:
+            await texts.to_code(config[CONF_HA_INTEGRATION][role])
     await switches.to_code(config[CONF_HA_INTEGRATION]["conference_ring"])

@@ -30,6 +30,9 @@ speaker:
 voip_stack:
   id: phone
   speaker: spk_main
+  # Compile the optional paging and queue owners on the existing S3 SDK job.
+  paging_auto_answer_peers: [192.0.2.1]
+  queues: CI queue
   audio:
     codecs:
       - codec: pcm

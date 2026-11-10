@@ -49,8 +49,10 @@ class SetAccountAction : public Action<Ts...>, public Parented<VoipStack> {
   TEMPLATABLE_VALUE(bool, persist)
   void set_config(const std::string &id, const std::string &registrar, uint16_t port, const std::string &domain,
       const std::string &username, const std::string &password, const std::string &auth_username,
-      const std::string &proxy, uint16_t proxy_port, bool tcp, uint32_t expires, bool enabled) {
-    this->config_ = {id, registrar, domain, username, password, auth_username, proxy, port, proxy_port, expires, tcp, enabled};
+      const std::string &proxy, uint16_t proxy_port, bool tcp, uint32_t expires, bool enabled,
+      bool allow_paging_auto_answer = false) {
+    this->config_ = {id, registrar, domain, username, password, auth_username, proxy, port, proxy_port, expires, tcp, enabled,
+                     allow_paging_auto_answer};
   }
   void play(const Ts &...x) override { this->parent_->set_account(this->config_, this->persist_.optional_value(x...).value_or(false)); }
  protected:

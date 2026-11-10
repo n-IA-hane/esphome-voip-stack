@@ -10,6 +10,7 @@ DEPENDENCIES = ["voip_stack"]
 CONF_TYPE = "type"
 
 TYPE_RING_GROUPS = "ring_groups"
+TYPE_QUEUES = "queues"
 TYPE_CONFERENCE_GROUPS = "conference_groups"
 TYPE_EXTENSION = "extension"
 
@@ -18,6 +19,10 @@ VoipStackGroupsText = voip_stack_ns.class_(
 )
 
 TYPES = {
+    TYPE_QUEUES: (
+        3, "VoIP Queues", "mdi:human-queue", "set_queues_text", "get_queues",
+        240, r"^[^|;\r\n]*$",
+    ),
     TYPE_EXTENSION: (
         2,
         "VoIP Extension",
@@ -68,6 +73,8 @@ CONFIG_SCHEMA = cv.All(
 
 
 async def to_code(config):
+    if config[CONF_TYPE] == TYPE_QUEUES:
+        cg.add_define("USE_ESPHOME_VOIP_STACK_QUEUES")
     parent = await cg.get_variable(resolve_parent_id(config))
     kind, _, _, setter_name, getter_name, max_length, pattern = TYPES[config[CONF_TYPE]]
     var = await text.new_text(config, max_length=max_length, pattern=pattern)

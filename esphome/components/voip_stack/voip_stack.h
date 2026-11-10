@@ -207,6 +207,13 @@ class VoipStack : public Component {
   bool get_conference_ring() const { return this->conference_ring_; }
   void set_ring_groups(const std::string &groups);
   const std::string &get_ring_groups() const { return this->ring_groups_; }
+#ifdef USE_ESPHOME_VOIP_PAGING
+  void set_paging_auto_answer_peers(const std::vector<std::string> &peers) { this->paging_auto_answer_peers_ = peers; }
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_QUEUES
+  void set_queues(const std::string &queues);
+  const std::string &get_queues() const { return this->queues_; }
+#endif
   // Stable routing key (yaml `name:` slug, e.g. "spotpear-ball-v2").
   // Matches the slug HA uses for the esphome.{slug}_start_call action.
   void set_device_route_id(const std::string &id) { this->device_route_id_ = id; }
@@ -414,6 +421,9 @@ class VoipStack : public Component {
 #endif
 #ifdef USE_TEXT
   void set_ring_groups_text(text::Text *entity) { this->ring_groups_text_ = entity; }
+#ifdef USE_ESPHOME_VOIP_STACK_QUEUES
+  void set_queues_text(text::Text *entity) { this->queues_text_ = entity; }
+#endif
   void set_conference_groups_text(text::Text *entity) { this->conference_groups_text_ = entity; }
   void set_extension_text(text::Text *entity) { this->extension_text_ = entity; }
 #endif
@@ -850,6 +860,9 @@ class VoipStack : public Component {
 #ifdef USE_TEXT
   text::Text *extension_text_{nullptr};
   text::Text *ring_groups_text_{nullptr};
+#ifdef USE_ESPHOME_VOIP_STACK_QUEUES
+  text::Text *queues_text_{nullptr};
+#endif
   text::Text *conference_groups_text_{nullptr};
 #endif
   // Contacts management. Empty at boot; fed by the optional HA text_sensor
@@ -894,6 +907,12 @@ class VoipStack : public Component {
   std::string conference_groups_;
   bool conference_ring_{false};
   std::string ring_groups_;
+#ifdef USE_ESPHOME_VOIP_PAGING
+  std::vector<std::string> paging_auto_answer_peers_;
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_QUEUES
+  std::string queues_;
+#endif
   std::string last_published_destination_;
   // One-shot dialplan target used when call("target") cannot resolve locally
   // and must route through the HA peer.
@@ -1188,6 +1207,13 @@ class VoipStack : public Component {
   };
 
   ESPPreferenceObject routing_settings_pref_{};
+#ifdef USE_ESPHOME_VOIP_STACK_QUEUES
+  // Separate key preserves the existing routing v1 record when queues are added.
+  struct StoredQueuesSettings {
+    char queues[MAX_GROUP_LIST_BYTES + 1]{};
+  };
+  ESPPreferenceObject queues_settings_pref_{};
+#endif
   bool routing_settings_loaded_{false};
   bool routing_save_scheduled_{false};
 
@@ -1384,6 +1410,10 @@ class VoipStackGroupsText : public text::Text, public Parented<VoipStack> {
   void control(const std::string &value) override {
     if (this->kind_ == 0) {
       this->parent_->set_ring_groups(value);
+#ifdef USE_ESPHOME_VOIP_STACK_QUEUES
+    } else if (this->kind_ == 3) {
+      this->parent_->set_queues(value);
+#endif
     } else if (this->kind_ == 1) {
       this->parent_->set_conference_groups(value);
     } else {

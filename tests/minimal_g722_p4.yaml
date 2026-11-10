@@ -8,3 +8,7 @@ esp32:
 packages:
   media: !include g722_duplex_base.yaml
 network:
+voip_stack:
+  # Cover the same optional owners on the existing P4 SDK job.
+  paging_auto_answer_peers: [192.0.2.1]
+  queues: CI queue

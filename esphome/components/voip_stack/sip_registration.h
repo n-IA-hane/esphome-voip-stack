@@ -30,13 +30,15 @@ struct SipAccountConfig {
   uint16_t port{5060}, proxy_port{5060};
   uint32_t expires{3600};
   bool tcp{false}, enabled{true};
+  bool allow_paging_auto_answer{false};
   bool valid() const;
   bool same_settings(const SipAccountConfig &other) const {
     return this->id == other.id && this->registrar == other.registrar && this->domain == other.domain &&
         this->username == other.username && this->password == other.password &&
         this->auth_username == other.auth_username && this->proxy == other.proxy &&
         this->port == other.port && this->proxy_port == other.proxy_port &&
-        this->expires == other.expires && this->tcp == other.tcp && this->enabled == other.enabled;
+        this->expires == other.expires && this->tcp == other.tcp && this->enabled == other.enabled &&
+        this->allow_paging_auto_answer == other.allow_paging_auto_answer;
   }
 };
 
@@ -47,10 +49,11 @@ struct SipAccountConfigView {
   uint16_t port, proxy_port;
   uint32_t expires;
   bool tcp, enabled;
+  bool allow_paging_auto_answer{false};
 
   SipAccountConfig materialize() const {
     return {id, registrar, domain, username, password, auth_username, proxy,
-            port, proxy_port, expires, tcp, enabled};
+            port, proxy_port, expires, tcp, enabled, allow_paging_auto_answer};
   }
 };
 

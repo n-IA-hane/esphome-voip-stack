@@ -115,7 +115,8 @@ void VoipStack::initialize_registration_() {
     c.proxy_port = s.proxy_port;
     c.tcp = s.tcp;
     c.expires = s.expires;
-    c.enabled = s.enabled;
+    c.enabled = (s.enabled & 1U) != 0;
+    c.allow_paging_auto_answer = (s.enabled & 2U) != 0;
     if (c.valid()) transport->set_account(c);
   }
 }
@@ -235,7 +236,8 @@ bool VoipStack::save_registration_override_(const std::string& id, const SipAcco
     slot->proxy_port = c->proxy_port;
     slot->tcp = c->tcp;
     slot->expires = c->expires;
-    slot->enabled = c->enabled;
+    // Retain the existing NVS record layout; old enabled values 0/1 stay valid.
+    slot->enabled = (c->enabled ? 1U : 0U) | (c->allow_paging_auto_answer ? 2U : 0U);
   }
   if (!this->write_registration_saved_(*next)) return false;
   *this->registration_saved_ = *next;

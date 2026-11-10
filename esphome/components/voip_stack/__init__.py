@@ -131,6 +131,8 @@ CONF_EXTENSION = "extension"
 CONF_CONFERENCE_GROUPS = "conference_groups"
 CONF_CONFERENCE_RING = "conference_ring"
 CONF_RING_GROUPS = "ring_groups"
+CONF_QUEUES = "queues"
+CONF_PAGING_AUTO_ANSWER_PEERS = "paging_auto_answer_peers"
 CONF_IP = "ip"
 CONF_PORT = "port"
 CONF_RTP_PORT_ACTION = "rtp_port"
@@ -618,6 +620,8 @@ CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), ha_integration.p
         cv.Optional(CONF_CONFERENCE_GROUPS, default=""): _validate_group_list,
         cv.Optional(CONF_CONFERENCE_RING, default=False): cv.boolean,
         cv.Optional(CONF_RING_GROUPS, default=""): _validate_group_list,
+        cv.Optional(CONF_QUEUES): _validate_group_list,
+        cv.Optional(CONF_PAGING_AUTO_ANSWER_PEERS, default=[]): cv.ensure_list(cv.ipv4address),
         # On the first post-boot phonebook population, select the HA peer row
         # as the current destination so a freshly booted ESP is tuned to HA
         # instead of whichever contact happens to be first in the roster order.
@@ -1055,6 +1059,12 @@ async def _add_core_settings(var, config):
     cg.add(var.set_conference_groups(config[CONF_CONFERENCE_GROUPS]))
     cg.add(var.set_conference_ring(config[CONF_CONFERENCE_RING]))
     cg.add(var.set_ring_groups(config[CONF_RING_GROUPS]))
+    if CONF_QUEUES in config:
+        cg.add_define("USE_ESPHOME_VOIP_STACK_QUEUES")
+        cg.add(var.set_queues(config[CONF_QUEUES]))
+    if config[CONF_PAGING_AUTO_ANSWER_PEERS]:
+        cg.add_define("USE_ESPHOME_VOIP_PAGING")
+        cg.add(var.set_paging_auto_answer_peers([str(ip) for ip in config[CONF_PAGING_AUTO_ANSWER_PEERS]]))
     cg.add(var.set_use_ha_as_first_contact(config[CONF_USE_HA_AS_FIRST_CONTACT]))
     cg.add(var.set_audio_debug(config[CONF_AUDIO_DEBUG]))
     if config[CONF_AUDIO_DEBUG]:

@@ -68,6 +68,7 @@ ACCOUNT_SCHEMA = cv.All(cv.Schema({
     cv.Optional("transport", default="udp"): cv.one_of("udp", "tcp", lower=True),
     cv.Optional("expires", default=3600): cv.int_range(min=30, max=86400),
     cv.Optional("enabled", default=True): cv.boolean,
+    cv.Optional("allow_paging_auto_answer", default=False): cv.boolean,
 }), complete_account)
 
 
@@ -124,6 +125,9 @@ async def to_code(parent, config):
     if not CORE.using_toolchain_esp_idf:
         raise cv.Invalid("SIP registration requires the ESP-IDF framework")
     conf = config[CONF_REGISTRATION]
+    if ((config.get("ha_integration") or {}).get("auto_register", False)
+            or any(account["allow_paging_auto_answer"] for account in conf["accounts"])):
+        cg.add_define("USE_ESPHOME_VOIP_PAGING")
     cg.add_define("USE_ESPHOME_VOIP_REGISTRATION")
     if conf["message_waiting"]:
         cg.add_define("USE_ESPHOME_VOIP_MWI")
@@ -139,7 +143,8 @@ async def to_code(parent, config):
             ("password", a["password"]), ("auth_username", a["auth_username"]),
             ("proxy", a["proxy"]), ("port", a["port"]),
             ("proxy_port", a["proxy_port"]), ("expires", a["expires"]),
-            ("tcp", a["transport"] == "tcp"), ("enabled", a["enabled"]))
+            ("tcp", a["transport"] == "tcp"), ("enabled", a["enabled"]),
+            ("allow_paging_auto_answer", a["allow_paging_auto_answer"]))
             for a in conf["accounts"]]
         accounts = cg.static_const_array(
             ID(f"{config['id']}_registration_accounts", is_declaration=True,
@@ -210,8 +215,11 @@ def register_automations(parent_type):
     async def set_to_code(conf, action_id, template_arg, args):
         action = await parented(conf, action_id, template_arg)
         a = conf["account"]
+        if a["allow_paging_auto_answer"]:
+            cg.add_define("USE_ESPHOME_VOIP_PAGING")
         cg.add(action.set_config(a["account_id"], a["registrar"], a["port"], a["domain"], a["username"], a["password"],
-            a["auth_username"], a["proxy"], a["proxy_port"], a["transport"] == "tcp", a["expires"], a["enabled"]))
+            a["auth_username"], a["proxy"], a["proxy_port"], a["transport"] == "tcp", a["expires"], a["enabled"],
+            a["allow_paging_auto_answer"]))
         cg.add(action.set_persist(await cg.templatable(conf["persist"], args, cg.bool_)))
         return action
 

@@ -333,6 +333,15 @@ void VoipStack::load_routing_settings_() {
     this->set_conference_groups(stored.conference_groups);
     ESP_LOGD(TAG, "Loaded routing identity and groups");
   }
+#ifdef USE_ESPHOME_VOIP_STACK_QUEUES
+  this->queues_settings_pref_ =
+      global_preferences->make_preference<StoredQueuesSettings>(fnv1_hash("voip_stack_queues_settings"));
+  StoredQueuesSettings queues;
+  if (this->queues_settings_pref_.load(&queues)) {
+    queues.queues[MAX_GROUP_LIST_BYTES] = '\0';
+    this->set_queues(queues.queues);
+  }
+#endif
   this->routing_settings_loaded_ = true;
 }
 
@@ -356,6 +365,11 @@ void VoipStack::save_routing_settings_() {
   copy_bounded(stored.ring_groups, sizeof(stored.ring_groups), this->ring_groups_);
   copy_bounded(stored.conference_groups, sizeof(stored.conference_groups), this->conference_groups_);
   this->routing_settings_pref_.save(&stored);
+#ifdef USE_ESPHOME_VOIP_STACK_QUEUES
+  StoredQueuesSettings queues;
+  copy_bounded(queues.queues, sizeof(queues.queues), this->queues_);
+  this->queues_settings_pref_.save(&queues);
+#endif
   ESP_LOGD(TAG, "Saved routing identity and groups");
 }
 
