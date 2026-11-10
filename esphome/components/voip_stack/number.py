@@ -46,7 +46,7 @@ def _number_schema(number_class, icon, min_val, max_val, step):
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_VOIP_STACK_ID): cv.use_id(VoipStack),
-        # Master volume (0-100%), default 100%
+        # Master volume (0-100%); Audio Stack supplies its effective state.
         cv.Optional(CONF_MASTER_VOLUME): _number_schema(
             VoipStackVolume, "mdi:volume-high", 0, 100, 5
         ),

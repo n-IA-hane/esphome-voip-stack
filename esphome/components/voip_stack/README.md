@@ -365,6 +365,12 @@ Declare only the native ESPHome platforms an endpoint needs:
 - `master_volume`, only when a speaker is configured
 - `mic_gain`, only when a mic is configured
 
+When the speaker path ends at Audio Stack, Native's Master Volume and
+`voip_stack.set_volume` address the shared Audio Stack master, including other
+mixer inputs. The alias follows external changes and zero without restoring a
+second saved volume. Speaker mute and per-input gain retain their own controls.
+Standard speakers keep Native's existing saved volume behavior.
+
 With native HA integration enabled, the component creates its discovery,
 call-state, contact and routing entities automatically. Its `auto_answer`, DND,
 audio numbers and extra diagnostic controls remain explicit optional platform

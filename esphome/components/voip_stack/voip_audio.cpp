@@ -30,7 +30,7 @@ void VoipStack::record_tx_debug_(const uint8_t *pcm, size_t bytes, const AudioFo
   data.bytes = bytes;
   data.samples = bytes / sizeof(int16_t);
   data.format = pack_audio_format(format);
-  data.volume = this->volume_.load(std::memory_order_relaxed);
+  data.volume = this->get_volume();
   data.state = static_cast<uint8_t>(this->call_state_.load(std::memory_order_acquire));
   if (pcm == nullptr || data.samples == 0) {
     data.status = 1;
@@ -519,7 +519,7 @@ void VoipStack::play_rx_frame_(const uint8_t *pcm, size_t bytes, SilenceReason s
   const bool receive_paused = this->transport_ != nullptr && this->transport_->audio_receive_paused();
   if (silence_reason == SilenceReason::NONE && this->rx_audio_chunk_ != nullptr &&
       bytes <= this->rx_audio_chunk_alloc_bytes_ &&
-      (receive_paused || this->volume_.load(std::memory_order_relaxed) <= 0.001f)) {
+      (receive_paused || this->get_volume() <= 0.001f)) {
     // The RX task owns decode and playout serially, including partial writes.
     // Zero PCM after decoding so codec prediction/PLC state still advances.
     memset(this->rx_audio_chunk_, 0, bytes);

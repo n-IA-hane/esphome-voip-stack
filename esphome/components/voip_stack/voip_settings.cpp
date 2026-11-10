@@ -255,6 +255,11 @@ void VoipStack::load_settings_() {
     // template-number setups own their own DAC + AEC sync.
     const float volume = clamp_volume_(stored.volume_pct / 100.0f);
 #ifdef USE_NUMBER
+#ifdef USE_ESPHOME_VOIP_STACK_MASTER_ALIAS
+    if (this->has_master_volume_control_()) {
+      ESP_LOGD(TAG, "Audio master owns volume; ignored saved Native volume");
+    } else
+#endif
     if (this->volume_number_ != nullptr) {
       this->volume_.store(volume, std::memory_order_relaxed);
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
@@ -358,6 +363,12 @@ void VoipStack::save_routing_settings_() {
 
 void VoipStack::set_volume(float volume) {
   volume = clamp_volume_(volume);
+#ifdef USE_ESPHOME_VOIP_STACK_MASTER_ALIAS
+  if (this->has_master_volume_control_()) {
+    this->master_volume_control_.set(this->master_volume_control_.owner, volume);
+    return;
+  }
+#endif
   this->volume_.store(volume, std::memory_order_relaxed);
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   if (this->speaker_ != nullptr) {
@@ -366,6 +377,18 @@ void VoipStack::set_volume(float volume) {
 #endif
   this->schedule_save_settings_();
 }
+
+#ifdef USE_ESPHOME_VOIP_STACK_MASTER_ALIAS
+void VoipStack::sync_master_volume_() {
+#ifdef USE_NUMBER
+  if (this->has_master_volume_control_() && this->volume_number_ != nullptr) {
+    const float percent = this->get_volume() * 100.0f;
+    if (!this->volume_number_->has_state() || this->volume_number_->state != percent)
+      this->volume_number_->publish_state(percent);
+  }
+#endif
+}
+#endif
 
 void VoipStack::set_auto_answer(bool enabled) {
   this->auto_answer_ = enabled;

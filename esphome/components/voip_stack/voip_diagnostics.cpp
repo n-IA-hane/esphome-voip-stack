@@ -107,7 +107,7 @@ void VoipStack::dump_diagnostics() {
   dump->tx_drops = this->media_tx_queue_drops_.load(std::memory_order_relaxed);
   dump->rx_depth = this->media_rx_queue_depth_.load(std::memory_order_relaxed);
   dump->rx_drops = this->media_rx_queue_drops_.load(std::memory_order_relaxed);
-  dump->receive_volume = this->volume_.load(std::memory_order_relaxed);
+  dump->receive_volume = this->get_volume();
   dump->transmit_gain = this->mic_gain_.load(std::memory_order_relaxed);
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   if (this->rx_jitter_buffer_ != nullptr) {

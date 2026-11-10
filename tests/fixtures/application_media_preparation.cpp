@@ -66,7 +66,7 @@ struct VoipStack {
  Speaker *speaker_=nullptr;Transport transport;Transport *transport_=&transport;
  std::atomic<CallState>call_state_{CallState::CALLING};
  std::atomic<bool>audio_devices_active_{true},first_audio_received_{false};
- std::atomic<float>volume_{1};
+ std::atomic<float>volume_{1};float get_volume()const{return volume_.load(std::memory_order_relaxed);}
  std::atomic<uint32_t>last_peer_audio_ms_{0},rx_audio_revision_{0},media_rx_queue_depth_{0},media_rx_queue_drops_{0},rx_underrun_start_ms_{0};
  RtpJitterBuffer *rx_jitter_buffer_=nullptr;
  uint8_t *rx_audio_chunk_=nullptr,*rx_network_chunk_=nullptr;size_t rx_audio_chunk_alloc_bytes_=0,rx_jitter_frame_alloc_bytes_=960;

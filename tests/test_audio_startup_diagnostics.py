@@ -103,7 +103,7 @@ struct VoipStack {
  std::atomic<CallState> call_state_{CallState::IN_CALL};
  std::atomic<uint32_t> rx_audio_revision_{0},media_rx_queue_depth_{0},media_rx_queue_drops_{0};
  std::atomic<uint32_t> rx_underrun_start_ms_{0};
- std::atomic<float> volume_{1};
+ std::atomic<float> volume_{1};float get_volume()const{return volume_.load(std::memory_order_relaxed);}
  uint8_t *rx_audio_chunk_=nullptr;size_t rx_audio_chunk_alloc_bytes_=0;
  size_t rx_jitter_frame_alloc_bytes_=4;void *rx_task_handle_=nullptr;
  AudioFormat get_current_rx_audio_format_(){return {};}

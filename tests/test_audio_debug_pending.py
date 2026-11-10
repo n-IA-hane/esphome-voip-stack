@@ -58,7 +58,7 @@ struct VoipStack{
  bool audio_debug_=true,dc_offset_removal_=false;unsigned dc_channel_phase_=0;
  std::array<Dc,2>dc_blockers_{};Buffer buffer;Buffer*mic_buffer_=&buffer;
  Transport transport;Transport*transport_=&transport;
- std::atomic<int16_t*>mic_converted_{nullptr};std::atomic<float>mic_gain_{1},volume_{1};
+ std::atomic<int16_t*>mic_converted_{nullptr};std::atomic<float>mic_gain_{1},volume_{1};float get_volume()const{return volume_.load(std::memory_order_relaxed);}
  std::atomic<CallState>call_state_{CallState::IN_CALL};AudioFormat format;
  std::atomic<uint32_t>media_tx_queue_depth_{2},media_tx_queue_drops_{3},media_tx_queue_drop_bytes_{4};
  unsigned wakes=0;void enable_loop_soon_any_context(){++wakes;}

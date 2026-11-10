@@ -306,7 +306,21 @@ class VoipStack : public Component {
 
   // Volume control
   void set_volume(float volume);
-  float get_volume() const { return this->volume_.load(std::memory_order_relaxed); }
+  float get_volume() const {
+#ifdef USE_ESPHOME_VOIP_STACK_MASTER_ALIAS
+    if (this->has_master_volume_control_())
+      return this->master_volume_control_.get(this->master_volume_control_.owner);
+#endif
+    return this->volume_.load(std::memory_order_relaxed);
+  }
+#ifdef USE_ESPHOME_VOIP_STACK_MASTER_ALIAS
+  template<typename Master> void set_master_volume_control(Master *master) {
+    this->master_volume_control_ = {
+        master,
+        [](void *owner) { return static_cast<Master *>(owner)->get_master_volume(); },
+        [](void *owner, float volume) { static_cast<Master *>(owner)->set_master_volume(volume); }};
+  }
+#endif
 
   // Auto-answer control (for incoming calls)
   void set_auto_answer(bool enabled);
@@ -981,7 +995,20 @@ class VoipStack : public Component {
 #endif
   static constexpr uint8_t kRxTaskPriority = 15;
 
+  // Legacy speaker control. A bound Audio master is read directly instead.
   std::atomic<float> volume_{1.0f};
+#ifdef USE_ESPHOME_VOIP_STACK_MASTER_ALIAS
+  struct MasterVolumeControl {
+    void *owner{nullptr};
+    float (*get)(void *){nullptr};
+    void (*set)(void *, float){nullptr};
+  } master_volume_control_;
+  bool has_master_volume_control_() const {
+    return this->master_volume_control_.owner != nullptr &&
+           this->master_volume_control_.get != nullptr && this->master_volume_control_.set != nullptr;
+  }
+  void sync_master_volume_();
+#endif
   bool audio_debug_{false};
   AudioFormat tx_audio_format_{DEFAULT_AUDIO_FORMAT};
   AudioFormat rx_audio_format_{DEFAULT_AUDIO_FORMAT};
@@ -1318,7 +1345,7 @@ class VoipStackVolume : public number::Number, public Parented<VoipStack> {
     if (value < 0.0f) value = 0.0f;
     if (value > 100.0f) value = 100.0f;
     this->parent_->set_volume(value / 100.0f);
-    this->publish_state(value);
+    this->publish_state(this->parent_->get_volume() * 100.0f);
   }
 };
 

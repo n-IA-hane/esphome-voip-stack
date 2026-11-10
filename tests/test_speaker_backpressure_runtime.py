@@ -37,7 +37,7 @@ struct Transport{bool audio_receive_paused()const{return false;}};
 struct VoipStack {
  Transport *transport_=nullptr;
  Speaker *speaker_;uint8_t *rx_audio_chunk_=nullptr;size_t rx_audio_chunk_alloc_bytes_=0;
- std::atomic<float> volume_{1};
+ std::atomic<float> volume_{1};float get_volume()const{return volume_.load(std::memory_order_relaxed);}
  std::atomic<bool> audio_devices_active_{true};
  std::atomic<CallState> call_state_{CallState::IN_CALL};
  std::atomic<uint32_t> rx_audio_revision_{0};

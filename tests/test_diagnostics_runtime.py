@@ -61,7 +61,7 @@ struct VoipStack{
  std::atomic<CallState>call_state_{CallState::IN_CALL};
  std::atomic<uint32_t>media_tx_queue_depth_{1},media_tx_queue_drops_{0},media_rx_queue_depth_{2},media_rx_queue_drops_{0};
  std::atomic<bool>audio_devices_active_{true};
- std::atomic<float>volume_{.75f},mic_gain_{2.0f};
+ std::atomic<float>volume_{.75f},mic_gain_{2.0f};float get_volume()const{return volume_.load(std::memory_order_relaxed);}
  Mutex call_state_mutex_;std::string current_call_id_="private-caller-token",last_reason_="local_hangup";
  std::unique_ptr<Transport>transport_=std::make_unique<Transport>();
  std::unique_ptr<RtpJitterBuffer>rx_jitter_buffer_=std::make_unique<RtpJitterBuffer>();
