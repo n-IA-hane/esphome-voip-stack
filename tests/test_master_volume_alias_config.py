@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 from esphome.core import ID
+import esphome.config_validation as cv
 
 from test_rx_feedback_config import Config, ref
 
@@ -54,7 +55,28 @@ def test_cycle_or_unresolved_speaker_keeps_legacy_volume_owner():
     assert provider(config, ref('missing')) is None
 
 
-@pytest.mark.parametrize('kind', ['legacy', 'direct', 'composite', 'direct-implicit', 'composite-implicit'])
+def test_canonical_control_matches_the_resolved_audio_parent_and_is_unique():
+    nodes = ast.parse((ROOT / 'esphome/components/voip_stack/__init__.py').read_text()).body
+    function = next(node for node in nodes if isinstance(node, ast.FunctionDef)
+                    and node.name == '_master_volume_number_for_provider')
+    canonical = ID('canonical', is_declaration=True)
+    config = Config({'number': [
+        {'platform': 'esp_audio_stack', 'esp_audio_stack_id': ref('other'), 'master_volume': {'id': ID('other_number')}},
+        {'platform': 'voip_stack', 'master_volume': {'id': ID('native_number')}},
+        {'platform': 'esp_audio_stack', 'esp_audio_stack_id': ref('audio'), 'master_volume': {'id': canonical}}]}, {})
+    namespace = {'fv': SimpleNamespace(full_config=SimpleNamespace(get=lambda: config)), 'CONF_ID': 'id', 'cv': cv}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), 'canonical-master', 'exec'), namespace)
+    resolve = namespace[function.name]
+    assert resolve(ref('audio')) is canonical
+    assert resolve(ref('absent')) is None and resolve(None) is None
+    config['number'].append({'platform': 'esp_audio_stack', 'esp_audio_stack_id': ref('audio'),
+                             'master_volume': {'id': ID('duplicate')}})
+    with pytest.raises(cv.Invalid, match='one master_volume'):
+        resolve(ref('audio'))
+
+
+@pytest.mark.parametrize('kind', ['legacy', 'direct', 'composite', 'direct-implicit', 'composite-implicit',
+                                'direct-canonical', 'composite-canonical', 'direct-canonical-implicit', 'composite-canonical-implicit'])
 def test_real_codegen_binds_the_actual_master_only_when_present(tmp_path, kind):
     data = yaml.safe_load((ROOT / 'tests/minimal_speaker_only.yaml').read_text())
     data['external_components'][0]['source'] = str(ROOT / 'esphome/components')
@@ -74,8 +96,13 @@ def test_real_codegen_binds_the_actual_master_only_when_present(tmp_path, kind):
             'i2s_din_pin': 'GPIO4', 'i2s_dout_pin': 'GPIO8', 'buffers_in_psram': True}
         data['speaker'] = [{'platform': 'esp_audio_stack', 'id': 'spk_main', 'esp_audio_stack_id': 'audio_master',
                             'sample_rate': 48000, 'bits_per_sample': 16}]
+        if 'canonical' in kind:
+            data['number'].append({'platform': 'esp_audio_stack', 'esp_audio_stack_id': 'audio_master',
+                                   'master_volume': {'id': 'audio_master_control', 'name': 'Audio Master'}})
         if kind.endswith('implicit'):
             data['speaker'][0].pop('esp_audio_stack_id')
+            if 'canonical' in kind:
+                data['number'][-1].pop('esp_audio_stack_id')
         if kind.startswith('composite'):
             data['speaker'] += [
                 {'platform': 'mixer', 'id': 'audio_mixer', 'output_speaker': 'spk_main',
@@ -92,3 +119,5 @@ def test_real_codegen_binds_the_actual_master_only_when_present(tmp_path, kind):
     defines = next(tmp_path.rglob('defines.h')).read_text()
     assert ('USE_ESPHOME_VOIP_STACK_MASTER_ALIAS' in defines) == (kind != 'legacy')
     assert ('phone->set_master_volume_control(audio_master)' in main) == (kind != 'legacy')
+    assert ('USE_ESPHOME_VOIP_STACK_MASTER_NUMBER_ALIAS' in defines) == ('canonical' in kind)
+    assert ('phone->set_master_volume_number(audio_master_control)' in main) == ('canonical' in kind)

@@ -365,6 +365,14 @@ void VoipStack::set_volume(float volume) {
   volume = clamp_volume_(volume);
 #ifdef USE_ESPHOME_VOIP_STACK_MASTER_ALIAS
   if (this->has_master_volume_control_()) {
+#ifdef USE_ESPHOME_VOIP_STACK_MASTER_NUMBER_ALIAS
+    if (this->master_volume_control_.number != nullptr) {
+      auto call = this->master_volume_control_.number->make_call();
+      call.set_value(volume * 100.0f);
+      call.perform();
+      return;
+    }
+#endif
     this->master_volume_control_.set(this->master_volume_control_.owner, volume);
     return;
   }
@@ -382,7 +390,7 @@ void VoipStack::set_volume(float volume) {
 void VoipStack::sync_master_volume_() {
 #ifdef USE_NUMBER
   if (this->has_master_volume_control_() && this->volume_number_ != nullptr) {
-    const float percent = this->get_volume() * 100.0f;
+    const float percent = this->get_volume_control_percent();
     if (!this->volume_number_->has_state() || this->volume_number_->state != percent)
       this->volume_number_->publish_state(percent);
   }

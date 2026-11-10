@@ -313,6 +313,14 @@ class VoipStack : public Component {
 #endif
     return this->volume_.load(std::memory_order_relaxed);
   }
+  // Main-loop UI projection. Media workers use the effective getter above.
+  float get_volume_control_percent() const {
+#ifdef USE_ESPHOME_VOIP_STACK_MASTER_NUMBER_ALIAS
+    if (this->master_volume_control_.number != nullptr && this->master_volume_control_.number->has_state())
+      return this->master_volume_control_.number->state;
+#endif
+    return this->get_volume() * 100.0f;
+  }
 #ifdef USE_ESPHOME_VOIP_STACK_MASTER_ALIAS
   template<typename Master> void set_master_volume_control(Master *master) {
     this->master_volume_control_ = {
@@ -320,6 +328,9 @@ class VoipStack : public Component {
         [](void *owner) { return static_cast<Master *>(owner)->get_master_volume(); },
         [](void *owner, float volume) { static_cast<Master *>(owner)->set_master_volume(volume); }};
   }
+#ifdef USE_ESPHOME_VOIP_STACK_MASTER_NUMBER_ALIAS
+  void set_master_volume_number(number::Number *number) { this->master_volume_control_.number = number; }
+#endif
 #endif
 
   // Auto-answer control (for incoming calls)
@@ -1002,6 +1013,9 @@ class VoipStack : public Component {
     void *owner{nullptr};
     float (*get)(void *){nullptr};
     void (*set)(void *, float){nullptr};
+#ifdef USE_ESPHOME_VOIP_STACK_MASTER_NUMBER_ALIAS
+    number::Number *number{nullptr};
+#endif
   } master_volume_control_;
   bool has_master_volume_control_() const {
     return this->master_volume_control_.owner != nullptr &&
@@ -1345,7 +1359,7 @@ class VoipStackVolume : public number::Number, public Parented<VoipStack> {
     if (value < 0.0f) value = 0.0f;
     if (value > 100.0f) value = 100.0f;
     this->parent_->set_volume(value / 100.0f);
-    this->publish_state(this->parent_->get_volume() * 100.0f);
+    this->publish_state(this->parent_->get_volume_control_percent());
   }
 };
 

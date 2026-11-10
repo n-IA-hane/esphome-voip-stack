@@ -470,6 +470,22 @@ def _speaker_master_volume_provider(speaker_id):
     return None
 
 
+def _master_volume_number_for_provider(provider_id):
+    """Use the existing canonical Audio control, never create another number."""
+    provider_name = getattr(provider_id, "id", None)
+    if provider_name is None:
+        return None
+    numbers = fv.full_config.get().get("number", [])
+    if isinstance(numbers, dict):
+        numbers = [numbers]
+    matches = [entry["master_volume"][CONF_ID] for entry in numbers
+               if entry.get("platform") == "esp_audio_stack" and "master_volume" in entry
+               and getattr(entry.get("esp_audio_stack_id"), "id", None) == provider_name]
+    if len(matches) > 1:
+        raise cv.Invalid("The Native Master alias requires one master_volume number per Audio Stack")
+    return matches[0] if matches else None
+
+
 def _esp_audio_stack_parent_config(declaration: dict):
     parent_id = declaration.get("esp_audio_stack_id")
     if parent_id is None:
@@ -895,6 +911,7 @@ def _final_validate(config):
 
     if CONF_SPEAKER in config and rx_fmt is not None:
         config["_master_volume_provider"] = _speaker_master_volume_provider(config[CONF_SPEAKER])
+        config["_master_volume_number"] = _master_volume_number_for_provider(config["_master_volume_provider"])
         config["_speaker_output_feedback"] = _speaker_output_feedback_provider(config[CONF_SPEAKER])
         try:
             audio.final_validate_audio_schema(
@@ -957,6 +974,10 @@ async def _add_core_settings(var, config):
             cg.add_define("USE_ESPHOME_VOIP_STACK_MASTER_ALIAS")
             master = await cg.get_variable(config["_master_volume_provider"])
             cg.add(var.set_master_volume_control(master))
+            if config.get("_master_volume_number") is not None:
+                cg.add_define("USE_ESPHOME_VOIP_STACK_MASTER_NUMBER_ALIAS")
+                master_number = await cg.get_variable(config["_master_volume_number"])
+                cg.add(var.set_master_volume_number(master_number))
         if config.get("_speaker_output_feedback", False):
             provider = await cg.get_variable(config["_speaker_output_feedback"])
             cg.add(var.set_speaker_output_feedback(provider))

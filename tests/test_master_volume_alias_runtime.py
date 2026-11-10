@@ -1,4 +1,6 @@
 """A Native Master alias observes the Audio owner, including zero and stale caches."""
+import os
+from pathlib import Path
 import subprocess
 
 import pytest
@@ -12,10 +14,14 @@ def alias_declarations():
         return ('template<typename Master>void set_master_volume_control(Master*){}\n'
                 'bool has_master_volume_control_()const{return false;}\n' +
                 block(header, 'float get_volume() const'))
-    return (block(header, 'struct MasterVolumeControl {') + ';MasterVolumeControl master_volume_control_;\n' +
+    binding = ('#ifdef USE_ESPHOME_VOIP_STACK_MASTER_NUMBER_ALIAS\n' + (block(header, 'void set_master_volume_number(')
+               if 'void set_master_volume_number(' in header else 'void set_master_volume_number(number::Number*){}') + '\n#endif\n')
+    return (block(header, 'struct MasterVolumeControl {') + ';MasterVolumeControl master_volume_control_;\n' + binding +
             block(header, 'template<typename Master>') + '\n' +
             block(header, 'bool has_master_volume_control_() const') + '\n' +
-            block(header, 'float get_volume() const'))
+            block(header, 'float get_volume() const') + '\n' +
+            (block(header, 'float get_volume_control_percent() const') if 'float get_volume_control_percent() const' in header
+             else 'float get_volume_control_percent()const{return this->get_volume()*100;}'))
 
 
 @pytest.fixture(scope='module')
@@ -24,32 +30,42 @@ def master_alias(tmp_path_factory):
     header = (SOURCE / 'voip_stack.h').read_text()
     code = r'''
 #define USE_NUMBER
+#define USE_SPEAKER
 #define USE_ESPHOME_VOIP_STACK_SPEAKER
 #define USE_ESPHOME_VOIP_STACK_MASTER_ALIAS
+#define USE_ESPHOME_VOIP_STACK_MASTER_NUMBER_ALIAS
 #include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 #define ESP_LOGD(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
 #define ESP_LOGI(...) ((void)0)
 struct StoredSettings {uint8_t version=1,volume_pct=0;int8_t mic_gain_db=0;};
 struct Pref {StoredSettings value;bool load(StoredSettings*out){*out=value;return true;}};
-struct Preferences {Pref pref;template<class T>Pref make_preference(unsigned){return pref;}}preferences;
+float audio_saved=0;unsigned audio_saves=0;
+struct ESPPreferenceObject {bool load(float*out){*out=audio_saved;return true;}void save(const float*value){audio_saved=*value;++audio_saves;}};
+struct Preferences {Pref pref;template<class T>auto make_preference(unsigned){if constexpr(std::is_same<T,float>::value)return ESPPreferenceObject{};else return pref;}}preferences;
 auto*global_preferences=&preferences;unsigned fnv1_hash(const char*){return 1;}
 float clamp_volume_(float value){return std::isfinite(value)?std::fmax(0,std::fmin(1,value)):0;}
 float clamp_mic_gain_db_(float value){return value;}float db_to_linear(float value){return std::pow(10,value/20);}
 namespace number {
+struct NumberCall;
 struct Number {float state=0;bool present=false;unsigned updates=0;
  bool has_state()const{return present;}void publish_state(float value){state=value;present=true;++updates;}
+ unsigned get_object_id_hash()const{return 2;}NumberCall make_call();
  virtual void control(float)=0;};
+struct NumberCall {Number*parent;float value=0;NumberCall&set_value(float v){value=v;return *this;}
+ void perform(){assert(std::isfinite(value)&&value>=0&&value<=100);parent->control(value);}};
+NumberCall Number::make_call(){return {this};}
 }
 template<class T>struct Parented {T*parent_=nullptr;void set_parent(T*p){parent_=p;}};
 struct Number:number::Number {void control(float)override{}};
-struct Speaker {float volume=.73f;bool muted=true;unsigned calls=0;void set_volume(float value){volume=value;++calls;}};
-struct AudioMaster {float value=.37f;unsigned calls=0;float get_master_volume()const{return value;}
- void set_master_volume(float requested){++calls;value=requested*.5f;}};
+struct Speaker {float volume=.73f;bool muted=true;unsigned calls=0;float get_volume()const{return volume;}void set_volume(float value){volume=value;++calls;}};
+struct AudioMaster {float value=.37f;bool curved=true;unsigned calls=0;float get_master_volume()const{return value;}
+ void set_master_volume(float requested){++calls;value=curved?requested*.5f:requested;}};
 struct VoipStack {
  static constexpr uint8_t SETTINGS_VERSION=1;
  Pref settings_pref_;bool suppress_save_=false;std::atomic<float>volume_{1};
@@ -66,6 +82,19 @@ struct VoipStack {
     code += '\n' + (block(settings, 'void VoipStack::sync_master_volume_(') if 'void VoipStack::sync_master_volume_(' in settings
                      else 'void VoipStack::sync_master_volume_(){}')
     code += '\n' + block(header, 'class VoipStackVolume :') + ';\n'
+    audio_source = os.environ.get('ESP_AUDIO_STACK_SOURCE')
+    if audio_source:
+        audio_header = (Path(audio_source) / 'esphome/components/esp_audio_stack/number.h').read_text()
+        code += r'''
+#define HAS_AUDIO_CANONICAL_CONTROL
+struct Component {virtual void setup(){}virtual void dump_config(){}};
+template<typename...Args>void log_config(Args&&...){}
+namespace esphome {
+using Component=::Component;
+namespace number {using Number=::number::Number;}
+namespace speaker {using Speaker=::Speaker;}
+namespace esp_audio_stack {using ESPAudioStack=::AudioMaster;
+''' + block(audio_header, 'class MasterVolumeNumber final') + ';\n}}\n'
     code += r'''
 #include <string>
 int main(int argc,char**argv){
@@ -76,6 +105,29 @@ int main(int argc,char**argv){
   phone.set_volume(.6f);assert(phone.get_volume()==.6f&&speaker.volume==.6f&&phone.saves==1&&speaker.muted);return 0;
  }
  phone.set_master_volume_control(&master);
+#ifdef HAS_AUDIO_CANONICAL_CONTROL
+ if(mode=="canonical"){
+  master.curved=false;master.value=0;audio_saved=0;
+  esphome::esp_audio_stack::MasterVolumeNumber canonical;canonical.set_parent(&master);canonical.set_speaker(&speaker);canonical.setup();
+  VoipStackVolume alias;alias.set_parent(&phone);phone.volume_number_=&alias;phone.set_master_volume_number(&canonical);
+  phone.sync_master_volume_();assert(alias.has_state()&&alias.state==0&&canonical.has_state()&&canonical.state==0);
+  const auto initial_audio=canonical.updates,initial_native=alias.updates;
+  phone.set_volume(.01f);phone.sync_master_volume_();
+  assert(master.value==.01f&&canonical.state==1&&audio_saved==1&&audio_saves==1&&alias.state==1);
+  assert(canonical.updates==initial_audio+1&&alias.updates==initial_native+1&&speaker.calls==0&&speaker.muted&&phone.saves==0);
+  phone.sync_master_volume_();phone.sync_master_volume_();assert(canonical.updates==initial_audio+1&&alias.updates==initial_native+1&&audio_saves==1);
+  canonical.make_call().set_value(40).perform();assert(phone.get_volume()==.4f&&audio_saved==40);
+  phone.sync_master_volume_();assert(alias.state==40&&canonical.state==40&&audio_saves==2);
+  const auto updates=alias.updates;alias.control(1);assert(alias.updates==updates+1&&canonical.state==1&&audio_saved==1&&audio_saves==3);
+  phone.sync_master_volume_();assert(alias.updates==updates+1);
+  phone.set_volume(0);phone.sync_master_volume_();assert(master.value==0&&canonical.state==0&&alias.state==0&&audio_saved==0&&audio_saves==4);
+  master.curved=true;canonical.make_call().set_value(50).perform();phone.sync_master_volume_();
+  assert(master.value==.25f&&phone.get_volume()==.25f&&canonical.state==50&&alias.state==50&&audio_saved==50&&audio_saves==5);
+  alias.control(1);assert(canonical.state==1&&alias.state==1&&audio_saved==1&&audio_saves==6);
+  const auto stable=alias.updates;phone.sync_master_volume_();assert(alias.updates==stable);
+  assert(phone.volume_==1&&phone.saves==0&&speaker.calls==0&&speaker.muted);return 0;
+ }
+#endif
  if(mode=="getter"){
   phone.volume_=0;assert(phone.get_volume()==master.value);
   master.value=0;assert(phone.get_volume()==0);master.value=.8f;assert(phone.get_volume()==.8f&&phone.volume_==0);
@@ -108,7 +160,9 @@ int main(int argc,char**argv){
     return binary
 
 
-@pytest.mark.parametrize('mode', ['getter', 'zero-sync', 'setter', 'number', 'restore', 'legacy'])
+@pytest.mark.parametrize('mode', ['getter', 'zero-sync', 'setter', 'number', 'restore', 'legacy',
+                                pytest.param('canonical', marks=pytest.mark.skipif(not os.environ.get('ESP_AUDIO_STACK_SOURCE'),
+                                             reason='Actual Audio control gate requires ESP_AUDIO_STACK_SOURCE'))])
 def test_master_alias_has_one_effective_owner(master_alias, mode):
     run = subprocess.run([str(master_alias), mode], capture_output=True, text=True, timeout=5)
     assert run.returncode == 0, run.stdout + run.stderr

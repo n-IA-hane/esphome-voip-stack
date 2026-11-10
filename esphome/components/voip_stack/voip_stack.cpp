@@ -1211,12 +1211,12 @@ void VoipStack::publish_entity_states() {
 #endif
 
   ESP_LOGD(TAG, "Entity states synced (vol=%.0f%%, mic=%.1fdB, auto=%s, dnd=%s)",
-           this->get_volume() * 100.0f, this->mic_gain_db_,
+           this->get_volume_control_percent(), this->mic_gain_db_,
            this->auto_answer_ ? "ON" : "OFF", this->do_not_disturb_ ? "ON" : "OFF");
 
 #ifdef USE_NUMBER
   if (this->volume_number_ != nullptr) {
-    this->volume_number_->publish_state(this->get_volume() * 100.0f);
+    this->volume_number_->publish_state(this->get_volume_control_percent());
   }
   if (this->mic_gain_number_ != nullptr) {
     this->mic_gain_number_->publish_state(this->mic_gain_db_);
