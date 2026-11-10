@@ -1313,6 +1313,8 @@ void VideoRtpSession::send_h264_access_unit_(
     this->tx_resync_needed_.store(true, std::memory_order_release);
     this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
   };
+  uint8_t packet[kMaxRtpPacketBytes];
+  const size_t payload_capacity = std::min(this->max_payload_, sizeof(packet) - 12);
   size_t cursor = 0;
   const uint8_t *nal = nullptr;
   size_t nal_size = 0;
@@ -1325,8 +1327,9 @@ void VideoRtpSession::send_h264_access_unit_(
     const bool last = !next_annex_b_nal(access_unit.data, access_unit.size,
                                         &cursor, &next_nal, &next_size);
     cursor = next_cursor;
-    if (nal_size <= this->max_payload_) {
-      if (!this->send_rtp_payload_(nal, nal_size, last,
+    if (nal_size <= payload_capacity) {
+      memcpy(packet + 12, nal, nal_size);
+      if (!this->send_rtp_packet_(packet, nal_size, last,
                                    access_unit.timestamp_90khz)) {
         fail_access_unit();
         return;
@@ -1334,7 +1337,7 @@ void VideoRtpSession::send_h264_access_unit_(
       sent_any = true;
       continue;
     }
-    if (nal_size < 2 || this->max_payload_ <= 2) {
+    if (nal_size < 2 || payload_capacity <= 2) {
       fail_access_unit();
       return;
     }
@@ -1344,14 +1347,13 @@ void VideoRtpSession::send_h264_access_unit_(
     bool first = true;
     while (offset < nal_size) {
       const size_t chunk =
-          std::min(this->max_payload_ - 2, nal_size - offset);
-      uint8_t packet[kMaxRtpPacketBytes];
-      packet[0] = fu_indicator;
-      packet[1] = static_cast<uint8_t>(nal_type | (first ? 0x80 : 0) |
+          std::min(payload_capacity - 2, nal_size - offset);
+      packet[12] = fu_indicator;
+      packet[13] = static_cast<uint8_t>(nal_type | (first ? 0x80 : 0) |
                                        (offset + chunk == nal_size ? 0x40 : 0));
-      memcpy(packet + 2, nal + offset, chunk);
+      memcpy(packet + 14, nal + offset, chunk);
       const bool marker = last && offset + chunk == nal_size;
-      if (!this->send_rtp_payload_(packet, chunk + 2, marker,
+      if (!this->send_rtp_packet_(packet, chunk + 2, marker,
                                    access_unit.timestamp_90khz)) {
         fail_access_unit();
         return;
@@ -1388,13 +1390,13 @@ void VideoRtpSession::send_jpeg_access_unit_(
     }
     return;
   }
+  uint8_t packet[kMaxRtpPacketBytes];
+  const size_t payload_capacity = std::min(this->max_payload_, sizeof(packet) - 12);
   size_t scan_offset = 0;
   while (scan_offset < frame.scan_size) {
-    uint8_t payload[kMaxRtpPacketBytes];
     const size_t header_size = build_rtp_jpeg_fragment_header(
-        frame, scan_offset, payload,
-        std::min(sizeof(payload), this->max_payload_));
-    if (header_size == 0 || header_size >= this->max_payload_) {
+        frame, scan_offset, packet + 12, payload_capacity);
+    if (header_size == 0 || header_size >= payload_capacity) {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
       this->reset_audio_pacing_burst_();
 #endif
@@ -1402,11 +1404,11 @@ void VideoRtpSession::send_jpeg_access_unit_(
       return;
     }
     const size_t fragment_size =
-        std::min(this->max_payload_ - header_size,
+        std::min(payload_capacity - header_size,
                  frame.scan_size - scan_offset);
-    memcpy(payload + header_size, frame.scan + scan_offset, fragment_size);
+    memcpy(packet + 12 + header_size, frame.scan + scan_offset, fragment_size);
     const bool marker = scan_offset + fragment_size == frame.scan_size;
-    if (!this->send_rtp_payload_(payload, header_size + fragment_size, marker,
+    if (!this->send_rtp_packet_(packet, header_size + fragment_size, marker,
                                  access_unit.timestamp_90khz)) {
       this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
       return;
@@ -1417,7 +1419,7 @@ void VideoRtpSession::send_jpeg_access_unit_(
 }
 #endif
 
-bool VideoRtpSession::send_rtp_payload_(const uint8_t *payload, size_t size,
+bool VideoRtpSession::send_rtp_packet_(uint8_t *packet, size_t size,
                                         bool marker, uint32_t timestamp) {
   const auto abort_payload = [this]() -> bool {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
@@ -1425,7 +1427,8 @@ bool VideoRtpSession::send_rtp_payload_(const uint8_t *payload, size_t size,
 #endif
     return false;
   };
-  if (payload == nullptr || size == 0 || size > this->max_payload_ ||
+  if (packet == nullptr || size == 0 || size > this->max_payload_ ||
+      size > kMaxRtpPacketBytes - 12 ||
       !this->send_enabled_.load(std::memory_order_acquire)) {
     return abort_payload();
   }
@@ -1435,8 +1438,6 @@ bool VideoRtpSession::send_rtp_payload_(const uint8_t *payload, size_t size,
 #endif
   if (!this->send_enabled_.load(std::memory_order_acquire))
     return abort_payload();
-  uint8_t packet[kMaxRtpPacketBytes];
-  if (size + 12 > sizeof(packet)) return abort_payload();
   packet[0] = 0x80;
   packet[1] = static_cast<uint8_t>(this->capability_.payload_type |
                                    (marker ? 0x80 : 0));
@@ -1446,7 +1447,6 @@ bool VideoRtpSession::send_rtp_payload_(const uint8_t *payload, size_t size,
   const uint32_t wire_timestamp = timestamp + this->tx_timestamp_offset_;
   write_be32(packet + 4, wire_timestamp);
   write_be32(packet + 8, this->tx_ssrc_);
-  memcpy(packet + 12, payload, size);
   const uint32_t ip = this->remote_ip_v4_.load(std::memory_order_acquire);
   const uint16_t latched_port =
       this->latched_remote_rtp_port_.load(std::memory_order_acquire);

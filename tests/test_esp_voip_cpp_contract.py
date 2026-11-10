@@ -1404,9 +1404,9 @@ def test_h264_tx_failure_aborts_the_au_and_requests_resynchronization() -> None:
     assert "const auto fail_access_unit" in packetizer
     assert "this->tx_resync_needed_.store(true" in packetizer
     assert packetizer.count("fail_access_unit();") >= 4
-    assert "sent_any |= this->send_rtp_payload_" not in packetizer
+    assert "sent_any |= this->send_rtp_packet_" not in packetizer
     assert re.search(
-        r"if \(!this->send_rtp_payload_\([^;]+\)\) \{\s*"
+        r"if \(!this->send_rtp_packet_\([^;]+\)\) \{\s*"
         r"fail_access_unit\(\);\s*return;",
         packetizer,
         re.DOTALL,
@@ -1423,7 +1423,7 @@ def test_video_sender_completes_owned_au_and_bounds_udp_backpressure() -> None:
         video.index("\nvoid VideoRtpSession::task_trampoline_")
     ]
     payload = sender[
-        sender.index("bool VideoRtpSession::send_rtp_payload_") :
+        sender.index("bool VideoRtpSession::send_rtp_packet_") :
     ]
 
     # Once transmission starts, finish the AU: deliberately aborting it after
@@ -3097,7 +3097,7 @@ def test_video_direction_changes_are_worker_owned_and_stop_mid_au_promptly() -> 
     )
     worker = cpp_method(video, r"VideoRtpSession::task_")
     sender = cpp_method(video, r"VideoRtpSession::sender_task_")
-    payload = cpp_method(video, r"VideoRtpSession::send_rtp_payload_")
+    payload = cpp_method(video, r"VideoRtpSession::send_rtp_packet_")
 
     assert "rx_reset_requested_.store(true" in direction
     assert "reset_reassembly_()" not in direction

@@ -165,8 +165,9 @@ class VideoRtpSession {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   void send_jpeg_access_unit_(const EncodedVideoAccessUnit &access_unit);
 #endif
-  bool send_rtp_payload_(const uint8_t *payload, size_t size, bool marker,
-                         uint32_t timestamp);
+  // Packetizers fill their final payload at packet+12; this owner adds RTP
+  // headers, pacing and bounded socket publication without another copy.
+  bool send_rtp_packet_(uint8_t *packet, size_t size, bool marker, uint32_t timestamp);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_HOSTED_AUDIO_PACING
   bool wait_for_audio_pacing_();
   void reset_audio_pacing_burst_();

@@ -480,10 +480,13 @@ def video_control_binary(tmp_path_factory):
     markers = [
         "VideoRtpSession::VideoRtpSession(", "bool VideoRtpSession::set_negotiated(",
         "void VideoRtpSession::request_stop(", "void VideoRtpSession::close_sockets_(",
-        "bool VideoRtpSession::send_rtp_payload_(", "size_t VideoRtpSession::build_rtcp_report_sdes_(",
+        "size_t VideoRtpSession::build_rtcp_report_sdes_(",
         "void VideoRtpSession::send_rtcp_packet_(", "void VideoRtpSession::send_rtcp_report_(",
         "void VideoRtpSession::send_rtcp_pli_(", "void VideoRtpSession::send_rtcp_bye_(",
     ]
+    packet_writer = ('bool VideoRtpSession::send_rtp_packet_(' if 'bool VideoRtpSession::send_rtp_packet_(' in implementation
+                     else 'bool VideoRtpSession::send_rtp_payload_(')
+    markers.append(packet_writer)
     if "void VideoRtpSession::set_rtcp_send_enabled(" in implementation:
         markers.append("void VideoRtpSession::set_rtcp_send_enabled(")
     methods = "\n".join(block(implementation, marker) for marker in markers)
@@ -553,6 +556,10 @@ int main(){
  child.request_stop();child.close_sockets_();close(rtp_peer);close(rtcp_peer);
 }
 '''.replace("HELPERS", helpers).replace("METHODS", methods)
+    if 'send_rtp_packet_' in packet_writer:
+        source = source.replace('const uint8_t payload[]={0x65,1,2,3};',
+                                'const uint8_t payload[]={0x65,1,2,3};uint8_t packet[12+sizeof(payload)]{};std::memcpy(packet+12,payload,sizeof(payload));')
+        source = source.replace('child.send_rtp_payload_(payload,', 'child.send_rtp_packet_(packet,')
     cpp = folder / "control.cpp"
     cpp.write_text(source)
     binary = folder / "control"
