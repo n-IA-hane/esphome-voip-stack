@@ -256,7 +256,7 @@ def test_actual_refer_reuses_pcm_target_and_retains_mixed_codec_boundary(tmp_pat
 #include <cassert>
 #include "esphome/components/voip_stack/pcm_receive_converter.h"
 using namespace esphome::voip_stack;
-struct ReferDialog {AudioFormat selected_tx_format_,selected_rx_format_;RtpAudioPayloads negotiated_rx_payloads_;};
+struct ReferDialog {struct {AudioFormat tx,rx;RtpAudioPayloads rx_payloads;}media;};
 struct SipTransport {
  AudioFormat tx,rx;AudioFormatList offer_rx_formats_;PcmReceiveConverter pcm_receive_converter_;size_t udp_max_payload_=1200;
  void get_media_config_(AudioFormat*t,AudioFormat*r,void*,void*){*t=tx;*r=rx;}
@@ -278,18 +278,18 @@ int main(){
   assert(target==(mixed?pcm16:pcm48));
   RtpAudioPayloads original;original.add(97,pcm16);
   assert(s.pcm_receive_converter_.prepare(original,decoded_pcm_format(target)));
-  ReferDialog next;next.selected_tx_format_=pcm16;next.selected_rx_format_=mixed?pcm16:pcm32;
-  next.negotiated_rx_payloads_.add(98,mixed?opus16:pcm32);
+  ReferDialog next;next.media.tx=pcm16;next.media.rx=mixed?pcm16:pcm32;
+  next.media.rx_payloads.add(98,mixed?opus16:pcm32);
   assert(s.prepare_refer_media_(next));
-  assert(s.rx==pcm16&&next.selected_rx_format_==pcm16);
+  assert(s.rx==pcm16&&next.media.rx==pcm16);
   if(!mixed){
    uint8_t input[640]{},output[960]{};
    const auto bytes=s.pcm_receive_converter_.convert(pcm32,input,sizeof(input),output,sizeof(output));
    assert(bytes>800&&bytes<=960);
   }else{
    // Empty PCM fallback maps must use the unchanged 16 kHz decoder target.
-   assert(next.negotiated_rx_payloads_.pcm_only().count==0);
-   next.selected_rx_format_=opus16;
+   assert(next.media.rx_payloads.pcm_only().count==0);
+   next.media.rx=opus16;
    assert(!s.prepare_refer_media_(next)&&"Existing REFER codec changes remain unsupported");
   }
  }

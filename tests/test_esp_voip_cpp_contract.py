@@ -571,10 +571,9 @@ def test_video_rtp_keeps_directional_endpoint_capabilities() -> None:
         transport.index("bool SipTransport::apply_video_direction_answer_") :
         transport.index("bool SipTransport::replay_completed_video_direction_ack_")
     ]
-    assert "new_capability.max_fps == old_capability.max_fps" in direction_answer
+    assert "after.max_fps == before.max_fps" in direction_answer
     assert (
-        "new_capability.level_asymmetry_allowed ==\n"
-        "          old_capability.level_asymmetry_allowed"
+        "after.level_asymmetry_allowed == before.level_asymmetry_allowed"
     ) in direction_answer
     assert "new_capability.width == old_capability.width" not in direction_answer
     assert "new_capability.height == old_capability.height" not in direction_answer
@@ -982,11 +981,11 @@ def test_rtp_jpeg_host_behavioral_contract(tmp_path: Path) -> None:
 def test_rejected_video_answer_preserves_the_first_offered_payload_type() -> None:
     sip_cpp = read("sip_transport.cpp")
     learn = cpp_method(
-        sip_cpp, r"SipTransport::learn_remote_video_from_sdp_"
+        sip_cpp, r"SipTransport::parse_remote_video_"
     )
 
     preserve = learn.index(
-        "this->negotiated_video_capability_.payload_type ="
+        "media->video.payload_type ="
     )
     disabled = learn.index("if (media_port == 0) return true;")
     rejected_rtcp = learn.index("if (rtcp_mux_only")
@@ -1014,7 +1013,7 @@ def test_reinvite_waits_for_prior_invite_ack_without_mutating_dialog() -> None:
     reinvite = cpp_method(sip_cpp, r"SipTransport::handle_reinvite_")
 
     pending = reinvite.index("this->completed_invite_.awaiting_ack")
-    parse_media = reinvite.index("this->learn_remote_rtp_from_sdp_")
+    parse_media = reinvite.index("this->parse_remote_media_")
     mutate_dialog = reinvite.index(
         'this->last_invite_via_ = header_values(message, "Via");'
     )
@@ -1056,11 +1055,12 @@ def test_final_reinvite_response_is_owned_before_initial_send() -> None:
     failure = reinvite[
         reinvite.index('if (!this->send_response_(200, "OK", answer))') :
         reinvite.index(
-            "\n  this->set_media_config_",
+            "\n  this->commit_negotiated_media_",
             reinvite.index('if (!this->send_response_(200, "OK", answer))'),
         )
     ]
-    assert "restore_old_media();" in failure
+    assert "commit_negotiated_media_" not in failure
+    assert "restore_old_media" not in reinvite
     assert "restore_old_dialog_metadata();" in failure
     restore = reinvite[
         reinvite.index("const auto restore_old_dialog_metadata") :
@@ -1239,7 +1239,7 @@ def test_local_video_reinvite_is_an_event_driven_dialog_transaction() -> None:
 
     incoming = cpp_method(source, r"SipTransport::handle_reinvite_")
     pending = incoming.index(f"this->{instance}")
-    parse_media = incoming.index("this->learn_remote_rtp_from_sdp_")
+    parse_media = incoming.index("this->parse_remote_media_")
     assert pending < parse_media
     assert "491" in incoming[pending:parse_media]
     assert "Request Pending" in incoming[pending:parse_media]
@@ -1511,7 +1511,7 @@ def test_video_offer_does_not_invent_a_missing_endpoint_capability() -> None:
     assert "const bool offer_send =" in append
     assert "const bool offer_receive =" in append
     assert (
-        "answer ? this->negotiated_video_capability_\n"
+        "answer ? media.video\n"
         "             : offer_receive ? local_receive : local_send"
         in append
     )
@@ -2675,7 +2675,11 @@ def test_sip_response_validation_precedes_retarget_and_bad_sdp_closes_dialog() -
     assert "this->reset_dialog_();" in incompatible
     assert "std::atomic<uint32_t> remote_rtp_ip_v4_{0};" in sip_h
     learn = cpp_method(sip_cpp, r"SipTransport::learn_remote_rtp_from_sdp_")
-    assert "remote_rtp_ip_v4_.store(media_ip" in learn
+    assert "this->commit_negotiated_media_(media);" in learn
+    parsed = cpp_method(sip_cpp, r"SipTransport::parse_remote_media_")
+    assert "media->audio_ip = zero_connection ? retained.audio_ip : media_ip;" in parsed
+    commit = cpp_method(sip_cpp, r"SipTransport::commit_negotiated_media_")
+    assert "remote_rtp_ip_v4_.store(media.audio_ip" in commit
     assert "remote_ip_v4_.store(media_ip" not in learn
     request = sip_cpp[sip_cpp.index("bool SipTransport::send_request_(const std::string &method, const std::string &body,") : sip_cpp.index("\nbool SipTransport::send_invite_error_ack_")]
     assert "remote_ip_v4_.load" in request
@@ -2759,7 +2763,7 @@ def test_sdp_only_negotiates_payloads_from_the_selected_audio_media() -> None:
         sip_cpp.index("bool parse_audio_media_line") :
         sip_cpp.index("\nsize_t pcm_to_rtp_payload")
     ]
-    learn = cpp_method(sip_cpp, r"SipTransport::learn_remote_rtp_from_sdp_")
+    learn = cpp_method(sip_cpp, r"SipTransport::parse_remote_media_")
 
     assert 'media.substr(protocol_start, protocol_end - protocol_start) != "RTP/AVP"' in parser
     assert "payload_types[payload_type] = true;" in parser
@@ -2781,7 +2785,7 @@ def test_inactive_video_reoffer_retains_the_negotiated_media_line() -> None:
         sip_sdp.index("\nstd::string SipTransport::build_sdp_offer_")
     ]
     learn_video = cpp_method(
-        sip_sdp, r"SipTransport::learn_remote_video_from_sdp_"
+        sip_sdp, r"SipTransport::parse_remote_video_"
     )
 
     assert 'receive ? "recvonly" : "inactive"' in append_video
@@ -3579,8 +3583,8 @@ def test_sdp_media_shape_uses_one_bounded_signaling_allocation() -> None:
     assert "SipSignalingString lines;" in shape
     assert "uint16_t offsets[kMaxSdpMediaLines + 1]{};" in shape
     assert "std::vector<std::string>" not in shape
-    assert "this->remote_media_shape_.append(line)" in sdp
-    assert "this->remote_media_shape_.line(index)" in sdp
+    assert "shape.append(line)" in sdp
+    assert "media.shape.line(index)" in sdp
 
 
 def test_roster_json_uses_address_direct_or_ha_route_without_kind_semantics() -> None:

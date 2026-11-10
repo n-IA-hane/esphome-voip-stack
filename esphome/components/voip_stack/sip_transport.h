@@ -314,6 +314,10 @@ class SipTransport : public SipPhoneTransport {
   uint8_t record_startup_packet_(const uint8_t *data, size_t bytes);
 #endif
   class ReferScope;
+  struct NegotiatedMedia;
+  NegotiatedMedia negotiated_media_() const;
+  void commit_negotiated_media_(const NegotiatedMedia &media);
+  void exchange_negotiated_media_(NegotiatedMedia &media);
   bool send_invite_unlocked_(const std::string &call_id, const std::string &caller_route,
                              const std::string &caller_name, const std::string &dest_route,
                              const std::string &dest_name);
@@ -353,6 +357,10 @@ class SipTransport : public SipPhoneTransport {
       const DtmfConfig *dtmf_proposal = nullptr,
 #endif
       const AudioSdpDirection *audio_direction = nullptr) const;
+  std::string build_negotiated_sdp_answer_(const NegotiatedMedia &media, uint32_t version) const;
+  std::string wrap_sdp_envelope_version_(const std::string &local_ip, const std::string &payloads,
+                                        const std::string &maps, const std::string &flows,
+                                        uint8_t ptime, const char *direction, uint32_t version) const;
   std::string wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
                                  const std::string &maps, const std::string &flows,
                                  uint8_t ptime, const char *direction = "sendrecv") const;
@@ -364,6 +372,11 @@ class SipTransport : public SipPhoneTransport {
 #endif
                                   , AudioSdpDirection *audio_direction = nullptr);
   void capture_remote_media_shape_(const std::string &sdp);
+  struct RemoteMediaShape;
+  RemoteMediaShape parse_remote_media_shape_(const std::string &sdp) const;
+  bool parse_remote_media_(const std::string &sdp, uint32_t default_ip, bool remote_is_answer,
+                            const NegotiatedMedia &retained, NegotiatedMedia *media,
+                            bool retained_call = false) const;
   std::string rejected_media_answer_(const std::string &media_line) const;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   bool learn_remote_video_from_sdp_(const std::string &sdp,
@@ -373,6 +386,11 @@ class SipTransport : public SipPhoneTransport {
   std::string append_video_sdp_(const std::string &sdp,
                                 const std::string &local_ip,
                                 bool answer, bool capabilities = false) const;
+  std::string append_negotiated_video_sdp_(const std::string &sdp, const std::string &local_ip,
+                                          bool answer, bool capabilities, const NegotiatedMedia &media) const;
+  bool parse_remote_video_(const std::string &sdp, uint32_t default_ip, bool remote_is_answer,
+                            const NegotiatedMedia &retained, NegotiatedMedia *media,
+                            bool allow_zero_connection) const;
   VideoCapability local_video_send_capability_() const;
   VideoCapability local_video_receive_capability_() const;
   VideoCapability local_video_direction_capability_(
@@ -459,6 +477,9 @@ class SipTransport : public SipPhoneTransport {
   void set_media_config_(const AudioFormat &tx, const AudioFormat &rx,
                          uint8_t tx_payload_type, uint8_t rx_payload_type,
                          const RtpAudioPayloads *rx_payloads = nullptr);
+  void commit_audio_config_(const AudioFormat &tx, const AudioFormat &rx,
+                             uint8_t tx_payload_type, uint8_t rx_payload_type,
+                             const RtpAudioPayloads *rx_payloads, bool send, bool receive);
   void get_media_config_(AudioFormat *tx, AudioFormat *rx,
                          uint8_t *tx_payload_type, uint8_t *rx_payload_type,
                          RtpAudioPayloads *rx_payloads = nullptr) const;
@@ -704,6 +725,7 @@ class SipTransport : public SipPhoneTransport {
 #endif
   std::atomic<bool> audio_send_enabled_{true};
   std::atomic<bool> audio_receive_enabled_{true};
+  bool audio_zero_connection_{false};
   std::atomic<bool> audio_receive_reset_pending_{false};
   // One validated RTP source may be reacquired after an actual RX resume.
   // Separate from the downstream jitter/decoder reset notification.
@@ -789,6 +811,31 @@ class SipTransport : public SipPhoneTransport {
                                     this->offsets[index]);
     }
   } remote_media_shape_;
+  // A complete signaling proposal. Runtime tasks, counters, source latches
+  // and consumable resume notifications stay with their existing owners.
+  struct NegotiatedMedia {
+    AudioFormat tx{DEFAULT_AUDIO_FORMAT}, rx{DEFAULT_AUDIO_FORMAT};
+    uint8_t tx_pt{96}, rx_pt{96};
+    RtpAudioPayloads rx_payloads;
+    bool send{true}, receive{true}, zero_connection{false};
+    uint32_t audio_ip{0};
+    uint16_t audio_port{0};
+    bool directional_audio{false};
+    RemoteMediaShape shape;
+#ifdef USE_ESPHOME_VOIP_DTMF
+    DtmfConfig dtmf;
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+    bool video_offered{false}, video_negotiated{false};
+    bool video_send{false}, video_receive{false}, video_zero_connection{false};
+    uint32_t video_ip{0}, video_rtcp_ip{0};
+    uint16_t video_port{0}, video_rtcp_port{0};
+    VideoCapability video;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+    uint8_t imageattr_state{0};
+#endif
+#endif
+  };
   struct SipTcpFlow {
     std::atomic<int> socket{-1};
     std::atomic<uint32_t> peer_ip{0}, target_ip{0};
@@ -942,19 +989,13 @@ class SipTransport : public SipPhoneTransport {
     CompletedInviteClientTransaction completed_invite_client_;
     UdpTransaction pending_invite_, pending_cancel_, pending_bye_, pending_update_;
     UdpTransaction pending_notify_, pending_notify_final_;
-    AudioFormat selected_tx_format_{DEFAULT_AUDIO_FORMAT}, selected_rx_format_{DEFAULT_AUDIO_FORMAT};
-    bool audio_send_enabled_{true}, audio_receive_enabled_{true};
-    uint8_t rtp_tx_payload_type_{96}, rtp_rx_payload_type_{96};
+    NegotiatedMedia media;
 #ifdef USE_ESPHOME_VOIP_DTMF
-    DtmfFormat dtmf_tx_format_{}, dtmf_rx_format_{};
     uint8_t dtmf_offered_clocks_{0};
 #endif
-    RtpAudioPayloads negotiated_rx_payloads_, local_offered_rx_payloads_;
+    RtpAudioPayloads local_offered_rx_payloads_;
     AudioFormatList local_offered_tx_formats_;
-    bool remote_directional_audio_v1_{false}, local_offered_directional_audio_v1_{false};
-    uint32_t remote_rtp_ip_v4_{0};
-    uint16_t remote_rtp_port_{0};
-    RemoteMediaShape remote_media_shape_;
+    bool local_offered_directional_audio_v1_{false};
   };
 
   struct CompletedRefer {
@@ -986,6 +1027,7 @@ class SipTransport : public SipPhoneTransport {
   bool video_negotiated_{false};
   bool video_send_enabled_{false};
   bool video_receive_enabled_{false};
+  bool video_zero_connection_{false};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   enum : uint8_t { IMAGEATTR_PEER = 1, IMAGEATTR_OFFERED = 2,
                    IMAGEATTR_DISABLED = 4, IMAGEATTR_FALLBACK = 8, IMAGEATTR_ACTIVE = 16 };

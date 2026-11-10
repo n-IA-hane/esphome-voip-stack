@@ -35,12 +35,12 @@ using namespace esphome::voip_stack;
     for signature in ["std::string trim_copy(", "bool parse_decimal_u32(",
                       "bool parse_rtpmap_format(", "bool parse_audio_media_line("]:
         source += method(parser, signature) + "\n"
-    from test_refer_dialog_runtime import block
+    from test_refer_dialog_runtime import block, negotiated_fixture_source
     header = (base / "sip_transport.h").read_text()
     source += "using SipSignalingString = std::string;\nconstexpr size_t kMaxSdpMediaLines = 8;\n"
     source += block(header, "struct RemoteMediaShape {") + ";\n"
     source += r'''
-struct RetainedCall { AudioFormat selected_tx_format_; };
+struct RetainedCall { struct{AudioFormat tx;}media;AudioFormat selected_tx_format_; };
 struct SipTransport {
  bool refer_context_active_=false;
  RetainedCall *refer_dialog_=nullptr;
@@ -53,6 +53,9 @@ struct SipTransport {
  uint32_t sdp_session_id_=1,sdp_session_version_=0;
  uint16_t rtp_port_=40000;size_t udp_max_payload_=1200;
  AudioFormat tx,rx;uint8_t tx_pt=0,rx_pt=0;
+ AudioFormat &selected_tx_format_=tx,&selected_rx_format_=rx;
+ uint8_t &rtp_tx_payload_type_=tx_pt,&rtp_rx_payload_type_=rx_pt;
+ RtpAudioPayloads &negotiated_rx_payloads_=accepted;
  void local_ip_for_peer_(uint32_t,std::string *out) const {*out="192.0.2.1";}
  void capture_remote_media_shape_(const std::string&);
  std::string rejected_media_answer_(const std::string&) const;
@@ -97,7 +100,7 @@ struct SipTransport {
     # declared helper arity changes, never the extracted decision logic.
     if "uint8_t ptime, const char *direction" not in sdp:
         source = source.replace('uint8_t,const char * = "sendrecv") const;', 'uint8_t) const;')
-    return source
+    return negotiated_fixture_source(source, sdp=True)
 
 
 def test_standard_receive_payload_contract(tmp_path):

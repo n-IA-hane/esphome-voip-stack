@@ -14,7 +14,12 @@ def version_source(video):
         # method with the video feature disabled, as in an audio-only build.
         code = code.replace('#include "esphome/components/voip_stack/video.h"',
                             '#include "esphome/components/voip_stack/video.h"\n'
-                            '#undef USE_ESPHOME_VOIP_STACK_VIDEO')
+                            '#undef USE_ESPHOME_VOIP_STACK_VIDEO\n'
+                            '#undef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG')
+        for marker in ('bool SipTransport::learn_remote_video_from_sdp_(',
+                       'std::string SipTransport::append_video_sdp_(',
+                       'void SipTransport::reset_video_negotiation_('):
+            code = code.replace(block(code, marker), '')
     header = (SOURCE / 'sip_transport.h').read_text()
     owner = (SOURCE / 'sip_transport.cpp').read_text()
     parser = (SOURCE / 'sip_message.cpp').read_text()

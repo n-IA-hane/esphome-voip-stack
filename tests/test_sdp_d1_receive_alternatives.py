@@ -54,7 +54,6 @@ def d1_receive_binary(tmp_path_factory):
     source = "#include <iostream>\n#include <vector>\n" + source
     source = source.replace("struct SipTransport {", """struct SipTransport {
  int media_config_lock_=0;
- RtpAudioPayloads &negotiated_rx_payloads_=accepted;
  bool received_audio_format_(uint8_t,AudioFormat*,const uint8_t* =nullptr,size_t=0)const;
 """, 1)
     source += "\n#define portENTER_CRITICAL(p) ((void)0)\n#define portEXIT_CRITICAL(p) ((void)0)\n"

@@ -56,31 +56,36 @@ int main(){
 def test_speculative_dtmf_proposal_has_no_committed_side_effects(tmp_path):
     source = '#define USE_ESPHOME_VOIP_DTMF\n#include "esphome/components/voip_stack/rtp_dtmf.h"\n' + sdp_fixture_source()
     source=source.replace('struct SipTransport {', '''struct SipTransport {
- DtmfConfig committed{{8000,0xffff,109},{8000,0xffff,109}};unsigned commits=0;uint8_t dtmf_offered_clocks_=1;
- void get_dtmf_config_(DtmfFormat*a,DtmfFormat*b,uint32_t*c=nullptr)const{if(a)*a=committed.tx;if(b)*b=committed.rx;if(c)*c=0;}
- void set_dtmf_config_(const DtmfFormat&a,const DtmfFormat&b){committed={a,b};++commits;}
+ DtmfFormat dtmf_tx_format_{8000,0xffff,109},dtmf_rx_format_{8000,0xffff,109};
+ std::atomic<uint32_t>dtmf_generation_{0};uint8_t dtmf_offered_clocks_=1;int media_config_lock_=0;
+ void get_dtmf_config_(DtmfFormat*,DtmfFormat*,uint32_t* =nullptr)const;
+ void set_dtmf_config_(const DtmfFormat&,const DtmfFormat&);
+ DtmfConfig committed()const{return {dtmf_tx_format_,dtmf_rx_format_};}
  static void append_dtmf_sdp_(std::string*,std::string*,uint8_t);
 ''')
     source=source.replace('std::string build_sdp_answer_() const;', 'std::string build_sdp_answer_(const DtmfConfig* =nullptr) const;')
     source=source.replace('bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false);',
         'bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false,DtmfConfig* =nullptr);')
+    source += '#define portENTER_CRITICAL(...) ((void)0)\n#define portEXIT_CRITICAL(...) ((void)0)\n'
+    for marker in ('void SipTransport::get_dtmf_config_(', 'void SipTransport::set_dtmf_config_('):
+        source += block((SOURCE/'sip_dtmf.cpp').read_text(), marker) + '\n'
     source+=block((SOURCE/'sip_dtmf.cpp').read_text(),'void SipTransport::append_dtmf_sdp_(')
     source+=r'''
 int main(){
  SipTransport transport;AudioFormat pcm;pcm.frame_ms=10;
  transport.offer_tx_formats_.formats[0]=transport.offer_rx_formats_.formats[0]=pcm;
- const auto old=transport.committed;DtmfConfig proposed;
+ const auto old=transport.committed();DtmfConfig proposed;
  const std::string offer="v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 50000 RTP/AVP 96 111\r\na=rtpmap:96 L16/16000/1\r\na=ptime:10\r\na=rtpmap:111 telephone-event/16000\r\na=fmtp:111 0-11\r\n";
  assert(transport.learn_remote_rtp_from_sdp_(offer,0,false,&proposed));
- assert(transport.committed==old&&transport.commits==0&&proposed.tx.payload_type==111&&proposed.tx.clock==16000);
+ assert(transport.committed()==old&&transport.dtmf_generation_==0&&proposed.tx.payload_type==111&&proposed.tx.clock==16000);
  const auto answer=transport.build_sdp_answer_(&proposed);
  assert(answer.find("a=rtpmap:111 telephone-event/16000")!=std::string::npos);
  assert(answer.find("a=rtpmap:109 telephone-event")==std::string::npos);
  // Rejected or unsent final response leaves this committed value unchanged.
- assert(transport.committed==old&&transport.commits==0);
+ assert(transport.committed()==old&&transport.dtmf_generation_==0);
  DtmfConfig failed;assert(!transport.learn_remote_rtp_from_sdp_("v=0\r\n",0,false,&failed));
- assert(transport.committed==old&&transport.commits==0);
- transport.set_dtmf_config_(proposed.tx,proposed.rx);assert(transport.commits==1&&transport.committed==proposed);
+ assert(transport.committed()==old&&transport.dtmf_generation_==0);
+ transport.set_dtmf_config_(proposed.tx,proposed.rx);assert(transport.dtmf_generation_==1&&transport.committed()==proposed);
 }
 '''
     cpp=tmp_path/'proposal.cpp'

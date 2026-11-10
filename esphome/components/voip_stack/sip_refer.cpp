@@ -260,63 +260,37 @@ void SipTransport::swap_dialog_(ReferDialog &other) {
 }
 
 void SipTransport::swap_negotiation_(ReferDialog &other) {
-  AudioFormat tx, rx;
-  uint8_t tx_pt, rx_pt;
-  RtpAudioPayloads payloads;
-  this->get_media_config_(&tx, &rx, &tx_pt, &rx_pt, &payloads);
-  const bool send = this->audio_send_enabled_.load(std::memory_order_acquire);
-  const bool receive = this->audio_receive_enabled_.load(std::memory_order_acquire);
-  this->set_media_config_(other.selected_tx_format_, other.selected_rx_format_,
-      other.rtp_tx_payload_type_, other.rtp_rx_payload_type_, &other.negotiated_rx_payloads_);
-  this->audio_send_enabled_.store(other.audio_send_enabled_, std::memory_order_release);
-  this->audio_receive_enabled_.store(other.audio_receive_enabled_, std::memory_order_release);
-  other.audio_send_enabled_ = send;
-  other.audio_receive_enabled_ = receive;
-  // RX reset and source-reacquisition notifications belong to the retained
-  // RTP worker, not the temporary signaling context. Do not snapshot them:
-  // restoring a consumed notification would reset a later packet twice.
-  // A completed transfer clears both through reset_rtp_latch_().
-  other.selected_tx_format_ = tx;
-  other.selected_rx_format_ = rx;
-  other.rtp_tx_payload_type_ = tx_pt;
-  other.rtp_rx_payload_type_ = rx_pt;
-  other.negotiated_rx_payloads_ = payloads;
-#ifdef USE_ESPHOME_VOIP_DTMF
-  DtmfFormat dtmf_tx, dtmf_rx;
-  this->get_dtmf_config_(&dtmf_tx, &dtmf_rx);
-  this->set_dtmf_config_(other.dtmf_tx_format_, other.dtmf_rx_format_);
-  other.dtmf_tx_format_ = dtmf_tx; other.dtmf_rx_format_ = dtmf_rx;
-  std::swap(this->dtmf_offered_clocks_, other.dtmf_offered_clocks_);
-#endif
-  other.remote_rtp_ip_v4_ = this->remote_rtp_ip_v4_.exchange(other.remote_rtp_ip_v4_);
-  other.remote_rtp_port_ = this->remote_rtp_port_.exchange(other.remote_rtp_port_);
+  this->exchange_negotiated_media_(other.media);
+  // Consumable RX notifications remain with the retained RTP worker.
+  // Successful transfer alone resets them through reset_rtp_latch_().
   using std::swap;
-  swap(this->remote_media_shape_, other.remote_media_shape_);
+#ifdef USE_ESPHOME_VOIP_DTMF
+  swap(this->dtmf_offered_clocks_, other.dtmf_offered_clocks_);
+#endif
   swap(this->local_offered_rx_payloads_, other.local_offered_rx_payloads_);
   swap(this->local_offered_tx_formats_, other.local_offered_tx_formats_);
-  swap(this->remote_directional_audio_v1_, other.remote_directional_audio_v1_);
   swap(this->local_offered_directional_audio_v1_, other.local_offered_directional_audio_v1_);
 }
 
 bool SipTransport::prepare_refer_media_(ReferDialog &other) {
   AudioFormat tx, rx;
   this->get_media_config_(&tx, &rx, nullptr, nullptr);
-  if (!(tx == other.selected_tx_format_)) return false;
+  if (!(tx == other.media.tx)) return false;
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   // Retain the existing REFER codec boundary. Per-packet fallback within one
   // negotiated call does not qualify changing a retained dialog's codec.
-  if (rx.codec == AudioCodec::OPUS || other.selected_rx_format_.codec == AudioCodec::OPUS)
-    return rx == other.selected_rx_format_;
+  if (rx.codec == AudioCodec::OPUS || other.media.rx.codec == AudioCodec::OPUS)
+    return rx == other.media.rx;
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
-  if (!rx.is_valid()) return !other.selected_rx_format_.is_valid();
+  if (!rx.is_valid()) return !other.media.rx.is_valid();
   if (!this->pcm_receive_converter_.prepare_additional(
-          configured_decoded_receive_formats(other.negotiated_rx_payloads_, this->offer_rx_formats_, this->udp_max_payload_),
+          configured_decoded_receive_formats(other.media.rx_payloads, this->offer_rx_formats_, this->udp_max_payload_),
                                                        decoded_pcm_format(pcm_playout_format(rx, this->offer_rx_formats_)))) return false;
-  other.selected_rx_format_ = rx;
+  other.media.rx = rx;
   return true;
 #else
-  return rx == other.selected_rx_format_;
+  return rx == other.media.rx;
 #endif
 }
 

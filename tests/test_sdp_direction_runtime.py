@@ -130,7 +130,7 @@ int main(){
 
 @pytest.fixture(scope='module')
 def directional_wire_binary(tmp_path_factory):
-    from test_refer_dialog_runtime import block
+    from test_refer_dialog_runtime import block, negotiated_fixture_source
     from test_refer_wire_runtime import wire_source
     base = ROOT / 'esphome/components/voip_stack'
     parser = (base / 'sip_message.cpp').read_text()
@@ -201,7 +201,7 @@ int main(int argc,char**argv){
 '''
     path = tmp_path_factory.mktemp('direction-wire')
     cpp = path / 'direction.cpp'
-    cpp.write_text(code + '\n' + helpers + '\n' + main)
+    cpp.write_text(negotiated_fixture_source(code, sdp=True) + '\n' + helpers + '\n' + main)
     binary = path / 'direction'
     proc = subprocess.run(['g++', '-std=c++17', '-I', str(ROOT), str(cpp), '-o', str(binary)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr

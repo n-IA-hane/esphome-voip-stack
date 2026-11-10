@@ -18,6 +18,54 @@ def block(source, marker):
     return source[start:end]
 
 
+def negotiated_fixture_source(code, *, sdp=False, video=False):
+    """Compile the complete production media value and its current owners."""
+    header = (SOURCE / 'sip_transport.h').read_text()
+    if 'struct NegotiatedMedia {' not in header:
+        return code
+    owner = (SOURCE / 'sip_transport.cpp').read_text()
+    parser = (SOURCE / 'sip_sdp.cpp').read_text()
+    declarations = 'struct NegotiatedMedia;\n'
+    implementations = ''
+    if 'struct NegotiatedMedia {' not in code:
+        declarations += 'bool audio_zero_connection_=false;\n#ifdef USE_ESPHOME_VOIP_STACK_VIDEO\nbool video_zero_connection_=false;\n#endif\n'
+        declarations += 'using RemoteMediaShape=::RemoteMediaShape;\n' + block(header, 'struct NegotiatedMedia {') + ';\n'
+        markers = ['SipTransport::NegotiatedMedia SipTransport::negotiated_media_(',
+                   'void SipTransport::commit_negotiated_media_(',
+                   'void SipTransport::exchange_negotiated_media_(',
+                   'void SipTransport::commit_audio_config_(']
+        if 'get_media_config_(' not in code:
+            markers.append('void SipTransport::get_media_config_(')
+        for marker in markers:
+            body = block(owner, marker)
+            declarations += body[:body.index('{')].replace('SipTransport::', '').strip() + ';\n'
+            implementations += '\n' + body
+    if (sdp or video) and 'bool SipTransport::parse_remote_media_(' not in code:
+        markers = (['std::string SipTransport::wrap_sdp_envelope_version_(',
+                   'SipTransport::RemoteMediaShape SipTransport::parse_remote_media_shape_(',
+                   'std::string SipTransport::build_negotiated_sdp_answer_(',
+                   'bool SipTransport::parse_remote_media_('] if sdp else []) + [
+                   'std::string SipTransport::append_negotiated_video_sdp_(',
+                   'bool SipTransport::parse_remote_video_(']
+        if sdp and 'std::string SipTransport::rejected_media_answer_(' not in code:
+            markers.append('std::string SipTransport::rejected_media_answer_(')
+        for marker in markers:
+            body = block(parser, marker)
+            declaration = body[:body.index('{')].replace('SipTransport::', '').strip() + ';\n'
+            if 'video' in marker:
+                declaration = '#ifdef USE_ESPHOME_VOIP_STACK_VIDEO\n' + declaration + '#endif\n'
+                body = '#ifdef USE_ESPHOME_VOIP_STACK_VIDEO\n' + body + '\n#endif\n'
+            declarations += declaration
+            implementations += '\n' + body
+    marker = 'struct SipTransport: SipPhoneTransport {' if 'struct SipTransport: SipPhoneTransport {' in code else 'struct SipTransport {'
+    alias = 'using RemoteMediaShape=::RemoteMediaShape;\n'
+    code = code.replace(alias, '')
+    declarations = alias + declarations.replace(alias, '')
+    begin = '\n#ifndef portENTER_CRITICAL\n#define portENTER_CRITICAL(...) ((void)0)\n#define portEXIT_CRITICAL(...) ((void)0)\n#define VOIP_TEST_MEDIA_CRITICAL\n#endif\n'
+    end = '\n#ifdef VOIP_TEST_MEDIA_CRITICAL\n#undef portENTER_CRITICAL\n#undef portEXIT_CRITICAL\n#undef VOIP_TEST_MEDIA_CRITICAL\n#endif\n'
+    return code.replace(marker, marker + '\n' + declarations, 1) + begin + implementations + end
+
+
 def refer_fixture_source():
     header = (SOURCE / 'sip_transport.h').read_text()
     parser = (SOURCE / 'sip_message.cpp').read_text()
@@ -27,6 +75,16 @@ def refer_fixture_source():
         'UdpTransaction', 'CompletedServerTransaction', 'CompletedInviteClientTransaction', 'SipIdentity', 'RemoteMediaShape', 'SipTcpFlow'))
     context = block(header, 'struct ReferDialog {')
     fields = context[context.index('{') + 1:-1]
+    if 'NegotiatedMedia media;' in fields:
+        fields = fields.replace('NegotiatedMedia media;', r'''
+    AudioFormat selected_tx_format_{DEFAULT_AUDIO_FORMAT},selected_rx_format_{DEFAULT_AUDIO_FORMAT};
+    uint8_t rtp_tx_payload_type_{96},rtp_rx_payload_type_{96};
+    RtpAudioPayloads negotiated_rx_payloads_;
+    bool audio_send_enabled_{true}, audio_receive_enabled_{true};
+    bool remote_directional_audio_v1_{false};
+    uint32_t remote_rtp_ip_v4_{0};uint16_t remote_rtp_port_{0};
+    RemoteMediaShape remote_media_shape_;
+''')
     fields = re.sub(r"#ifdef USE_ESPHOME_VOIP_REGISTRATION.*?#endif\n", "", fields, flags=re.S)
     fields = fields.replace('bool remote_sip_tcp_{false};', 'std::atomic<bool> remote_sip_tcp_{false};')
     fields = fields.replace('bool outgoing_invite_pending_{false}, cancel_requested_{false};',
@@ -149,7 +207,7 @@ struct SipTransport: SipPhoneTransport {
         implementation = implementation.replace('RtpAudioPayloads *rx_payloads)', 'RtpAudioPayloads *rx_payloads = nullptr)')
         implementation = implementation.replace('const RtpAudioPayloads *rx_payloads)', 'const RtpAudioPayloads *rx_payloads = nullptr)')
         code = code.replace(block(code, marker), implementation, 1)
-    return code
+    return negotiated_fixture_source(code)
 
 
 def test_refer_keeps_one_media_owner_and_reports_actual_outcome(tmp_path):

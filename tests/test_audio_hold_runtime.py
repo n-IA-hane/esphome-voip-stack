@@ -26,7 +26,6 @@ uint32_t millis(){return 100;}
  std::atomic<uint32_t> dtmf_generation_{0},rtp_timestamp_{10000},rtp_tx_packets_{0},rtp_tx_bytes_{0};
  std::atomic<uint16_t> rtp_sequence_{100};uint32_t rtp_ssrc_=1234,rtp_tx_clock_ms_=0,rtp_tx_clock_timestamp_=0;
  int rtp_socket_=-1,queue=0;int*dtmf_queue_=&queue;
- RtpAudioPayloads &negotiated_rx_payloads_=accepted;
  std::function<void()> on_final;
  bool remote_audio_expected() const;
  bool received_audio_format_(uint8_t,AudioFormat*,const uint8_t* =nullptr,size_t=0)const;

@@ -63,9 +63,6 @@ def mixed_playout_binary(tmp_path_factory):
     fields = r'''
  int media_config_lock_=0,rtp_socket_=-1;
  unsigned emitted=0,decodes=0,plc=0,resets=0;
- RtpAudioPayloads &negotiated_rx_payloads_=accepted;
- AudioFormat &selected_tx_format_=tx,&selected_rx_format_=rx;
- uint8_t &rtp_tx_payload_type_=tx_pt,&rtp_rx_payload_type_=rx_pt;
  std::atomic<bool>rtp_running_{false},rtp_task_terminate_{false},media_active_{true},rtp_task_quiesced_{true};
  std::atomic<uint16_t>rtp_sequence_{0};std::atomic<uint32_t>rtp_timestamp_{0};uint32_t rtp_ssrc_=0;
  std::atomic<bool>rtp_ssrc_latched_{false};

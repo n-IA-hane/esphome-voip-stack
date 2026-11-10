@@ -10,7 +10,7 @@ def source():
     code = refer_fixture_source()
     owner = (SOURCE / 'sip_transport.cpp').read_text()
     parser = (SOURCE / 'sip_message.cpp').read_text()
-    code = '#define portENTER_CRITICAL(p) (p)->lock()\n#define portEXIT_CRITICAL(p) (p)->unlock()\n#define USE_ESPHOME_VOIP_STACK_PCM\n#include <mutex>\n#include <thread>\n#include <chrono>\n#include <cstring>\n#include <cinttypes>\n#include <cerrno>\n#include <unistd.h>\n' + code
+    code = '#define portENTER_CRITICAL(p) (p)->lock()\n#define portEXIT_CRITICAL(p) (p)->unlock()\n#define USE_ESPHOME_VOIP_STACK_PCM\n#include <mutex>\n#include <functional>\n#include <thread>\n#include <chrono>\n#include <cstring>\n#include <cinttypes>\n#include <cerrno>\n#include <unistd.h>\n' + code
     code = code.replace('struct Mutex{};struct LockGuard{explicit LockGuard(Mutex&) {}};',
                         'using Mutex=std::mutex;using LockGuard=std::lock_guard<Mutex>;')
     extra = r'''
@@ -24,6 +24,7 @@ def source():
  std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::ACTIVE};
  void*rtp_cleanup_done_=nullptr,*rtp_task_done_=nullptr;
  std::atomic<unsigned>admitted{0},changed{0};
+ std::function<void(const AudioFormat&,const AudioFormat&,bool,bool)>on_config;
  void emit_audio_frame_(const uint8_t*p,size_t n,uint16_t,uint32_t,bool change,uint32_t){
   assert(n==320);for(unsigned i=0;i<n;++i)assert(p[i]==uint8_t(i*7));if(change)++changed;++admitted;}
  void emit_media_quiesced_(){}void finish_audio_path_stop_(){}
@@ -51,6 +52,9 @@ unsigned ulTaskNotifyTake(int,unsigned){return 1;}void xSemaphoreGive(void*){}vo
 const char*socket_errno_name(int){return "host";}const char*socket_errno_text(int){return "host";}
 '''
     code = code.replace('struct SipPhoneTransport {', helpers + '\nstruct SipPhoneTransport {')
+    commit = block(code, 'void SipTransport::commit_audio_config_(')
+    code = code.replace(commit, commit.replace('portEXIT_CRITICAL(&this->media_config_lock_);',
+                                             'portEXIT_CRITICAL(&this->media_config_lock_);if(on_config)on_config(tx,rx,send,receive);'))
     for marker in ['size_t pcm_to_rtp_payload(', 'size_t rtp_payload_to_pcm(']:
         body = block(parser, marker)
         code = code.replace('struct SipPhoneTransport {', body + '\nstruct SipPhoneTransport {')
@@ -94,6 +98,13 @@ int main(int argc,char**argv){
  };
  media(send,receive);
  s.audio_receive_reset_pending_=true;s.rtp_source_reacquire_pending_=true;
+ unsigned observations=0;
+ s.on_config=[&](const auto&tx,const auto&rx,bool sending,bool receiving){
+  assert((s.media_proposal_epoch_&1U)!=0&&"REFER must fence every configuration publication");
+  assert(s.audio_send_enabled_==(sending&&tx.is_valid()));
+  assert(s.audio_receive_enabled_==(receiving&&rx.is_valid()));
+  media(false,false);++observations;
+ };
  assert(s.handle_refer_(refer,sip));
  media(send,receive);
  assert(s.audio_send_enabled_==send&&s.audio_receive_enabled_==receive);
@@ -113,6 +124,7 @@ int main(int argc,char**argv){
   media(complete||send,complete||receive);
  }
  if(receive)assert(s.changed==1&&!s.audio_receive_reset_pending_&&!s.rtp_source_reacquire_pending_);
+ assert(observations>=8);s.on_config={};
  s.rtp_task_terminate_=true;s.rtp_running_=false;uint8_t wake=0;assert(sendto(peer,&wake,1,0,reinterpret_cast<sockaddr*>(&target),sizeof(target))==1);worker.join();
  assert(s.rtp_task_quiesced_);close(s.rtp_socket_);close(peer);
 }

@@ -40,7 +40,7 @@ def g722_clock_binary(g722_playout_binary):
     refer = block((COMPONENT / "sip_refer.cpp").read_text(), "bool SipTransport::prepare_refer_media_(")
     refer = refer.replace("bool SipTransport::prepare_refer_media_(ReferDialog &other)",
                           "bool prepare_refer_media(SipTransport &self, ReferDialog &other)")
-    code += "struct ReferDialog {AudioFormat selected_tx_format_,selected_rx_format_;RtpAudioPayloads negotiated_rx_payloads_;};\n"
+    code += "struct ReferDialog {struct {AudioFormat tx,rx;RtpAudioPayloads rx_payloads;}media;};\n"
     code += refer.replace("this->", "self.")
     code += r'''
 #include <fstream>
@@ -71,14 +71,14 @@ int main(int argc,char **argv){
  const AudioFormat wire=s.rx;assert(wire.codec==AudioCodec::G722&&wire.sample_rate==16000&&s.rx_pt==9);
  s.rtp_port_=0;assert(s.prepare_media_path_locked_());
  if(mode=="refer"){
-  ReferDialog next;next.selected_tx_format_=s.tx;next.selected_rx_format_=g10;
-  next.negotiated_rx_payloads_.add(9,g10);
-  assert(prepare_refer_media(s,next)&&next.selected_rx_format_==wire&&s.rx==wire);
+  ReferDialog next;next.media.tx=s.tx;next.media.rx=g10;
+  next.media.rx_payloads.add(9,g10);
+  assert(prepare_refer_media(s,next)&&next.media.rx==wire&&s.rx==wire);
   uint8_t input[320]{},output[960]{};
   assert(s.convert_received_pcm(decoded_pcm_format(g10),input,sizeof(input),output,sizeof(output))>0);
-  ReferDialog failed;failed.selected_tx_format_=fmt(48000,10,AudioCodec::PCM);
-  failed.selected_rx_format_=g10;failed.negotiated_rx_payloads_.add(9,g10);
-  assert(!prepare_refer_media(s,failed)&&failed.selected_rx_format_==g10&&s.rx==wire);
+  ReferDialog failed;failed.media.tx=fmt(48000,10,AudioCodec::PCM);
+  failed.media.rx=g10;failed.media.rx_payloads.add(9,g10);
+  assert(!prepare_refer_media(s,failed)&&failed.media.rx==g10&&s.rx==wire);
   assert(s.convert_received_pcm(decoded_pcm_format(g10),input,sizeof(input),output,sizeof(output))==sizeof(output));
   // A failed additional source must roll back its new DSP entries and retain
   // the existing target/history. Both new sources are genuinely configured.
@@ -90,9 +90,9 @@ int main(int argc,char **argv){
   RtpAudioPayloads original;original.add(9,g20);
   assert(narrow.pcm_receive_converter_.prepare(configured_decoded_receive_formats(
    original,narrow.offer_rx_formats_,1200),decoded_pcm_format(g20)));
-  ReferDialog incompatible;incompatible.selected_tx_format_=narrow.tx;incompatible.selected_rx_format_=pcm48;
-  incompatible.negotiated_rx_payloads_.add(98,pcm8);incompatible.negotiated_rx_payloads_.add(99,pcm48);
-  assert(!prepare_refer_media(narrow,incompatible)&&incompatible.selected_rx_format_==pcm48&&narrow.rx==g20);
+  ReferDialog incompatible;incompatible.media.tx=narrow.tx;incompatible.media.rx=pcm48;
+  incompatible.media.rx_payloads.add(98,pcm8);incompatible.media.rx_payloads.add(99,pcm48);
+  assert(!prepare_refer_media(narrow,incompatible)&&incompatible.media.rx==pcm48&&narrow.rx==g20);
   uint8_t low[160]{};assert(narrow.convert_received_pcm(pcm8,low,sizeof(low),output,sizeof(output))==0);
   close(s.rtp_socket_);return 0;
  }

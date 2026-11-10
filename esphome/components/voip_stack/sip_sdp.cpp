@@ -21,6 +21,13 @@ static const char *const TAG = "voip_stack.sip";
 std::string SipTransport::wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
                                              const std::string &maps, const std::string &flows,
                                              uint8_t ptime, const char *direction) const {
+  return this->wrap_sdp_envelope_version_(local_ip, payloads, maps, flows, ptime, direction,
+                                          this->sdp_session_version_);
+}
+
+std::string SipTransport::wrap_sdp_envelope_version_(const std::string &local_ip, const std::string &payloads,
+                                             const std::string &maps, const std::string &flows,
+                                             uint8_t ptime, const char *direction, uint32_t version) const {
   uint16_t maxptime = 0;
   uint16_t required_minimum = 0;
   // maxptime bounds the whole m-line. A receive-only 48 kHz mapping must
@@ -63,7 +70,7 @@ std::string SipTransport::wrap_sdp_envelope_(const std::string &local_ip, const 
   if (maxptime != 0 && ptime > maxptime) ptime = 0;
   return "v=0\r\n"
          "o=- " + std::to_string(this->sdp_session_id_) + " " +
-         std::to_string(this->sdp_session_version_) + " IN IP4 " +
+         std::to_string(version) + " IN IP4 " +
          local_ip + "\r\n"
          "s=VoIP Stack\r\n"
          "c=IN IP4 " + local_ip + "\r\n"
@@ -78,27 +85,32 @@ std::string SipTransport::wrap_sdp_envelope_(const std::string &local_ip, const 
 }
 
 void SipTransport::capture_remote_media_shape_(const std::string &sdp) {
-  this->remote_media_shape_.clear();
+  this->remote_media_shape_ = this->parse_remote_media_shape_(sdp);
+}
+
+SipTransport::RemoteMediaShape SipTransport::parse_remote_media_shape_(const std::string &sdp) const {
+  RemoteMediaShape shape;
+  shape.clear();
   size_t pos = 0;
   while (pos < sdp.size()) {
     size_t end = sdp.find("\r\n", pos);
     if (end == std::string::npos) end = sdp.size();
     const std::string line = sdp.substr(pos, end - pos);
     if (line.rfind("m=", 0) == 0) {
-      const int8_t index = this->remote_media_shape_.count;
-      if (this->remote_media_shape_.append(line)) {
-        if (this->remote_media_shape_.audio_index < 0) {
+      const int8_t index = shape.count;
+      if (shape.append(line)) {
+        if (shape.audio_index < 0) {
           bool payloads[128]{};
           uint16_t port = 0;
           if (parse_audio_media_line(line, &port, payloads))
-            this->remote_media_shape_.audio_index = index;
+            shape.audio_index = index;
         }
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-        if (this->remote_media_shape_.video_index < 0) {
+        if (shape.video_index < 0) {
           bool payloads[128]{};
           uint16_t port = 0;
           if (parse_video_media_line(line, &port, payloads))
-            this->remote_media_shape_.video_index = index;
+            shape.video_index = index;
         }
 #endif
       }
@@ -106,6 +118,7 @@ void SipTransport::capture_remote_media_shape_(const std::string &sdp) {
     if (end == sdp.size()) break;
     pos = end + 2;
   }
+  return shape;
 }
 
 std::string SipTransport::rejected_media_answer_(
@@ -123,12 +136,19 @@ std::string SipTransport::rejected_media_answer_(
 std::string SipTransport::append_video_sdp_(const std::string &sdp,
                                             const std::string &local_ip,
                                             bool answer, bool capabilities) const {
+  return this->append_negotiated_video_sdp_(sdp, local_ip, answer, capabilities,
+                                            this->negotiated_media_());
+}
+
+std::string SipTransport::append_negotiated_video_sdp_(const std::string &sdp,
+                                            const std::string &local_ip,
+                                            bool answer, bool capabilities, const NegotiatedMedia &media) const {
   if ((!capabilities && this->refer_context_active_) || (this->video_source_ == nullptr && this->video_sink_ == nullptr)) {
     return sdp;
   }
-  if (answer && this->video_offered_ && !this->video_negotiated_) {
+  if (answer && media.video_offered && !media.video_negotiated) {
     return sdp + "m=video 0 RTP/AVP " +
-           std::to_string(this->negotiated_video_capability_.payload_type) +
+           std::to_string(media.video.payload_type) +
            "\r\n";
   }
   const VideoCapability local_send = this->local_video_send_capability_();
@@ -144,18 +164,18 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
   // independently declares the answerer's receive level, allowing a P4
   // hardware encoder and software decoder to use different envelopes.
   VideoCapability capability =
-      answer ? this->negotiated_video_capability_
+      answer ? media.video
              : offer_receive ? local_receive : local_send;
   if (!capability.valid()) {
     ESP_LOGW(TAG, "Video SDP omitted: local capabilities are invalid");
     return sdp;
   }
   const bool send =
-      answer ? this->video_send_enabled_
+      answer ? media.video_send
              : offer_send &&
                    local_send.encoding == capability.encoding;
   const bool receive =
-      answer ? this->video_receive_enabled_
+      answer ? media.video_receive
              : offer_receive &&
                    local_receive.encoding == capability.encoding;
   if (!send && !receive && !answer) return sdp;
@@ -196,8 +216,8 @@ std::string SipTransport::append_video_sdp_(const std::string &sdp,
   // a lower receive budget than the hardware encoder without a private fmtp.
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   if (capability.is_jpeg() && (send || receive) &&
-      (capabilities || !(this->video_imageattr_state_ & IMAGEATTR_DISABLED)) &&
-      (!answer || (this->video_imageattr_state_ & IMAGEATTR_PEER))) {
+      (capabilities || !(media.imageattr_state & IMAGEATTR_DISABLED)) &&
+      (!answer || (media.imageattr_state & IMAGEATTR_PEER))) {
     out += "a=imageattr:26";
     if (send) {
       // A fixed camera promises only its actual output, never arbitrary sizes.
@@ -336,7 +356,7 @@ std::string SipTransport::build_sdp_offer_() {
   std::string flows;
   uint8_t pt = 96;
   const AudioFormat *retained_tx = this->offer_tx_formats_.count != 0 && this->refer_context_active_ && this->refer_dialog_
-      ? &this->refer_dialog_->selected_tx_format_ : nullptr;
+      ? &this->refer_dialog_->media.tx : nullptr;
   uint8_t selected_ptime = preferred_audio_ptime(
       this->offer_rx_formats_.count != 0 ? this->offer_rx_formats_ : this->offer_tx_formats_, this->udp_max_payload_);
   if (selected_ptime == 0) {
@@ -433,6 +453,19 @@ std::string SipTransport::build_sdp_answer_(
     const DtmfConfig *dtmf_proposal,
 #endif
     const AudioSdpDirection *audio_direction) const {
+  auto media = this->negotiated_media_();
+#ifdef USE_ESPHOME_VOIP_DTMF
+  if (dtmf_proposal != nullptr) media.dtmf = *dtmf_proposal;
+#endif
+  if (audio_direction != nullptr) {
+    media.send = audio_direction->send;
+    media.receive = audio_direction->receive;
+  }
+  return this->build_negotiated_sdp_answer_(media, this->sdp_session_version_);
+}
+
+std::string SipTransport::build_negotiated_sdp_answer_(const NegotiatedMedia &media,
+                                                            uint32_t version) const {
   const uint32_t remote_ip = this->remote_ip_v4_.load(std::memory_order_acquire);
   std::string local_ip = "0.0.0.0";
   this->local_ip_for_peer_(remote_ip, &local_ip);
@@ -441,11 +474,12 @@ std::string SipTransport::build_sdp_answer_(
   uint8_t tx_payload_type = 96;
   uint8_t rx_payload_type = 96;
   RtpAudioPayloads rx_payloads;
-  this->get_media_config_(&selected_tx, &selected_rx, &tx_payload_type, &rx_payload_type, &rx_payloads);
+  selected_tx = media.tx; selected_rx = media.rx;
+  tx_payload_type = media.tx_pt; rx_payload_type = media.rx_pt; rx_payloads = media.rx_payloads;
   const bool have_tx = selected_tx.is_valid();
   const bool have_rx = selected_rx.is_valid();
-  const bool send = have_tx && (audio_direction == nullptr || audio_direction->send);
-  const bool receive = have_rx && (audio_direction == nullptr || audio_direction->receive);
+  const bool send = have_tx && media.send;
+  const bool receive = have_rx && media.receive;
   if (!have_tx && !have_rx) return "";
   // RFC 3264 section 6.1: one-way answers describe only that direction's
   // formats. An inactive answer retains the sendrecv codec description.
@@ -464,7 +498,7 @@ std::string SipTransport::build_sdp_answer_(
     if (format.codec == AudioCodec::OPUS)
       maps += "a=fmtp:" + std::to_string(pt) +
           " stereo=0;sprop-stereo=0;maxaveragebitrate=28000\r\n";
-    if (this->remote_directional_audio_v1_)
+    if (media.directional_audio)
       flows += "a=x-voip-stack-flow:" + std::to_string(pt) + " " + flow + "\r\n";
     return true;
   };
@@ -479,12 +513,7 @@ std::string SipTransport::build_sdp_answer_(
       !append(tx_payload_type, selected_tx,
               advertise_rx && rx_payloads.find(tx_payload_type, nullptr) ? "sendrecv" : "send")) return "";
 #ifdef USE_ESPHOME_VOIP_DTMF
-  DtmfConfig committed_dtmf;
-  if (dtmf_proposal == nullptr) {
-    this->get_dtmf_config_(&committed_dtmf.tx, &committed_dtmf.rx);
-    dtmf_proposal = &committed_dtmf;
-  }
-  const DtmfFormat dtmf = dtmf_proposal->rx.valid() ? dtmf_proposal->rx : dtmf_proposal->tx;
+  const DtmfFormat dtmf = media.dtmf.rx.valid() ? media.dtmf.rx : media.dtmf.tx;
   if (dtmf.valid()) {
     const auto pt = std::to_string(dtmf.payload_type);
     payloads += " " + pt;
@@ -497,19 +526,19 @@ std::string SipTransport::build_sdp_answer_(
     maps += "a=fmtp:" + pt + " " + events + "\r\n";
   }
 #endif
-  const std::string audio_sdp = this->wrap_sdp_envelope_(
+  const std::string audio_sdp = this->wrap_sdp_envelope_version_(
       local_ip, payloads, maps, flows, advertise_rx ? selected_rx.frame_ms : selected_tx.frame_ms,
-      audio_direction_attribute(send, receive));
+      audio_direction_attribute(send, receive), version);
   const size_t audio_media = audio_sdp.find("m=audio ");
   if (audio_media == std::string::npos) return "";
   const std::string session = audio_sdp.substr(0, audio_media);
   const std::string audio = audio_sdp.substr(audio_media);
   std::string video;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  video = this->append_video_sdp_("", local_ip, true);
+  video = this->append_negotiated_video_sdp_("", local_ip, true, false, media);
 #endif
-  if (this->remote_media_shape_.empty()) return audio_sdp + video;
-  if (this->remote_media_shape_.overflow) {
+  if (media.shape.empty()) return audio_sdp + video;
+  if (media.shape.overflow) {
     ESP_LOGW(TAG, "SIP SDP answer refused: more than %u media lines",
              (unsigned) kMaxSdpMediaLines);
     return "";
@@ -519,17 +548,17 @@ std::string SipTransport::build_sdp_answer_(
   // m-line, in the same order. Unsupported and duplicate streams are retained
   // with port zero instead of being silently omitted or reordered.
   std::string answer = session;
-  for (size_t index = 0; index < this->remote_media_shape_.count; index++) {
-    if (static_cast<int>(index) == this->remote_media_shape_.audio_index) {
+  for (size_t index = 0; index < media.shape.count; index++) {
+    if (static_cast<int>(index) == media.shape.audio_index) {
       answer += audio;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-    } else if (static_cast<int>(index) == this->remote_media_shape_.video_index &&
+    } else if (static_cast<int>(index) == media.shape.video_index &&
                !video.empty()) {
       answer += video;
 #endif
     } else {
       const std::string rejected = this->rejected_media_answer_(
-          this->remote_media_shape_.line(index));
+          media.shape.line(index));
       if (rejected.empty()) return "";
       answer += rejected;
     }
@@ -544,9 +573,38 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
                                               , DtmfConfig *dtmf_proposal
 #endif
                                               , AudioSdpDirection *audio_direction) {
-  this->remote_directional_audio_v1_ = false;
-  this->capture_remote_media_shape_(sdp);
-  if (this->remote_media_shape_.overflow) {
+  const auto retained = this->negotiated_media_();
+  NegotiatedMedia media;
+  if (!this->parse_remote_media_(sdp, default_ip, remote_is_answer, retained, &media,
+                                  audio_direction != nullptr)) return false;
+#ifdef USE_ESPHOME_VOIP_DTMF
+  if (dtmf_proposal != nullptr) {
+    *dtmf_proposal = media.dtmf;
+    media.dtmf = retained.dtmf;
+  }
+#endif
+  if (audio_direction != nullptr) {
+    audio_direction->send = media.send;
+    audio_direction->receive = media.receive;
+    audio_direction->zero_connection = media.zero_connection;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+    audio_direction->video_zero_connection = media.video_zero_connection;
+#endif
+  }
+  this->commit_negotiated_media_(media);
+  return true;
+}
+
+bool SipTransport::parse_remote_media_(const std::string &sdp, uint32_t default_ip,
+                                        bool remote_is_answer, const NegotiatedMedia &retained,
+                                        NegotiatedMedia *media, bool retained_call) const {
+  *media = NegotiatedMedia{};
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  media->imageattr_state = retained.imageattr_state;
+#endif
+  media->directional_audio = false;
+  media->shape = this->parse_remote_media_shape_(sdp);
+  if (media->shape.overflow) {
     ESP_LOGW(TAG, "SIP SDP rejected: too many media lines");
     return false;
   }
@@ -664,17 +722,17 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
   for (uint8_t pt = 0; pt < 128; ++pt)
     if (offered_payload[pt] && payload_flow[pt] != 0 &&
         (!remote_is_answer || this->local_offered_directional_audio_v1_))
-      this->remote_directional_audio_v1_ = true;
+      media->directional_audio = true;
   // Only the earlier private D1 contract coupled both directions. Ordinary
   // SIP and peers explicitly declaring this version use RFC 3264 semantics.
-  const bool legacy_directional_ptime = this->remote_directional_audio_v1_ && !independent_audio_ptime;
+  const bool legacy_directional_ptime = media->directional_audio && !independent_audio_ptime;
   const uint16_t transmit_ptime = legacy_directional_ptime && media_ptime == 0
       ? choose_common_audio_ptime(this->offer_tx_formats_, this->offer_rx_formats_, this->udp_max_payload_)
       : media_ptime;
   if (legacy_directional_ptime && transmit_ptime == 0) return false;
   AudioFormat retained_tx_format = disabled_audio_format();
-  if (audio_direction != nullptr && !remote_is_answer && media_ptime == 0)
-    this->get_media_config_(&retained_tx_format, nullptr, nullptr, nullptr, nullptr);
+  if (retained_call && !remote_is_answer && media_ptime == 0)
+    retained_tx_format = retained.tx;
   auto consider_mapping = [&](AudioFormat fmt, uint8_t pt) {
     if (pt == 9 && fmt.codec != AudioCodec::G722) return false;
     fmt.frame_ms = media_ptime;
@@ -685,8 +743,8 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
     AudioFormat local_tx;
     // Preserve the prepared codec geometry during a direction-only proposal.
     // D1 payload capabilities remain directional; the m-line gates activity.
-    const uint8_t flow = !this->remote_directional_audio_v1_ || payload_flow[pt] == 0
-                             ? (audio_direction != nullptr ? 0x03 : media_flow) : payload_flow[pt];
+    const uint8_t flow = !media->directional_audio || payload_flow[pt] == 0
+                             ? (retained_call ? 0x03 : media_flow) : payload_flow[pt];
     const bool peer_can_send = (flow & 0x01) != 0;
     const bool peer_can_recv = (flow & 0x02) != 0;
     const auto match_tx = [&](uint16_t preferred_time) {
@@ -754,7 +812,7 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
     alternate_pcm = local_rx.codec == AudioCodec::PCM && local_rx.pcm_format == PcmFormat::S16LE;
 #endif
     const bool unidirectional = this->offer_tx_formats_.count == 0 || this->offer_rx_formats_.count == 0;
-    const bool eligible = unidirectional || this->remote_directional_audio_v1_ || media_flow != 0x03 ||
+    const bool eligible = unidirectional || media->directional_audio || media_flow != 0x03 ||
                           (tx_ok && rx_ok) || alternate_pcm;
     // RFC 3264 allows independent send preferences. Keep every accepted
     // receive mapping; select the first compatible local preference.
@@ -771,7 +829,7 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
                (unsigned) audio_format_rtp_channels(selected_rx_format),
                (unsigned) selected_rx_format.frame_ms);
     }
-    if (tx_ok && eligible && (unidirectional || this->remote_directional_audio_v1_ || media_flow != 0x03 || rx_ok) &&
+    if (tx_ok && eligible && (unidirectional || media->directional_audio || media_flow != 0x03 || rx_ok) &&
         (!selected_tx ||
          local_rank(this->offer_tx_formats_, local_tx) < local_rank(this->offer_tx_formats_, selected_tx_format) ||
          (local_rank(this->offer_tx_formats_, local_tx) == local_rank(this->offer_tx_formats_, selected_tx_format) &&
@@ -834,11 +892,11 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
       !zero_connection && (media_flow & 0x02) != 0;
   const bool want_rx = this->offer_rx_formats_.count != 0 &&
       !zero_connection && (media_flow & 0x01) != 0;
-  if (audio_direction != nullptr) {
+  if (retained_call) {
     AudioFormat retained_tx, retained_rx;
     uint8_t retained_tx_pt = 0, retained_rx_pt = 0;
-    this->get_media_config_(&retained_tx, &retained_rx,
-                            &retained_tx_pt, &retained_rx_pt, nullptr);
+    retained_tx = retained.tx; retained_rx = retained.rx;
+    retained_tx_pt = retained.tx_pt; retained_rx_pt = retained.rx_pt;
     const auto retained_mapping_offered = [&](const AudioFormat &format, uint8_t pt) {
       return format.is_valid() && seen_mapping[pt] != 0 &&
           audio_formats_share_rtp_mapping(format, unpack_audio_format(seen_mapping[pt]));
@@ -860,10 +918,10 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
     }
   }
   if (media_port == 0 || media_ip == 0 ||
-      (!want_tx && !want_rx && audio_direction == nullptr) ||
+      (!want_tx && !want_rx && !retained_call) ||
       (!selected_tx && !selected_rx) ||
       (want_tx && !selected_tx) || (want_rx && !selected_rx) ||
-      (want_tx && want_rx && !this->remote_directional_audio_v1_ && media_flow == 0x03 && !shared_format)) {
+      (want_tx && want_rx && !media->directional_audio && media_flow == 0x03 && !shared_format)) {
     ESP_LOGW(TAG,
              "SIP SDP rejected: body_len=%u media_port=%u media_ip=%08x "
              "selected_tx=%s selected_rx=%s",
@@ -873,12 +931,10 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
   }
   // Initial setup has no retained media owner to pause. Reject the legacy
   // address rather than acknowledging it while transmitting to the fallback.
-  if (zero_connection && audio_direction == nullptr) return false;
-  if (audio_direction != nullptr) {
-    audio_direction->zero_connection = zero_connection;
-    audio_direction->send = !zero_connection && selected_tx && (media_flow & 0x02) != 0;
-    audio_direction->receive = !zero_connection && selected_rx && (media_flow & 0x01) != 0;
-  }
+  if (zero_connection && !retained_call) return false;
+  media->zero_connection = zero_connection;
+  media->send = !zero_connection && selected_tx && (media_flow & 0x02) != 0;
+  media->receive = !zero_connection && selected_rx && (media_flow & 0x01) != 0;
   RtpAudioPayloads accepted_rx;
   for (uint8_t i = 0; i < received_payloads.count; ++i) {
     const auto &entry = received_payloads.entries[i];
@@ -888,22 +944,21 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
     target_pcm.frame_ms = entry.format.frame_ms;
     // D1 keeps configured PCM alternatives supported by the existing receive
     // converter, while other codecs retain their directional geometry rule.
-    usable |= (!this->remote_directional_audio_v1_ || entry.format.codec == AudioCodec::PCM) &&
+    usable |= (!media->directional_audio || entry.format.codec == AudioCodec::PCM) &&
               pcm_receive_conversion_supported(decoded_pcm_format(entry.format), target_pcm);
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
-    usable |= !this->remote_directional_audio_v1_ &&
+    usable |= !media->directional_audio &&
               same_decoded_audio_geometry(entry.format, selected_rx_format);
 #endif
     if (usable && !accepted_rx.add(entry.payload_type, entry.format)) return false;
   }
-  if (audio_direction != nullptr && !audio_direction->receive)
-    this->get_media_config_(nullptr, nullptr, nullptr, nullptr, &accepted_rx);
+  if (retained_call && !media->receive) accepted_rx = retained.rx_payloads;
 #ifdef USE_ESPHOME_VOIP_DTMF
   const auto next_media = sdp.find("\r\nm=", selected_audio_line);
-  const std::string_view media(sdp.data() + selected_audio_line,
+  const std::string_view audio_section(sdp.data() + selected_audio_line,
       (next_media == std::string::npos ? sdp.size() : next_media + 2) - selected_audio_line);
-  auto dtmf = negotiate_dtmf(media, payload_rank,
+  auto dtmf = negotiate_dtmf(audio_section, payload_rank,
       audio_format_rtp_clock_rate(selected_tx ? selected_tx_format : selected_rx_format),
       remote_is_answer, this->dtmf_offered_clocks_);
   if (dtmf.valid() && (seen_mapping[dtmf.payload_type] != 0 ||
@@ -911,18 +966,17 @@ bool SipTransport::learn_remote_rtp_from_sdp_(const std::string &sdp,
       (selected_tx && selected_tx_payload_type == dtmf.payload_type))) dtmf = {};
   DtmfConfig dtmf_config{selected_tx ? dtmf : DtmfFormat{}, selected_rx ? dtmf : DtmfFormat{}};
   if (remote_is_answer && dtmf_config.rx.valid()) dtmf_config.rx.payload_type = 120 + dtmf_clock_index(dtmf.clock);
-  if (dtmf_proposal != nullptr) *dtmf_proposal = dtmf_config;
-  else this->set_dtmf_config_(dtmf_config.tx, dtmf_config.rx);
+  media->dtmf = dtmf_config;
 #endif
-  this->set_media_config_(selected_tx_format, selected_rx_format,
-                          selected_tx_payload_type, selected_rx_payload_type, &accepted_rx);
+  media->tx = selected_tx_format; media->rx = selected_rx_format;
+  media->tx_pt = selected_tx_payload_type; media->rx_pt = selected_rx_payload_type;
+  media->rx_payloads = accepted_rx;
   // Signaling can traverse a PBX/proxy while RTP terminates on a separate
   // media address from SDP. Never overwrite the SIP peer with the media peer.
-  this->remote_rtp_ip_v4_.store(media_ip, std::memory_order_release);
-  this->remote_rtp_port_.store(media_port, std::memory_order_release);
+  media->audio_ip = zero_connection ? retained.audio_ip : media_ip;
+  media->audio_port = media_port;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
-  if (!this->refer_context_active_ && !this->learn_remote_video_from_sdp_(sdp, default_ip,
-          remote_is_answer, audio_direction != nullptr ? &audio_direction->video_zero_connection : nullptr)) {
+  if (!this->refer_context_active_ && !this->parse_remote_video_(sdp, default_ip, remote_is_answer, retained, media, retained_call)) {
     // An unsupported video m-line is rejected independently. Audio remains
     // valid and build_sdp_answer_ will return m=video 0.
     ESP_LOGW(TAG, "SIP SDP video rejected while retaining negotiated audio");
@@ -936,10 +990,28 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
                                                 uint32_t default_ip,
                                                 bool remote_is_answer,
                                                 bool *zero_connection) {
-  const uint32_t retained_ip = this->remote_video_ip_v4_;
-  const uint32_t retained_rtcp_ip = this->remote_video_rtcp_ip_v4_;
-  this->reset_video_negotiation_();
-  if (zero_connection != nullptr) *zero_connection = false;
+  const auto retained = this->negotiated_media_();
+  auto media = retained;
+  const bool valid = this->parse_remote_video_(sdp, default_ip, remote_is_answer, retained,
+                                               &media, zero_connection != nullptr);
+  if (zero_connection != nullptr) *zero_connection = media.video_zero_connection;
+  this->commit_negotiated_media_(media);
+  return valid;
+}
+
+bool SipTransport::parse_remote_video_(const std::string &sdp, uint32_t default_ip,
+                                        bool remote_is_answer, const NegotiatedMedia &retained,
+                                        NegotiatedMedia *media, bool allow_zero_connection) const {
+  const uint32_t retained_ip = retained.video_ip;
+  const uint32_t retained_rtcp_ip = retained.video_rtcp_ip;
+  media->video_offered = false; media->video_negotiated = false;
+  media->video_send = false; media->video_receive = false;
+  media->video_ip = 0; media->video_port = 0;
+  media->video_rtcp_ip = 0; media->video_rtcp_port = 0;
+  media->video = {}; media->video_zero_connection = false;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  media->imageattr_state &= ~IMAGEATTR_PEER;
+#endif
   const VideoCapability local_send = this->local_video_send_capability_();
   const VideoCapability local_receive = this->local_video_receive_capability_();
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
@@ -998,7 +1070,7 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
                                    candidate_payloads, candidate_order,
                                    &candidate_count)) {
           selected_video_line = true;
-          this->video_offered_ = true;
+          media->video_offered = true;
           media_port = candidate_port;
           std::copy(candidate_payloads, candidate_payloads + 128,
                     offered_payloads);
@@ -1010,7 +1082,7 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
           // corresponding answer m-line, with port zero and a payload format
           // taken from the offer rather than our unrelated local default.
           if (candidate_count > 0) {
-            this->negotiated_video_capability_.payload_type =
+            media->video.payload_type =
                 candidate_order[0];
           }
           media_ip = session_ip;
@@ -1151,14 +1223,14 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
     pos = end + 2;
   }
 
-  if (!this->video_offered_) return true;
+  if (!media->video_offered) return true;
   // A disabled answer is not an error and must not disturb audio.
   if (media_port == 0) return true;
   if (media_zero_connection) {
     // Legacy hold applies to this media section after connection inheritance.
     // Keep the prepared child's peer identity for a direction-only pause.
-    if (zero_connection == nullptr) return false;
-    *zero_connection = true;
+    if (!allow_zero_connection) return false;
+    media->video_zero_connection = true;
     media_direction = 0;
     if (retained_ip != 0) media_ip = retained_ip;
     if (retained_rtcp_ip != 0) media_rtcp_ip = retained_rtcp_ip;
@@ -1278,30 +1350,30 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
     }
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-    this->video_imageattr_state_ &= ~IMAGEATTR_PEER;
+    media->imageattr_state &= ~IMAGEATTR_PEER;
     if (imageattr_specific.valid || imageattr_wildcard.valid) {
       const auto &send_attr = imageattr_specific.send_present ? imageattr_specific : imageattr_wildcard;
       const auto &recv_attr = imageattr_specific.recv_present ? imageattr_specific : imageattr_wildcard;
       const bool compatible = (!local_receives || !send_attr.send_present || send_attr.send_compatible) &&
                               (!local_sends || !recv_attr.recv_present || recv_attr.recv_compatible);
       if (compatible) {
-        this->video_imageattr_state_ |= IMAGEATTR_PEER;
-      } else if (remote_is_answer && (this->video_imageattr_state_ & IMAGEATTR_OFFERED) &&
-                 !(this->video_imageattr_state_ & IMAGEATTR_DISABLED)) {
+        media->imageattr_state |= IMAGEATTR_PEER;
+      } else if (remote_is_answer && (media->imageattr_state & IMAGEATTR_OFFERED) &&
+                 !(media->imageattr_state & IMAGEATTR_DISABLED)) {
         // RFC6236: do not silently accept an unusable answer. Preserve media
         // and let the existing SIP transaction owner offer once without it.
-        this->video_imageattr_state_ |= IMAGEATTR_DISABLED | IMAGEATTR_FALLBACK;
+        media->imageattr_state |= IMAGEATTR_DISABLED | IMAGEATTR_FALLBACK;
       }
     }
 #endif
-    this->negotiated_video_capability_ = negotiated;
-    this->remote_video_ip_v4_ = media_ip;
-    this->remote_video_rtp_port_ = media_port;
-    this->remote_video_rtcp_ip_v4_ = media_rtcp_ip;
-    this->remote_video_rtcp_port_ = media_rtcp_port;
-    this->video_send_enabled_ = local_sends;
-    this->video_receive_enabled_ = local_receives;
-    this->video_negotiated_ = true;
+    media->video = negotiated;
+    media->video_ip = media_ip;
+    media->video_port = media_port;
+    media->video_rtcp_ip = media_rtcp_ip;
+    media->video_rtcp_port = media_rtcp_port;
+    media->video_send = local_sends;
+    media->video_receive = local_receives;
+    media->video_negotiated = true;
     ESP_LOGI(TAG,
              "SIP SDP selected video PT=%u %s remote=%08x:%u dir=%s%s",
              (unsigned) pt, negotiated.encoding.c_str(),

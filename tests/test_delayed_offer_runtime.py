@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 from test_incoming_setup_runtime import incoming_source
-from test_refer_dialog_runtime import block
+from test_refer_dialog_runtime import block, negotiated_fixture_source
 from test_refer_wire_runtime import wire_source
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,7 +85,7 @@ def delayed_source(*, registered=False):
     app = app.replace("void set_current_media_formats_(const AudioFormat&,const AudioFormat&,const AudioFormat&,const AudioFormat&){}", "AudioFormat tx,rx;void set_current_media_formats_(const AudioFormat&,const AudioFormat&,const AudioFormat&t,const AudioFormat&r){tx=t;rx=r;}")
     app = app.replace("void set_audio_devices_active_(bool on){if(!on)++media_stops;}", "bool mic_owned=false;unsigned mic_starts=0;void set_audio_devices_active_(bool on){bool requested=on&&tx.is_valid();if(requested&&!mic_owned)++mic_starts;mic_owned=requested;if(!on)++media_stops;}")
     helpers = (ROOT / "tests/fixtures/refer_wire_main.cpp").read_text().split("void auth_case(")[0]
-    return code + "\nSipTransport *wire_transport=nullptr;\n" + app + "\n" + helpers
+    return negotiated_fixture_source(code, sdp=True) + "\nSipTransport *wire_transport=nullptr;\n" + app + "\n" + helpers
 
 
 @pytest.fixture(scope="module")

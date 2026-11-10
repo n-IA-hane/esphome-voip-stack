@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from test_refer_dialog_runtime import block
+from test_refer_dialog_runtime import block, negotiated_fixture_source
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "esphome/components/voip_stack"
@@ -85,14 +85,23 @@ def sdp_source():
 #include <string>
 #include <arpa/inet.h>
 #include "esphome/components/voip_stack/video.h"
+#include "esphome/components/voip_stack/rtp_audio_payloads.h"
 #include "esphome/components/voip_stack/sdp_imageattr.h"
 using namespace esphome::voip_stack;
 '''
     for signature in ["std::string trim_copy(", "bool parse_decimal_u32(",
                       "bool parse_video_media_line(", "bool parse_video_rtpmap(", "bool parse_rtcp_attribute("]:
         code += block(message, signature) + "\n"
+    code += 'using SipSignalingString=std::string;constexpr unsigned kMaxSdpMediaLines=8;\n'
+    code += block(header, 'struct RemoteMediaShape {') + ';\n'
     code += r'''
 struct SipTransport {
+ AudioFormat selected_tx_format_,selected_rx_format_;
+ uint8_t rtp_tx_payload_type_=96,rtp_rx_payload_type_=96;
+ RtpAudioPayloads negotiated_rx_payloads_;
+ std::atomic<bool>audio_send_enabled_{true},audio_receive_enabled_{true};
+ std::atomic<uint32_t>remote_rtp_ip_v4_{0};std::atomic<uint16_t>remote_rtp_port_{0};
+ bool remote_directional_audio_v1_=false;RemoteMediaShape remote_media_shape_;
  bool refer_context_active_=false,video_offered_=false,video_negotiated_=false,video_send_enabled_=false,video_receive_enabled_=false;
  void *video_source_=nullptr,*video_sink_=this;VideoCapability tx,rx,negotiated_video_capability_;
  std::atomic<bool>video_send_requested_{false};
@@ -120,7 +129,7 @@ struct SipTransport {
                               (sdp, "std::string SipTransport::append_video_sdp_("),
                               (owner, "std::string SipTransport::build_video_direction_offer_(")]:
         code += block(source, signature) + "\n"
-    return code
+    return negotiated_fixture_source(code, video=True)
 
 
 @pytest.mark.parametrize("scenario", range(9))
