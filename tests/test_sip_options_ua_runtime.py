@@ -19,6 +19,7 @@ def options_source():
     # compiles and exposes its original empty OPTIONS reply for the RED witness.
     for marker, owner in [("std::string SipTransport::build_sdp_capabilities_(", sdp),
                           ("std::string SipTransport::wrap_sdp_envelope_(", sdp),
+                          ("std::string SipTransport::wrap_sdp_envelope_version_(", sdp),
                           ("void SipTransport::handle_options_(", source)]:
         if marker not in owner:
             continue
