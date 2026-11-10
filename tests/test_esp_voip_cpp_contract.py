@@ -1640,7 +1640,9 @@ def test_incoming_answer_prepares_before_200_and_commits_after_send() -> None:
     assert incoming.index("set_audio_devices_active_(true)") < incoming.rindex("begin_application_media_start_")
     assert incoming.count("abort_media_path()") + prepared.count("abort_media_path()") == 3
 
-    auto_start = fsm.index("      if (this->auto_answer_)")
+    # The condition also contains per-call answering modes in paging builds.
+    # Locate the branch by its incoming-call owner, preserving the lifecycle check.
+    auto_start = fsm.index("      if (", fsm.index("this->incoming_call_trigger_.trigger("))
     auto_end = fsm.index("      } else {", auto_start)
     auto_answer = fsm[auto_start:auto_end]
     assert "this->complete_incoming_answer_(true)" in auto_answer
