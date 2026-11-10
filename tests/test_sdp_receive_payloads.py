@@ -61,7 +61,7 @@ struct SipTransport {
  std::string rejected_media_answer_(const std::string&) const;
  void get_media_config_(AudioFormat*a,AudioFormat*b,uint8_t*c,uint8_t*d,RtpAudioPayloads*e=nullptr)const{if(a)*a=tx;if(b)*b=rx;if(c)*c=tx_pt;if(d)*d=rx_pt;if(e)*e=accepted;}
  void set_media_config_(const AudioFormat&a,const AudioFormat&b,uint8_t c,uint8_t d,const RtpAudioPayloads*e){tx=a;rx=b;tx_pt=c;rx_pt=d;accepted=*e;}
- std::string wrap_sdp_envelope_(const std::string&,const std::string&,const std::string&,const std::string&,uint8_t,const char * = "sendrecv") const;
+ std::string wrap_sdp_envelope_(const std::string&,const std::string&,const std::string&,const std::string&,const AudioSdpFacts&,uint8_t,const char * = "sendrecv") const;
  std::string build_sdp_offer_();
  std::string build_sdp_answer_() const;
  bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool=false);

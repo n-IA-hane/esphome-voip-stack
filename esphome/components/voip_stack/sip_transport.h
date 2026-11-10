@@ -6,6 +6,7 @@
 
 #include "transport.h"
 #include "rtp_audio_payloads.h"
+#include "sip_sdp_facts.h"
 #ifdef USE_ESPHOME_VOIP_DTMF
 #include "rtp_dtmf.h"
 #include <freertos/FreeRTOS.h>
@@ -360,10 +361,12 @@ class SipTransport : public SipPhoneTransport {
   std::string build_negotiated_sdp_answer_(const NegotiatedMedia &media, uint32_t version) const;
   std::string wrap_sdp_envelope_version_(const std::string &local_ip, const std::string &payloads,
                                         const std::string &maps, const std::string &flows,
-                                        uint8_t ptime, const char *direction, uint32_t version) const;
+                                        const AudioSdpFacts &facts, uint8_t ptime, const char *direction,
+                                        const AudioSdpEnvelope &envelope) const;
   std::string wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
                                  const std::string &maps, const std::string &flows,
-                                 uint8_t ptime, const char *direction = "sendrecv") const;
+                                 const AudioSdpFacts &facts, uint8_t ptime,
+                                 const char *direction = "sendrecv") const;
   bool learn_remote_rtp_from_sdp_(const std::string &sdp,
                                   uint32_t default_ip,
                                   bool remote_is_answer = false

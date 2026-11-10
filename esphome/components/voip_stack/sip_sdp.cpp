@@ -20,62 +20,30 @@ static const char *const TAG = "voip_stack.sip";
 
 std::string SipTransport::wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
                                              const std::string &maps, const std::string &flows,
-                                             uint8_t ptime, const char *direction) const {
-  return this->wrap_sdp_envelope_version_(local_ip, payloads, maps, flows, ptime, direction,
-                                          this->sdp_session_version_);
+                                             const AudioSdpFacts &facts, uint8_t ptime, const char *direction) const {
+  return this->wrap_sdp_envelope_version_(local_ip, payloads, maps, flows, facts, ptime, direction,
+      {this->sdp_session_id_, this->sdp_session_version_, this->rtp_port_});
 }
 
 std::string SipTransport::wrap_sdp_envelope_version_(const std::string &local_ip, const std::string &payloads,
                                              const std::string &maps, const std::string &flows,
-                                             uint8_t ptime, const char *direction, uint32_t version) const {
-  uint16_t maxptime = 0;
-  uint16_t required_minimum = 0;
-  // maxptime bounds the whole m-line. A receive-only 48 kHz mapping must
-  // not inherit the longer packet duration of another (or omitted) mapping.
-  size_t at = 0;
-  while (std::strcmp(direction, "sendonly") != 0 && at < maps.size()) {
-    const auto end = maps.find("\r\n", at);
-    AudioFormat mapping;
-    uint8_t pt = 0;
-    if (parse_rtpmap_format(maps.substr(at, end - at), &mapping, &pt) &&
-        flows.find("a=x-voip-stack-flow:" + std::to_string(pt) + " send\r\n") == std::string::npos) {
-      uint16_t mapping_max = 0, mapping_min = UINT16_MAX;
-      // rtpmap has no packet time. Ignore the parser's placeholder duration
-      // for wire identity; the configured format below keeps the real budget.
-      const char *mapping_encoding = audio_format_rtp_encoding(mapping, SIZE_MAX);
-      for (uint8_t i = 0; i < this->offer_rx_formats_.count; ++i) {
-        const auto &format = this->offer_rx_formats_.formats[i];
-        const char *encoding = audio_format_rtp_encoding(format, this->udp_max_payload_);
-        if (encoding != nullptr && mapping_encoding != nullptr &&
-            std::strcmp(encoding, mapping_encoding) == 0 &&
-            audio_format_rtp_clock_rate(format) == audio_format_rtp_clock_rate(mapping) &&
-            audio_format_rtp_channels(format) == audio_format_rtp_channels(mapping)) {
-          mapping_max = std::max(mapping_max, format.frame_ms);
-          mapping_min = std::min(mapping_min, format.frame_ms);
-        }
-      }
-      if (mapping_max != 0) {
-        maxptime = maxptime == 0 ? mapping_max : std::min(maxptime, mapping_max);
-        required_minimum = std::max(required_minimum, mapping_min);
-      }
-    }
-    if (end == std::string::npos) break;
-    at = end + 2;
-  }
-  if (maxptime != 0 && required_minimum > maxptime) {
+                                             const AudioSdpFacts &facts, uint8_t ptime, const char *direction,
+                                                     const AudioSdpEnvelope &envelope) const {
+  if (!facts.valid()) {
     ESP_LOGW(TAG, "SIP SDP receive mappings have no declared packet time within the shared maxptime");
     return "";
   }
+  const uint16_t maxptime = facts.maxptime;
   // ptime is a preference, but must not recommend packets above our bound.
   if (maxptime != 0 && ptime > maxptime) ptime = 0;
   return "v=0\r\n"
-         "o=- " + std::to_string(this->sdp_session_id_) + " " +
-         std::to_string(version) + " IN IP4 " +
+         "o=- " + std::to_string(envelope.session_id) + " " +
+         std::to_string(envelope.version) + " IN IP4 " +
          local_ip + "\r\n"
          "s=VoIP Stack\r\n"
          "c=IN IP4 " + local_ip + "\r\n"
          "t=0 0\r\n"
-         "m=audio " + std::to_string(this->rtp_port_) + " RTP/AVP " + payloads + "\r\n" +
+         "m=audio " + std::to_string(envelope.port) + " RTP/AVP " + payloads + "\r\n" +
          maps +
          flows +
          "a=x-voip-stack-independent-ptime:1\r\n" +
@@ -268,8 +236,10 @@ std::string SipTransport::build_sdp_capabilities_(uint32_t peer_ip) const {
   collect(this->offer_tx_formats_, 1);
   if (formats.count == 0) return "";
   std::string payloads, maps, flows;
+  AudioSdpFacts facts;
   for (uint8_t i = 0; i < formats.count && i < 24; ++i) {
     const auto &format = formats.formats[i];
+    if (directions[i] & 2) facts.include_receive(format, this->offer_rx_formats_, this->udp_max_payload_);
     const uint8_t pt = format.codec == AudioCodec::G722 ? 9 : 96 + i;
     if (!payloads.empty()) payloads.push_back(' ');
     payloads += std::to_string(pt);
@@ -321,22 +291,15 @@ std::string SipTransport::build_sdp_capabilities_(uint32_t peer_ip) const {
   };
   for (uint8_t i = 0; i < formats.count && ptime != 0; ++i)
     if ((directions[i] & 2) && !supports_time(this->offer_rx_formats_, formats.formats[i])) ptime = 0;
-  std::string result = this->wrap_sdp_envelope_(local_ip, payloads, maps, flows, ptime,
-      audio_direction_attribute(this->offer_tx_formats_.count != 0, this->offer_rx_formats_.count != 0));
-  if (result.empty()) return "";
-  // RFC 3264 section 9 gives each capability description its own origin.
-  // Preserve the live dialog's SDP identity, including in-dialog OPTIONS.
+  // RFC 3264 section 9 gives capabilities their own origin without changing
+  // the live dialog. Serialize that identity and disabled media port directly.
   static std::atomic<uint32_t> sequence{0};
   const uint64_t session = (static_cast<uint64_t>(esp_random()) << 32) |
       sequence.fetch_add(1, std::memory_order_relaxed);
-  const auto origin = result.find("o=");
-  result.replace(origin, result.find("\r\n", origin) - origin,
-      "o=- " + std::to_string(session) + " 0 IN IP4 " + local_ip);
-  const auto start = result.find("m=audio ");
-  if (start != std::string::npos) {
-    const auto end = result.find(' ', start + 8);
-    result.replace(start + 8, end - start - 8, "0");
-  }
+  std::string result = this->wrap_sdp_envelope_version_(local_ip, payloads, maps, flows, facts, ptime,
+      audio_direction_attribute(this->offer_tx_formats_.count != 0, this->offer_rx_formats_.count != 0),
+      {session, 0, 0});
+  if (result.empty()) return "";
 
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   result = this->append_video_sdp_(result, local_ip, false, true);
@@ -355,6 +318,7 @@ std::string SipTransport::build_sdp_offer_() {
   std::string maps;
   std::string flows;
   uint8_t pt = 96;
+  AudioSdpFacts facts;
   const AudioFormat *retained_tx = this->offer_tx_formats_.count != 0 && this->refer_context_active_ && this->refer_dialog_
       ? &this->refer_dialog_->media.tx : nullptr;
   uint8_t selected_ptime = preferred_audio_ptime(
@@ -392,6 +356,9 @@ std::string SipTransport::build_sdp_offer_() {
       this->local_offered_tx_formats_.formats[this->local_offered_tx_formats_.count++] = local_format;
     if (this->peer_directional_audio_v1_)
       flows += "a=x-voip-stack-flow:" + std::to_string(payload_pt) + " " + flow + "\r\n";
+    if (this->offer_rx_formats_.count != 0 &&
+        (!this->peer_directional_audio_v1_ || std::strcmp(flow, "send") != 0))
+      facts.include_receive(fmt, this->offer_rx_formats_, this->udp_max_payload_);
     pt++;
   };
   for (uint8_t i = 0; i < this->offer_rx_formats_.count && pt < 120; i++) {
@@ -433,7 +400,7 @@ std::string SipTransport::build_sdp_offer_() {
   append_dtmf_sdp_(&payloads, &maps, this->dtmf_offered_clocks_);
 #endif
   std::string sdp =
-      this->wrap_sdp_envelope_(local_ip, payloads, maps, flows, selected_ptime,
+      this->wrap_sdp_envelope_(local_ip, payloads, maps, flows, facts, selected_ptime,
           audio_direction_attribute(this->offer_tx_formats_.count != 0, this->offer_rx_formats_.count != 0));
   if (sdp.empty()) return "";
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
@@ -487,6 +454,7 @@ std::string SipTransport::build_negotiated_sdp_answer_(const NegotiatedMedia &me
   const bool advertise_tx = send || (inactive && have_tx);
   const bool advertise_rx = receive || (inactive && have_rx);
   std::string payloads, maps, flows;
+  AudioSdpFacts facts;
   auto append = [&](uint8_t pt, const AudioFormat &format, const char *flow) {
     const char *encoding = audio_format_rtp_encoding(format, this->udp_max_payload_);
     if (encoding == nullptr) return false;
@@ -500,6 +468,8 @@ std::string SipTransport::build_negotiated_sdp_answer_(const NegotiatedMedia &me
           " stereo=0;sprop-stereo=0;maxaveragebitrate=28000\r\n";
     if (media.directional_audio)
       flows += "a=x-voip-stack-flow:" + std::to_string(pt) + " " + flow + "\r\n";
+    if (advertise_rx && (!media.directional_audio || std::strcmp(flow, "send") != 0))
+      facts.include_receive(format, this->offer_rx_formats_, this->udp_max_payload_);
     return true;
   };
   if (advertise_rx && !append(rx_payload_type, selected_rx,
@@ -527,8 +497,8 @@ std::string SipTransport::build_negotiated_sdp_answer_(const NegotiatedMedia &me
   }
 #endif
   const std::string audio_sdp = this->wrap_sdp_envelope_version_(
-      local_ip, payloads, maps, flows, advertise_rx ? selected_rx.frame_ms : selected_tx.frame_ms,
-      audio_direction_attribute(send, receive), version);
+      local_ip, payloads, maps, flows, facts, advertise_rx ? selected_rx.frame_ms : selected_tx.frame_ms,
+      audio_direction_attribute(send, receive), {this->sdp_session_id_, version, this->rtp_port_});
   const size_t audio_media = audio_sdp.find("m=audio ");
   if (audio_media == std::string::npos) return "";
   const std::string session = audio_sdp.substr(0, audio_media);

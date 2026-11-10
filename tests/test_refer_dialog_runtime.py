@@ -63,7 +63,7 @@ def negotiated_fixture_source(code, *, sdp=False, video=False):
     declarations = alias + declarations.replace(alias, '')
     begin = '\n#ifndef portENTER_CRITICAL\n#define portENTER_CRITICAL(...) ((void)0)\n#define portEXIT_CRITICAL(...) ((void)0)\n#define VOIP_TEST_MEDIA_CRITICAL\n#endif\n'
     end = '\n#ifdef VOIP_TEST_MEDIA_CRITICAL\n#undef portENTER_CRITICAL\n#undef portEXIT_CRITICAL\n#undef VOIP_TEST_MEDIA_CRITICAL\n#endif\n'
-    return code.replace(marker, marker + '\n' + declarations, 1) + begin + implementations + end
+    return '#include "esphome/components/voip_stack/sip_sdp_facts.h"\n' + code.replace(marker, marker + '\n' + declarations, 1) + begin + implementations + end
 
 
 def refer_fixture_source():
