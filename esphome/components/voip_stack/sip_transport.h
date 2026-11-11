@@ -149,6 +149,8 @@ class SipTransport : public SipPhoneTransport {
   void disconnect() override;
   bool is_connected() const override;
   void send_audio_frame(const uint8_t *pcm, size_t bytes) override;
+  TransportAudioTxContext audio_tx_frame_context(const AudioFormat &format) override;
+  void send_audio_frame(const uint8_t *pcm, size_t bytes, const TransportAudioTxContext &context) override;
 #ifdef USE_ESPHOME_VOIP_DTMF
   bool can_send_dtmf() const override;
   bool send_dtmf(char digit, uint16_t duration_ms = 160) override;
@@ -468,7 +470,7 @@ class SipTransport : public SipPhoneTransport {
                                   const std::string &method, bool incoming_udp);
   void remember_completed_response_(const std::string &request, uint32_t peer_ip_v4,
                                     uint16_t peer_port, const std::string &method,
-                                    const std::string &response);
+                                    const std::string &response, bool header_block = false);
   uint16_t acknowledge_completed_invite_(const std::string &request,
                                          const sockaddr_in &src,
                                          bool *terminate_after_ack);
@@ -666,6 +668,9 @@ class SipTransport : public SipPhoneTransport {
   std::atomic<uint16_t> rtp_sequence_{0};
   std::atomic<uint32_t> rtp_timestamp_{0};
   uint32_t rtp_ssrc_{0x49434150};
+  // Validation of consumed-frame contexts belongs to the existing RTP clock.
+  // Speculative SDP never writes these fields; rtp_socket_mutex_ protects them.
+  uint32_t audio_tx_clock_rate_{0}, audio_tx_clock_generation_{0};
 
   std::string call_id_;
   std::string local_tag_;

@@ -115,6 +115,14 @@ void VoipStack::process_tx_chunk_(const uint8_t *audio_chunk) {
   this->send_chunk_(audio_chunk, this->tx_audio_chunk_bytes_());
 }
 
+void VoipStack::send_chunk_(const uint8_t *data, size_t length, const TransportAudioTxContext &context) {
+  if (!this->is_tx_stream_ready_()) return;
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  if (this->audio_debug_) this->record_tx_debug_(data, length, context.format);
+#endif
+  this->transport_->send_audio_frame(data, length, context);
+}
+
 bool VoipStack::read_tx_chunk_(uint8_t *audio_chunk) {
   const size_t frame_bytes = this->tx_audio_chunk_bytes_();
   return this->mic_buffer_ != nullptr &&
@@ -203,9 +211,10 @@ void VoipStack::tx_task_() {
       }
     }
 
+    const auto consumed_context = this->transport_->audio_tx_frame_context(tx_format);
     if (!this->read_tx_chunk_(audio_chunk))
       continue;
-    this->process_tx_chunk_(audio_chunk);
+    this->send_chunk_(audio_chunk, frame_bytes, consumed_context);
 
     const int64_t frame_interval_us = static_cast<int64_t>(tx_format.frame_ms) * 1000;
     // Preserve capture-clock debt after a late wakeup. The bounded microphone

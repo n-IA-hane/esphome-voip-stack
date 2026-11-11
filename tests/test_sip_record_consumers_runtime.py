@@ -29,6 +29,11 @@ int main(int argc,char**argv){
   assert(allocations==0&&"Unrelated header fields must remain borrowed views");return 0;
  }
  if(mode=="headers"){
+  assert(sip_record_unfold(sip_record_first_header("Via: first\r\n\t;branch=top\r\n\r\nVia: body\r\n","Via"))=="first ;branch=top");
+  assert(via_branch("SIP/2.0/UDP first;note=\";branch=inside,quoted\", SIP/2.0/UDP second;branch=other").empty());
+  assert(via_branch("SIP/2.0/UDP first;\r\n branch = top, SIP/2.0/UDP second;branch=other")=="top");
+  const std::string chain="SIP/2.0/UDP first;branch=top, SIP/2.0/UDP second;branch=other;rport";
+  assert(response_via_with_rport(chain,INADDR_LOOPBACK,40000)==chain);
   assert(header_value(message,"Via")=="SIP/2.0/UDP first.example ;branch=one");
   assert(header_values(message,"Via")=="SIP/2.0/UDP first.example ;branch=one\r\nVia: SIP/2.0/TCP second.example;branch=two");
   assert(name_addr_uri(header_value(message,"From"))=="sip:alice@example.test");

@@ -4,6 +4,7 @@ import subprocess
 import pytest
 
 from test_refer_dialog_runtime import ROOT, SOURCE, block, refer_fixture_source
+from audio_tx_fixture import audio_tx_fixture
 
 
 def source():
@@ -60,7 +61,7 @@ const char*socket_errno_name(int){return "host";}const char*socket_errno_text(in
         code = code.replace('struct SipPhoneTransport {', body + '\nstruct SipPhoneTransport {')
     for marker in ['bool SipTransport::received_audio_format_(', 'void SipTransport::send_audio_frame(', 'void SipTransport::rtp_task_(']:
         code += '\n' + block(owner, marker)
-    return code + r'''
+    return audio_tx_fixture(code) + r'''
 uint16_t bind_udp(int fd){sockaddr_in p{};p.sin_family=AF_INET;p.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
  assert(bind(fd,reinterpret_cast<sockaddr*>(&p),sizeof(p))==0);socklen_t n=sizeof(p);assert(getsockname(fd,reinterpret_cast<sockaddr*>(&p),&n)==0);return ntohs(p.sin_port);}
 int main(int argc,char**argv){

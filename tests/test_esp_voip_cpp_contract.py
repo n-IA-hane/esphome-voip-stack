@@ -2079,7 +2079,8 @@ def test_sip_responses_preserve_the_full_via_chain() -> None:
     assert 'out += "\\r\\nVia: ";' in sip_cpp
     assert 'const std::string incoming_via = header_values(message, "Via");' in sip_cpp
     assert 'const std::string via = header_values(request, "Via");' in sip_cpp
-    assert 'via.find("\\r\\nVia: ")' in sip_cpp
+    assert "sip_record_first_list_value(via)" in sip_cpp
+    assert "tail = via.substr(first.size())" in sip_cpp
 
 
 def test_sip_header_parsing_stops_before_sdp_and_validates_datagram_framing() -> None:
@@ -2600,7 +2601,9 @@ def test_rtp_clock_advances_without_consuming_sequence_for_a_local_payload_drop(
     drop = audio.index("if (bytes == 0 || bytes > this->udp_max_payload_)")
     sequence = audio.index("this->rtp_sequence_.fetch_add")
     assert drop < sequence
-    assert "this->rtp_timestamp_.fetch_add(timestamp_samples" in audio[drop:sequence]
+    # One consumed-frame reservation now covers every packet-suppression path.
+    assert audio.index("this->rtp_timestamp_.fetch_add(timestamp_samples") < drop
+    assert audio.count("this->rtp_timestamp_.fetch_add(timestamp_samples") == 1
 
 
 def test_jitter_prebuffer_handles_initial_reordering_and_preserves_metadata() -> None:
@@ -3076,7 +3079,7 @@ def test_reinvite_proposal_cannot_leak_temporary_audio_format_to_rtp() -> None:
 
     assert "std::atomic<uint32_t> media_proposal_epoch_{0};" in sip_h
     assert "class ScopedMediaProposal" in sip_cpp
-    send = cpp_method(sip_cpp, r"SipTransport::send_audio_frame")
+    send = cpp_method(sip_cpp, r"SipTransport::send_audio_frame(?=\([^)]*TransportAudioTxContext)")
     receive = cpp_method(sip_cpp, r"SipTransport::rtp_task_")
     assert send.count("media_proposal_epoch_.load") >= 3
     assert "proposal_epoch & 1U" in send

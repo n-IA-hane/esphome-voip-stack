@@ -87,19 +87,40 @@ struct VoipStack {
         audio_header = (Path(audio_source) / 'esphome/components/esp_audio_stack/number.h').read_text()
         code += r'''
 #define HAS_AUDIO_CANONICAL_CONTROL
+struct CanonicalAudioMaster : AudioMaster {
+ float level=1;
+ float get_master_volume_level()const{return level;}
+ void set_master_volume(float value){level=value;AudioMaster::set_master_volume(value);}
+};
 struct Component {virtual void setup(){}virtual void dump_config(){}};
 template<typename...Args>void log_config(Args&&...){}
 namespace esphome {
 using Component=::Component;
 namespace number {using Number=::number::Number;}
 namespace speaker {using Speaker=::Speaker;}
-namespace esp_audio_stack {using ESPAudioStack=::AudioMaster;
+namespace esp_audio_stack {using ESPAudioStack=::CanonicalAudioMaster;
 ''' + block(audio_header, 'class MasterVolumeNumber final') + ';\n}}\n'
     code += r'''
 #include <string>
 int main(int argc,char**argv){
  assert(argc==2);const std::string mode=argv[1];VoipStack phone;Speaker speaker;AudioMaster master;Number number;
  phone.speaker_=&speaker;phone.volume_number_=&number;
+ if(mode=="logical-no-number"){
+  struct SoftwareMaster {
+   float level=1,gain=1;unsigned calls=0;
+   float get_master_volume()const{return gain;}
+   float get_master_volume_level()const{return level;}
+   void set_master_volume(float value){++calls;level=value;gain=value==0?0:std::pow(10.0f,(-49.0f+49.0f*value)/20.0f);}
+  } software;
+  phone.set_master_volume_control(&software);
+  VoipStackVolume alias;alias.set_parent(&phone);phone.volume_number_=&alias;
+  alias.control(50);
+  assert(std::fabs(phone.get_volume()-.0595662f)<.000001f&&alias.state==50);
+  const auto publishes=alias.updates;phone.sync_master_volume_();assert(alias.updates==publishes);
+  alias.control(0);assert(phone.get_volume()==0&&alias.state==0);
+  alias.control(100);assert(phone.get_volume()==1&&alias.state==100);
+  assert(software.calls==3&&phone.saves==0&&speaker.calls==0);return 0;
+ }
  if(mode=="legacy"){
   phone.load_settings_();assert(phone.volume_==0&&speaker.volume==0&&speaker.calls==1&&speaker.muted);
   phone.set_volume(.6f);assert(phone.get_volume()==.6f&&speaker.volume==.6f&&phone.saves==1&&speaker.muted);return 0;
@@ -107,6 +128,7 @@ int main(int argc,char**argv){
  phone.set_master_volume_control(&master);
 #ifdef HAS_AUDIO_CANONICAL_CONTROL
  if(mode=="canonical"){
+  CanonicalAudioMaster master;phone.set_master_volume_control(&master);
   master.curved=false;master.value=0;audio_saved=0;
   esphome::esp_audio_stack::MasterVolumeNumber canonical;canonical.set_parent(&master);canonical.set_speaker(&speaker);canonical.setup();
   VoipStackVolume alias;alias.set_parent(&phone);phone.volume_number_=&alias;phone.set_master_volume_number(&canonical);
@@ -160,7 +182,7 @@ int main(int argc,char**argv){
     return binary
 
 
-@pytest.mark.parametrize('mode', ['getter', 'zero-sync', 'setter', 'number', 'restore', 'legacy',
+@pytest.mark.parametrize('mode', ['getter', 'zero-sync', 'setter', 'number', 'restore', 'legacy', 'logical-no-number',
                                 pytest.param('canonical', marks=pytest.mark.skipif(not os.environ.get('ESP_AUDIO_STACK_SOURCE'),
                                              reason='Actual Audio control gate requires ESP_AUDIO_STACK_SOURCE'))])
 def test_master_alias_has_one_effective_owner(master_alias, mode):

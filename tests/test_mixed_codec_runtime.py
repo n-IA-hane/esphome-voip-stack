@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 import pytest
+from audio_tx_fixture import audio_tx_fixture
 from test_sdp_receive_payloads import sdp_fixture_source
 from test_refer_dialog_runtime import block
 
@@ -65,11 +66,12 @@ def mixed_playout_binary(tmp_path_factory):
  unsigned emitted=0,decodes=0,plc=0,resets=0;
  std::atomic<bool>rtp_running_{false},rtp_task_terminate_{false},media_active_{true},rtp_task_quiesced_{true};
  std::atomic<uint16_t>rtp_sequence_{0};std::atomic<uint32_t>rtp_timestamp_{0};uint32_t rtp_ssrc_=0;
+ uint32_t audio_tx_clock_rate_=0,audio_tx_clock_generation_=0;
  std::atomic<bool>rtp_ssrc_latched_{false};
  std::atomic<uint32_t>media_proposal_epoch_{0},latched_rtp_ip_v4_{0},latched_rtp_ssrc_{0},rtp_rx_packets_{0},rtp_rx_bytes_{0},rtp_rx_datagrams_{0};
  std::atomic<uint16_t>latched_rtp_port_{0};
  enum class MediaLifecyclePhase{ACTIVE,CLEANING,IDLE,PREPARED};std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::IDLE};
- Mutex media_lifecycle_mutex_,dialog_mutex_;void *rtp_cleanup_done_=nullptr,*rtp_task_done_=nullptr,*rtp_task_handle_=this;
+ Mutex media_lifecycle_mutex_,dialog_mutex_,rtp_socket_mutex_;void *rtp_cleanup_done_=nullptr,*rtp_task_done_=nullptr,*rtp_task_handle_=this;
  std::string call_id_;
  OpusRtpCodec opus_codec_;PcmReceiveConverter pcm_receive_converter_;bool opus_codec_ready_=false;
  void set_audio_formats(const AudioFormatList&,const AudioFormatList&);
@@ -97,7 +99,9 @@ def mixed_playout_binary(tmp_path_factory):
     methods = block(parser, "size_t rtp_payload_to_pcm(") + "\n"
     old_getter = block(code, "void get_media_config_(")
     getter = block(transport, "void SipTransport::get_media_config_(")
-    code = code.replace(old_getter, getter[:getter.index("{")].replace("SipTransport::", "").strip() + ";")
+    declaration = getter[:getter.index("{")].replace("SipTransport::", "").strip()
+    declaration = declaration.replace("RtpAudioPayloads *rx_payloads)", "RtpAudioPayloads *rx_payloads = nullptr)")
+    code = code.replace(old_getter, declaration + ";")
     methods += getter + "\n"
     for marker in ("bool SipTransport::received_audio_format_(", "void SipTransport::set_audio_formats(", "bool SipTransport::prepare_media_path_locked_(", "bool SipTransport::commit_media_path_locked_(", "bool SipTransport::bind_udp_(", "void SipTransport::reset_rtp_latch_(", "void SipTransport::rtp_task_(", "void SipTransport::reset_audio_decoder(", "size_t SipTransport::decode_audio_payload(", "size_t SipTransport::convert_received_pcm("):
         body = block(transport, marker)
@@ -139,13 +143,13 @@ def g722_playout_binary(mixed_playout_binary, tmp_path_factory):
     code = code.replace("#define USE_ESPHOME_VOIP_STACK_G722\n", "", 1)
     transport = (ROOT / "esphome/components/voip_stack/sip_transport.cpp").read_text()
     getter_declaration = block(transport, "void SipTransport::get_media_config_(").split("{")[0].replace("SipTransport::", "").strip() + ";"
+    getter_declaration = getter_declaration.replace("RtpAudioPayloads *rx_payloads)", "RtpAudioPayloads *rx_payloads = nullptr)")
     assert getter_declaration in code
-    code = code.replace(getter_declaration, getter_declaration.replace("RtpAudioPayloads *rx_payloads)", "RtpAudioPayloads *rx_payloads = nullptr)"), 1)
     code = code.replace('#include "esphome/components/voip_stack/opus_rtp_codec.h"',
                         '#include "esphome/components/voip_stack/g722_rtp_codec.h"')
     code = code.replace("OpusRtpCodec opus_codec_;PcmReceiveConverter pcm_receive_converter_;bool opus_codec_ready_=false;",
                         "G722RtpCodec g722_codec_;PcmReceiveConverter pcm_receive_converter_;bool g722_codec_ready_=false;"
-                        "Mutex rtp_socket_mutex_;std::atomic<uint32_t>rtp_tx_packets_{0},rtp_tx_bytes_{0};"
+                        "std::atomic<uint32_t>rtp_tx_packets_{0},rtp_tx_bytes_{0};"
                         "void send_audio_frame(const uint8_t*,size_t);")
     # Bound the genuine ingress loop after the independently sent datagrams,
     # including when a failing admission drops every packet. Poll still uses
@@ -163,6 +167,7 @@ int bounded_select(int nfds,fd_set*r,fd_set*w,fd_set*e,timeval*timeout){
     component = ROOT / "esphome/components/voip_stack"
     code += block((component / "sip_message.cpp").read_text(), "size_t pcm_to_rtp_payload(") + "\n"
     code += block((component / "sip_transport.cpp").read_text(), "void SipTransport::send_audio_frame(") + "\n"
+    code = audio_tx_fixture(code)
     code += r'''
 #include <spandsp.h>
 int main(int argc,char **argv){

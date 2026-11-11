@@ -332,7 +332,7 @@ bool SipTransport::send_response_(uint16_t status, const char *reason,
         "Via: " + this->last_invite_via_ + "\r\nCall-ID: " +
             this->call_id_ + "\r\nCSeq: " + this->last_invite_cseq_ +
             "\r\n",
-        ip, port, "INVITE", msg);
+        ip, port, "INVITE", msg, true);
     response_owned = this->completed_invite_.awaiting_ack &&
                      this->completed_invite_.response == msg;
   } else {
@@ -388,7 +388,7 @@ bool SipTransport::send_stateless_response_(
   cache_transaction = cache_transaction && (this->call_id_.empty() || this->call_id_ == call_id);
 #endif
   if (cache_transaction && status >= 200) {
-    this->remember_completed_response_(request, ip, port, method, msg);
+    this->remember_completed_response_(request, ip, port, method, msg, false);
     const CompletedServerTransaction &completed =
         method == "INVITE" ? this->completed_invite_
                            : this->completed_control_;

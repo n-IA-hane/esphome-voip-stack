@@ -7,6 +7,7 @@ import pytest
 
 from test_inactive_video_reinvite_runtime import source as inactive_video_source
 from test_refer_dialog_runtime import ROOT, SOURCE, block
+from audio_tx_fixture import audio_tx_fixture
 
 
 def hold_source():
@@ -49,7 +50,7 @@ uint32_t millis(){return 100;}
     ):
         implementation = (SOURCE / filename).read_text()
         source += "\n" + "\n".join(block(implementation, marker) for marker in markers)
-    return source + r'''
+    return audio_tx_fixture(source) + r'''
 int main(int argc,char**argv){
  assert(argc==2);const std::string mode=argv[1];
  SipTransport t;AudioFormat pcm;pcm.sample_rate=16000;pcm.frame_ms=10;

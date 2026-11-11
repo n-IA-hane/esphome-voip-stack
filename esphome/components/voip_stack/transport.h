@@ -25,6 +25,12 @@ struct TransportAudioFrame {
   uint32_t format_packed{0};
 };
 
+struct TransportAudioTxContext {
+  AudioFormat format{};
+  uint32_t clock_rate{0}, generation{0}, ssrc{0};
+  bool valid{false};
+};
+
 using TransportAudioCallback = void (*)(void *ctx, const TransportAudioFrame &frame);
 using TransportSipSignalCallback = void (*)(void *ctx, SipSignal signal);
 using TransportConnectionCallback = void (*)(void *ctx, bool connected);
@@ -99,6 +105,15 @@ class SipPhoneTransport {
   /// Best-effort send. Payload is one PCM frame in the negotiated RTP format.
   /// Safe from a high-priority audio task; may drop on backpressure.
   virtual void send_audio_frame(const uint8_t *pcm, size_t bytes) = 0;
+  virtual TransportAudioTxContext audio_tx_frame_context(const AudioFormat &format) {
+    TransportAudioTxContext context;
+    context.format = format;
+    context.valid = format.is_valid();
+    return context;
+  }
+  virtual void send_audio_frame(const uint8_t *pcm, size_t bytes, const TransportAudioTxContext &) {
+    this->send_audio_frame(pcm, bytes);
+  }
   virtual bool can_send_dtmf() const { return false; }
   virtual bool send_dtmf(char digit, uint16_t duration_ms = 160) { (void) digit; (void) duration_ms; return false; }
 #ifdef USE_ESPHOME_VOIP_DTMF_EVENTS

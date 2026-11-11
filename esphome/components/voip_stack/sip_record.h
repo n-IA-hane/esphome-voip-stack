@@ -14,10 +14,10 @@ inline std::string_view sip_record_trim(std::string_view value) {
              : value.substr(first, value.find_last_not_of(" \t") - first + 1);
 }
 
-template<class F> void sip_record_fields(std::string_view message, std::string_view wanted, F consume) {
-  size_t at = message.find("\r\n");
-  while (at != std::string_view::npos) {
-    const size_t start = at + 2, end = message.find("\r\n", start);
+template<class F> void sip_record_header_fields(std::string_view message, std::string_view wanted, F consume) {
+  size_t start = 0;
+  while (start < message.size()) {
+    const size_t end = message.find("\r\n", start);
     if (end == std::string_view::npos || end == start) break;
     size_t last = end, next = message.find("\r\n", end + 2);
     while (end + 2 < message.size() && last + 2 < message.size() &&
@@ -29,8 +29,43 @@ template<class F> void sip_record_fields(std::string_view message, std::string_v
     if (colon < end && sip_header_name_equal(sip_record_trim(message.substr(start, colon - start)), wanted)) {
       if (!consume(sip_record_trim(message.substr(colon + 1, last - colon - 1)))) return;
     }
-    at = last;
+    start = last + 2;
   }
+}
+
+template<class F> void sip_record_fields(std::string_view message, std::string_view wanted, F consume) {
+  const size_t first_line = message.find("\r\n");
+  if (first_line != std::string_view::npos)
+    sip_record_header_fields(message.substr(first_line + 2), wanted, consume);
+}
+
+inline std::string_view sip_record_first_header(std::string_view block, std::string_view name) {
+  std::string_view value;
+  sip_record_header_fields(block, name, [&](std::string_view field) {
+    value = field;
+    return false;
+  });
+  return value;
+}
+
+// A Via chain may use repeated fields or a comma list. Quoted parameters and
+// comments can themselves contain commas; folded LWS is not a new field.
+inline std::string_view sip_record_first_list_value(std::string_view field) {
+  bool quoted = false, escaped = false;
+  unsigned comments = 0;
+  for (size_t i = 0; i < field.size(); ++i) {
+    const char ch = field[i];
+    if (escaped) { escaped = false; continue; }
+    if ((quoted || comments) && ch == '\\') { escaped = true; continue; }
+    if (!comments && ch == '"') { quoted = !quoted; continue; }
+    if (!quoted && ch == '(') { ++comments; continue; }
+    if (!quoted && comments && ch == ')') { --comments; continue; }
+    if (quoted || comments) continue;
+    if (ch == ',' || (ch == '\r' && i + 1 < field.size() && field[i + 1] == '\n' &&
+                      (i + 2 >= field.size() || (field[i + 2] != ' ' && field[i + 2] != '\t'))))
+      return field.substr(0, i);
+  }
+  return field;
 }
 
 inline std::string_view sip_record_first(std::string_view message, std::string_view name) {

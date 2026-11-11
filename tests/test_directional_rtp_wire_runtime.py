@@ -5,6 +5,7 @@ import pytest
 
 from test_refer_dialog_runtime import ROOT, SOURCE, block
 from test_sdp_receive_payloads import sdp_fixture_source
+from audio_tx_fixture import audio_tx_fixture
 
 
 @pytest.fixture(scope="module")
@@ -32,6 +33,7 @@ struct Mutex{};struct LockGuard{explicit LockGuard(Mutex&){}};
         body = block(parser, marker)
         code = code.replace("struct SipTransport {", body + "\nstruct SipTransport {", 1)
     code += "\n" + block((SOURCE / "sip_transport.cpp").read_text(), "void SipTransport::send_audio_frame(")
+    code = audio_tx_fixture(code)
     code += r'''
 AudioFormat fmt(unsigned rate,unsigned frame){AudioFormat f;f.sample_rate=rate;f.frame_ms=frame;return f;}
 int endpoint(uint16_t *port){

@@ -1,6 +1,7 @@
 """Production RTP worker and independent loopback packet peer, without ESP hardware."""
 import subprocess
 import pytest
+from audio_tx_fixture import audio_tx_fixture
 from test_refer_dialog_runtime import SOURCE, block
 
 
@@ -113,6 +114,7 @@ struct SipTransport {
                       'void SipTransport::request_audio_path_stop_locked_(', 'void SipTransport::finish_audio_path_stop_(',
                       'void SipTransport::send_audio_frame(', 'void SipTransport::rtp_task_(']:
         code += block(impl,signature)+'\n'
+    code = audio_tx_fixture(code)
     code += r'''
 uint16_t bind_udp(int fd){sockaddr_in a{};a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);assert(bind(fd,reinterpret_cast<sockaddr*>(&a),sizeof(a))==0);socklen_t n=sizeof(a);assert(getsockname(fd,reinterpret_cast<sockaddr*>(&a),&n)==0);return ntohs(a.sin_port);}
 uint16_t u16(const uint8_t*p){return uint16_t(p[0])<<8|p[1];}

@@ -27,6 +27,7 @@ def reservation_binary(tmp_path_factory):
  static constexpr unsigned kRtpSocketRxBufferBytes=65536;
  std::atomic<bool>rtp_running_{false},rtp_task_terminate_{false},rtp_task_quiesced_{true};
  std::atomic<uint16_t>rtp_sequence_{0};std::atomic<uint32_t>rtp_timestamp_{0};uint32_t rtp_ssrc_=0;
+ uint32_t audio_tx_clock_rate_=0,audio_tx_clock_generation_=0;
  void *rtp_task_handle_=this,*rtp_cleanup_done_=this;
  AudioFormatList offer_rx_formats_;
  struct Converter {

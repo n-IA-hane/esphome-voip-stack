@@ -1,5 +1,6 @@
 #include "sip_transport.h"
 #include "sip_message.h"
+#include "sip_record.h"
 #ifdef USE_ESPHOME_VOIP_PAGING
 #include "sip_answer_mode.h"
 #endif
@@ -1226,9 +1227,16 @@ bool SipTransport::prepare_media_path_locked_() {
     return false;
   }
   this->reset_rtp_latch_();
-  this->rtp_sequence_.store(static_cast<uint16_t>(esp_random()), std::memory_order_release);
-  this->rtp_timestamp_.store(esp_random(), std::memory_order_release);
-  this->rtp_ssrc_ = esp_random();
+  {
+    LockGuard clock_lock(this->rtp_socket_mutex_);
+    this->rtp_sequence_.store(static_cast<uint16_t>(esp_random()), std::memory_order_release);
+    this->rtp_timestamp_.store(esp_random(), std::memory_order_release);
+    this->rtp_ssrc_ = esp_random();
+    AudioFormat tx;
+    this->get_media_config_(&tx, nullptr, nullptr, nullptr);
+    this->audio_tx_clock_rate_ = audio_format_rtp_clock_rate(tx);
+    ++this->audio_tx_clock_generation_;
+  }
 #ifdef USE_ESPHOME_VOIP_DTMF
   if (this->dtmf_queue_ != nullptr) xQueueReset(this->dtmf_queue_);
   this->dtmf_generation_.fetch_add(1, std::memory_order_release);
@@ -2443,32 +2451,81 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
   return sent;
 }
 
+TransportAudioTxContext SipTransport::audio_tx_frame_context(const AudioFormat &format) {
+  TransportAudioTxContext context;
+  context.format = format;
+  if (!format.is_valid()) return context;
+  LockGuard clock_lock(this->rtp_socket_mutex_);
+  if (!this->rtp_running_.load(std::memory_order_acquire)) return context;
+  const uint32_t epoch = this->media_proposal_epoch_.load(std::memory_order_acquire);
+  if (!(epoch & 1U)) {
+    AudioFormat committed;
+    this->get_media_config_(&committed, nullptr, nullptr, nullptr);
+    if (epoch == this->media_proposal_epoch_.load(std::memory_order_acquire)) {
+      const uint32_t rate = audio_format_rtp_clock_rate(committed);
+      if (rate != this->audio_tx_clock_rate_) {
+        this->audio_tx_clock_rate_ = rate;
+        ++this->audio_tx_clock_generation_;
+      }
+      if (!(format == committed)) return context;
+    }
+  }
+  context.clock_rate = audio_format_rtp_clock_rate(format);
+  if (context.clock_rate == 0 || context.clock_rate != this->audio_tx_clock_rate_) return context;
+  context.generation = this->audio_tx_clock_generation_;
+  context.ssrc = this->rtp_ssrc_;
+  context.valid = true;
+  return context;
+}
+
 void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
-  if (!this->rtp_running_.load(std::memory_order_acquire) || pcm == nullptr || bytes == 0) return;
+  // Compatibility callers have not captured an active producer contract.
+  if (this->media_proposal_epoch_.load(std::memory_order_acquire) & 1U) return;
+  AudioFormat format;
+  this->get_media_config_(&format, nullptr, nullptr, nullptr);
+  this->send_audio_frame(pcm, bytes, this->audio_tx_frame_context(format));
+}
+
+void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes, const TransportAudioTxContext &context) {
+  if (!context.valid || pcm == nullptr || bytes == 0 || !context.format.is_valid() ||
+      bytes != context.format.nominal_frame_bytes()) return;
+  const AudioFormat tx_format = context.format;
+  const uint32_t pcm_samples = bytes / tx_format.container_bytes_per_sample() / tx_format.channels;
+  const uint64_t ticks = static_cast<uint64_t>(context.clock_rate) * pcm_samples;
+  if (context.clock_rate == 0 || ticks % tx_format.sample_rate != 0) return;
+  const uint32_t timestamp_samples = static_cast<uint32_t>(ticks / tx_format.sample_rate);
+  if (timestamp_samples == 0) return;
   const uint32_t proposal_epoch =
       this->media_proposal_epoch_.load(std::memory_order_acquire);
-  if ((proposal_epoch & 1U) != 0) return;
+  bool stable = (proposal_epoch & 1U) == 0;
+  AudioFormat committed;
+  uint8_t tx_payload_type = 96;
+  if (stable) {
+    this->get_media_config_(&committed, nullptr, &tx_payload_type, nullptr);
+    stable = proposal_epoch == this->media_proposal_epoch_.load(std::memory_order_acquire);
+  }
+  uint32_t ts;
+  {
+    LockGuard clock_lock(this->rtp_socket_mutex_);
+    stable = stable && proposal_epoch == this->media_proposal_epoch_.load(std::memory_order_acquire);
+    if (stable) {
+      const uint32_t rate = audio_format_rtp_clock_rate(committed);
+      if (rate != this->audio_tx_clock_rate_) {
+        this->audio_tx_clock_rate_ = rate;
+        ++this->audio_tx_clock_generation_;
+      }
+    }
+    if (!this->rtp_running_.load(std::memory_order_acquire) || context.ssrc != this->rtp_ssrc_ ||
+        context.generation != this->audio_tx_clock_generation_ || context.clock_rate != this->audio_tx_clock_rate_) return;
+    // Sampling time belongs to this consumed frame, independently of whether
+    // a proposal, hold or local encoder failure suppresses its RTP packet.
+    ts = this->rtp_timestamp_.fetch_add(timestamp_samples, std::memory_order_acq_rel);
+    if (!stable || !(committed == tx_format) || !this->audio_send_enabled_.load(std::memory_order_acquire)) return;
+  }
   // PCM conversion is the expensive part. Keep it outside the socket mutex;
   // teardown flips rtp_running_ first and the short final critical section
   // below prevents close-vs-send without delaying the media loop.
-  AudioFormat tx_format;
-  uint8_t tx_payload_type = 96;
-  this->get_media_config_(&tx_format, nullptr, &tx_payload_type, nullptr);
-  if (!tx_format.is_valid()) return;
   uint8_t packet[1500];
-  const uint8_t bps = tx_format.container_bytes_per_sample();
-  const size_t input_bytes = bytes;
-  const uint32_t pcm_samples = bps == 0 || tx_format.channels == 0
-      ? 0
-      : static_cast<uint32_t>(input_bytes / bps / tx_format.channels);
-  const uint32_t timestamp_samples = tx_format.codec == AudioCodec::PCM ? pcm_samples
-      : static_cast<uint32_t>((static_cast<uint64_t>(audio_format_rtp_clock_rate(tx_format)) * tx_format.frame_ms) / 1000U);
-  if (!this->audio_send_enabled_.load(std::memory_order_acquire)) {
-    // Paused packets do not consume sequence numbers. Sampling time continues
-    // while the existing microphone owner feeds this retained call.
-    this->rtp_timestamp_.fetch_add(timestamp_samples, std::memory_order_acq_rel);
-    return;
-  }
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   if (tx_format.codec == AudioCodec::OPUS) {
     bytes = this->opus_codec_.encode(pcm, bytes, tx_format, packet + 12,
@@ -2491,23 +2548,21 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
   if (bytes == 0 || bytes > this->udp_max_payload_) {
     // Sequence numbers count packets, while timestamps follow the sampling
     // clock. A locally discarded PCM frame therefore advances only time.
-    this->rtp_timestamp_.fetch_add(timestamp_samples, std::memory_order_acq_rel);
     return;
   }
   if (this->media_proposal_epoch_.load(std::memory_order_acquire) !=
       proposal_epoch) {
-    this->rtp_timestamp_.fetch_add(timestamp_samples, std::memory_order_acq_rel);
     return;
   }
   LockGuard socket_lock(this->rtp_socket_mutex_);
   if (!this->rtp_running_.load(std::memory_order_acquire) || this->rtp_socket_ < 0 ||
-      !this->audio_send_enabled_.load(std::memory_order_acquire)) return;
+      !this->audio_send_enabled_.load(std::memory_order_acquire) || context.ssrc != this->rtp_ssrc_ ||
+      context.generation != this->audio_tx_clock_generation_ || context.clock_rate != this->audio_tx_clock_rate_) return;
   const uint32_t ip = this->remote_rtp_ip_v4_.load(std::memory_order_acquire);
   const uint16_t port = this->remote_rtp_port_.load(std::memory_order_acquire);
   if (ip == 0 || port == 0) return;
   if (this->media_proposal_epoch_.load(std::memory_order_acquire) !=
       proposal_epoch) {
-    this->rtp_timestamp_.fetch_add(timestamp_samples, std::memory_order_acq_rel);
     return;
   }
   packet[0] = 0x80;
@@ -2515,7 +2570,6 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes) {
   const uint16_t seq = this->rtp_sequence_.fetch_add(1, std::memory_order_acq_rel);
   packet[2] = static_cast<uint8_t>(seq >> 8);
   packet[3] = static_cast<uint8_t>(seq & 0xFF);
-  const uint32_t ts = this->rtp_timestamp_.fetch_add(timestamp_samples, std::memory_order_acq_rel);
   packet[4] = static_cast<uint8_t>(ts >> 24);
   packet[5] = static_cast<uint8_t>((ts >> 16) & 0xFF);
   packet[6] = static_cast<uint8_t>((ts >> 8) & 0xFF);
@@ -2846,7 +2900,7 @@ bool SipTransport::replay_completed_response_(const std::string &request, const 
 void SipTransport::remember_completed_response_(const std::string &request, uint32_t peer_ip_v4,
                                                 uint16_t peer_port,
                                                 const std::string &method,
-                                                const std::string &response) {
+                                                const std::string &response, bool header_block) {
   if (response.empty() || peer_ip_v4 == 0 || peer_port == 0 ||
       (method != "INVITE" && method != "CANCEL" && method != "BYE" &&
        method != "UPDATE" && method != "REFER") ||
@@ -2857,9 +2911,13 @@ void SipTransport::remember_completed_response_(const std::string &request, uint
   if (!parse_decimal_u32(response.substr(8, 3), 699, &parsed_status) || parsed_status < 200) return;
   CompletedServerTransaction *completed = method == "INVITE" ? &this->completed_invite_
                                                                : &this->completed_control_;
-  const std::string call_id = header_value(request, "Call-ID");
-  const uint32_t request_cseq = cseq_number(header_value(request, "CSeq"));
-  const std::string request_branch = via_branch(header_value(request, "Via"));
+  const auto request_header = [&](const char *name) {
+    return sip_record_unfold(header_block ? sip_record_first_header(request, name)
+                                          : sip_record_first(request, name));
+  };
+  const std::string call_id = request_header("Call-ID");
+  const uint32_t request_cseq = cseq_number(request_header("CSeq"));
+  const std::string request_branch = via_branch(request_header("Via"));
   if (call_id.empty() || request_cseq == 0) return;
   if (method == "INVITE" && completed->awaiting_ack &&
       completed->call_id == this->call_id_ && this->last_invite_cseq_number_ != 0 &&

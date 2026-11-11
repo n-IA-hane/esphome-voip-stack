@@ -2,6 +2,7 @@
 import subprocess
 
 import pytest
+from audio_tx_fixture import audio_tx_fixture
 
 from test_refer_dialog_runtime import SOURCE, block
 
@@ -48,6 +49,7 @@ struct SipTransport {
     code += block(media, "size_t rtp_payload_to_pcm(") + "\n"
     code += block((SOURCE / "sip_dtmf.cpp").read_text(), "bool SipTransport::send_dtmf_packet_(")
     code += block((SOURCE / "sip_transport.cpp").read_text(), "void SipTransport::send_audio_frame(")
+    code = audio_tx_fixture(code)
     code += r'''
 int main(int argc,char**argv){
  assert(argc==2);const std::string name=argv[1];

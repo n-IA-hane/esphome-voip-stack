@@ -502,13 +502,27 @@ uint32_t cseq_number(const std::string &cseq) {
 }
 
 std::string via_branch(const std::string &via) {
-  std::string lowered = via;
-  for (char &ch : lowered) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-  const size_t marker = lowered.find(";branch=");
-  if (marker == std::string::npos) return "";
-  const size_t begin = marker + 8;
-  const size_t end = via.find_first_of("; \t\r\n", begin);
-  return via.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+  const std::string top = sip_record_unfold(sip_record_first_list_value(via));
+  bool quoted = false, escaped = false;
+  unsigned comments = 0;
+  for (size_t i = 0; i < top.size(); ++i) {
+    const char ch = top[i];
+    if (escaped) { escaped = false; continue; }
+    if ((quoted || comments) && ch == '\\') { escaped = true; continue; }
+    if (!comments && ch == '"') { quoted = !quoted; continue; }
+    if (!quoted && ch == '(') { ++comments; continue; }
+    if (!quoted && comments && ch == ')') { --comments; continue; }
+    if (quoted || comments || ch != ';') continue;
+    const size_t end = top.find(';', i + 1);
+    const auto parameter = sip_record_trim(std::string_view(top).substr(i + 1, end - i - 1));
+    const size_t equal = parameter.find('=');
+    if (equal == std::string_view::npos ||
+        !sip_header_name_equal(sip_record_trim(parameter.substr(0, equal)), "branch")) continue;
+    const auto value = sip_record_trim(parameter.substr(equal + 1));
+    const size_t last = value.find_first_of(" \t\r\n");
+    return std::string(value.substr(0, last));
+  }
+  return "";
 }
 
 bool sip_method_known_(const std::string &method) {
@@ -638,9 +652,9 @@ std::string sip_user_from_header(const std::string &value) {
 }
 
 std::string response_via_with_rport(const std::string &via, uint32_t source_ip, uint16_t source_port) {
-  const size_t remaining_vias = via.find("\r\nVia: ");
-  const std::string top_via = remaining_vias == std::string::npos ? via : via.substr(0, remaining_vias);
-  const std::string tail = remaining_vias == std::string::npos ? "" : via.substr(remaining_vias);
+  const auto first = sip_record_first_list_value(via);
+  const std::string top_via = sip_record_unfold(first);
+  const std::string tail = via.substr(first.size());
   std::string lowered = top_via;
   for (char &ch : lowered) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
   if (lowered.find("rport") == std::string::npos) return top_via + tail;

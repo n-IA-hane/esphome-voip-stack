@@ -43,7 +43,7 @@ def resume_source():
      std::string current_request;
      uint32_t current_peer_ip=0;uint16_t current_peer_port=0;
      int sip_server_=-1;sockaddr_in sip_peer_{};
-     void remember_completed_response_(const std::string&,uint32_t,uint16_t,const std::string&,const std::string&);
+     void remember_completed_response_(const std::string&,uint32_t,uint16_t,const std::string&,const std::string&,bool=false);
      uint16_t acknowledge_completed_invite_(const std::string&,const sockaddr_in&,bool* =nullptr);
     '''
     code = code.replace('struct SipTransport {', 'struct SipTransport {' + extra)

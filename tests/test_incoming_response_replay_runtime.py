@@ -47,8 +47,18 @@ def replay_binary(tmp_path_factory):
     main = r"""
 int main(int argc,char **argv){
  SipTransport s;Peer original(std::string(argv[1])=="tcp");setup(s,original);
- s.media_active_=false;const auto invite=request(original,"INVITE",1);
- s.last_invite_via_=header_value(invite,"Via");s.last_invite_from_=header_value(invite,"From");
+ s.media_active_=false;auto invite=request(original,"INVITE",1);
+ const std::string top_branch=via_branch(header_value(invite,"Via"));
+ const std::string layout=argc>2?argv[2]:"single";
+ if(layout!="single"){
+  const auto begin=invite.find("Via: ")+5,end=invite.find("\r\n",begin);
+  const std::string top="SIP/2.0/"+std::string(original.tcp?"TCP":"UDP")+" 127.0.0.1:5060;branch="+top_branch;
+  const std::string lower="SIP/2.0/UDP downstream.example;branch=lower-hop";
+  const std::string vias=layout=="comma"?top+", "+lower:layout=="folded"?
+   top.substr(0,top.find(";branch="))+";\r\n\tbranch = "+top_branch+"\r\nv: "+lower:top+"\r\nv: "+lower;
+  invite.replace(begin,end-begin,vias);
+ }
+ s.last_invite_via_=header_values(invite,"Via");s.last_invite_from_=header_value(invite,"From");
  s.last_invite_to_=header_value(invite,"To");s.last_invite_cseq_=header_value(invite,"CSeq");
  s.last_invite_cseq_number_=1;s.last_invite_peer_ip_v4_=INADDR_LOOPBACK;
  s.last_invite_peer_port_=ntohs(original.address.sin_port);
@@ -56,6 +66,11 @@ int main(int argc,char **argv){
  auto failed=original.drain();assert(failed.size()==1&&failed[0].rfind("SIP/2.0 500",0)==0);
  assert(s.call_id_.empty()&&!s.media_active_);
  assert(s.completed_invite_.method=="INVITE"&&s.completed_invite_.response==failed[0]);
+ assert(s.completed_invite_.branch==top_branch);
+ if(layout!="single")assert(failed[0].find("downstream.example;branch=lower-hop")!=std::string::npos);
+ auto different=invite;const auto top=different.find(top_branch);assert(top!=std::string::npos);
+ different.replace(top,top_branch.size(),"z9hG4bK-other-top");
+ assert(!s.replay_completed_response_(different,original.address,"INVITE",!original.tcp));
  original.send_to(s,invite);auto replay=original.drain();assert(replay.size()==1&&replay[0]==failed[0]);
  assert(s.delivered.empty()&&"a retransmission must not create a new phone operation");
  auto ack=invite;ack.replace(0,6,"ACK");
@@ -84,4 +99,11 @@ def test_incoming_error_replays_final_response(replay_binary, transport):
     result = subprocess.run(
         [str(replay_binary), transport], capture_output=True, text=True
     )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("transport", ["udp", "tcp"])
+@pytest.mark.parametrize("layout", ["duplicate", "comma", "folded"])
+def test_multiple_vias_keep_top_transaction_key_and_replay_whole_response(replay_binary, transport, layout):
+    result = subprocess.run([str(replay_binary), transport, layout], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr

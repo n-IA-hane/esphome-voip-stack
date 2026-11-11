@@ -326,6 +326,10 @@ class VoipStack : public Component {
     if (this->master_volume_control_.number != nullptr && this->master_volume_control_.number->has_state())
       return this->master_volume_control_.number->state;
 #endif
+#ifdef USE_ESPHOME_VOIP_STACK_MASTER_ALIAS
+    if (this->has_master_volume_control_() && this->master_volume_control_.get_level != nullptr)
+      return this->master_volume_control_.get_level(this->master_volume_control_.owner) * 100.0f;
+#endif
     return this->get_volume() * 100.0f;
   }
 #ifdef USE_ESPHOME_VOIP_STACK_MASTER_ALIAS
@@ -333,7 +337,8 @@ class VoipStack : public Component {
     this->master_volume_control_ = {
         master,
         [](void *owner) { return static_cast<Master *>(owner)->get_master_volume(); },
-        [](void *owner, float volume) { static_cast<Master *>(owner)->set_master_volume(volume); }};
+        [](void *owner, float volume) { static_cast<Master *>(owner)->set_master_volume(volume); },
+        [](void *owner) { return MasterVolumeControl::read_level(static_cast<Master *>(owner), 0); }};
   }
 #ifdef USE_ESPHOME_VOIP_STACK_MASTER_NUMBER_ALIAS
   void set_master_volume_number(number::Number *number) { this->master_volume_control_.number = number; }
@@ -634,6 +639,7 @@ class VoipStack : public Component {
 
   bool is_tx_stream_ready_() const;
   void send_chunk_(const uint8_t *data, size_t length);
+  void send_chunk_(const uint8_t *data, size_t length, const TransportAudioTxContext &context);
   void process_tx_chunk_(const uint8_t *audio_chunk);
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
@@ -1032,6 +1038,13 @@ class VoipStack : public Component {
     void *owner{nullptr};
     float (*get)(void *){nullptr};
     void (*set)(void *, float){nullptr};
+    float (*get_level)(void *){nullptr};
+    template<typename Master> static auto read_level(Master *master, int) -> decltype(master->get_master_volume_level()) {
+      return master->get_master_volume_level();
+    }
+    template<typename Master> static float read_level(Master *master, long) {
+      return master->get_master_volume();
+    }
 #ifdef USE_ESPHOME_VOIP_STACK_MASTER_NUMBER_ALIAS
     number::Number *number{nullptr};
 #endif
