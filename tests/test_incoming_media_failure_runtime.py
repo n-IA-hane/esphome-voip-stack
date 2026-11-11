@@ -27,6 +27,7 @@ def media_failure_source():
 #include <cassert>
 #include <cstring>
 #include <fcntl.h>
+#include <mutex>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -37,15 +38,22 @@ constexpr unsigned kRtpSocketRxBufferBytes=65536;
 uint32_t esp_random(){return 42;}
 int xSemaphoreTake(int,int){return 1;}
 struct MediaOwner {
+ using LockGuard=std::lock_guard<std::mutex>;
+ std::mutex rtp_socket_mutex_;
  enum class MediaLifecyclePhase {IDLE,PREPARED,ACTIVE};
  std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::IDLE};
  std::atomic<bool>rtp_running_{false},rtp_task_terminate_{false},rtp_task_quiesced_{true};
  void *rtp_task_handle_=this;std::atomic<uint16_t>rtp_sequence_{0};std::atomic<uint32_t>rtp_timestamp_{0};uint32_t rtp_ssrc_=0;
+ uint32_t audio_tx_clock_rate_=0,audio_tx_clock_generation_=0;
  int rtp_socket_=-1,rtp_cleanup_done_=0;uint16_t rtp_port_=0;
  AudioFormatList offer_rx_formats_;size_t udp_max_payload_=UDP_SAFE_AUDIO_PAYLOAD_BYTES;
  struct Converter {bool ok=true;bool prepare(const AudioFormatList&,const AudioFormat&){return ok;}}pcm_receive_converter_;
  void reset_rtp_latch_(){}
- template<class...T>void get_media_config_(T...){ }
+ AudioFormat tx_format_{DEFAULT_AUDIO_FORMAT},rx_format_{DEFAULT_AUDIO_FORMAT};
+ RtpAudioPayloads rx_payloads_;
+ void get_media_config_(AudioFormat*tx,AudioFormat*rx,uint8_t*tx_pt,uint8_t*rx_pt,RtpAudioPayloads*payloads=nullptr)const{
+  if(tx)*tx=tx_format_;if(rx)*rx=rx_format_;if(tx_pt)*tx_pt=96;if(rx_pt)*rx_pt=96;if(payloads)*payloads=rx_payloads_;
+ }
  bool prepare_media_path_locked_();bool bind_udp_(int*,uint16_t,const char*);
  ~MediaOwner(){if(rtp_socket_>=0)close(rtp_socket_);}
 };
