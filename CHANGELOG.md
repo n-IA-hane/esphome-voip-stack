@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026.12.0-dev
+
+Changes since stable **2026.11.0**.
+
+- Preserve the DC-blocker's wide feedback and explicitly saturate its S16
+  output. Extreme valid microphone steps no longer overflow or invert sign.
+  Existing filter coefficient, channel separation and settings are preserved.
+
 ## 2026.11.0
 
 Changes since stable **2026.10.1**.

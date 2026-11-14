@@ -24,7 +24,7 @@ static inline int16_t scale_sample(int16_t sample, float gain) {
 #define ESPHOME_VOIP_STACK_SCALE_BLOCK_I16_DEFINED
 // Q15 scale for standalone float gain paths. ESPHome-facing attenuation/volume
 // uses esp-audio-libs Q31 in esp_audio_stack; user-facing positive mic gain
-// uses esp_ae_alc. This helper remains for board-level input boost and
+// uses a precomputed Q16 multiplier. This helper remains for board-level input boost and
 // intercom standalone paths that need amplification.
 static inline void scale_block_i16_q15(const int16_t *in, int16_t *out, size_t len, int16_t q15) {
   if (q15 <= 0) {
@@ -117,17 +117,20 @@ static inline PcmLevelsDbfs compute_levels_dbfs_i16(const int16_t *data, size_t 
 #ifndef ESPHOME_VOIP_STACK_DC_BLOCKER_STATE_DEFINED
 #define ESPHOME_VOIP_STACK_DC_BLOCKER_STATE_DEFINED
 struct DcBlockerState {
-  int32_t prev_input_q16{0};
-  int32_t prev_output_q16{0};
+  int64_t prev_input_q16{0};
+  int64_t prev_output_q16{0};
 
   // y[n]=x[n]-x[n-1]+(1-2^-10)y[n-1]; cutoff is about fs/(2*pi*1024).
   inline int16_t process(int16_t sample) {
-    int32_t input = static_cast<int32_t>(sample) << 16;
-    int32_t output = input - this->prev_input_q16 + this->prev_output_q16 -
+    // A valid S16 step can exceed S16 before narrowing. Keep that history
+    // intact; clipping the feedback would change the filter's recovery.
+    const int64_t input = static_cast<int64_t>(sample) * 65536;
+    const int64_t output = input - this->prev_input_q16 + this->prev_output_q16 -
                      (this->prev_output_q16 >> 10);
     this->prev_input_q16 = input;
     this->prev_output_q16 = output;
-    return static_cast<int16_t>(output >> 16);
+    const int64_t value = output >> 16;
+    return static_cast<int16_t>(value > 32767 ? 32767 : value < -32768 ? -32768 : value);
   }
 };
 #endif
