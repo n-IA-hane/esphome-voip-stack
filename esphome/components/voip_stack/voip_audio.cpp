@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <numeric>
 
 #include <esp_timer.h>
 
@@ -82,10 +83,25 @@ size_t VoipStack::tx_audio_buffer_bytes_() const {
   // esp_audio_stack already owns the realtime I2S/AFE buffering and emits
   // regular processed frames. Keep only enough VoIP queue to bridge scheduler
   // jitter into the network task.
-  return std::max<size_t>(frame_bytes * 6, frame_bytes + 1024);
+  const size_t bytes = std::max<size_t>(frame_bytes * 6, frame_bytes + 1024);
 #else
-  return std::max<size_t>(frame_bytes * 16, frame_bytes + 4096);
+  const size_t bytes = std::max<size_t>(frame_bytes * 16, frame_bytes + 4096);
 #endif
+  size_t alignment = std::max<size_t>(1, this->tx_audio_format_.channels * this->tx_audio_format_.container_bytes_per_sample());
+  for (uint8_t i = 0; i < this->tx_audio_formats_.count; ++i) {
+    const auto &format = this->tx_audio_formats_.formats[i];
+    const size_t stride = format.channels * format.container_bytes_per_sample();
+    if (stride != 0) alignment = std::lcm(alignment, stride);
+  }
+  // BYTEBUF has no 4-byte capacity constraint. Whole interleaved PCM frames
+  // keep both replacement drops and partial writes on sample/channel bounds.
+  return ((bytes + alignment - 1) / alignment) * alignment;
+}
+
+void VoipStack::reset_mic_buffer_() {
+  if (this->mic_buffer_ != nullptr) this->mic_buffer_->reset();
+  // The main owner invalidates carry without writing producer-owned fields.
+  this->tx_pcm_epoch_.fetch_add(1, std::memory_order_release);
 }
 
 void VoipStack::tx_task(void *param) {
@@ -134,30 +150,62 @@ bool VoipStack::write_mic_buffer_(const uint8_t *data, size_t len) {
     return false;
   }
   const size_t frame_bytes = this->tx_audio_chunk_bytes_();
-  const size_t capacity = this->tx_audio_buffer_bytes_();
-  size_t skipped = 0;
-  if (len > capacity) {
-    // RingBuffer::write() cannot accept one item larger than its capacity.
-    // Keep the newest PCM instead of losing the whole callback or preserving
-    // audio that is already stale by the time the network task can send it.
-    skipped = len - capacity;
-    data += skipped;
-    len = capacity;
+  const size_t capacity = this->mic_buffer_->capacity();
+  const AudioFormat format = this->get_current_tx_audio_format_();
+  const size_t stride = format.channels * format.container_bytes_per_sample();
+  if (stride == 0 || stride > TxPcmFragment::MAX_STRIDE || capacity % stride != 0) return false;
+  auto &fragment = this->tx_pcm_fragment_;
+  const uint32_t epoch = this->tx_pcm_epoch_.load(std::memory_order_acquire);
+  const uint32_t packed = pack_audio_format(format);
+  if (fragment.epoch != epoch || fragment.format != packed) {
+    if (fragment.format != packed) this->mic_buffer_->reset();
+    fragment.bytes = 0;
+    fragment.epoch = epoch;
+    fragment.format = packed;
   }
-  const size_t free_before = this->mic_buffer_->free();
-  const size_t replaced = free_before < len ? len - free_before : 0;
-  const size_t written = this->mic_buffer_->write(data, len);
-  const size_t dropped = skipped + replaced + (written < len ? len - written : 0);
+  size_t dropped = 0, accepted = 0;
+  bool complete = true;
+  const auto enqueue = [&](const uint8_t *pcm, size_t bytes) {
+    size_t skipped = 0;
+    if (bytes > capacity) {
+      skipped = bytes - capacity;
+      pcm += skipped;
+      bytes = capacity;
+    }
+    const size_t free_before = this->mic_buffer_->free();
+    const size_t replaced = free_before < bytes ? bytes - free_before : 0;
+    const size_t written = this->mic_buffer_->write(pcm, bytes);
+    dropped += skipped + replaced + (written < bytes ? bytes - written : 0);
+    accepted += written;
+    complete = complete && skipped == 0 && written == bytes;
+  };
+  if (fragment.bytes != 0) {
+    const size_t copied = std::min(len, stride - fragment.bytes);
+    std::memcpy(fragment.data + fragment.bytes, data, copied);
+    fragment.bytes += copied;
+    data += copied;
+    len -= copied;
+    if (fragment.bytes == stride) {
+      enqueue(fragment.data, stride);
+      fragment.bytes = 0;
+    }
+  }
+  const size_t whole = len - len % stride;
+  if (whole != 0) enqueue(data, whole);
+  if (len != whole) {
+    fragment.bytes = len - whole;
+    std::memcpy(fragment.data, data + whole, fragment.bytes);
+  }
   if (dropped > 0) {
     this->media_tx_queue_drops_.fetch_add(frames_for_bytes(dropped, frame_bytes), std::memory_order_relaxed);
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
     this->media_tx_queue_drop_bytes_.fetch_add(static_cast<uint32_t>(dropped), std::memory_order_relaxed);
 #endif
   }
-  if (written > 0 && this->tx_task_handle_ != nullptr) {
+  if (accepted > 0 && this->tx_task_handle_ != nullptr) {
     xTaskNotifyGive(this->tx_task_handle_);
   }
-  return skipped == 0 && written == len;
+  return complete;
 }
 
 void VoipStack::tx_task_() {

@@ -619,6 +619,9 @@ void VoipStack::pump_dtmf_events_() {
 
 void VoipStack::loop() {
 #ifdef USE_ESPHOME_VOIP_STACK_MASTER_ALIAS
+#ifdef USE_ESPHOME_VOIP_STACK_MASTER_NUMBER_ALIAS
+  if (this->master_volume_control_.number == nullptr)
+#endif
   this->sync_master_volume_();
 #endif
   this->pump_application_media_start_();

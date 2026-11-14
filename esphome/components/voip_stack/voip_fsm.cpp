@@ -763,9 +763,7 @@ void VoipStack::set_in_call_(bool on) {
 
     // Drop stale frames from the previous call before audio resumes.
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
-    if (this->mic_buffer_) {
-      this->mic_buffer_->reset();
-    }
+    this->reset_mic_buffer_();
     this->media_tx_queue_depth_.store(0, std::memory_order_relaxed);
     this->media_tx_queue_drops_.store(0, std::memory_order_relaxed);
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
@@ -787,7 +785,7 @@ void VoipStack::set_in_call_(bool on) {
   } else {
     if (this->transport_) this->transport_->stop_audio_path();
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
-    if (this->mic_buffer_) this->mic_buffer_->reset();
+    this->reset_mic_buffer_();
     this->media_tx_queue_depth_.store(0, std::memory_order_relaxed);
     this->media_tx_queue_drops_.store(0, std::memory_order_relaxed);
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG

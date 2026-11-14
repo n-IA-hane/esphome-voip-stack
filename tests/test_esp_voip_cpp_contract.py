@@ -1918,10 +1918,10 @@ def test_mic_enqueue_drop_accounting_is_single_primitive() -> None:
     assert "bool VoipStack::write_mic_buffer_(const uint8_t *data, size_t len)" in audio
     assert "media_tx_queue_drops_.fetch_add(frames_for_bytes(dropped, frame_bytes)" in audio
     assert "xTaskNotifyGive(this->tx_task_handle_)" in audio
-    assert "if (len > capacity)" in audio
-    assert "data += skipped;" in audio
-    assert "const size_t dropped = skipped + replaced" in audio
-    assert "return skipped == 0 && written == len;" in audio
+    assert "if (bytes > capacity)" in audio
+    assert "pcm += skipped;" in audio
+    assert "dropped += skipped + replaced" in audio
+    assert "return complete;" in audio
     assert "this->write_mic_buffer_(reinterpret_cast<const uint8_t *>(mic_converted), bytes);" in audio
     assert "this->write_mic_buffer_(data, len);" in audio
     assert audio.count("media_tx_queue_drops_.fetch_add(frames_for_bytes(dropped, frame_bytes)") == 1

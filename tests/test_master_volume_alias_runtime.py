@@ -17,6 +17,7 @@ def alias_declarations():
     binding = ('#ifdef USE_ESPHOME_VOIP_STACK_MASTER_NUMBER_ALIAS\n' + (block(header, 'void set_master_volume_number(')
                if 'void set_master_volume_number(' in header else 'void set_master_volume_number(number::Number*){}') + '\n#endif\n')
     return (block(header, 'struct MasterVolumeControl {') + ';MasterVolumeControl master_volume_control_;\n' + binding +
+            '#ifdef USE_NUMBER\n' + block(header, 'void register_volume_number(') + '\n#endif\n' +
             block(header, 'template<typename Master>') + '\n' +
             block(header, 'bool has_master_volume_control_() const') + '\n' +
             block(header, 'float get_volume() const') + '\n' +
@@ -40,6 +41,8 @@ def master_alias(tmp_path_factory):
 #include <cstdint>
 #include <limits>
 #include <type_traits>
+#include <functional>
+#include <vector>
 #define ESP_LOGD(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
 #define ESP_LOGI(...) ((void)0)
@@ -54,7 +57,10 @@ float clamp_mic_gain_db_(float value){return value;}float db_to_linear(float val
 namespace number {
 struct NumberCall;
 struct Number {float state=0;bool present=false;unsigned updates=0;
- bool has_state()const{return present;}void publish_state(float value){state=value;present=true;++updates;}
+ struct Traits {float min=0,max=100,step=1;}traits;
+ std::vector<std::function<void(float)>>callbacks;
+ template<class F>void add_on_state_callback(F&&cb){callbacks.emplace_back(std::forward<F>(cb));}
+ bool has_state()const{return present;}void publish_state(float value){state=value;present=true;++updates;for(auto&cb:callbacks)cb(value);}
  unsigned get_object_id_hash()const{return 2;}NumberCall make_call();
  virtual void control(float)=0;};
 struct NumberCall {Number*parent;float value=0;NumberCall&set_value(float v){value=v;return *this;}
@@ -127,6 +133,24 @@ int main(int argc,char**argv){
  }
  phone.set_master_volume_control(&master);
 #ifdef HAS_AUDIO_CANONICAL_CONTROL
+ if(mode=="canonical-idle"){
+  CanonicalAudioMaster master;master.curved=false;phone.set_master_volume_control(&master);
+  esphome::esp_audio_stack::MasterVolumeNumber canonical;canonical.set_parent(&master);canonical.set_speaker(&speaker);
+  audio_saved=20;canonical.setup();assert(canonical.state==20);
+  phone.volume_number_=nullptr;phone.set_master_volume_number(&canonical);
+  VoipStackVolume alias;alias.set_parent(&phone);alias.traits={7,93,7};
+  phone.register_volume_number(&alias);assert(alias.has_state()&&alias.state==20);
+  const auto initial=alias.updates;
+  // No loop(), manual sync or wakeup: the canonical Number is the event owner.
+  canonical.make_call().set_value(80).perform();
+  assert(master.value==.8f&&alias.state==80&&alias.updates==initial+1);
+  canonical.publish_state(80);assert(alias.updates==initial+1);
+  alias.control(40);assert(canonical.state==40&&alias.state==40&&alias.updates==initial+2);
+  assert(alias.traits.min==7&&alias.traits.max==93&&alias.traits.step==7);
+  phone.register_volume_number(nullptr);canonical.publish_state(30);
+  phone.register_volume_number(&alias);assert(alias.state==30);
+  assert(phone.volume_==1&&phone.saves==0&&speaker.calls==0);return 0;
+ }
  if(mode=="canonical"){
   CanonicalAudioMaster master;phone.set_master_volume_control(&master);
   master.curved=false;master.value=0;audio_saved=0;
@@ -183,6 +207,8 @@ int main(int argc,char**argv){
 
 
 @pytest.mark.parametrize('mode', ['getter', 'zero-sync', 'setter', 'number', 'restore', 'legacy', 'logical-no-number',
+                                pytest.param('canonical-idle', marks=pytest.mark.skipif(not os.environ.get('ESP_AUDIO_STACK_SOURCE'),
+                                             reason='Actual Audio control gate requires ESP_AUDIO_STACK_SOURCE')),
                                 pytest.param('canonical', marks=pytest.mark.skipif(not os.environ.get('ESP_AUDIO_STACK_SOURCE'),
                                              reason='Actual Audio control gate requires ESP_AUDIO_STACK_SOURCE'))])
 def test_master_alias_has_one_effective_owner(master_alias, mode):

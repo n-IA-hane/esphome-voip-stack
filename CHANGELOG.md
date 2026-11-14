@@ -7,6 +7,14 @@ Changes since stable **2026.11.0**.
 - Preserve the DC-blocker's wide feedback and explicitly saturate its S16
   output. Extreme valid microphone steps no longer overflow or invert sign.
   Existing filter coefficient, channel separation and settings are preserved.
+- Update a Native Master alias immediately from the canonical Audio number,
+  including while the VoIP loop is idle. Preserve custom limits and standalone
+  volume controls without adding polling or another saved volume.
+- Align TX microphone queue capacity, replacement drops and fragmented
+  callbacks to complete interleaved PCM samples. Packed 24-bit and stereo
+  audio retain their sample/channel order through overflow and call changes.
+  Compute capacity geometry at allocation and reuse the allocated size in
+  microphone callbacks.
 
 ## 2026.11.0
 

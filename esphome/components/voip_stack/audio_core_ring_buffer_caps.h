@@ -52,6 +52,7 @@ class CapsRingBuffer : public ring_buffer::RingBuffer {
 
   bool install(size_t len, uint32_t caps, RingbufferType_t type = RINGBUF_TYPE_BYTEBUF);
   const void *probe_storage() const { return this->storage_; }
+  size_t capacity() const { return this->size_; }
 
   size_t read(void *data, size_t len, TickType_t ticks_to_wait = 0);
   size_t write(const void *data, size_t len);

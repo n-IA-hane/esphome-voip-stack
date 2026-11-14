@@ -112,6 +112,7 @@ int main() {
   {
     CapsRingBuffer rb;
     assert(rb.install(32,MALLOC_CAP_8BIT));
+    assert(rb.capacity()==32);
     assert(rb.probe_storage()!=nullptr);
   }
   assert(allocated==1 && freed==1 && deleted==1);

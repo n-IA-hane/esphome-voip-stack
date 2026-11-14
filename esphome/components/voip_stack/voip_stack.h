@@ -341,7 +341,16 @@ class VoipStack : public Component {
         [](void *owner) { return MasterVolumeControl::read_level(static_cast<Master *>(owner), 0); }};
   }
 #ifdef USE_ESPHOME_VOIP_STACK_MASTER_NUMBER_ALIAS
-  void set_master_volume_number(number::Number *number) { this->master_volume_control_.number = number; }
+  void set_master_volume_number(number::Number *number) {
+    if (this->master_volume_control_.number == number) return;
+    this->master_volume_control_.number = number;
+    if (number != nullptr) {
+      number->add_on_state_callback([this, number](float) {
+        if (this->master_volume_control_.number == number) this->sync_master_volume_();
+      });
+    }
+    this->sync_master_volume_();
+  }
 #endif
 #endif
 
@@ -449,7 +458,12 @@ class VoipStack : public Component {
 #endif
 #ifdef USE_NUMBER
   // Optional number-platform registration.
-  void register_volume_number(number::Number *num) { this->volume_number_ = num; }
+  void register_volume_number(number::Number *num) {
+    this->volume_number_ = num;
+#ifdef USE_ESPHOME_VOIP_STACK_MASTER_ALIAS
+    this->sync_master_volume_();
+#endif
+  }
   void register_mic_gain_number(number::Number *num) { this->mic_gain_number_ = num; }
 #endif
   // SIP dial-plan contact management. Public YAML should prefer the
@@ -952,6 +966,16 @@ class VoipStack : public Component {
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
   uint8_t *tx_audio_chunk_{nullptr};
   size_t tx_audio_chunk_alloc_bytes_{0};
+  struct TxPcmFragment {
+    // Every implemented PCM container fits in 32 bits, with at most 2 channels.
+    static constexpr size_t MAX_STRIDE = sizeof(int32_t) * 2;
+    uint8_t data[MAX_STRIDE]{};
+    uint8_t bytes{0};
+    uint32_t epoch{0};
+    uint32_t format{0};
+  } tx_pcm_fragment_;  // Only the microphone producer writes this value.
+  std::atomic<uint32_t> tx_pcm_epoch_{0};
+  void reset_mic_buffer_();
   bool read_tx_chunk_(uint8_t *audio_chunk);
   bool write_mic_buffer_(const uint8_t *data, size_t len);
 
@@ -1398,7 +1422,8 @@ class VoipStackVolume : public number::Number, public Parented<VoipStack> {
     if (value < 0.0f) value = 0.0f;
     if (value > 100.0f) value = 100.0f;
     this->parent_->set_volume(value / 100.0f);
-    this->publish_state(this->parent_->get_volume_control_percent());
+    const float percent = this->parent_->get_volume_control_percent();
+    if (!this->has_state() || this->state != percent) this->publish_state(percent);
   }
 };
 
