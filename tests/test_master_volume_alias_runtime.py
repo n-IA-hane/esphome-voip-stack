@@ -207,11 +207,10 @@ int main(int argc,char**argv){
 
 
 @pytest.mark.parametrize('mode', ['getter', 'zero-sync', 'setter', 'number', 'restore', 'legacy', 'logical-no-number',
-                                pytest.param('canonical-idle', marks=pytest.mark.skipif(not os.environ.get('ESP_AUDIO_STACK_SOURCE'),
-                                             reason='Actual Audio control gate requires ESP_AUDIO_STACK_SOURCE')),
-                                pytest.param('canonical', marks=pytest.mark.skipif(not os.environ.get('ESP_AUDIO_STACK_SOURCE'),
-                                             reason='Actual Audio control gate requires ESP_AUDIO_STACK_SOURCE'))])
+                                'canonical-idle', 'canonical'])
 def test_master_alias_has_one_effective_owner(master_alias, mode):
+    if mode.startswith('canonical'):
+        assert os.environ.get('ESP_AUDIO_STACK_SOURCE'), 'Canonical control tests require ESP_AUDIO_STACK_SOURCE'
     run = subprocess.run([str(master_alias), mode], capture_output=True, text=True, timeout=5)
     assert run.returncode == 0, run.stdout + run.stderr
 

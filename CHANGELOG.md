@@ -4,6 +4,10 @@
 
 Changes since stable **2026.11.0**.
 
+- Require the canonical Audio Stack checkout in contract CI. The active and
+  idle MasterVolume integration tests now fail when that dependency is absent,
+  instead of silently skipping the control owner they are meant to verify.
+
 - Preserve the DC-blocker's wide feedback and explicitly saturate its S16
   output. Extreme valid microphone steps no longer overflow or invert sign.
   Existing filter coefficient, channel separation and settings are preserved.

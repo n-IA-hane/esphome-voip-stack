@@ -63,9 +63,23 @@ jobs:
           git -C .test-deps/esp-audio-libs rev-parse HEAD > test-results/audio-libs-sha.txt
           test "$(cat test-results/audio-libs-sha.txt)" = "${{ matrix.audio_sha }}"
 
+      - name: Fetch the canonical Audio Stack controls
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: n-IA-hane/esphome-audio-stack
+          ref: 0507bf8e3315d92a21beb0addeb404f527cc30fe
+          path: .test-deps/esphome-audio-stack
+
+      - name: Verify canonical control dependency
+        run: |
+          git -C .test-deps/esphome-audio-stack rev-parse HEAD > test-results/audio-stack-sha.txt
+          test "$(cat test-results/audio-stack-sha.txt)" = "0507bf8e3315d92a21beb0addeb404f527cc30fe"
+          test -f .test-deps/esphome-audio-stack/esphome/components/esp_audio_stack/number.h
+
       - name: Run contract tests
         env:
           ESP_AUDIO_LIBS_SOURCE: ${{ github.workspace }}/.test-deps/esp-audio-libs
+          ESP_AUDIO_STACK_SOURCE: ${{ github.workspace }}/.test-deps/esphome-audio-stack
         run: python -m pytest -q --junitxml=test-results/native.xml
 
       - name: Preserve native regression results
@@ -76,6 +90,7 @@ jobs:
           path: |
             test-results/native.xml
             test-results/audio-libs-sha.txt
+            test-results/audio-stack-sha.txt
           if-no-files-found: error
 
   renderer-consumer:
