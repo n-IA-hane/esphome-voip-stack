@@ -2,35 +2,39 @@
 
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("codec", ["jpeg", "h264"])
-@pytest.mark.parametrize("owned", [False, True], ids=["legacy-mipi", "owned-mipi"])
-def test_p4_bidirectional_sources_and_actual_mipi_capability(tmp_path, codec, owned):
+@pytest.mark.parametrize("receive", [False, True], ids=["source-only", "source-and-renderer"])
+def test_p4_sources_and_renderer_use_official_display_api(tmp_path, codec, receive):
     camera = os.environ.get("ESP_VIDEO_CAMERA_SOURCE")
-    intercom = os.environ.get("ESPHOME_MIPI_SOURCE")
-    if not camera or not intercom:
-        pytest.skip("Set ESP_VIDEO_CAMERA_SOURCE and ESPHOME_MIPI_SOURCE to real checkouts")
-    intercom = Path(intercom).resolve()
-    mipi = intercom / "esphome/components"
-    if not owned:
-        # Preserve all old-provider behavior. Only its exact committed Python
-        # manifest lacks the new capability; Native's C++ two-surface witness
-        # separately executes the old provider interface.
-        mipi = tmp_path / "legacy"
-        shutil.copytree(intercom / "esphome/components/mipi_dsi", mipi / "mipi_dsi",
-                        ignore=shutil.ignore_patterns("__pycache__"))
-        shutil.copyfile(intercom / "tests/fixtures/mipi_legacy/display.py", mipi / "mipi_dsi/display.py")
+    if not camera:
+        pytest.skip("Set ESP_VIDEO_CAMERA_SOURCE to the real camera checkout")
+    renderer = Path(os.environ.get("VIDEO_RENDERER_SOURCE", ROOT.parent / "esphome-video-renderer")).resolve()
     width, height, rx_width, rx_height, fps = (800, 800, 800, 800, 15) if codec == "jpeg" else (400, 400, 352, 288, 10)
     source = "esp_jpeg_video_source" if codec == "jpeg" else "esp_h264_video_source"
+    renderer_config = f"""p4_video_renderer:
+  id: renderer
+  codec: {codec}
+  width: {rx_width}
+  height: {rx_height}
+  framerate: {fps}
+  max_decode_width: {rx_width}
+  max_decode_height: {rx_height}
+  display_id: screen
+  display_rotation: 270
+""" if receive else ""
+    mipi = Path(os.environ.get("MIPI_COMPONENTS_SOURCE", ROOT.parent / "esphome-intercom/esphome/components"))
+    driver_source = f"  - source: {mipi}\n    components: [mipi_dsi]\n" if receive else ""
     config = tmp_path / "p4.yaml"
+    sink_config = "    sink: renderer" if receive else ""
     config.write_text(f'''esphome:
   name: p4-video-contract
   build_path: {tmp_path / 'build'}
@@ -46,12 +50,12 @@ esp_ldo:
 logger:
 external_components:
   - source: {ROOT / 'esphome/components'}
-    components: [voip_stack, p4_video_renderer, {source}]
+    components: [voip_stack, {source}]
+  - source: {renderer / "esphome/components"}
+    components: [video_renderer{", p4_video_renderer" if receive else ""}]
   - source: {Path(camera).resolve() / 'components'}
     components: [esp_video_camera]
-  - source: {mipi}
-    components: [mipi_dsi]
-i2c:
+{driver_source}i2c:
   id: camera_i2c
   sda: GPIO7
   scl: GPIO8
@@ -87,16 +91,7 @@ esp_video_camera:
   width: {width}
   height: {height}
   framerate: {fps}
-p4_video_renderer:
-  id: renderer
-  codec: {codec}
-  width: {rx_width}
-  height: {rx_height}
-  framerate: {fps}
-  max_decode_width: {rx_width}
-  max_decode_height: {rx_height}
-  display_id: screen
-  display_rotation: 270
+{renderer_config}
 voip_stack:
   id: phone
   ha_integration: false
@@ -109,7 +104,7 @@ voip_stack:
   video:
     codec: {codec}
     source: encoded_source
-    sink: renderer
+{sink_config}
     width: {width}
     height: {height}
     framerate: {fps}
@@ -120,12 +115,31 @@ voip_stack:
     generated = tmp_path / "build/src"
     main = (generated / "main.cpp").read_text()
     defines = (generated / "esphome/core/defines.h").read_text()
-    assert ("#define USE_MIPI_DSI_RGB565_OWNED_TRANSFORM" in defines) is owned
-    assert f"lvgl::ROTATION_{'HARDWARE' if owned else 'SOFTWARE'}" in main
+    assert ("USE_MIPI_DSI_RGB565_OWNED_TRANSFORM" in defines) is receive
+    assert "USE_ESPHOME_VOIP_STACK_VIDEO_RENDERER" in defines if receive else "USE_ESPHOME_VOIP_STACK_VIDEO_RENDERER" not in defines
     assert f"#define USE_ESPHOME_VOIP_STACK_VIDEO_{codec.upper()}" in defines
     assert f"USE_ESPHOME_VOIP_STACK_VIDEO_{'H264' if codec == 'jpeg' else 'JPEG'}" not in defines
-    for call in ["phone->set_video_source(encoded_source)", "phone->set_video_sink(renderer)",
-                 f"encoded_source->set_framerate({fps})", f"renderer->set_width({rx_width})",
-                 f"renderer->set_height({rx_height})", f"renderer->set_framerate({fps})"]:
-        assert call in main
+    assert "phone->set_video_source(encoded_source)" in main
+    assert f"encoded_source->set_framerate({fps})" in main
+    if receive:
+        assert "voip_stack::P4RendererVideoSink(renderer)" in main
+        assert "phone->set_video_sink(" in main
+        for call in [f"renderer->set_width({rx_width})", f"renderer->set_height({rx_height})", f"renderer->set_framerate({fps})"]:
+            assert call in main
+    else:
+        assert "P4VideoRenderer" not in main
+    assert "set_display_rotation" not in main
+    if codec == "h264":
+        dependency = yaml.safe_load((generated / "idf_component.yml").read_text())[
+            "dependencies"
+        ]["espressif/esp_h264"]
+        selected = Path(dependency.get("path", dependency.get("override_path")))
+        assert subprocess.check_output(
+            ["git", "-C", str(selected), "rev-parse", "HEAD"], text=True
+        ).strip() == "176cda67716c24deef0e76e4451048981e154bd4"
+        assert not subprocess.check_output(
+            ["git", "-C", str(selected), "status", "--porcelain"], text=True
+        )
+        sdkconfig = (tmp_path / "build/sdkconfig.p4-video-contract").read_text()
+        assert "CONFIG_ESP_H264_HW_ENCODER_PREFER_DB_SPIRAM=y" in sdkconfig
     assert "USE_ESPHOME_VOIP_DIRECTORY" not in defines and "USE_ESPHOME_VOIP_BLF" not in defines

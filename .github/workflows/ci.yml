@@ -35,7 +35,7 @@ jobs:
       - name: Install test dependencies
         run: >-
           python -m pip install
-          esphome==2026.10.0
+          "esphome @ git+https://github.com/esphome/esphome.git@373224c141dceadbb67ace263040cbfc802c5968"
           pytest==9.0.3
           ruff==0.15.21
           ldap3==2.9.1
@@ -76,9 +76,17 @@ jobs:
           test "$(cat test-results/audio-stack-sha.txt)" = "0507bf8e3315d92a21beb0addeb404f527cc30fe"
           test -f .test-deps/esphome-audio-stack/esphome/components/esp_audio_stack/number.h
 
+      - name: Fetch the renderer source owned by the video contract
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: n-IA-hane/esphome-video-renderer
+          ref: dev
+          path: .test-deps/esphome-video-renderer
+
       - name: Run contract tests
         env:
           ESP_AUDIO_LIBS_SOURCE: ${{ github.workspace }}/.test-deps/esp-audio-libs
+          VIDEO_RENDERER_SOURCE: ${{ github.workspace }}/.test-deps/esphome-video-renderer
           ESP_AUDIO_STACK_SOURCE: ${{ github.workspace }}/.test-deps/esphome-audio-stack
         run: python -m pytest -q --junitxml=test-results/native.xml
 
@@ -113,11 +121,12 @@ jobs:
         working-directory: .test-deps/esphome-video-renderer
         env:
           VOIP_STACK_SOURCE: ${{ github.workspace }}
+          VIDEO_RENDERER_SOURCE: ${{ github.workspace }}/.test-deps/esphome-video-renderer
         run: >-
           python -m pytest -q
-          tests/test_esp_video_renderer_config.py::test_renderer_voip_sink_is_explicit
+          tests/test_esp_video_renderer_config.py::test_renderer_voip_sink_is_automatic
           'tests/test_esp_video_renderer_config.py::test_documented_display_examples_generate_with_real_sources[voip]'
-          tests/test_esp_video_renderer_adapter.py
+          ${{ github.workspace }}/tests/test_video_renderer_adapter_runtime.py
           --junitxml=${{ github.workspace }}/test-results/renderer-consumer.xml
       - name: Preserve consumer regression results
         if: always()
@@ -156,7 +165,7 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install official ESPHome
-        run: python -m pip install esphome==2026.10.0
+        run: python -m pip install "esphome @ git+https://github.com/esphome/esphome.git@373224c141dceadbb67ace263040cbfc802c5968"
       - name: Compile and link the audio firmware
         env:
           CONFIGURATION: ${{ matrix.configuration }}

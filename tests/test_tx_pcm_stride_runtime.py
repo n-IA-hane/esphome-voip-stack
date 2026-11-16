@@ -16,7 +16,7 @@ def tx_pcm_stride(tmp_path_factory):
     files = {
         "esp_heap_caps.h": "#pragma once\n#include <cstdlib>\n#define MALLOC_CAP_8BIT 1\n#define MALLOC_CAP_INTERNAL 2\n#define MALLOC_CAP_SPIRAM 4\ninline void*heap_caps_malloc(size_t n,unsigned){return std::malloc(n);}\ninline void heap_caps_free(void*p){std::free(p);}\n",
         "esp_memory_utils.h": "#pragma once\ninline bool esp_ptr_internal(const void*){return true;}\n",
-        "esphome/core/log.h": "#pragma once\n#define ESP_LOGD(...) ((void)0)\n#define ESP_LOGI(...) ((void)0)\n#define ESP_LOGW(...) ((void)0)\n#define ESP_LOGE(...) ((void)0)\n",
+        "esphome/core/log.h": "#pragma once\n#define ESPHOME_LOG_TAG(name, tag) [[maybe_unused]] static constexpr const char *const name = tag\n#define ESP_LOGD(...) ((void)0)\n#define ESP_LOGI(...) ((void)0)\n#define ESP_LOGW(...) ((void)0)\n#define ESP_LOGE(...) ((void)0)\n",
         "esphome/core/helpers.h": "#pragma once\n#include <memory>\n#include <cstdlib>\nnamespace esphome {using std::make_unique;template<class T>struct RAMAllocator {enum {NONE=0,PREFER_INTERNAL=1};explicit RAMAllocator(int=0){}T*allocate(size_t n){return static_cast<T*>(std::malloc(n*sizeof(T)));}void deallocate(T*p,size_t){std::free(p);}};}\n",
         "freertos/FreeRTOS.h": "#pragma once\n#include <cstddef>\n#include <cstdint>\nusing TickType_t=unsigned;using UBaseType_t=unsigned;using BaseType_t=int;constexpr int pdPASS=1,pdTRUE=1,pdFALSE=0;\n",
         "freertos/ringbuf.h": r"""

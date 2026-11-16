@@ -85,6 +85,32 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 **Full ESPHome automation surface.** Triggers, actions and conditions are normal ESPHome automations.
 
+
+For a display sink, load the renderer repository and reference the existing
+renderer ID. Native creates the transport adapter automatically:
+
+```yaml
+external_components:
+  - source: github://n-IA-hane/esphome-video-renderer@dev
+    components: [video_renderer, esp_video_renderer]  # or p4_video_renderer
+# Keep the normal renderer/display/LVGL declarations.
+voip_stack:
+  video:
+    codec: jpeg
+    sink: incoming_video
+```
+
+The P4 renderer component has moved to `esphome-video-renderer`; its renderer ID
+and `attach_video_container` hook are unchanged. For S3 custom configurations,
+remove the old nested renderer `voip:` block and use the renderer ID instead of
+the old sink ID. See the [renderer migration guide](https://github.com/n-IA-hane/esphome-video-renderer/blob/dev/docs/MIGRATION_RENDERER_OWNERSHIP.md).
+
+H.264 source-only configurations also load the renderer repository's
+`video_renderer` component as a normal build dependency. This common component
+provides the pinned H.264 codec dependency, not a renderer instance, LVGL object
+or task. Declare `components: [video_renderer]` in that external source when no
+display renderer is configured. Audio-only builds do not load it.
+
 ## Native media discovery and keepalive
 
 An OPTIONS request can read the configured audio capabilities without opening a

@@ -4,6 +4,13 @@
 
 Changes since stable **2026.11.0**.
 
+- Connect S3 and P4 video sinks to independent renderer components through
+  adapters owned by VoIP Stack. The normal sink reference creates the adapter;
+  SIP/RTP formats, clocks and negotiation remain outside the renderer.
+- Remove the duplicate P4 renderer implementation from this repository.
+  Rendering libraries and codec build requirements now follow the renderer's
+  own configuration. Existing sink IDs continue to resolve normally.
+
 - Require the canonical Audio Stack checkout in contract CI. The active and
   idle MasterVolume integration tests now fail when that dependency is absent,
   instead of silently skipping the control owner they are meant to verify.

@@ -3,7 +3,7 @@ import logging
 import esphome.codegen as cg
 import esphome.config_validation as cv
 import esphome.final_validate as fv
-from esphome import automation, git
+from esphome import automation
 from esphome.core import CORE
 from esphome.const import (
     CONF_ID,
@@ -22,28 +22,16 @@ DEPENDENCIES = ["esp32"]
 
 def AUTO_LOAD(config):
     from .ha_integration import enabled
-    return ["ring_buffer"] + (["text_sensor", "text", "switch"] if enabled(config) else [])
+    return (["ring_buffer"] + (["text_sensor", "text", "switch"] if enabled(config) else [])
+            + (["video_renderer"] if config.get("video", {}).get("codec") == "h264" else []))
 
 _LOGGER = logging.getLogger(__name__)
 
 
 def add_h264_component():
-    """Use one pinned local component for direct and transitive H.264 users."""
-    # esp_video also requires the registry component. A Git dependency alone
-    # can resolve alongside it and leave the registry copy in the build.
-    # IDF's local-component override applies to the whole dependency graph.
-    repository = CORE.data.get("voip_stack_h264_repository")
-    if repository is None:
-        repository, _ = git.clone_or_update(
-            url="https://github.com/n-IA-hane/esp-h264-component.git",
-            ref="cabfb05c1e20b08975b21544d67f61f483d023f5",
-            refresh=None,
-            domain="idf_components",
-        )
-        CORE.data["voip_stack_h264_repository"] = repository
-    esp32.add_idf_component(
-        name="espressif/esp_h264", path=str(repository / "esp_h264")
-    )
+    """Share the same codec dependency owner with optional video renderers."""
+    from esphome.components.video_renderer import add_h264_component as add_component
+    add_component()
 
 
 CONF_VOIP_STACK_ID = "voip_stack_id"
@@ -153,6 +141,11 @@ PcmFormat = voip_stack_ns.enum("PcmFormat", is_class=True)
 AudioCodec = voip_stack_ns.enum("AudioCodec", is_class=True)
 EncodedVideoSource = voip_stack_ns.class_("EncodedVideoSource")
 EncodedVideoSink = voip_stack_ns.class_("EncodedVideoSink")
+EncodedFrameRenderer = cg.esphome_ns.namespace("video_renderer").class_("EncodedFrameRenderer")
+RendererVideoSink = voip_stack_ns.class_("RendererVideoSink", EncodedVideoSink)
+S3RendererVideoSink = voip_stack_ns.class_("S3RendererVideoSink", RendererVideoSink)
+P4RendererVideoSink = voip_stack_ns.class_("P4RendererVideoSink", RendererVideoSink)
+CONF_RENDERER_SINK_ID = "renderer_sink_adapter_id"
 VideoCodec = voip_stack_ns.enum("VideoCodec", is_class=True)
 
 PCM_FORMAT_IDS = {
@@ -348,7 +341,10 @@ PHONE_VIDEO_SCHEMA = cv.All(cv.Schema(
         # ESP32Camera implements camera::Camera in C++, but its Python codegen
         # declaration does not include that base. Use the real declared ID type.
         cv.Optional(CONF_CAMERA_ID): cv.use_id(esp32_camera_component.ESP32Camera),
-        cv.Optional(CONF_SINK): cv.use_id(EncodedVideoSink),
+        # Final validation accepts the actual declared sink or neutral renderer
+        # type. The union cannot be expressed by use_id's single base type.
+        cv.Optional(CONF_SINK): cv.use_id(None),
+        cv.GenerateID(CONF_RENDERER_SINK_ID): cv.declare_id(RendererVideoSink),
         cv.Optional(CONF_WIDTH, default=640): cv.int_range(min=8, max=2048),
         cv.Optional(CONF_HEIGHT, default=480): cv.int_range(min=8, max=2048),
         cv.Optional(CONF_FRAMERATE, default=10): cv.int_range(min=1, max=60),
@@ -810,6 +806,17 @@ def _final_validate(config):
         )
     if CONF_VIDEO in config:
         video = config[CONF_VIDEO]
+        if CONF_SINK in video:
+            if video[CONF_SINK].id is None:
+                raise cv.Invalid("video.sink requires an explicit renderer or sink ID", path=[CONF_VIDEO, CONF_SINK])
+            full = fv.full_config.get()
+            declaration = full.get_config_for_path(full.get_path_for_id(video[CONF_SINK]))
+            declared_type = declaration.type
+            if not (hasattr(declared_type, "inherits_from") and (declared_type.inherits_from(EncodedVideoSink) or declared_type.inherits_from(EncodedFrameRenderer))):
+                raise cv.Invalid("video.sink must reference an encoded video sink or video renderer", path=[CONF_VIDEO, CONF_SINK])
+            video[CONF_SINK].type = declared_type
+            if declared_type.inherits_from(EncodedFrameRenderer):
+                video[CONF_RENDERER_SINK_ID].type = (P4RendererVideoSink if str(declared_type) == "p4_video_renderer::P4VideoRenderer" else S3RendererVideoSink if str(declared_type) == "esp_video_renderer::EspVideoRenderer" else RendererVideoSink)
         if (
             CONF_SOURCE not in video
             and CONF_CAMERA_ID not in video
@@ -1031,6 +1038,12 @@ async def _add_core_settings(var, config):
             )
         if CONF_SINK in video:
             sink = await cg.get_variable(video[CONF_SINK])
+            if video[CONF_SINK].type.inherits_from(EncodedFrameRenderer):
+                cg.add_define("USE_ESPHOME_VOIP_STACK_VIDEO_RENDERER")
+                cg.add_global(cg.RawStatement('#include "esphome/components/voip_stack/video_renderer_adapter.h"'))
+                sink = cg.new_Pvariable(video[CONF_RENDERER_SINK_ID], sink)
+                if config[CONF_VIDEO_DEBUG] and str(video[CONF_RENDERER_SINK_ID].type) == str(P4RendererVideoSink):
+                    cg.add_define("USE_P4_VIDEO_RENDERER_DEBUG")
             cg.add(var.set_video_sink(sink))
         cg.add(var.set_video_rtp_port(video[CONF_RTP_PORT]))
         cg.add(var.set_video_offer_payload_type(video[CONF_OFFER_PAYLOAD_TYPE]))

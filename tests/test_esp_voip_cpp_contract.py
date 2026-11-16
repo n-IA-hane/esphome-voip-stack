@@ -10,6 +10,7 @@ disappears, and minimal SIP transaction behavior for UDP.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 import re
@@ -410,44 +411,45 @@ def test_h264_camera_callback_completes_the_shared_idle_barrier() -> None:
     assert callback.count("this->release_tx_slot_(slot);") == 2
 
 
-def test_p4_h264_renderer_uses_compact_surfaces_and_supported_display_copy() -> None:
-    header = read("../p4_video_renderer/p4_video_renderer.h")
-    codegen = read("../p4_video_renderer/__init__.py")
-    source = read("../p4_video_renderer/p4_video_renderer.cpp")
+def renderer_read(name: str) -> str:
+    renderer = Path(os.environ.get("VIDEO_RENDERER_SOURCE", ROOT.parent / "esphome-video-renderer"))
+    return (renderer / "esphome/components/p4_video_renderer" / name).read_text()
 
-    assert "display::Display *value" in header
-    assert header.count('#include "esphome/components/mipi_dsi/mipi_dsi.h"') == 1
-    assert re.search(
-        r"#if defined\(USE_MIPI_DSI_RGB565_OWNED_TRANSFORM\)\s*&&\s*\\?\s*"
-        r'defined\(USE_P4_VIDEO_RENDERER_DIRECT_DISPLAY\)\s*'
-        r'#include "esphome/components/mipi_dsi/mipi_dsi.h"\s*#endif',
-        header,
-    )
-    assert "cv.use_id(mipi_dsi_display.MipiDsi)" in codegen
-    assert "prepare_direct_frame_buffers" not in source
-    assert "present_direct_frame_buffer" not in source
-    native_blit = cpp_method(source, r"P4VideoRenderer::present_native_rgb565_")
-    assert "supports_native_rgb565()" in native_blit
-    assert "draw_native_rgb565(x, y, width, height, pixels," in native_blit
-    assert "this->direct_display_->draw_pixels_at" in native_blit
-    assert "get_frame_buffer(" not in native_blit
+
+def test_p4_h264_renderer_publishes_only_through_owned_display() -> None:
+    header = renderer_read("p4_video_renderer.h")
+    codegen = renderer_read("__init__.py")
+    source = renderer_read("p4_video_renderer.cpp")
+    assert "mipi_dsi::MipiDsi *value" in header
+    assert "rgb565_transform_ids" in codegen
+    assert "public video_renderer::EncodedFrameRenderer" in header
+    assert "lv_image_set_src" not in source and "lv_image_create" not in source
+    assert "get_frame_buffer(" not in source
+    worker = cpp_method(source, r"P4VideoRenderer::render_i420_")
+    assert "this->pending_surface_.store(0" in worker
+    assert "this->enable_loop_soon_any_context()" in worker
+    assert "ppa_do_scale_rotate_mirror" not in worker
+    assert "draw_rgb565_transformed" not in worker
+    loop = cpp_method(source, r"P4VideoRenderer::loop")
+    assert "present_surface_direct_" in loop
+    assert "LV_EVENT_REFR_READY" in source
+    assert "PPA_SRM_ROTATION_ANGLE_0" in source
 
 
 def test_p4_renderer_requires_transfer_callback_only_for_h264() -> None:
-    source = read("../p4_video_renderer/p4_video_renderer.cpp")
-    consume = cpp_method(source, r"P4VideoRenderer::consume_video_access_unit")
-
-    common_gate, codec_paths = consume.split(
-        "#ifdef USE_P4_VIDEO_RENDERER_H264", 1
-    )
+    source = renderer_read("p4_video_renderer.cpp")
+    consume = cpp_method(source, r"P4VideoRenderer::submit_frame")
+    common_gate, codec_paths = consume.split("#ifdef USE_P4_VIDEO_RENDERER_H264", 1)
     h264_path, jpeg_path = codec_paths.split("#else", 1)
-
     assert "release_callback" not in common_gate
     assert "access_unit.release_callback == nullptr" in h264_path
     assert "memcpy(this->rx_au_, access_unit.data, access_unit.size);" in jpeg_path
-    assert "this->direct_display_->draw_pixels_at(" in source
-    assert "config.out.pic_w = geometry.surface_width;" in source
-    assert "config.out.pic_h = geometry.surface_height;" in source
+    assert "access_unit.release();" in jpeg_path
+    rejected_queue = h264_path.split("if (xQueueSend", 1)[1].split("if (access_unit.key_frame)", 1)[0]
+    assert "slot.access_unit = {};" in rejected_queue
+    assert "release()" not in rejected_queue
+    assert "operation.in.srm_cm = PPA_SRM_COLOR_MODE_YUV420;" in source
+    assert "ppa_do_scale_rotate_mirror(" not in source
 
 
 def test_video_rtp_latches_only_codec_valid_media_packets() -> None:
