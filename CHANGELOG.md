@@ -4,6 +4,10 @@
 
 Changes since stable **2026.11.0**.
 
+- Recover incoming H.264 video after RTP loss by waiting for a complete IDR
+  picture before passing dependent frames to the decoder. The next IDR also
+  carries the session's cached SPS and PPS when the peer omits them.
+
 - Connect S3 and P4 video sinks to independent renderer components through
   adapters owned by VoIP Stack. The normal sink reference creates the adapter;
   SIP/RTP formats, clocks and negotiation remain outside the renderer.
