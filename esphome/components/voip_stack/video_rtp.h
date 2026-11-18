@@ -194,6 +194,10 @@ class VideoRtpSession {
   bool append_annex_b_nal_(const uint8_t *nal, size_t size);
   void finish_access_unit_(uint32_t timestamp);
   void reset_h264_parameter_sets_();
+  void request_h264_resync_() {
+    this->h264_waiting_for_idr_ = true;
+    this->send_rtcp_pli_();
+  }
 #endif
   bool handle_rtcp_packet_(const uint8_t *packet, size_t size,
                            bool *request_key_frame);
@@ -329,6 +333,9 @@ class VideoRtpSession {
   uint16_t expected_sequence_{0};
   bool sequence_valid_{false};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+  // Losing a reference can invalidate pictures beyond the current assembly.
+  // The receive worker clears this only once the sink accepts an intact IDR.
+  bool h264_waiting_for_idr_{false};
   // RFC 6184 senders may transmit SPS/PPS only at stream bootstrap. Keep the
   // last complete sets for this RTP session and prepend them to a later IDR
   // after local loss/reset, matching the browser-side depacketizer.

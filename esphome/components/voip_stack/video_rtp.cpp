@@ -361,6 +361,7 @@ bool VideoRtpSession::set_negotiated(
   this->reset_reassembly_();
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
   this->reset_h264_parameter_sets_();
+  this->h264_waiting_for_idr_ = false;
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   // Dynamic RFC 2435 Q mappings belong to one negotiated RTP session and
@@ -1586,6 +1587,9 @@ void VideoRtpSession::task_() {
     if (this->rx_reset_requested_.exchange(false,
                                            std::memory_order_acq_rel)) {
       this->reset_reassembly_();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+      this->h264_waiting_for_idr_ = true;
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
       this->jpeg_depacketizer_.reset_session();
 #endif
@@ -1631,6 +1635,9 @@ void VideoRtpSession::task_() {
             continue;
           }
           this->reset_reassembly_();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+          this->h264_waiting_for_idr_ = true;
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
           this->jpeg_depacketizer_.reset_session();
 #endif
@@ -1778,6 +1785,9 @@ bool VideoRtpSession::handle_rtp_packet_(const uint8_t *packet, size_t size) {
     return false;
   if (this->reassembly_ == nullptr && !this->acquire_reassembly_slot_()) {
     this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+    this->request_h264_resync_();
+#endif
     return false;
   }
   const bool marker = (packet[1] & 0x80) != 0;
@@ -1806,6 +1816,9 @@ bool VideoRtpSession::handle_rtp_packet_(const uint8_t *packet, size_t size) {
     // A packet with only a valid RTP envelope is not enough to establish the
     // symmetric RTP peer. In particular, a malformed first packet must not
     // latch an attacker-controlled SSRC/port and exclude the real stream.
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
+    if (this->sequence_valid_) this->request_h264_resync_();
+#endif
     this->reset_reassembly_();
     return false;
   }
@@ -1859,7 +1872,11 @@ bool VideoRtpSession::handle_h264_payload_(const uint8_t *payload,
   }
 
   if (!this->reassembly_active_ || timestamp != this->reassembly_timestamp_) {
-    if (this->reassembly_active_) this->reset_reassembly_();
+    if (this->reassembly_active_) {
+      // A new timestamp before the marker abandons the previous picture.
+      this->request_h264_resync_();
+      this->reset_reassembly_();
+    }
     this->reassembly_active_ = true;
     this->reassembly_timestamp_ = timestamp;
     this->reassembly_damaged_ = sequence_gap;
@@ -2045,6 +2062,14 @@ void VideoRtpSession::finish_access_unit_(uint32_t timestamp) {
         }
       }
     }
+    if (this->h264_waiting_for_idr_ && !key_frame) {
+      // Cache intact parameter sets above, but do not lease a dependent
+      // picture to the decoder until its references have been restored.
+      this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
+      this->send_rtcp_pli_();
+      this->reset_reassembly_();
+      return;
+    }
     const size_t sps_prefix =
         key_frame && !has_sps && this->h264_sps_size_ != 0
             ? 4 + this->h264_sps_size_
@@ -2059,7 +2084,7 @@ void VideoRtpSession::finish_access_unit_(uint32_t timestamp) {
           this->receive_access_unit_capacity_) {
         this->dropped_access_units_.fetch_add(
             1, std::memory_order_acq_rel);
-        this->send_rtcp_pli_();
+        this->request_h264_resync_();
         this->reset_reassembly_();
         return;
       }
@@ -2094,13 +2119,14 @@ void VideoRtpSession::finish_access_unit_(uint32_t timestamp) {
     if (!this->sink_->consume_video_access_unit(access_unit)) {
       access_unit.release();
       this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
-      this->send_rtcp_pli_();
+      this->request_h264_resync_();
     } else {
+      this->h264_waiting_for_idr_ = false;
       this->rx_access_units_ok_.fetch_add(1, std::memory_order_acq_rel);
     }
   } else {
     this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);
-    this->send_rtcp_pli_();
+    this->request_h264_resync_();
   }
   this->reset_reassembly_();
   this->acquire_reassembly_slot_();
