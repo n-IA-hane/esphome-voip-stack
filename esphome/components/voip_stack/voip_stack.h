@@ -850,12 +850,14 @@ class VoipStack : public Component {
   text_sensor::TextSensor *transport_sensor_{nullptr};    // SIP signaling transport: "udp" or "tcp"
   text_sensor::TextSensor *endpoint_sensor_{nullptr};     // HA roster row with SIP route and audio capabilities.
   text_sensor::TextSensor *last_reason_sensor_{nullptr};  // terminal reason for HA/card mirroring
-  text_sensor::TextSensor *sip_snapshot_sensor_{nullptr};  // diagnostic SipPhoneState JSON
+  text_sensor::TextSensor *sip_snapshot_sensor_{nullptr};
+  std::string last_sip_snapshot_;
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  uint32_t last_sip_snapshot_refresh_ms_{0};
+#endif
 #endif
   std::string last_reason_;
   std::string last_endpoint_;
-  std::string last_sip_snapshot_;
-  uint32_t last_sip_snapshot_refresh_ms_{0};
   std::atomic<bool> endpoint_publish_requested_{false};
   std::string last_terminal_call_id_;
   std::string last_terminal_direction_;

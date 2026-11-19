@@ -79,6 +79,8 @@ struct VoipStack{
  void defer(const char*,std::function<void()>f){assert(!pending);pending=std::move(f);}
  void once(){assert(pending);auto f=std::move(pending);pending={};const auto n=lines.size();f();assert(lines.size()-n<=2);}
  void finish(){unsigned bound=80;while(pending&&bound--)once();assert(!pending);}
+ unsigned published_snapshots=0;
+ void publish_sip_snapshot_(){++published_snapshots;}
  void dump_diagnostics();uint32_t last_diagnostics_ms_=0;
 """
         + fields
@@ -94,7 +96,7 @@ int main(){
  auto &event=s.audio_debug_rx_startup_[0];event.revision=5;event.present=true;event.data.us=123456;event.data.flags=0;
 #endif
  s.dump_diagnostics();assert(s.diagnostic_dump_);assert(lines.size()==1);assert(stack_reads==0);
- s.dump_diagnostics();assert(lines.size()==1);
+ s.dump_diagnostics();assert(lines.size()==1 && s.published_snapshots==1);
  // A hangup during output must not rewrite the already captured report.
  s.current_call_id_.clear();s.call_state_=CallState::IDLE;s.transport_->value.rtp_tx_packets=999;s.last_reason_="different";
  s.volume_=0;s.mic_gain_=1;
@@ -155,3 +157,94 @@ int main(){
     )
     assert compiled.returncode == 0, compiled.stderr
     subprocess.run([str(exe)], check=True, capture_output=True, text=True)
+
+
+@pytest.mark.parametrize("audio_debug", [False, True])
+def test_call_snapshot_publishes_transitions_without_periodic_media_churn(tmp_path, audio_debug):
+    from test_refer_dialog_runtime import block
+
+    stack = (COMPONENT / "voip_stack.cpp").read_text()
+    fsm = (COMPONENT / "voip_fsm.cpp").read_text()
+    source = tmp_path / "activity.cpp"
+    source.write_text(r"""
+#include <atomic>
+#include <cassert>
+#include <cstdint>
+#include <string>
+#include <vector>
+#define ESP_LOGD(...) ((void)0)
+enum class CallState { IDLE, RINGING, IN_CALL };
+static uint32_t clock_ms;
+static uint32_t millis() { return clock_ms; }
+struct Sensor {
+  std::vector<std::string> events;
+  void publish_state(const std::string &state) { events.push_back(state); }
+};
+struct VoipStack {
+  Sensor snapshot, state, reason;
+  Sensor *sip_snapshot_sensor_{&snapshot}, *state_sensor_{&state}, *last_reason_sensor_{&reason};
+  std::atomic<CallState> call_state_{CallState::IDLE};
+  std::atomic<bool> endpoint_publish_requested_{false};
+  std::string last_sip_snapshot_, last_reason_;
+  uint32_t last_sip_snapshot_refresh_ms_{0}, cycle_started_at_{0}, packets{0};
+  static constexpr uint32_t CYCLE_TIMEOUT_MS=3000, calling_timeout_ms_=3000, ringing_timeout_ms_=3000;
+  bool audio_debug_{false}, cycle_active_{false};
+  void pump_application_media_start_() {}
+  void publish_endpoint_() {}
+  void commit_cycle_() {}
+  void handle_call_timeouts_(uint32_t, uint32_t) {}
+  void publish_media_route_() {}
+  void disable_loop() {}
+  template<class F> void defer(F) {}
+  std::string get_state_str() const {
+    switch (call_state_.load()) {
+      case CallState::RINGING: return "ringing";
+      case CallState::IN_CALL: return "in_call";
+      default: return "idle";
+    }
+  }
+  std::string build_sip_snapshot_string_() const {
+    return get_state_str() + ":" + std::to_string(packets) + ":" + last_reason_;
+  }
+  void loop();
+  void publish_state_();
+  void publish_last_reason_(const std::string &);
+  void publish_sip_snapshot_();
+};
+""" + "\n".join([
+        block(stack, "void VoipStack::loop()"),
+        block(stack, "void VoipStack::publish_sip_snapshot_()"),
+        block(fsm, "void VoipStack::publish_state_()"),
+        block(fsm, "void VoipStack::publish_last_reason_("),
+    ]) + r"""
+int main() {
+  VoipStack phone;
+#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
+  phone.audio_debug_ = true;
+#endif
+  phone.call_state_ = CallState::RINGING;
+  phone.publish_state_();
+  phone.call_state_ = CallState::IN_CALL;
+  phone.publish_state_();
+  for (clock_ms=1; clock_ms<=60000; ++clock_ms) {
+    ++phone.packets;
+    phone.loop();
+  }
+  assert(phone.snapshot.events.size() == (phone.audio_debug_ ? 122 : 2));
+  phone.publish_last_reason_("remote_hangup");
+  phone.call_state_ = CallState::IDLE;
+  phone.publish_state_();
+  assert(phone.state.events == std::vector<std::string>({"ringing", "in_call", "idle"}));
+  assert(phone.snapshot.events.back() == "idle:60000:remote_hangup");
+  const auto count = phone.snapshot.events.size();
+  clock_ms += 2000;
+  ++phone.packets;
+  phone.loop();
+  assert(phone.snapshot.events.size() == count);
+}
+""")
+    exe = tmp_path / "activity"
+    subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-DUSE_TEXT_SENSOR",
+                    *(["-DUSE_ESPHOME_VOIP_STACK_AUDIO_DEBUG"] if audio_debug else []),
+                    str(source), "-o", str(exe)], check=True)
+    subprocess.run([exe], check=True)

@@ -737,7 +737,7 @@ platform entities you need:
 | `text_sensor` | `last_reason` | Last terminal outcome. |
 | `text_sensor` | `contacts` | Published local contact list. |
 | `text_sensor` | `transport` | Active signaling transport. |
-| `text_sensor` | `sip_snapshot` | Diagnostic snapshot of the SIP layer. |
+| `text_sensor` | `sip_snapshot` | SIP and media details captured on call or endpoint changes. Run `voip_stack.dump_diagnostics` for current counters. With `audio_debug: true`, active calls also sample every 500 ms. |
 | `text` | `ring_groups` | Editable comma-separated ring group memberships. |
 | `text` | `queues` | Editable comma-separated queue declarations; HA owns agent login and pause. |
 | `text` | `conference_groups` | Editable comma-separated conference group memberships. |

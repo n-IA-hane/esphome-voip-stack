@@ -120,6 +120,7 @@ void VoipStack::dump_diagnostics() {
   std::snprintf(dump->last_reason, sizeof(dump->last_reason), "%.47s",
                 this->last_reason_.empty() ? "none" : this->last_reason_.c_str());
   this->diagnostic_dump_ = std::move(dump);
+  this->publish_sip_snapshot_();
   this->emit_diagnostic_section_();
 }
 

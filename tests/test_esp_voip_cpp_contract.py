@@ -3440,13 +3440,6 @@ def test_media_session_and_silence_policies_are_explicit() -> None:
     assert "if (!this->media_active_.load" in sip_cpp
 
 
-def test_sip_snapshot_refresh_is_throttled_unless_audio_debug_is_enabled() -> None:
-    stack = read("voip_stack.cpp")
-
-    assert "const uint32_t snapshot_refresh_ms = this->audio_debug_ ? 500 : 2000;" in stack
-    assert "now - this->last_sip_snapshot_refresh_ms_ >= snapshot_refresh_ms" in stack
-
-
 def test_long_diagnostic_text_sensors_have_wrapping_separators() -> None:
     stack = read("voip_stack.cpp")
 

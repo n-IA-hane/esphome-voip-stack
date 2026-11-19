@@ -11,6 +11,9 @@ Changes since stable **2026.11.0**.
   fails, the phone restores a previously requested registration.
 - A re-enrolled Home Assistant phone can register with its new password
   after the PBX rejects cleanup of old BLF, presence or mailbox subscriptions.
+- The SIP snapshot sensor records call and endpoint changes. VoIP Diagnostics
+  refreshes its current packet counters on demand. Periodic samples during a
+  call are available with `audio_debug: true`.
 - Recover incoming H.264 video after RTP loss by waiting for a complete IDR
   picture before passing dependent frames to the decoder. The next IDR also
   carries the session's cached SPS and PPS when the peer omits them.

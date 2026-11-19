@@ -680,11 +680,13 @@ void VoipStack::loop() {
 
   this->handle_call_timeouts_(now, calling_to);
   const CallState state = this->call_state_.load(std::memory_order_acquire);
-  const uint32_t snapshot_refresh_ms = this->audio_debug_ ? 500 : 2000;
-  if (state != CallState::IDLE && now - this->last_sip_snapshot_refresh_ms_ >= snapshot_refresh_ms) {
+#if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_TEXT_SENSOR)
+  if (this->audio_debug_ && this->sip_snapshot_sensor_ != nullptr && state != CallState::IDLE &&
+      now - this->last_sip_snapshot_refresh_ms_ >= 500) {
     this->last_sip_snapshot_refresh_ms_ = now;
     this->publish_sip_snapshot_();
   }
+#endif
   bool keep_loop = this->cycle_active_ || state != CallState::IDLE;
 #if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_MIC)
   keep_loop = keep_loop || (this->audio_debug_ &&
