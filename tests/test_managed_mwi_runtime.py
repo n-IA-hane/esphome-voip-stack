@@ -12,7 +12,8 @@ def managed_mwi_binary(tmp_path_factory):
     core = folder / "esphome/core"
     core.mkdir(parents=True)
     (core / "defines.h").write_text("")
-    code = mwi_transport_source().split("int main(int argc,char**argv)")[0]
+    code = '#include "sip_account_view.h"\nusing esphome::voip_stack::SipAccountSnapshot;\n'
+    code += mwi_transport_source().split("int main(int argc,char**argv)")[0]
     adapter = (SOURCE / "sip_registration_transport.cpp").read_text()
     for marker in ["bool SipTransport::queue_managed_account_(", "bool SipTransport::managed_account_needs_main_loop_(",
                    "void SipTransport::notify_managed_account_main_loop_(", "void SipTransport::pump_managed_account_(",

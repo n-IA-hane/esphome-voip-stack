@@ -305,11 +305,13 @@ bool VoipStack::reset_account(const std::string& id) {
 #endif
   return true;
 }
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
+#if defined(USE_ESPHOME_VOIP_DIRECTORY) || defined(USE_VOIP_HA_AUTO_REGISTER)
 bool VoipStack::get_account_snapshot(const std::string &id, SipAccountSnapshot *out) {
   return this->transport_ != nullptr &&
          static_cast<SipTransport *>(this->transport_.get())->get_account_snapshot(id, out);
 }
+#endif
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
 void VoipStack::publish_account_changed_(const std::string &id) {
   this->defer([this, id]() { this->account_changed_callbacks_.call(id); });
 }

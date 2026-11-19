@@ -196,14 +196,11 @@ bool SipTransport::set_blf_watches(const std::vector<BlfWatchConfig> &watches) {
   for (size_t i = 0; i < watches.size(); ++i) {
     const auto &watch = watches[i];
     const int owner_index = this->registration_.find(watch.account_id);
-    if (watch.contact_id.empty() || watch.contact_id.size() > 96 || watch.target.empty() ||
-        watch.target.size() > 512 || owner_index < 0) return false;
-    for (unsigned char c : watch.target)
-      if (c <= 32 || c == 127 || c == '<' || c == '>' || c == '"') return false;
+    if (watch.contact_id.empty() || !sip_valid_text(watch.contact_id, CONTACT_ID_BYTES) || owner_index < 0) return false;
     for (size_t j = 0; j < i; ++j)
       if (watches[j].contact_id == watch.contact_id) return false;
-    const auto normalized = sip_normalize_dial_target(watch.target, 512);
-    if (normalized.empty() || (normalized.find(':') != std::string::npos && normalized.rfind("sip:", 0) != 0) ||
+    const auto normalized = sip_normalize_dial_target(watch.target, SIP_URI_BYTES);
+    if (normalized.empty() ||
         sip_target_uri(normalized, this->registration_.account(owner_index).config.domain).empty()) return false;
   }
   const uint32_t now = millis();
@@ -617,7 +614,7 @@ bool SipTransport::register_account(const std::string& id, bool enabled) {
   this->wake_sip_task_();
   return result;
 }
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
+#if defined(USE_ESPHOME_VOIP_DIRECTORY) || defined(USE_VOIP_HA_AUTO_REGISTER)
 bool SipTransport::get_account_snapshot(const std::string &id, SipAccountSnapshot *out) {
   if (out == nullptr) return false;
   LockGuard lock(this->dialog_mutex_);

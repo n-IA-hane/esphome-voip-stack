@@ -8,9 +8,7 @@
 #include <cstring>
 
 #include "cJSON.h"
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
 #include "sip_message.h"
-#endif
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
@@ -167,13 +165,10 @@ bool parse_json_roster_slot(const cJSON *obj, JsonRosterSlot *slot) {
   std::string name = Phonebook::trim(json_string(obj, "name"));
   if (name.empty()) name = id;
   if (id.empty()) id = name;
+  if (!sip_valid_text(id, id.rfind("sip:", 0) == 0 ? Phonebook::MAX_ROUTE_BYTES : Phonebook::MAX_ID_BYTES))
+    return false;
   const auto valid_name = [](const std::string &value) {
-    if (value.empty() || value.size() > Phonebook::MAX_NAME_BYTES) return false;
-    for (const char ch : value) {
-      const auto byte = static_cast<unsigned char>(ch);
-      if (byte < 0x20 || byte == 0x7F || ch == '|' || ch == ',' || ch == ';') return false;
-    }
-    return true;
+    return !value.empty() && sip_valid_text(value, Phonebook::MAX_NAME_BYTES);
   };
   // A human-friendly UTF-8 display name may exceed the ESP phonebook's byte
   // budget even when its stable SIP/account id is short. Keep the contact
@@ -185,6 +180,7 @@ bool parse_json_roster_slot(const cJSON *obj, JsonRosterSlot *slot) {
 
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
   slot->stable_id = json_metadata_string(obj, "endpoint_id");
+  if (!sip_valid_text(slot->stable_id, Phonebook::MAX_ID_BYTES)) return false;
   slot->account_id = json_metadata_string(obj, "account_id");
   slot->kind = contact_kind_from_string(json_metadata_string(obj, "endpoint_kind"));
   if (slot->kind == ContactKind::UNKNOWN) slot->kind = contact_kind_from_string(json_metadata_string(obj, "kind"));
@@ -198,8 +194,7 @@ bool parse_json_roster_slot(const cJSON *obj, JsonRosterSlot *slot) {
   slot->route = id;
   slot->address = Phonebook::trim(json_string(obj, "address"));
   if (slot->address.empty()) slot->address = Phonebook::trim(json_string(obj, "host"));
-  if (slot->address.size() > Phonebook::MAX_ADDRESS_BYTES ||
-      slot->address.find_first_of("|,;\r\n\x7f") != std::string::npos) {
+  if (!slot->address.empty() && !sip_valid_host(slot->address)) {
     return false;
   }
   slot->local_ha = json_metadata_bool(obj, "local_ha");
@@ -584,13 +579,27 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
   bool has_ha = false;
   bool saw_valid_slot = false;
 
+  SipTargetParts own;
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  SipAccountSnapshot account;
+  std::string own_uri;
+  if (this->get_account_snapshot("ha", &account)) {
+    own_uri = account.config.address_of_record();
+    if (sip_parse_target_uri(own_uri, own)) own.port = account.config.port;
+  }
+#endif
   const cJSON *item = nullptr;
   cJSON_ArrayForEach(item, contacts) {
     if (slots.size() >= Phonebook::MAX_CONTACTS) break;
     JsonRosterSlot slot;
     if (!parse_json_roster_slot(item, &slot)) continue;
     saw_valid_slot = true;
-    if (slot.name == this->device_name_ || slot.route == this->device_route_id_) continue;
+    if (!this->device_route_id_.empty() && (slot.route == this->device_route_id_
+#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
+        || slot.stable_id == this->device_route_id_
+#endif
+        )) continue;
+    if (sip_matches_aor(own, json_string(item, "sip_uri")) || sip_matches_aor(own, slot.route)) continue;
     slots.push_back(slot);
     if (slot.local_ha && !slot.address.empty()) {
       ha_slot = slot;
@@ -838,24 +847,19 @@ DirectoryCommitResult VoipStack::commit_contact_directory(const void *provider, 
     for (auto &item : this->directory_providers_)
       if (item.owner == nullptr) { binding = &item; break; }
   if (binding == nullptr && count != 0) return DirectoryCommitResult::CAPACITY;
-  std::string own_aor, own_default_aor;
+  SipTargetParts own;
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   SipAccountSnapshot account;
+  std::string own_uri;
   if (!account_id.empty() && this->get_account_snapshot(account_id, &account)) {
-    own_aor = sip_prefix_target_user(account.config.address_of_record(), "");
-    // Match only this account's authority. An identical user at another PBX
-    // or port remains a distinct contact, and the display name is irrelevant.
-    if (!own_aor.empty() && account.config.domain.find(':') == std::string::npos) {
-      if (account.config.port == 5060) own_default_aor = own_aor;
-      own_aor += ":" + std::to_string(account.config.port);
-    }
+    own_uri = account.config.address_of_record();
+    if (sip_parse_target_uri(own_uri, own)) own.port = account.config.port;
   }
 #endif
-  const auto self = [this, &own_aor, &own_default_aor](const ContactEntry &entry) {
-    if (entry.route == this->device_route_id_ || entry.stable_id() == this->device_route_id_) return true;
-    if (own_aor.empty()) return false;
-    const std::string normalized = sip_prefix_target_user(entry.route, "");
-    return normalized == own_aor || (!own_default_aor.empty() && normalized == own_default_aor);
+  const auto self = [this, &own](const ContactEntry &entry) {
+    return (!this->device_route_id_.empty() &&
+            (entry.route == this->device_route_id_ || entry.stable_id() == this->device_route_id_)) ||
+           sip_matches_aor(own, entry.route);
   };
   size_t retained_count = 0;
   for (size_t i = 0; i < count; ++i) {
@@ -917,8 +921,7 @@ void VoipStack::call_(const std::string &value, const std::string &call_id) {
     this->start_call_on_line(target, this->default_line_); return;
   }
 #endif
-  if (target.size() > Phonebook::MAX_NAME_BYTES ||
-      target.find_first_of("|,;\r\n") != std::string::npos) {
+  if (sip_normalize_dial_target(value, Phonebook::MAX_ROUTE_BYTES).empty()) {
     ESP_LOGW(TAG, "call failed: invalid target label");
     this->defer([this, target]() { this->call_failed_trigger_.trigger(target, "Invalid target"); });
     return;

@@ -94,6 +94,7 @@ class LdapDirectory:public Component {
  uint8_t max_entries_=4;
  char receive_buffer_[8192]{};size_t receive_size_=8192;
  voip_stack::ContactEntry *stage_;
+ uint8_t result_discarded_=0;
  size_t stage_count_=0,stage_capacity_=4,contact_count_=0;
  const char*status_="updating";
  std::string account_id_="ha";

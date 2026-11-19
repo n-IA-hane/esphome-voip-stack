@@ -13,6 +13,7 @@ def test_uri_targets_and_line_calls_preserve_authority_and_parameters(tmp_path):
     code = r'''
 #include "esphome/components/voip_stack/phonebook.h"
 #include "esphome/components/voip_stack/sip_uri_user.h"
+#include "esphome/components/voip_stack/sip_record.h"
 #include "esphome/components/voip_stack/sip_types.h"
 #include <algorithm>
 #include <cassert>
@@ -20,9 +21,12 @@ def test_uri_targets_and_line_calls_preserve_authority_and_parameters(tmp_path):
 #include <memory>
 using namespace esphome::voip_stack;
 '''
-    for marker in ["std::string trim_copy(", "static uint8_t hex_value(", "std::string sip_uri_user_decode(",
+    for marker in ["std::string trim_copy(", "std::string sip_uri_user_decode(",
                    "std::string sip_prefix_target_user(", "std::string sip_target_uri(",
                    "std::string sip_normalize_dial_target("]:
+        code += block(parser, marker) + "\n"
+    for marker in ("std::string name_addr_uri(", "std::string strip_angle_uri(", "std::string sip_quoted(",
+                   "std::string sip_name_addr(", "std::string sip_display_name_from_header(", "std::string sip_user_from_header("):
         code += block(parser, marker) + "\n"
     code += r'''
 struct SipTransport{void clear_account_line(){}};
@@ -46,6 +50,14 @@ struct VoipStack {
     code += block(registration, "void VoipStack::start_call_on_line_(") + "\n"
     code += block((SOURCE / "voip_settings.cpp").read_text(), "void VoipStack::call_via_ha(") + r'''
 int main(){
+ const std::string angle_label=R"(Desk <A> "Sales")";
+ const std::string angle_uri="sip:"+sip_uri_user_encode(angle_label)+"@pbx.example";
+ const auto address=sip_name_addr(angle_uri,angle_label);
+ assert(name_addr_uri(address)==angle_uri);
+ assert(sip_display_name_from_header(address,64)==angle_label);
+ assert(sip_user_from_header(address)==angle_label);
+ assert(name_addr_uri("<sip:a@pbx><sip:b@pbx>").empty());
+
  assert(sip_uri_user_decode("Caff%C3%A8%2020%25%40Casa")=="Caffè 20%@Casa");
  assert(sip_uri_user_decode("Caff%0d%0aName").empty()&&sip_uri_user_decode("bad%2").empty());
  assert(sip_target_uri("sip:camera@pbx.example.test:5070;transport=tcp","ignored.example.test")=="sip:camera@pbx.example.test:5070;transport=tcp");
@@ -64,10 +76,13 @@ int main(){
  phone.start_call_on_line("101","ha");assert(phone.dialed=="101"&&phone.line=="ha");
  phone.start_call_on_line("SIP:Home%20Assistant@pbx.example.test:5070;transport=TCP","ha");
  assert(phone.dialed=="sip:Home%20Assistant@pbx.example.test:5070;transport=TCP"&&phone.line=="ha");
+ for(const std::string name:{"Desk|Other", "Desk,Other", "Bad;Label","Caffè 20%@Casa"}){
+  phone.start_call_on_line(name,"ha");assert(phone.dialed==name);
+ }
  for(const std::string bad:{"sips:101@host", "SIPS:101@host", "http://host/101", "sip:101@host;transport=tls",
      "sip:101@host;transport=udp;transport=tcp", "sip:101@host:0", "sip:101@host:65536", "sip:101@host:bad",
      "sip:101@.bad", "sip:101@host;=bad", "sip:101@[::1]", "sip:101@host?Subject=bad", "sip:bad%00@host",
-     "sip:101@host\r\nHeader", "\r\n101", "101\r\n", "Desk|Other", "Desk,Other", "Bad;Label"}) {
+     "sip:101@host\r\nHeader", "\r\n101", "101\r\n"}) {
   phone.dialed="unchanged";phone.start_call_on_line(bad,"ha");assert(phone.dialed=="unchanged");
  }
  phone.dialed="unchanged";phone.start_call_on_line(std::string("sip:bad\0@host",13),"ha");assert(phone.dialed=="unchanged");

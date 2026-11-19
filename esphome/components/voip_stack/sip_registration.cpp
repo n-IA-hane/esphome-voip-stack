@@ -33,21 +33,7 @@ bool token_safe(const std::string& s, size_t max, bool empty = false) {
 }
 #ifdef USE_VOIP_HA_AUTO_REGISTER
 bool managed_username_valid(const std::string &name) {
-  if (!safe(name, 64) || name.front() == ' ' || name.back() == ' ') return false;
-  // RFC 3629 permits only canonical sequences and Unicode scalar values.
-  for (size_t i = 0; i < name.size();) {
-    const auto lead = static_cast<unsigned char>(name[i++]);
-    if (lead < 0x80) continue;
-    if (lead < 0xC2 || lead > 0xF4) return false;
-    const size_t following = lead < 0xE0 ? 1 : (lead < 0xF0 ? 2 : 3);
-    if (following > name.size() - i) return false;
-    const auto next = static_cast<unsigned char>(name[i]);
-    if ((lead == 0xE0 && next < 0xA0) || (lead == 0xED && next >= 0xA0) ||
-        (lead == 0xF0 && next < 0x90) || (lead == 0xF4 && next >= 0x90)) return false;
-    for (size_t end = i + following; i < end; ++i)
-      if ((static_cast<unsigned char>(name[i]) & 0xC0) != 0x80) return false;
-  }
-  return true;
+  return !name.empty() && name.front() != ' ' && name.back() != ' ' && sip_valid_text(name, SIP_NAME_BYTES);
 }
 #endif
 std::string quote(const std::string& s) {
@@ -211,23 +197,8 @@ bool find_registered_contact(const std::string& message, const std::string& expe
         if (c != ',' || quoted || angle) continue;
         const std::string item = trim(values.substr(first, p - first));
         first = p + 1;
-        size_t open = std::string::npos, close = std::string::npos;
-        bool name_quoted = false, name_escaped = false, invalid_angles = false;
-        for (size_t index = 0; index < item.size(); ++index) {
-          const char current = item[index];
-          if (name_escaped) { name_escaped = false; continue; }
-          if (name_quoted && current == '\\') { name_escaped = true; continue; }
-          if (current == '"') { name_quoted = !name_quoted; continue; }
-          if (name_quoted) continue;
-          if (current == '<') {
-            if (open != std::string::npos || close != std::string::npos) invalid_angles = true;
-            else open = index;
-          } else if (current == '>') {
-            if (open == std::string::npos || close != std::string::npos) invalid_angles = true;
-            else close = index;
-          }
-        }
-        if (name_quoted || name_escaped || invalid_angles) continue;
+        size_t open, close;
+        if (!sip_name_addr_bounds(item, open, close)) continue;
         std::string contact, parameters;
         if (open != std::string::npos && close != std::string::npos && close > open) {
           contact = item.substr(open + 1, close - open - 1);

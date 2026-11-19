@@ -56,7 +56,7 @@
 #include "voip_fsm.h"
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
 #include "sip_registration.h"
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
+#if defined(USE_ESPHOME_VOIP_DIRECTORY) || defined(USE_VOIP_HA_AUTO_REGISTER)
 #include "sip_account_view.h"
 #endif
 #ifdef USE_ESPHOME_VOIP_MWI
@@ -147,8 +147,10 @@ class VoipStack : public Component {
   bool register_account(const std::string &id);
   bool unregister_account(const std::string &id);
   bool is_registered(const std::string &id);
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
+#if defined(USE_ESPHOME_VOIP_DIRECTORY) || defined(USE_VOIP_HA_AUTO_REGISTER)
   bool get_account_snapshot(const std::string &id, SipAccountSnapshot *out);
+#endif
+#ifdef USE_ESPHOME_VOIP_DIRECTORY
   template<typename F> void add_on_account_changed_callback(F &&callback) {
     this->account_changed_callbacks_.add(std::forward<F>(callback));
   }

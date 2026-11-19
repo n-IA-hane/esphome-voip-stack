@@ -20,6 +20,7 @@ namespace esphome{template<class T>struct RAMAllocator{using value_type=T;enum{A
         code = code.replace('struct SipSignalingString:std::string {using std::string::string;using std::string::operator=;std::string str()const{return *this;}};',
                             'using esphome::voip_stack::SipSignalingString;')
     adapter = (SOURCE / "sip_registration_transport.cpp").read_text()
+    code += block(adapter, "bool SipTransport::queue_managed_account_(") + "\n"
     code += block(adapter, "bool SipTransport::get_account_snapshot(") + r'''
 struct VoipStack {
  Phonebook phonebook_;std::unique_ptr<SipTransport>transport_=std::make_unique<SipTransport>();
@@ -50,11 +51,54 @@ void add_line(SipTransport&s,Peer&p,const char*id,const char*user){
  const auto reg=one(p,"REGISTER ");auto answer=response(reg,200);answer.insert(answer.find("Content-Length:"),"Contact: "+header_value(reg,"Contact")+"\r\n");
  p.send_to(s,answer);assert(s.registration_.is_registered(id));
 }
-int main(){
+int main(int argc, char **){
  VoipStack app;auto&phone=*app.transport_;Peer peer(false);bind_account(phone,peer);add_line(phone,peer,"explicit","200");add_line(phone,peer,"fallback","300");
  assert(app.phonebook_.prepare_directory_storage());assert(phone.configure_blf(3,nullptr));
  SipMwi::Hooks hooks;hooks.context=&phone;hooks.send=SipTransport::registration_send_view_;hooks.reply=SipTransport::registration_mwi_reply_;
  hooks.local_ip=SipTransport::registration_local_ip_;hooks.random=esp_random;hooks.hash=SipTransport::registration_hash_;hooks.local_port=phone.sip_port_;phone.mwi_.set_hooks(hooks);
+ if(argc>1){
+  std::string username="Sala,@%|;!";
+  for(int i=0;i<27;++i)username+="é";
+  assert(username.size()==64);
+  std::string managed_user;
+  for(int i=0;i<32;++i)managed_user+="é";
+  const auto managed_wire_user=sip_uri_user_encode(managed_user);
+  assert(managed_user.size()==64 && managed_wire_user.size()==192);
+  add_line(phone,peer,"ha",managed_user.c_str());
+  std::string host(63,'a');
+  host+="."+std::string(63,'b')+"."+std::string(63,'c')+"."+std::string(61,'d');
+  assert(host.size()==253);
+  const std::string user_on_wire=sip_uri_user_encode(username);
+  std::string target="sip:"+user_on_wire+"@"+host+":5070;transport=tcp;opaque=";
+  target.append(512-target.size(),'x');
+  const std::string id(96,'i'); int provider;
+  app.phonebook_.set_self_name(username);
+  ContactEntry saved=row(id.c_str(),username.c_str(),target.c_str(),"ha");
+  assert(app.commit_contact_directory(&provider,&saved,1,"ha")==DirectoryCommitResult::APPLIED);
+  const auto *selected=app.phonebook_.find_id(id);assert(selected && selected->name==username);
+  phone.pump_registration_mwi_(clock_ms);
+  bool subscribed=false;
+  for(const auto &sub:peer.drain())if(header_value(sub,"Event")=="dialog"){
+   assert(sub.rfind("SUBSCRIBE "+target+" SIP/2.0\r\n",0)==0);
+   assert(name_addr_uri(header_value(sub,"To"))==target);
+   assert(name_addr_uri(header_value(sub,"From"))=="sip:"+managed_wire_user+"@pbx.example");
+   peer.send_to(phone,response(sub,200));subscribed=true;
+  }
+  assert(subscribed);
+  std::string next_hop;uint16_t port;bool tcp;
+  assert(phone.prepare_account_line("ha",&next_hop,&port,&tcp));
+  phone.remote_ip_v4_=INADDR_LOOPBACK;phone.remote_sip_port_=port;phone.remote_sip_tcp_=tcp;
+  assert(phone.send_invite_unlocked_("target-call",managed_user,managed_user,std::string(selected->route),username));
+  const auto invite=one(peer,"INVITE ");
+  assert(invite.rfind("INVITE "+target+" SIP/2.0\r\n",0)==0);
+  assert(name_addr_uri(header_value(invite,"To"))==target);
+  assert(name_addr_uri(header_value(invite,"From"))=="sip:"+managed_wire_user+"@pbx.example");
+  assert(header_value(invite,"To").find(username)!=std::string::npos);
+  assert(std::stoul(header_value(invite,"Content-Length"))==message_body(invite).size());
+  for(auto&flow:phone.registration_flows_)phone.close_tcp_flow_(flow);
+  close(phone.sip_socket_);
+  return 0;
+ }
  auto manual=row("manual","Manual fallback","103");assert(app.phonebook_.add_entry(manual)==AddResult::Added);
  int provider;ContactEntry initial[]={row("ldap-explicit","Directory explicit phone","101","explicit"),row("ldap-provider","Directory provider phone","102")};
  assert(app.commit_contact_directory(&provider,initial,2,"office")==DirectoryCommitResult::APPLIED);
@@ -100,7 +144,7 @@ int main(){
     cpp.write_text(code)
     binary = folder / "directory"
     built = subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-Wno-misleading-indentation", "-g", "-fsanitize=address,undefined", "-fno-pie", "-no-pie",
-        "-DUSE_ESPHOME_VOIP_REGISTRATION", "-DVOIP_REGISTRATION_CAPACITY=4", "-DUSE_ESPHOME_VOIP_MWI", "-DUSE_ESPHOME_VOIP_BLF", "-DUSE_ESPHOME_VOIP_DIRECTORY", "-DUSE_ESPHOME_VOIP_CONTACT_METADATA",
+        "-DUSE_ESPHOME_VOIP_REGISTRATION", "-DUSE_VOIP_HA_AUTO_REGISTER", "-DVOIP_REGISTRATION_CAPACITY=4", "-DUSE_ESPHOME_VOIP_MWI", "-DUSE_ESPHOME_VOIP_BLF", "-DUSE_ESPHOME_VOIP_DIRECTORY", "-DUSE_ESPHOME_VOIP_CONTACT_METADATA",
         *(["-DUSE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM"] if request.param else []), "-I", str(folder), "-I", str(SOURCE), "-I", str(SOURCE.parents[2]),
         str(cpp), str(SOURCE / "sip_mwi.cpp"), str(SOURCE / "sip_blf.cpp"), str(SOURCE / "sip_registration.cpp"), "-lcrypto", "-o", str(binary)], capture_output=True, text=True)
     assert built.returncode == 0, built.stderr
@@ -109,4 +153,9 @@ int main(){
 
 def test_provider_commit_selection_account_precedence_and_watch_retirement(directory_blf_binary):
     result = subprocess.run([directory_blf_binary], capture_output=True, text=True, timeout=8)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_literal_contact_identity_survives_actual_subscribe_and_invite(directory_blf_binary):
+    result = subprocess.run([directory_blf_binary, "boundary"], capture_output=True, text=True, timeout=8)
     assert result.returncode == 0, result.stdout + result.stderr

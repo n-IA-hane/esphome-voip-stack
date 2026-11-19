@@ -75,6 +75,7 @@ class LdapDirectory:public Component {
  uint8_t max_entries_=4;
  char receive_buffer_[8192]{};size_t receive_size_=sizeof receive_buffer_;
  voip_stack::ContactEntry stage_storage_[4],*stage_=stage_storage_;
+ uint8_t result_discarded_=0;
  size_t stage_count_=0,stage_capacity_=4,contact_count_=0;
  const char*status_="updating";std::string account_id_="ha";
  voip_stack::VoipStack*parent_;phone_client::TcpStream stream_;
@@ -93,6 +94,7 @@ int main(int argc,char**argv){
  const std::string mode=argv[1];voip_stack::VoipStack phone;ldap_directory::LdapDirectory directory(phone);
  directory.config_.port=std::stoi(argv[2]);directory.config_.tls=std::stoi(argv[3]);
  if(directory.config_.tls){std::ifstream file(argv[4]);directory.config_.ca_pem.assign(std::istreambuf_iterator<char>(file),{});}
+ phone.phonebook_.set_self_name("New");
  assert(phone.phonebook_.add_one("Manual|manual|192.0.2.9|5060|40000|sip_udp")==voip_stack::AddResult::Added);
  voip_stack::ContactEntry previous;previous.id="entry-old";previous.name="Old";previous.route="old";
  assert(phone.commit_contact_directory(&directory,&previous,1,"ha")==voip_stack::DirectoryCommitResult::APPLIED);
@@ -102,11 +104,14 @@ int main(int argc,char**argv){
  assert(phone.phonebook_.size()==2&&phone.phonebook_.find("Old")&&phone.publications==initial_publications);
  if(mode=="stale")++directory.generation_;
  directory.loop();
- if(mode=="success"){
+ if(mode=="success" || mode=="mixed"){
+  assert(directory.warning==(mode=="mixed"));
+  assert(directory.result_discarded_==(mode=="mixed"?1:0));
   assert(directory.updated_.calls==1&&directory.error_.calls==0&&std::string(directory.status_)=="ready");
   assert(phone.phonebook_.size()==2&&!phone.phonebook_.find("Old")&&phone.phonebook_.find("Manual"));
   const auto*contact=phone.phonebook_.find_id("entry-new");
   assert(contact&&contact->name=="New"&&contact->number=="102"&&contact->kind==voip_stack::ContactKind::CONTACT&&contact->auto_blf&&contact->account_id=="ha");
+  assert(contact->route=="sip:Caff%C3%A8%2020%25%40Casa%2C1@pbx.example.test");
   assert(phone.publications==initial_publications+1);
  }else if(mode=="empty"){
   assert(directory.updated_.calls==1&&phone.phonebook_.size()==1&&phone.phonebook_.find("Manual"));
@@ -125,7 +130,7 @@ int main(int argc,char**argv){
     core = ROOT / "esphome/components/voip_stack"
     uri = (core / "sip_message.cpp").read_text()
     source = source.replace("URI_METHODS", "\n".join(block(uri, marker) for marker in [
-        "std::string trim_copy(", "static uint8_t hex_value(", "std::string sip_uri_user_decode(",
+        "std::string trim_copy(", "std::string sip_uri_user_decode(",
         "std::string sip_prefix_target_user(", "std::string sip_target_uri(",
     ]))
     settings = (core / "voip_settings.cpp").read_text()
@@ -181,7 +186,7 @@ def message(stream):
         return decoded
 
 
-def response(mid, operation, code=0):
+def response(mid, operation, code=0, *, bad=False):
     from ldap3.protocol.rfc4511 import LDAPMessage
     from pyasn1.codec.ber.encoder import encode
     packet = LDAPMessage()
@@ -190,7 +195,7 @@ def response(mid, operation, code=0):
     if operation == "searchResEntry":
         entry["object"] = "uid=entry-new,ou=phonebook,dc=voip"
         for index, (name, value) in enumerate({"uid": "entry-new", "cn": "New", "telephoneNumber": "102",
-            "labeledURI": "sip:102@pbx.example.test", "ou": "contact"}.items()):
+            "labeledURI": "sip:bad%00@pbx" if bad else "sip:Caff%C3%A8%2020%25%40Casa%2C1@pbx.example.test", "ou": "contact"}.items()):
             entry["attributes"][index]["type"] = name
             entry["attributes"][index]["vals"][0] = value
     else:
@@ -199,7 +204,7 @@ def response(mid, operation, code=0):
 
 
 @pytest.mark.parametrize("tls", [False, True], ids=["tcp", "verified-tls"])
-@pytest.mark.parametrize("scenario", ["success", "empty", "limit", "truncated", "wrong-id", "stale"])
+@pytest.mark.parametrize("scenario", ["success", "mixed", "all-invalid", "duplicate", "capacity", "empty", "limit", "truncated", "wrong-id", "stale"])
 def test_real_peer_atomic_snapshot_failure_manual_and_generation(owner_binary, tls_certificate, tls, scenario):
     certificate, key = tls_certificate
     with socket.socket() as listener, ThreadPoolExecutor(max_workers=1) as executor:
@@ -225,15 +230,20 @@ def test_real_peer_atomic_snapshot_failure_manual_and_generation(owner_binary, t
                     assert search["protocolOp"].getName() == "searchRequest"
                     assert int(search["protocolOp"]["searchRequest"]["sizeLimit"]) == 4
                     mid = int(search["messageID"])
-                    if scenario != "empty":
+                    if scenario in {"mixed", "all-invalid"}:
+                        stream.sendall(response(mid, "searchResEntry", bad=True))
+                    if scenario in {"duplicate", "capacity"}:
+                        for _ in range(1 if scenario == "duplicate" else 4):
+                            stream.sendall(response(mid, "searchResEntry"))
+                    if scenario not in {"empty", "all-invalid"}:
                         stream.sendall(response(mid + (scenario == "wrong-id"), "searchResEntry"))
                     if scenario != "truncated":
                         stream.sendall(response(mid, "searchResDone", 4 if scenario == "limit" else 0))
-                    if scenario in {"success", "empty", "stale"}:
+                    if scenario in {"success", "mixed", "all-invalid", "duplicate", "empty", "stale"}:
                         assert message(stream)["protocolOp"].getName() == "unbindRequest"
 
         pending = executor.submit(peer)
-        mode = scenario if scenario in {"success", "empty", "stale"} else "failure"
+        mode = scenario if scenario in {"success", "mixed", "empty", "stale"} else "failure"
         result = subprocess.run([owner_binary, mode, str(listener.getsockname()[1]), str(int(tls)), certificate],
                                 capture_output=True, text=True, timeout=6)
         pending.result(timeout=5)

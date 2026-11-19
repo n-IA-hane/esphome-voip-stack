@@ -118,13 +118,13 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
            sip_route_id(this->caller_.route, VOIP_STACK_MAX_ROUTE_ID_LEN) +
            "\r\n";
     msg += "X-Voip-Stack-Caller-Name: " +
-           sip_header_token(this->caller_.name, VOIP_STACK_MAX_NAME_LEN) +
+           sip_route_id(this->caller_.name, VOIP_STACK_MAX_NAME_LEN) +
            "\r\n";
     msg += "X-Voip-Stack-Dest-Route: " +
            sip_route_id(this->destination_.route, VOIP_STACK_MAX_ROUTE_ID_LEN) +
            "\r\n";
     msg += "X-Voip-Stack-Dest-Name: " +
-           sip_header_token(this->destination_.name, VOIP_STACK_MAX_NAME_LEN) +
+           sip_route_id(this->destination_.name, VOIP_STACK_MAX_NAME_LEN) +
            "\r\n";
   }
 #ifdef USE_ESPHOME_VOIP_REGISTRATION

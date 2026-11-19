@@ -41,6 +41,9 @@ def correlated_fixture_source(*, snapshot=False):
         methods += '\n' + block((component / 'voip_stack.cpp').read_text(),
                                  'std::string VoipStack::build_sip_snapshot_string_() const')
     transport = (component / 'transport.h').read_text()
+    sip = (component / "sip_message.cpp").read_text()
+    uri_methods = "\n".join(block(sip, name) for name in ("std::string trim_copy(",
+        "std::string sip_prefix_target_user(", "std::string sip_target_uri(", "std::string sip_normalize_dial_target("))
     transport_snapshot = block(transport, 'struct SipTransportSnapshot {') + ';'
     return r'''
 #include <atomic>
@@ -61,7 +64,7 @@ uint32_t millis(){return 100;}
 uint32_t esp_random(){return 42;}
 const char*inet_ntoa_r(in_addr a,char*out,size_t n){return inet_ntop(AF_INET,&a,out,n);}
 namespace esphome::voip_stack {
-''' + transport_snapshot + r'''
+''' + uri_methods + '\n' + transport_snapshot + r'''
 struct Transport {
   bool terminating=false,originate_ok=true;
   mutable int snapshots=0;unsigned originations=0;

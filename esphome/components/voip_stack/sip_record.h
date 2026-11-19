@@ -48,6 +48,27 @@ inline std::string_view sip_record_first_header(std::string_view block, std::str
   return value;
 }
 
+// Find one name-addr without mistaking quoted display text for URI delimiters.
+inline bool sip_name_addr_bounds(std::string_view field, size_t &open, size_t &close) {
+  open = close = field.npos;
+  bool quoted = false;
+  for (size_t i = 0; i < field.size(); ++i) {
+    const char ch = field[i];
+    if (quoted && ch == '\\') {
+      if (++i == field.size()) return false;
+    } else if (ch == '"') {
+      quoted = !quoted;
+    } else if (!quoted && ch == '<') {
+      if (open != field.npos) return false;
+      open = i;
+    } else if (!quoted && ch == '>') {
+      if (open == field.npos || close != field.npos) return false;
+      close = i;
+    }
+  }
+  return !quoted && ((open == field.npos) == (close == field.npos));
+}
+
 // A Via chain may use repeated fields or a comma list. Quoted parameters and
 // comments can themselves contain commas; folded LWS is not a new field.
 inline std::string_view sip_record_first_list_value(std::string_view field) {

@@ -5,6 +5,8 @@
 
 #ifdef USE_ESP32
 
+#include "sip_uri_user.h"
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -178,9 +180,10 @@ enum class AddResult : uint8_t {
 class Phonebook {
  public:
   static constexpr size_t MAX_CONTACTS = 64;
-  static constexpr size_t MAX_NAME_BYTES = 64;
-  static constexpr size_t MAX_ROUTE_BYTES = 96;
-  static constexpr size_t MAX_ADDRESS_BYTES = 64;
+  static constexpr size_t MAX_NAME_BYTES = SIP_NAME_BYTES;
+  static constexpr size_t MAX_ID_BYTES = CONTACT_ID_BYTES;
+  static constexpr size_t MAX_ROUTE_BYTES = SIP_URI_BYTES;
+  static constexpr size_t MAX_ADDRESS_BYTES = SIP_HOST_BYTES;
   static constexpr size_t MAX_CAPABILITY_BYTES = 160;
 
   /// Skip add_one() for this name (the device's own name).
@@ -258,7 +261,6 @@ class Phonebook {
     for (size_t i = 0; i < entries.size() && count < MAX_CONTACTS; ++i) {
       auto &entry = entries[i];
       if (!valid_entry_(entry)) continue;
-      if (!this->self_name_.empty() && entry.name == this->self_name_) continue;
       entry.missing_count = 0;
       size_t target = 0;
       while (target < count && entries[target].route != entry.route) ++target;
@@ -281,7 +283,6 @@ class Phonebook {
     for (auto &entry : entries) {
       if (normalized.size() >= MAX_CONTACTS) break;
       if (!valid_entry_(entry)) continue;
-      if (!this->self_name_.empty() && entry.name == this->self_name_) continue;
       entry.missing_count = 0;
       bool replaced = false;
       for (auto &existing : normalized) {
@@ -351,7 +352,6 @@ class Phonebook {
           ;
     };
     const auto shadowed = [&](const ContactEntry &entry) {
-      if (!this->self_name_.empty() && entry.name == this->self_name_) return true;
       for (const auto &old : this->entries_)
         if (retained(old) && old.origin == ContactOrigin::MANUAL &&
             (old.stable_id() == entry.stable_id() || old.route == entry.route || old.name == entry.name)) return true;
@@ -492,7 +492,7 @@ class Phonebook {
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
   bool set_metadata(std::string_view name, std::string_view id, ContactKind kind,
                     std::string_view account_id, bool auto_blf) {
-    if (!valid_text_field_(id, MAX_ROUTE_BYTES, true) ||
+    if (!sip_valid_text(id, MAX_ID_BYTES) ||
         !valid_text_field_(account_id, 32, true)) return false;
     for (auto &entry : this->entries_) {
       if (entry.name != name && entry.route != name) continue;
@@ -709,6 +709,9 @@ class Phonebook {
     c.route = c.name;
 
     if (!parse_short_entry_(parts, &c)) return false;
+    if (!valid_text_field_(c.name, MAX_NAME_BYTES, true) ||
+        !valid_text_field_(c.route, MAX_ID_BYTES, c.route.rfind("sip:", 0) != 0) ||
+        !valid_text_field_(c.ip, 64, true)) return false;
     if (!valid_entry_(c)) return false;
 
     *out = std::move(c);
@@ -804,14 +807,12 @@ class Phonebook {
 
   static bool valid_entry_(const ContactEntry &entry) {
     if (entry.name.empty() || entry.route.empty() ||
-        !valid_text_field_(entry.name, MAX_NAME_BYTES, true) ||
-        !valid_text_field_(entry.route, MAX_ROUTE_BYTES, entry.route.rfind("sip:", 0) != 0) ||
-        !valid_text_field_(entry.ip, MAX_ADDRESS_BYTES, true) ||
-        !valid_text_field_(entry.number, MAX_ROUTE_BYTES, true)) {
-      return false;
-    }
+        !sip_valid_text(entry.name, MAX_NAME_BYTES) ||
+        !sip_valid_text(entry.route, entry.route.rfind("sip:", 0) == 0 ? MAX_ROUTE_BYTES : MAX_ID_BYTES) ||
+        !sip_valid_text(entry.number, MAX_ID_BYTES) ||
+        (!entry.ip.empty() && !sip_valid_host(entry.ip))) return false;
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
-    if (!valid_text_field_(entry.id, MAX_ROUTE_BYTES, true) ||
+    if (!sip_valid_text(entry.id, MAX_ID_BYTES) ||
         !valid_text_field_(entry.account_id, 32, true)) return false;
 #endif
     if (entry.endpoint_type == ContactEndpointType::SIP) {
@@ -822,14 +823,14 @@ class Phonebook {
   }
 
   struct Selection {
-    std::array<char, MAX_ROUTE_BYTES + 1> id{};
+    std::array<char, MAX_ID_BYTES + 1> id{};
     std::array<char, MAX_NAME_BYTES + 1> name{};
   };
   Selection snapshot_selection_() const {
     Selection result;
     if (const auto *current = this->current()) {
       const auto &id = current->stable_id();
-      std::memcpy(result.id.data(), id.data(), std::min(id.size(), MAX_ROUTE_BYTES));
+      std::memcpy(result.id.data(), id.data(), std::min(id.size(), MAX_ID_BYTES));
       std::memcpy(result.name.data(), current->name.data(), std::min(current->name.size(), MAX_NAME_BYTES));
     }
     return result;

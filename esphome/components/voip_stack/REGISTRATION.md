@@ -90,7 +90,7 @@ not written to flash. Existing `start_call_via_ha(dest, call_id)` retains the
 explicit HA path and the supplied case-sensitive Call-ID.
 
 Registered targets accept a label/extension or a validated `sip:user@host:port`
-URI, up to 96 UTF-8 bytes after normalization, preserving its authority and URI
+URI, up to 512 bytes after normalization, preserving its authority and URI
 parameters. `sips:`, control characters,
 URI headers and unsupported transports are rejected. Selecting `direct` keeps
 the existing phonebook/HA routing behavior. A new account call requires a current

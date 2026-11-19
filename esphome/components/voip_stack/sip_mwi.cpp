@@ -68,7 +68,8 @@ std::string parameter(const std::string &text, const std::string &name) {
   return "";
 }
 std::string tag(const std::string &field) {
-  const auto close = field.rfind('>');
+  size_t open, close;
+  if (!sip_name_addr_bounds(field, open, close)) return "";
   return parameter(close == std::string::npos ? field : field.substr(close + 1),
                    "tag");
 }
@@ -82,7 +83,8 @@ bool safe_uri(const std::string &value) {
   return true;
 }
 std::string contact_uri(const std::string &field) {
-  const auto begin = field.find('<'), end = field.find('>');
+  size_t begin, end;
+  if (!sip_name_addr_bounds(field, begin, end)) return "";
   const std::string value = trim(
       begin == std::string::npos
           ? field

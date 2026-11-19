@@ -134,7 +134,7 @@ template<class T> struct RAMAllocator {
 std::string sip_header_token(const std::string &v,size_t=160){return v;}
 std::string sip_route_id(const std::string &v,size_t){return v;}
 '''
-    for signature in ['std::string trim_copy(', 'static uint8_t hex_value(', 'std::string sip_uri_user_decode(',
+    for signature in ['std::string trim_copy(', 'std::string sip_uri_user_decode(',
                       'std::string header_value(', 'std::string header_values(', 'bool parse_decimal_u32(', 'bool time_reached(',
                       'std::string name_addr_uri(', 'std::string strip_angle_uri(', 'bool sip_uri_ipv4_target(', 'std::string sip_user_from_header(',
                       'std::string cseq_method(', 'uint32_t cseq_number(', 'std::string tag_from_header(']:

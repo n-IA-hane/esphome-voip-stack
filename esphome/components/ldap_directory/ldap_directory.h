@@ -60,6 +60,7 @@ class LdapDirectory : public phone_client::WorkerComponent
   size_t receive_size_{8192};
   bool ready_{false}, active_{false}, pending_result_{false}, account_loaded_{false};
   bool managed_by_ha_{false}, enabled_{true};
+  uint8_t result_discarded_{0};
   uint32_t result_generation_{0}, result_code_{0};
   voip_stack::ContactEntry *stage_{nullptr};
   size_t stage_count_{0}, stage_capacity_{0};

@@ -4,6 +4,10 @@
 
 Changes since stable **2026.11.0**.
 
+- Keep directory contacts with punctuation or UTF-8 in their names and route
+  INVITE and BLF subscriptions to their complete SIP address. LDAP refreshes
+  report invalid contacts and publish the usable entries together. A failed
+  search or a result containing only invalid contacts preserves the previous list.
 - Fix a compiler warning in PCM receive logging when debug messages are disabled.
 - Register the Home Assistant managed line with the effective ESPHome friendly
   name, including spaces and UTF-8. Devices configured to append a MAC suffix

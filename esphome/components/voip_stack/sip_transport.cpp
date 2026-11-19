@@ -2396,12 +2396,14 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
   const std::string local_identity_uri =
       "sip:" + sip_uri_user_encode(this->caller_.route) + "@" + local_ip +
       ":" + std::to_string(this->sip_port_) + ";transport=" + uri_transport;
+  const std::string peer_authority = std::string(ip_text) + ":" +
+      std::to_string(this->remote_sip_port_.load(std::memory_order_acquire)) + ";transport=" + uri_transport;
   const std::string remote_identity_uri = this->refer_context_active_ && this->refer_dialog_
-      ? this->refer_dialog_->target_uri
-      : "sip:" + sip_uri_user_encode(this->destination_.route) + "@" +
-      std::string(ip_text) + ":" +
-      std::to_string(this->remote_sip_port_.load(std::memory_order_acquire)) +
-      ";transport=" + uri_transport;
+      ? this->refer_dialog_->target_uri : sip_target_uri(dest_route, peer_authority);
+  if (remote_identity_uri.empty()) {
+    this->reset_dialog_();
+    return false;
+  }
   this->local_uri_ = sip_name_addr(local_identity_uri, this->caller_.name);
   this->local_contact_uri_ = sip_name_addr(local_identity_uri);
   this->remote_uri_ = sip_name_addr(remote_identity_uri, this->destination_.name);
@@ -2414,6 +2416,10 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
     const std::string account_target = this->refer_context_active_ && this->refer_dialog_
         ? this->refer_dialog_->target_uri
         : sip_target_uri(dest_route, account.config.domain);
+    if (account_target.empty()) {
+      this->reset_dialog_();
+      return false;
+    }
     this->remote_uri_ = sip_name_addr(account_target, dest_name);
     this->remote_target_uri_ = strip_angle_uri(this->remote_uri_);
   }
@@ -3117,20 +3123,20 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   std::string incoming_dest_name =
       sip_display_name_from_header(incoming_to, VOIP_STACK_MAX_NAME_LEN);
   if (incoming_caller_name.empty()) {
-    incoming_caller_name = sip_header_token(
+    incoming_caller_name = sip_route_id(
         header_value(message, "X-Voip-Stack-Caller-Name"),
         VOIP_STACK_MAX_NAME_LEN);
   }
   if (incoming_dest_name.empty()) {
-    incoming_dest_name = sip_header_token(
+    incoming_dest_name = sip_route_id(
         header_value(message, "X-Voip-Stack-Dest-Name"),
         VOIP_STACK_MAX_NAME_LEN);
   }
   if (incoming_caller_name.empty()) {
-    incoming_caller_name = sip_header_token(sip_user_from_header(incoming_from), VOIP_STACK_MAX_NAME_LEN);
+    incoming_caller_name = sip_route_id(sip_user_from_header(incoming_from), VOIP_STACK_MAX_NAME_LEN);
   }
   if (incoming_dest_name.empty()) {
-    incoming_dest_name = sip_header_token(sip_user_from_header(incoming_to), VOIP_STACK_MAX_NAME_LEN);
+    incoming_dest_name = sip_route_id(sip_user_from_header(incoming_to), VOIP_STACK_MAX_NAME_LEN);
   }
   if (!incoming_call_id.empty() && !this->call_id_.empty() && incoming_call_id != this->call_id_) {
     const uint32_t active_peer_ip = this->remote_ip_v4_.load(std::memory_order_acquire);

@@ -1,7 +1,7 @@
 #include "voip_stack.h"
+#include "sip_message.h"
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
 #include "sip_transport.h"
-#include "sip_message.h"
 #endif
 
 #ifdef USE_ESP32
@@ -319,7 +319,7 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
           ? sip_target_uri(dest_route, registration_domain)
           :
 #endif
-          "sip:" + dest_route + "@" + dial_ip + ":" + std::to_string(dial_port);
+          sip_target_uri(dest_route, dial_ip + ":" + std::to_string(dial_port));
   this->defer([this, call_id, caller = caller_name, dest_name, remote_uri, route_via_ha, via_ha]() {
     if (!via_ha) this->outgoing_call_trigger_.trigger(call_id, caller, dest_name, remote_uri);
     if (route_via_ha) {

@@ -23,36 +23,16 @@ std::string trim_copy(const std::string &s) {
   return s.substr(begin, end - begin);
 }
 
-static uint8_t hex_value(char ch) {
-  if (ch >= '0' && ch <= '9') return static_cast<uint8_t>(ch - '0');
-  if (ch >= 'A' && ch <= 'F') return static_cast<uint8_t>(ch - 'A' + 10);
-  if (ch >= 'a' && ch <= 'f') return static_cast<uint8_t>(ch - 'a' + 10);
-  return 0xFF;
-}
-
 std::string sip_uri_user_decode(const std::string &raw) {
-  std::string out;
-  for (size_t i = 0; i < raw.size(); ++i) {
-    auto ch = static_cast<unsigned char>(raw[i]);
-    if (ch == '%') {
-      if (i + 2 >= raw.size()) return "";
-      const auto hi = hex_value(raw[i + 1]);
-      const auto lo = hex_value(raw[i + 2]);
-      if (hi == 0xFF || lo == 0xFF) return "";
-      ch = static_cast<unsigned char>((hi << 4) | lo);
-      i += 2;
-    }
-    if (ch < 32 || ch == 127) return "";
-    out.push_back(static_cast<char>(ch));
-  }
-  return out;
+  return sip_decode_user(raw);
 }
 
 std::string sip_prefix_target_user(std::string_view target, std::string_view prefix) {
+  if (target.find_first_of("\r\n") != target.npos) return "";
   const std::string value = trim_copy(std::string(target));
-  if (value.empty() || value.size() > 512 || prefix.size() > 32) return "";
+  if (value.empty() || value.size() > SIP_URI_BYTES || prefix.size() > 32) return "";
   for (const unsigned char ch : value)
-    if (ch < 32 || ch == 127 || ch == '<' || ch == '>' || ch == '"') return "";
+    if (ch < 32 || ch == 127) return "";
   for (const unsigned char ch : prefix)
     if (ch <= 32 || ch == 127 || ch == '<' || ch == '>' || ch == '"') return "";
   const bool sip = value.size() >= 4 && std::tolower(static_cast<unsigned char>(value[0])) == 's' &&
@@ -69,67 +49,15 @@ std::string sip_prefix_target_user(std::string_view target, std::string_view pre
     result += value;
     return result;
   }
-  if (value.find(' ') != std::string::npos || value.find('?') != std::string::npos) return "";
-  const auto at = value.find('@', 4);
-  if (at == std::string::npos || at == 4 || at + 1 == value.size()) return "";
-  const std::string user = value.substr(4, at - 4);
-  if (user.find(':') != std::string::npos || user.size() > 3 * VOIP_STACK_MAX_ROUTE_ID_LEN) return "";
-  const auto decoded_user = sip_uri_user_decode(user);
-  if (decoded_user.empty()) return "";
-  const auto authority_end = value.find_first_of(";?", at + 1);
-  const auto authority = value.substr(at + 1, authority_end - at - 1);
-  if (authority.empty() || authority.find('@') != std::string::npos) return "";
-  const auto colon = authority.find(':');
-  const auto host = authority.substr(0, colon);
-  if (host.empty() || host.size() > 253) return "";
-  size_t label_size = 0;
-  for (size_t i = 0; i < host.size(); ++i) {
-    if (host[i] == '.') {
-      if (label_size == 0 || host[i - 1] == '-') return "";
-      label_size = 0;
-    } else {
-      if ((label_size == 0 && host[i] == '-') || ++label_size > 63) return "";
-    }
-  }
-  if (host.back() == '-') return "";
-  for (unsigned char ch : host)
-    if (!std::isalnum(ch) && ch != '-' && ch != '.') return "";
-  if (colon != std::string::npos) {
-    uint32_t port = 0;
-    const auto text = authority.substr(colon + 1);
-    if (text.empty()) return "";
-    for (unsigned char ch : text) {
-      if (ch < '0' || ch > '9') return "";
-      port = port * 10U + ch - '0';
-      if (port > 65535) return "";
-    }
-    if (port == 0) return "";
-  }
-  bool transport_seen = false;
-  for (size_t position = authority_end; position != std::string::npos && position < value.size();) {
-    const auto end = value.find(';', position + 1);
-    const auto parameter = value.substr(position + 1, end - position - 1);
-    if (parameter.empty()) return "";
-    const auto equals = parameter.find('=');
-    std::string key = parameter.substr(0, equals);
-    if (key.empty()) return "";
-    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) { return std::tolower(ch); });
-    if (key == "transport") {
-      if (transport_seen || equals == std::string::npos) return "";
-      std::string transport = parameter.substr(equals + 1);
-      std::transform(transport.begin(), transport.end(), transport.begin(), [](unsigned char ch) { return std::tolower(ch); });
-      if (transport != "udp" && transport != "tcp") return "";
-      transport_seen = true;
-    }
-    position = end;
-  }
+  SipTargetParts parts;
+  if (!sip_parse_target_uri(value, parts)) return "";
   std::string prefixed_user;
-  prefixed_user.reserve(prefix.size() + decoded_user.size());
+  prefixed_user.reserve(prefix.size() + parts.user.size());
   prefixed_user.append(prefix.data(), prefix.size());
-  prefixed_user += decoded_user;
+  prefixed_user += parts.user;
   const auto prefixed = sip_uri_user_encode(prefixed_user);
-  const std::string result = "sip:" + prefixed + value.substr(at);
-  return result.size() <= 512 ? result : "";
+  const std::string result = "sip:" + prefixed + std::string(parts.authority_and_parameters);
+  return result.size() <= SIP_URI_BYTES ? result : "";
 }
 
 std::string sip_target_uri(const std::string &target, const std::string &fallback_authority) {
@@ -137,7 +65,7 @@ std::string sip_target_uri(const std::string &target, const std::string &fallbac
   if (normalized.empty()) return "";
   if (normalized.rfind("sip:", 0) == 0) return normalized;
   const std::string result = "sip:" + sip_uri_user_encode(normalized) + "@" + fallback_authority;
-  return result.size() <= 512 ? result : "";
+  return result.size() <= SIP_URI_BYTES ? result : "";
 }
 
 std::string sip_normalize_dial_target(const std::string &target, size_t max_bytes) {
@@ -151,7 +79,7 @@ std::string sip_normalize_dial_target(const std::string &target, size_t max_byte
   if (scheme == "sip" || scheme == "sips") {
     cleaned = sip_prefix_target_user(cleaned, "");
     if (cleaned.empty() || cleaned.size() > max_bytes) return "";
-  } else if (cleaned.find_first_of("|,;\r\n") != std::string::npos || cleaned.find("://") != std::string::npos) return "";
+  } else if (scheme == "tel" || !sip_valid_text(cleaned, CONTACT_ID_BYTES) || cleaned.find("://") != std::string::npos) return "";
   return cleaned;
 }
 
@@ -281,16 +209,8 @@ std::string sip_header_token(const std::string &raw, size_t max_bytes) {
 }
 
 std::string sip_route_id(const std::string &raw, size_t max_bytes) {
-  const std::string route = trim_copy(raw);
-  if (route.empty() || route.size() > max_bytes) return "";
-  for (char ch : route) {
-    const auto byte = static_cast<unsigned char>(ch);
-    if (byte < 0x20 || byte == 0x7F || ch == '<' || ch == '>' ||
-        ch == '@' || ch == '"' || ch == '\\') {
-      return "";
-    }
-  }
-  return route;
+  if (!sip_valid_text(raw, max_bytes)) return "";
+  return trim_copy(raw);
 }
 
 std::string sip_quoted(const std::string &raw) {
@@ -319,8 +239,8 @@ std::string sip_name_addr(const std::string &uri,
 
 std::string sip_display_name_from_header(const std::string &value,
                                          size_t max_bytes) {
-  const size_t left = value.find('<');
-  if (left == std::string::npos) return "";
+  size_t left, right;
+  if (!sip_name_addr_bounds(value, left, right) || left == std::string::npos) return "";
   const std::string prefix = trim_copy(value.substr(0, left));
   if (prefix.empty()) return "";
   std::string display;
@@ -508,7 +428,8 @@ std::string tag_from_header(const std::string &value) {
   // With name-addr syntax, header parameters start after '>'. Without angle
   // brackets they start at the first semicolon. Parsing parameter keys avoids
   // treating display names or URI users containing "tag=" as dialog tags.
-  const size_t right_angle = value.find('>');
+  size_t open, right_angle;
+  if (!sip_name_addr_bounds(value, open, right_angle)) return "";
   size_t pos = value.find(';', right_angle == std::string::npos ? 0 : right_angle + 1);
   while (pos != std::string::npos) {
     const size_t next = value.find(';', pos + 1);
@@ -533,16 +454,14 @@ std::string tag_from_header(const std::string &value) {
 std::string name_addr_uri(const std::string &value) {
   std::string out = trim_copy(value);
   if (out.find_first_of("\r\n") != std::string::npos) return "";
-  const size_t left = out.find('<');
-  const size_t right = out.find('>');
+  size_t left, right;
+  if (!sip_name_addr_bounds(out, left, right)) return "";
   if (left == std::string::npos) {
     const size_t at = out.find('@');
     const size_t comma = out.find(',', at == std::string::npos ? 0 : at);
     return right == std::string::npos && comma == std::string::npos ? out : "";
   }
-  if (right == std::string::npos || right <= left + 1 ||
-      out.find('<', left + 1) != std::string::npos || out.find('>', right + 1) != std::string::npos)
-    return "";
+  if (right <= left + 1) return "";
   const std::string suffix = trim_copy(out.substr(right + 1));
   if (!suffix.empty() && suffix.front() != ';') return "";
   return trim_copy(out.substr(left + 1, right - left - 1));
@@ -593,17 +512,7 @@ bool sip_uri_ipv4_target(const std::string &value, uint32_t *ip_v4, uint16_t *po
 }
 
 std::string sip_user_from_header(const std::string &value) {
-  std::string uri;
-  const size_t left = value.find('<');
-  const size_t right = left == std::string::npos ? std::string::npos : value.find('>', left + 1);
-  if (left != std::string::npos && right != std::string::npos && right > left + 1) {
-    uri = value.substr(left + 1, right - left - 1);
-  } else {
-    uri = trim_copy(value);
-    const size_t semicolon = uri.find(';');
-    if (semicolon != std::string::npos) uri.resize(semicolon);
-  }
-  uri = trim_copy(uri);
+  std::string uri = name_addr_uri(value);
   if (uri.size() >= 4 && std::tolower(static_cast<unsigned char>(uri[0])) == 's' &&
       std::tolower(static_cast<unsigned char>(uri[1])) == 'i' &&
       std::tolower(static_cast<unsigned char>(uri[2])) == 'p' && uri[3] == ':') {

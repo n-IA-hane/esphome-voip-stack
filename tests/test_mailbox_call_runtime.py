@@ -43,7 +43,7 @@ using namespace esphome::voip_stack;
 constexpr size_t VOIP_STACK_MAX_ROUTE_ID_LEN=64;
 struct LockGuard{explicit LockGuard(int&){};};
 '''
-    for signature in ["std::string trim_copy(", "static uint8_t hex_value(", "std::string sip_uri_user_decode(",
+    for signature in ["std::string trim_copy(", "std::string sip_uri_user_decode(",
                       "std::string sip_prefix_target_user(",
                       "std::string sip_normalize_dial_target("]:
         code += block(message, signature) + "\n"

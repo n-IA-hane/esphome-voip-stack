@@ -50,7 +50,10 @@ explicit external credentials. YAML automation can call `ldap_directory.refresh`
 A successful search is staged off the main loop and published atomically only
 after its terminal LDAP success result. A partial search, malformed response,
 wrong message ID, size limit, timeout or authentication failure retains the
-previous complete snapshot. An empty successful result clears this provider.
+previous complete snapshot. A successful search with a mix of valid and invalid
+contacts publishes the valid contacts together and logs the number discarded.
+If every contact is invalid, the previous directory remains available and the
+refresh reports an error. An empty successful result clears this provider.
 Manual contacts take precedence. Conflicts with another provider or the shared
 64-contact capacity reject the whole replacement. Selection follows stable ID
 when a contact is renamed.
@@ -58,7 +61,11 @@ when a contact is renamed.
 Standard attributes are `uid` or `entryUUID` for identity, `displayName` or `cn`,
 `telephoneNumber`, `labeledURI` and `ou`. A missing identity gets a bounded key
 derived from the entry DN. SIP URI authority and transport remain independent of
-the display number.
+the display number. Display names use up to 64 UTF-8 bytes, contact IDs up to
+96 bytes, DNS hosts up to 253 bytes and complete SIP routes up to 512 bytes.
+An escaped username such as `Caff%C3%A8%20%40Casa` represents the literal
+user `Caffè @Casa`. Two contacts can share a display name and still have
+different IDs and SIP addresses.
 
 Display kind and number are available even without LDAP or BLF; stable identity
 falls back to the existing route. The UI reads the same phonebook and calls the

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sip_uri_user.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -10,8 +12,8 @@ namespace voip_stack {
 
 static constexpr uint16_t VOIP_STACK_PORT = 5060;
 static constexpr size_t VOIP_STACK_MAX_CALL_ID_LEN = 64;
-static constexpr size_t VOIP_STACK_MAX_ROUTE_ID_LEN = 64;
-static constexpr size_t VOIP_STACK_MAX_NAME_LEN = 64;
+static constexpr size_t VOIP_STACK_MAX_ROUTE_ID_LEN = CONTACT_ID_BYTES;
+static constexpr size_t VOIP_STACK_MAX_NAME_LEN = SIP_NAME_BYTES;
 static constexpr size_t VOIP_STACK_MAX_REASON_LEN = 160;
 
 enum class PcmFormat : uint8_t {

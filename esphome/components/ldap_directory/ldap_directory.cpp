@@ -175,6 +175,7 @@ void LdapDirectory::worker_run_() {
   const std::string host = cfg.host.empty() ? cfg.sip_host : cfg.host;
   bool ok = this->stream_.connect(host, cfg.port, this->timeout_ms_, cfg.tls, cfg.ca_pem) &&
       generation == this->generation_.load();
+  uint8_t discarded = 0;
   Client client(this->stream_);
   client.set_receive_buffer(this->receive_buffer_, this->receive_size_);
   if (ok) {
@@ -185,12 +186,18 @@ void LdapDirectory::worker_run_() {
     ok = client.bind(dn, cfg.password, this->timeout_ms_) && generation == this->generation_.load();
     Search search;
     search.base_dn = cfg.base_dn; search.filter = cfg.filter; search.size_limit = this->max_entries_;
-    ok = ok && client.search_each(search, [this, &cfg, generation](Entry &&entry) {
-      if (generation != this->generation_.load() || this->stage_count_ == this->stage_capacity_) return false;
+    ok = ok && client.search_each(search, [this, &cfg, &discarded, generation](Entry &&entry) {
+      if (generation != this->generation_.load()) return false;
       // Subtree searches may include the organizational-unit container.
-      if (entry.first("labeledURI").empty() && entry.first("telephoneNumber").empty()) return true;
+      if (entry.first("labeledURI").empty() && entry.first("telephoneNumber").empty() &&
+          (entry.dn == cfg.base_dn || (entry.first("uid").empty() && entry.first("cn").empty() &&
+                                       entry.first("displayName").empty()))) return true;
       DirectoryContact mapped;
-      if (!map_contact(entry, cfg.sip_host, cfg.sip_port, cfg.sip_tcp, &mapped)) return false;
+      if (!map_contact(entry, cfg.sip_host, cfg.sip_port, cfg.sip_tcp, &mapped)) {
+        ++discarded;
+        return true;
+      }
+      if (this->stage_count_ == this->stage_capacity_) return false;
       auto &contact = this->stage_[this->stage_count_];
       contact.id = std::move(mapped.id); contact.name = std::move(mapped.name);
       contact.number = std::move(mapped.number);
@@ -217,6 +224,8 @@ void LdapDirectory::worker_run_() {
   this->lock_();
   if (generation == this->generation_.load()) {
     this->result_generation_ = generation;
+    this->result_discarded_ = discarded;
+    if (discarded != 0 && this->stage_count_ == 0) ok = false;
     this->result_code_ = ok ? 0 : (client.result_code() == 0 ? 2 : client.result_code());
     this->pending_result_ = true;
   } else this->reset_stage_();
@@ -238,6 +247,7 @@ void LdapDirectory::loop() {
   if (!this->pending_result_) { this->unlock_(); return; }
   const auto generation = this->result_generation_, code = this->result_code_;
   const size_t count = this->stage_count_;
+  const unsigned discarded = this->result_discarded_;
   this->unlock_();
   uint32_t error = code;
   if (generation == this->generation_.load() && error == 0) {
@@ -257,9 +267,11 @@ void LdapDirectory::loop() {
   // can cancel it rather than inheriting the previous generation's timer.
   this->Component::set_timeout("refresh", error == 0 ? this->refresh_ms_ : std::min<uint32_t>(this->refresh_ms_, 30000),
                                [this]() { this->refresh(); });
+  if (discarded != 0) ESP_LOGW(TAG, "Discarded %u invalid LDAP contact(s)", discarded);
   if (error == 0) {
     this->status_ = "ready"; this->last_success_ = millis(); this->contact_count_ = count;
-    this->status_clear_warning(); this->updated_.trigger(static_cast<uint32_t>(count));
+    if (discarded != 0) this->status_set_warning(); else this->status_clear_warning();
+    this->updated_.trigger(static_cast<uint32_t>(count));
   } else {
     this->status_ = "error"; this->status_set_warning(); this->error_.trigger(error);
     ESP_LOGW(TAG, "Directory update failed (code=%u); previous directory retained", static_cast<unsigned>(error));
