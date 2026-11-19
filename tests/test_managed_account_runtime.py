@@ -24,6 +24,7 @@ def managed_binary(tmp_path_factory):
 #include <cerrno>
 #include <memory>
 #include <thread>
+#include "sip_mwi.h"
 const std::thread::id main_owner=std::this_thread::get_id();
 uint32_t clock_ms=0;
 uint32_t millis(){return clock_ms;}
@@ -35,14 +36,9 @@ struct SipTransport {
  SipRegistration &registration_;int dialog_mutex_=0;
  bool active_call=false,terminal=false;
  unsigned wakes=0,flow_retirements=0,dns_invalidations=0,notifications=0;
- bool subscriptions_retired=true;
- bool registration_subscriptions_retired_(size_t)const{return subscriptions_retired;}
- // This isolated managed-owner fixture controls retirement explicitly.
- // Actual subscription transactions are exercised by the MWI wire fixture.
- struct SubscriptionAdapter {
-  void invalidate_account(size_t){}
-  void update_registered_account(size_t,const SipRegistration::Account&,uint32_t){}
- } mwi_{};
+ SipMwi mwi_{};
+ REPLACE_SUBSCRIPTIONS
+ void pump_registration_mwi_(uint32_t);
  std::atomic<uint16_t> managed_retirement_status_{0};
  std::atomic<bool> running_{true},transport_stopping_{false},main_wake{false};
  void (*registration_wake_callback_)(void*,SipTransport*)=nullptr;void *registration_context_=nullptr;
@@ -63,15 +59,16 @@ struct SipTransport {
  REPLACE_RESUME
  void step(uint32_t now){clock_ms=now;
   for(unsigned stage=0;stage<3;++stage){
-   std::thread worker([&]{registration_.tick(now);WORKER_MANAGED_STAGE});worker.join();
+   std::thread worker([&]{registration_.tick(now);pump_registration_mwi_(now);WORKER_MANAGED_STAGE});worker.join();
    if(!main_wake.exchange(false))break;
    wake_registration_from_main_loop();
   }
  }
 };
-'''.replace("REPLACE_PENDING", block(header, "struct ManagedAccountUpdate {") + ";").replace("void*=", "void * =").replace(
+'''.replace("REPLACE_PENDING", block(header, "struct ManagedAccountUpdate {") + ";").replace(
+    "REPLACE_SUBSCRIPTIONS", block(header, "bool registration_subscriptions_retired_(")).replace("void*=", "void * =").replace(
     "REPLACE_RESUME", block(header, "void wake_registration_from_main_loop()")).replace("WORKER_MANAGED_STAGE", worker_stage)
-    for name in ["set_account", "remove_account", "queue_managed_account_", "managed_account_needs_main_loop_", "notify_managed_account_main_loop_", "pump_managed_account_", "register_account"]:
+    for name in ["pump_registration_mwi_", "set_account", "remove_account", "queue_managed_account_", "managed_account_needs_main_loop_", "notify_managed_account_main_loop_", "pump_managed_account_", "register_account"]:
         marker = next(line for line in adapter.splitlines() if "SipTransport::" + name + "(" in line)
         code += block(adapter, marker) + "\n"
     code += r'''
@@ -82,6 +79,7 @@ bool persist(void*context,const std::string&id,const SipAccountConfig*config){
  ++s.count;s.removed=config==nullptr;if(config)s.config=*config;return true;
 }
 bool quiet(Peer &peer){char c;return recv(peer.peer,&c,1,MSG_DONTWAIT)<0&&(errno==EAGAIN||errno==EWOULDBLOCK);}
+#include "managed_subscription_handover.h"
 int main(int argc,char**argv){
  assert(argc==3);const std::string scenario=argv[1];Harness h(std::string(argv[2])=="tcp");
  h.hooks.send=[](void*ctx,size_t,std::string_view wire,uint32_t ip,uint16_t port,bool tcp){
@@ -91,6 +89,7 @@ int main(int argc,char**argv){
   return send(peer.esp,wire.data(),wire.size(),0)==ssize_t(wire.size());
  };
  h.manager.set_hooks(h.hooks);auto original=h.config();original.id="ha";
+ if(scenario.rfind("watch-",0)==0) original.username="Waveshare S3 Audio";
  const auto feed=[&](Peer&peer,const std::string&wire,uint32_t now,int index=0){
   assert(h.manager.handle_response(peer.answer(wire),INADDR_LOOPBACK,peer.port,peer.tcp,index,now));
  };
@@ -121,6 +120,9 @@ int main(int argc,char**argv){
   assert(std::this_thread::get_id()!=main_owner);
   static_cast<SipTransport*>(context)->main_wake=true;
  };
+ if(scenario.rfind("watch-",0)==0){
+  managed_subscription_handover(h, transport, original, saved, scenario);return 0;
+ }
  if(scenario=="noop"){
   transport.active_call=true;
   assert(transport.set_account(original,persist,&saved));transport.step(2);
@@ -145,19 +147,11 @@ int main(int argc,char**argv){
  const bool failed_write=scenario.rfind("persist-fail",0)==0;
  if(failed_write)saved.fail=true;
  if(scenario=="persist-fail-opt-out")assert(transport.register_account("ha",false));
- if(scenario=="subscription-wait")transport.subscriptions_retired=false;
  if(scenario=="timeout"){
   transport.step(32005);
   transport.step(32006);assert(transport.managed_retirement_status_.load()==408);
  }else{
   feed(h.first,h.success(unregister,0),6);transport.step(7);
-  if(scenario=="subscription-wait"){
-   const auto waiting=transport.wakes;
-   assert(quiet(h.second)&&saved.count==0&&transport.managed_update_->active);
-   for(unsigned n=0;n<3;++n)transport.step(7);
-   assert(transport.wakes==waiting&&!transport.main_wake.load());
-   transport.subscriptions_retired=true;transport.step(8);
-  }
  }
  if(scenario=="remove"){
   assert(saved.count==1&&saved.removed&&h.manager.find("ha")<0);
@@ -200,13 +194,19 @@ int main(int argc,char**argv){
     binary = folder / "managed"
     result = subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-g",
         "-fsanitize=address,undefined", "-fno-pie", "-no-pie", "-pthread", "-DUSE_ESPHOME_VOIP_REGISTRATION", "-DUSE_VOIP_HA_AUTO_REGISTER", "-DUSE_ESPHOME_VOIP_MWI",
+        "-DUSE_ESPHOME_VOIP_BLF", "-DUSE_ESPHOME_VOIP_PRESENCE", "-I", str(ROOT / "tests/fixtures"),
         "-I", str(folder), "-I", str(SOURCE), str(source), str(SOURCE / "sip_registration.cpp"),
+        str(SOURCE / "sip_mwi.cpp"), str(SOURCE / "sip_blf.cpp"),
         "-lcrypto", "-o", str(binary)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     return binary
 
 
-@pytest.mark.parametrize("scenario", ["bootstrap", "noop", "replace", "timeout", "remove", "persist-fail", "persist-fail-inactive", "persist-fail-opt-out", "subscription-wait"])
+@pytest.mark.parametrize("scenario", [
+    "bootstrap", "noop", "replace", "timeout", "remove",
+    "persist-fail", "persist-fail-inactive", "persist-fail-opt-out",
+    "watch-rejected", "watch-missing", "watch-timeout", "watch-notify", "watch-remove", "watch-refresh",
+])
 @pytest.mark.parametrize("transport", ["udp", "tcp"])
 def test_managed_updates_are_idempotent_or_retire_one_old_generation(managed_binary, scenario, transport):
     result = subprocess.run([managed_binary, scenario, transport], capture_output=True, text=True, timeout=8)

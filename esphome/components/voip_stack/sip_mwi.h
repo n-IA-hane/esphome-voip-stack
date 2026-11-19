@@ -53,7 +53,7 @@ public:
     uint16_t local_port{5060};
   };
   bool initialized() const { return MWI_CAPACITY == 0 || this->accounts_ != nullptr; }
-  bool account_retired(size_t index) const;
+  bool account_retired(size_t index, bool replacing_account = false) const;
   void set_hooks(const Hooks &hooks) { this->hooks_ = hooks; }
   void update_account(size_t index, const SipAccountConfig &config,
                       uint32_t target_ip, uint16_t target_port,

@@ -510,7 +510,7 @@ bool SipTransport::managed_account_needs_main_loop_() const {
   if (old.config_revision != update.retiring_revision || old.desired) return true;
   if (old.pending || old.scheduled || old.resolving) return false;
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
-  if (!this->registration_subscriptions_retired_(index)) return false;
+  if (!this->mwi_.account_retired(index, true)) return false;
 #endif
   return true;
 }
@@ -561,7 +561,7 @@ void SipTransport::pump_managed_account_(uint32_t now) {
     }
   }
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
-  if (index >= 0 && !this->registration_subscriptions_retired_(index)) return;
+  if (index >= 0 && !this->mwi_.account_retired(index, true)) return;
 #endif
   if (update.commit != nullptr &&
       !update.commit(update.context, update.config.id, update.removing ? nullptr : &update.config)) {
@@ -573,6 +573,12 @@ void SipTransport::pump_managed_account_(uint32_t now) {
     return;
   }
   if (index >= 0) {
+#ifdef USE_ESPHOME_VOIP_MWI
+    this->mwi_.invalidate_account(index);
+#endif
+#ifdef USE_ESPHOME_VOIP_BLF
+    this->mwi_.invalidate_blf_account(index);
+#endif
     this->invalidate_registration_dns_(index);
     this->retire_registration_flow_(index);
   }

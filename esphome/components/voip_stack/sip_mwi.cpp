@@ -368,11 +368,15 @@ bool SipMwi::blf_watch_requested(size_t index) const {
 }
 #endif
 
-bool SipMwi::account_retired(size_t index) const {
+bool SipMwi::account_retired(size_t index, bool replacing_account) const {
   for (size_t row = 0; row < this->total_capacity_(); ++row) {
     const auto &a = this->account_(row);
-    if (a.occupied && this->owner_index_(row) == index &&
-        (!a.call_id.empty() || a.pending || a.waiting_notify)) return false;
+    if (!a.occupied || this->owner_index_(row) != index) continue;
+    if (a.pending || a.waiting_notify) return false;
+    // A rejected unsubscribe can leave a remote lease (RFC 6665, 4.1.2.2).
+    // Once the old account has no more work, its local replacement may proceed.
+    const bool abandoned = replacing_account && !a.desired && !a.scheduled && a.failures != 0;
+    if (!a.call_id.empty() && !abandoned) return false;
   }
   return true;
 }
