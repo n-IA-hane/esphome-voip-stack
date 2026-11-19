@@ -4,6 +4,7 @@
 
 Changes since stable **2026.11.0**.
 
+- Fix a compiler warning in PCM receive logging when debug messages are disabled.
 - Register the Home Assistant managed line with the effective ESPHome friendly
   name, including spaces and UTF-8. Devices configured to append a MAC suffix
   identify the line by their effective node name. The direct caller route also

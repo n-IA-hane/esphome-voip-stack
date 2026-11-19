@@ -715,10 +715,11 @@ void VoipStack::rx_task_() {
       previous_geometry.frame_ms = frame_format.frame_ms;
       if (source_changed || previous_format_packed == 0 || !(previous_geometry == frame_format)) {
         this->transport_->reset_audio_decoder();
-        if (frame_format.codec == AudioCodec::PCM)
+        if (frame_format.codec == AudioCodec::PCM) {
           ESP_LOGD(TAG, "RX wire PCM=%uHz playout=%uHz frame=%ums",
                    (unsigned) frame_format.sample_rate, (unsigned) rx_format.sample_rate,
                    (unsigned) frame_format.frame_ms);
+        }
       }
       previous_format_packed = current_format_packed;
       const AudioFormat source_pcm = decoded_pcm_format(frame_format);
