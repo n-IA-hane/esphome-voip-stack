@@ -2409,7 +2409,7 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   if (this->active_account_ >= 0) {
     const auto &account = this->registration_.account(this->active_account_);
-    this->local_uri_ = sip_name_addr("sip:" + account.config.username + "@" + account.config.domain, this->caller_.name);
+    this->local_uri_ = sip_name_addr(account.config.address_of_record(), this->caller_.name);
     this->local_contact_uri_ = sip_name_addr(account.contact);
     const std::string account_target = this->refer_context_active_ && this->refer_dialog_
         ? this->refer_dialog_->target_uri

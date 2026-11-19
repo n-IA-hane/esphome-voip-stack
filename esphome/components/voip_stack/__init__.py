@@ -1167,11 +1167,10 @@ def _add_static_contacts(var, config):
 
 
 async def _add_device_and_audio_settings(var, config):
-    # Set device name (used to exclude self from the contacts list)
+    # pre_setup has applied ESPHome's optional per-device MAC suffix to these names.
     from esphome.core import CORE
-    cg.add(var.set_device_name(CORE.friendly_name or CORE.name))
-    # Stable SIP caller route id (yaml node name slug).
-    cg.add(var.set_device_route_id(CORE.name))
+    cg.add(var.set_device_name((cg.App.get_friendly_name() if CORE.friendly_name else cg.App.get_name()).str()))
+    cg.add(var.set_device_route_id(cg.App.get_name().str()))
 
     # Ringing timeout (auto-decline if not answered)
     if CONF_RINGING_TIMEOUT in config:

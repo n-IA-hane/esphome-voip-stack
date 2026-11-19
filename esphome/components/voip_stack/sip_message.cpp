@@ -23,11 +23,6 @@ std::string trim_copy(const std::string &s) {
   return s.substr(begin, end - begin);
 }
 
-static bool is_sip_uri_unreserved(char ch) {
-  const auto c = static_cast<unsigned char>(ch);
-  return std::isalnum(c) || ch == '-' || ch == '.' || ch == '_' || ch == '~';
-}
-
 static uint8_t hex_value(char ch) {
   if (ch >= '0' && ch <= '9') return static_cast<uint8_t>(ch - '0');
   if (ch >= 'A' && ch <= 'F') return static_cast<uint8_t>(ch - 'A' + 10);
@@ -35,45 +30,22 @@ static uint8_t hex_value(char ch) {
   return 0xFF;
 }
 
-std::string sip_uri_user_encode(const std::string &raw) {
-  std::string out;
-  static const char *const HEX = "0123456789ABCDEF";
-  for (char ch : raw) {
-    if (ch == '\r' || ch == '\n') {
-      continue;
-    }
-    if (is_sip_uri_unreserved(ch)) {
-      out.push_back(ch);
-    } else {
-      const auto c = static_cast<unsigned char>(ch);
-      out.push_back('%');
-      out.push_back(HEX[(c >> 4) & 0x0F]);
-      out.push_back(HEX[c & 0x0F]);
-    }
-  }
-  if (out.empty()) out = "voip";
-  return out;
-}
-
 std::string sip_uri_user_decode(const std::string &raw) {
   std::string out;
-  for (size_t i = 0; i < raw.size(); i++) {
-    const char ch = raw[i];
-    if (ch == '\r' || ch == '\n') {
-      continue;
+  for (size_t i = 0; i < raw.size(); ++i) {
+    auto ch = static_cast<unsigned char>(raw[i]);
+    if (ch == '%') {
+      if (i + 2 >= raw.size()) return "";
+      const auto hi = hex_value(raw[i + 1]);
+      const auto lo = hex_value(raw[i + 2]);
+      if (hi == 0xFF || lo == 0xFF) return "";
+      ch = static_cast<unsigned char>((hi << 4) | lo);
+      i += 2;
     }
-    if (ch == '%' && i + 2 < raw.size()) {
-      const uint8_t hi = hex_value(raw[i + 1]);
-      const uint8_t lo = hex_value(raw[i + 2]);
-      if (hi != 0xFF && lo != 0xFF) {
-        out.push_back(static_cast<char>((hi << 4) | lo));
-        i += 2;
-        continue;
-      }
-    }
-    out.push_back(ch);
+    if (ch < 32 || ch == 127) return "";
+    out.push_back(static_cast<char>(ch));
   }
-  return sip_header_token(out);
+  return out;
 }
 
 std::string sip_prefix_target_user(std::string_view target, std::string_view prefix) {
@@ -102,17 +74,8 @@ std::string sip_prefix_target_user(std::string_view target, std::string_view pre
   if (at == std::string::npos || at == 4 || at + 1 == value.size()) return "";
   const std::string user = value.substr(4, at - 4);
   if (user.find(':') != std::string::npos || user.size() > 3 * VOIP_STACK_MAX_ROUTE_ID_LEN) return "";
-  std::string decoded_user;
-  for (size_t i = 0; i < user.size(); ++i) {
-    unsigned char ch = user[i];
-    if (user[i] == '%') {
-      if (i + 2 >= user.size() || hex_value(user[i + 1]) == 0xFF || hex_value(user[i + 2]) == 0xFF) return "";
-      ch = (hex_value(user[i + 1]) << 4) | hex_value(user[i + 2]);
-      i += 2;
-    }
-    if (ch < 32 || ch == 127) return "";
-    decoded_user.push_back(static_cast<char>(ch));
-  }
+  const auto decoded_user = sip_uri_user_decode(user);
+  if (decoded_user.empty()) return "";
   const auto authority_end = value.find_first_of(";?", at + 1);
   const auto authority = value.substr(at + 1, authority_end - at - 1);
   if (authority.empty() || authority.find('@') != std::string::npos) return "";

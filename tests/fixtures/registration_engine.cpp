@@ -179,6 +179,46 @@ int main(int argc, char** argv) {
   Harness h(tcp);
   auto c = h.config();
   assert(c.valid());
+  if (scenario == "managed-literal") {
+    c.username = "Caffè 20%@Casa";
+    assert(!c.valid());  // Preserve the manual PBX contract, including pre-escaped users.
+    c.username = "+123%2A";
+    assert(c.valid() && c.address_of_record() == "sip:+123%2A@example.org");
+    c.id = "ha";
+    for (const char *invalid : {"", " bad", "bad ", "bad\r\nname", "\xC0\xAF", "\xED\xA0\x80", "\xF4\x90\x80\x80"}) {
+      c.username = invalid;
+      assert(!c.valid());
+    }
+    c.username = "Caffè 20%@Casa";
+    const std::string aor = "<sip:Caff%C3%A8%2020%25%40Casa@example.org>";
+    h.manager.set_keepalive_interval(2000);
+    assert(h.manager.set_account(c, 0));
+    h.manager.tick(0);
+    const auto first = h.first.receive();
+    assert(field(first, "To") == aor && field(first, "From").find(aor + ";tag=") == 0);
+    h.feed(h.first, response(first, 401, "WWW-Authenticate: Digest realm=\"pbx\", nonce=\"fixed\"\r\n"));
+    const auto retry = h.first.receive();
+    const auto target = "sip:" + c.registrar + ":" + std::to_string(c.port);
+    const auto digest = hash_value("MD5", hash_value("MD5", c.username + ":pbx:" + c.password) + ":fixed:" +
+                                          hash_value("MD5", "REGISTER:" + target));
+    const auto auth = field(retry, "Authorization");
+    assert(auth.find("username=\"Caffè 20%@Casa\"") != std::string::npos);
+    assert(auth.find("response=\"" + digest + "\"") != std::string::npos);
+    h.feed(h.first, h.success(retry), 2);
+    assert(h.manager.is_registered("ha"));
+    h.manager.tick(2002);
+    const auto options = h.first.receive();
+    assert(options.rfind("OPTIONS ", 0) == 0 && field(options, "To") == aor && field(options, "From") == field(first, "From"));
+    h.feed(h.first, response(options, 200), 2003);
+    assert(h.manager.request_registration("ha", false, 2004));
+    h.manager.tick(2004);
+    const auto retire = h.first.receive();
+    assert(field(retire, "To") == aor && field(retire, "Expires") == "0");
+    h.feed(h.first, h.success(retire, 0), 2005);
+    assert(!h.manager.is_registered("ha") && !h.manager.account(0).pending);
+    std::cout << "PASS managed-literal " << (tcp ? "tcp" : "udp") << "\n";
+    return 0;
+  }
   if (scenario == "digest-syntax") {
     assert(argc == 5);
     const std::string style = argv[3];

@@ -25,6 +25,7 @@ def managed_api_binary(tmp_path_factory):
 #include <vector>
 using Value = std::variant<std::string,int32_t,bool>;
 namespace esphome {
+struct Application {bool suffix=false; bool is_name_add_mac_suffix_enabled() const {return suffix;}} App;
 namespace setup_priority { constexpr float AFTER_CONNECTION=0; }
 struct Component {virtual void setup(){};virtual float get_setup_priority()const{return 0;}
  template<class F>void defer(F f){f();}};
@@ -49,12 +50,12 @@ namespace voip_stack {
 struct SipAccountConfig {std::string id,registrar,domain,username,password,auth_username,proxy;
  uint16_t port=5060,proxy_port=5060;uint32_t expires=3600;bool tcp=false;};
 struct VoipStack {
- SipAccountConfig account;int writes=0;bool persisted=false,tcp=false;std::string display;
+ SipAccountConfig account;int writes=0;bool persisted=false,tcp=false;std::string display,registered;
  const char* configured_sip_transport_name()const{return tcp?"tcp":"udp";}
  void set_account(const SipAccountConfig&c,bool persist){account=c;persisted=persist;++writes;}
  void set_ha_display_name(const std::string&s){display=s;}
  void publish_entity_states(){}
- void remove_account(std::string,bool){}void reset_account(std::string){}void register_account(std::string){}
+ void remove_account(std::string,bool){}void reset_account(std::string){}void register_account(std::string id){registered=id;}
  void unregister_account(std::string){}void select_line(std::string){}void start_call_on_line(std::string,std::string){}
  void call(std::string){}void call_via_ha(std::string,std::string){}void hangup_call_if_id(std::string){}
  void answer_call(){}void decline_call(std::string){}void stop(){}void send_dtmf(char){}
@@ -67,6 +68,7 @@ struct VoipStack {
 using namespace esphome::voip_stack;
 int main(int argc,char**argv){
  assert(argc==3);const bool tcp=std::string(argv[1])=="tcp";const std::string scenario=argv[2];
+ esphome::App.suffix=tcp;
  VoipStack parent;parent.tcp=tcp;VoipHAIntegration adapter;adapter.set_parent(&parent);adapter.setup();
  assert(adapter.services.count("set_account"));
  auto&service=adapter.services.at("set_account");
@@ -90,10 +92,15 @@ int main(int argc,char**argv){
  assert(parent.account.registrar=="192.0.2.10"&&parent.account.domain=="192.0.2.10"&&parent.account.port==5060);
  assert(parent.account.username==parent.account.auth_username&&parent.account.expires==3600);
 #ifdef USE_VOIP_HA_AUTO_REGISTER
+ const std::string node="register_ha_account_by_node_name",friendly="register_ha_account_by_friendly_name";
+ assert(adapter.services.count(tcp?node:friendly)&&!adapter.services.count(tcp?friendly:node));
+ auto&enroll=adapter.services.at(tcp?node:friendly);assert(enroll.args.empty());
+ enroll.invoke({});assert(parent.registered=="ha");
  assert(adapter.services.count("set_ha_display_name"));
  auto&name=adapter.services.at("set_ha_display_name");assert(name.args==std::vector<std::string>{"name"});
  name.invoke({std::string("Ingresso")});assert(parent.display=="Ingresso");
 #else
+ assert(!adapter.services.count("register_ha_account_by_node_name")&&!adapter.services.count("register_ha_account_by_friendly_name"));
  assert(!adapter.services.count("set_ha_display_name"));
 #endif
 }

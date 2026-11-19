@@ -7,6 +7,9 @@
 #include <limits>
 
 #include "sip_record.h"
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+#include "sip_uri_user.h"
+#endif
 
 namespace esphome::voip_stack {
 namespace {
@@ -28,6 +31,25 @@ bool safe(const std::string& s, size_t max, bool empty = false) {
 bool token_safe(const std::string& s, size_t max, bool empty = false) {
   return safe(s, max, empty) && s.find_first_of(" \t<>\"\\;,@/?#:") == std::string::npos;
 }
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+bool managed_username_valid(const std::string &name) {
+  if (!safe(name, 64) || name.front() == ' ' || name.back() == ' ') return false;
+  // RFC 3629 permits only canonical sequences and Unicode scalar values.
+  for (size_t i = 0; i < name.size();) {
+    const auto lead = static_cast<unsigned char>(name[i++]);
+    if (lead < 0x80) continue;
+    if (lead < 0xC2 || lead > 0xF4) return false;
+    const size_t following = lead < 0xE0 ? 1 : (lead < 0xF0 ? 2 : 3);
+    if (following > name.size() - i) return false;
+    const auto next = static_cast<unsigned char>(name[i]);
+    if ((lead == 0xE0 && next < 0xA0) || (lead == 0xED && next >= 0xA0) ||
+        (lead == 0xF0 && next < 0x90) || (lead == 0xF4 && next >= 0x90)) return false;
+    for (size_t end = i + following; i < end; ++i)
+      if ((static_cast<unsigned char>(name[i]) & 0xC0) != 0x80) return false;
+  }
+  return true;
+}
+#endif
 std::string quote(const std::string& s) {
   std::string out = "\"";
   for (char c : s) {
@@ -133,7 +155,20 @@ std::string parameter(const std::string& source, const std::string& wanted) {
   }
   return "";
 }
-std::string uri(const SipAccountConfig& c) { return "sip:" + c.username + "@" + c.domain; }
+template<typename Buffer> void append_address_of_record(Buffer &out, const SipAccountConfig &c) {
+  out.append("sip:", 4);
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  if (c.id == "ha") {
+    sip_append_uri_user(out, c.username);
+  } else
+#endif
+  {
+    // Manual PBX configurations already supply the SIP URI user component.
+    out.append(c.username.data(), c.username.size());
+  }
+  out.append("@", 1);
+  out.append(c.domain.data(), c.domain.size());
+}
 
 bool contact_uri_equal(const std::string& left, const std::string& right) {
   // RFC 3261 19.1.4 preserves an explicit port/transport even at default values.
@@ -246,11 +281,22 @@ bool find_registered_binding(const std::string &message, const SipRegistration::
 }
 }  // namespace
 
+std::string SipAccountConfig::address_of_record() const {
+  std::string result;
+  append_address_of_record(result, *this);
+  return result;
+}
+
 bool SipAccountConfig::valid() const {
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  const bool valid_user = this->id == "ha" ? managed_username_valid(this->username) : token_safe(this->username, 64);
+#else
+  const bool valid_user = token_safe(this->username, 64);
+#endif
   for (unsigned char c : this->id)
     if (!std::isalnum(c) && c != '_' && c != '-' && c != '.') return false;
   return this->id != "direct" && token_safe(this->id, 32) && token_safe(this->registrar, 253) &&
-         token_safe(this->domain, 253) && token_safe(this->username, 64) && safe(this->password, 128, true) &&
+         token_safe(this->domain, 253) && valid_user && safe(this->password, 128, true) &&
          safe(this->auth_username, 64, true) && token_safe(this->proxy, 253, true) && this->port != 0 &&
          this->proxy_port != 0 && this->expires >= 30 && this->expires <= 86400;
 }
@@ -483,10 +529,11 @@ bool SipRegistration::begin_(size_t i, uint32_t now) {
   ++a.cseq;
   a.requested_expires = a.desired ? c.expires : 0;
   const std::string registrar_uri = "sip:" + c.registrar + ":" + std::to_string(c.port);
+  const auto aor = c.address_of_record();
   std::string message =
       "REGISTER " + registrar_uri + " SIP/2.0\r\nVia: SIP/2.0/" + (c.tcp ? "TCP" : "UDP") + " " + local_ip +
       ":" + std::to_string(this->hooks_.local_port) + ";branch=" + a.branch + ";rport\r\n" +
-      "Max-Forwards: 70\r\nFrom: <" + uri(c) + ">;tag=" + a.tag + "\r\nTo: <" + uri(c) + ">\r\n" +
+      "Max-Forwards: 70\r\nFrom: <" + aor + ">;tag=" + a.tag + "\r\nTo: <" + aor + ">\r\n" +
       "Call-ID: " + a.call_id + "\r\nCSeq: " + std::to_string(a.cseq) + " REGISTER\r\n" + "Contact: <" +
       a.contact + ">;expires=" + std::to_string(a.desired ? c.expires : 0) + "\r\n" +
       "Expires: " + std::to_string(a.desired ? c.expires : 0) + "\r\nUser-Agent: ESPHome-VoIP-Stack\r\n";
@@ -539,9 +586,9 @@ bool SipRegistration::begin_keepalive_(size_t i, uint32_t now, bool capabilities
   std::snprintf(number, sizeof(number), "%u", c.port); append(number);
   append(" SIP/2.0\r\nVia: SIP/2.0/"); append(c.tcp ? "TCP" : "UDP"); append(" ");
   append(std::string_view(a.contact).substr(at + 1, end == std::string::npos ? end : end - at - 1));
-  append(";branch="); append(a.branch); append(";rport\r\nMax-Forwards: 70\r\nFrom: <sip:");
-  append(c.username); append("@"); append(c.domain); append(">;tag="); append(a.tag);
-  append("\r\nTo: <sip:"); append(c.username); append("@"); append(c.domain);
+  append(";branch="); append(a.branch); append(";rport\r\nMax-Forwards: 70\r\nFrom: <");
+  append_address_of_record(a.request, c); append(">;tag="); append(a.tag);
+  append("\r\nTo: <"); append_address_of_record(a.request, c);
   append(">\r\nCall-ID: "); append(a.call_id); append("\r\nCSeq: ");
   std::snprintf(number, sizeof(number), "%u", a.cseq); append(number);
   append(" OPTIONS\r\n");

@@ -4,6 +4,11 @@
 
 Changes since stable **2026.11.0**.
 
+- Register the Home Assistant managed line with the effective ESPHome friendly
+  name, including spaces and UTF-8. Devices configured to append a MAC suffix
+  identify the line by their effective node name. The direct caller route also
+  uses the effective node name on these devices. If saving the replacement
+  fails, the phone restores a previously requested registration.
 - Recover incoming H.264 video after RTP loss by waiting for a complete IDR
   picture before passing dependent frames to the decoder. The next IDR also
   carries the session's cached SPS and PPS when the peer omits them.

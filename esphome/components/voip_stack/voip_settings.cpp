@@ -842,14 +842,13 @@ DirectoryCommitResult VoipStack::commit_contact_directory(const void *provider, 
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   SipAccountSnapshot account;
   if (!account_id.empty() && this->get_account_snapshot(account_id, &account)) {
-    std::string authority = account.config.domain;
+    own_aor = sip_prefix_target_user(account.config.address_of_record(), "");
     // Match only this account's authority. An identical user at another PBX
     // or port remains a distinct contact, and the display name is irrelevant.
-    if (authority.find(':') == std::string::npos) {
-      if (account.config.port == 5060) own_default_aor = sip_target_uri(account.config.username, authority);
-      authority += ":" + std::to_string(account.config.port);
+    if (!own_aor.empty() && account.config.domain.find(':') == std::string::npos) {
+      if (account.config.port == 5060) own_default_aor = own_aor;
+      own_aor += ":" + std::to_string(account.config.port);
     }
-    own_aor = sip_target_uri(account.config.username, authority);
   }
 #endif
   const auto self = [this, &own_aor, &own_default_aor](const ContactEntry &entry) {

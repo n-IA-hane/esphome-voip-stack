@@ -6,7 +6,7 @@ std::string SipTransport::registration_hash_(const std::string &algorithm, const
   for (unsigned i = 0; i < n; ++i) { char item[3]; snprintf(item, sizeof(item), "%02x", digest[i]); result += item; }
   return result;
 }
-void bind_account(SipTransport &s, Peer &peer) {
+void bind_account(SipTransport &s, Peer &peer, const std::string &username = "100") {
   setup(s, peer); s.call_id_.clear(); s.media_active_ = false;
   if (peer.tcp) { s.tcp_flow_.socket = -1; s.registration_flows_[0].socket = peer.esp; }
   SipRegistration::Hooks hooks; hooks.context = &s; hooks.send = SipTransport::registration_send_view_;
@@ -15,7 +15,7 @@ void bind_account(SipTransport &s, Peer &peer) {
   hooks.random = esp_random; hooks.hash = SipTransport::registration_hash_;
   s.registration_.set_hooks(hooks);
   SipAccountConfig config; config.id = "office"; config.registrar = "127.0.0.1"; config.domain = "pbx.example";
-  config.username = "100"; config.password = "test-only-password"; config.tcp = peer.tcp;
+  config.username = username; config.password = "test-only-password"; config.tcp = peer.tcp;
   config.port = ntohs(peer.address.sin_port);
   assert(s.registration_.set_account(config, clock_ms)); s.registration_.tick(clock_ms);
   auto requests = peer.drain(); assert(requests.size() == 1);

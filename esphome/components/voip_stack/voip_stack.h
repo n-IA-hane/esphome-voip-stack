@@ -214,7 +214,7 @@ class VoipStack : public Component {
   void set_queues(const std::string &queues);
   const std::string &get_queues() const { return this->queues_; }
 #endif
-  // Stable routing key (yaml `name:` slug, e.g. "spotpear-ball-v2").
+  // Effective ESPHome node name, including the optional MAC suffix.
   // Matches the slug HA uses for the esphome.{slug}_start_call action.
   void set_device_route_id(const std::string &id) { this->device_route_id_ = id; }
   // CALLING / RINGING timeouts (0 disables). They send CANCEL or a SIP
@@ -942,7 +942,7 @@ class VoipStack : public Component {
   // This is a projection of the current call, not another call lifecycle.
   enum class MediaRoute : uint8_t { UNKNOWN, DIRECT, HA_TRANSCODING };
   std::atomic<MediaRoute> media_route_{MediaRoute::UNKNOWN};
-  std::string device_route_id_;  // routing key (yaml node name slug)
+  std::string device_route_id_;  // routing key (effective ESPHome node name)
 
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
   // Audio buffers

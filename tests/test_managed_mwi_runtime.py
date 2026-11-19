@@ -19,7 +19,7 @@ def managed_mwi_binary(tmp_path_factory):
                    "void SipTransport::registration_notify_("]:
         code += "\n" + block(adapter, marker)
     account = (ROOT / "tests/fixtures/registration_transport.cpp").read_text()
-    for marker in ["void start_account_call(", "std::string pick(", "void confirm_account_call("]:
+    for marker in ["void start_account_call(", "std::string pick("]:
         code += "\n" + block(account, marker)
     code = code.replace('"office"', '"ha"')
     assert "uint32_t esp_random(){return 42;}" in code
@@ -43,14 +43,22 @@ void sip_step(SipTransport&phone,Wake&wake){
 void feed(SipTransport&phone,Peer&peer,const std::string&record){std::thread worker([&]{peer.send_to(phone,record);});worker.join();}
 int main(int argc,char**argv){
  assert(argc==3);const bool tcp=std::string(argv[1])=="tcp";const std::string mode=argv[2];
- SipTransport phone;Peer old_peer(tcp),new_peer(tcp);bind_account(phone,old_peer);
+ const std::string original_user = "Caffè 20%@Casa";
+ SipTransport phone;Peer old_peer(tcp),new_peer(tcp);bind_account(phone,old_peer,original_user);
  phone.managed_update_.reset(new SipTransport::ManagedAccountUpdate);
  SipMwi::Hooks hooks;hooks.context=&phone;hooks.send=SipTransport::registration_send_view_;hooks.reply=SipTransport::registration_mwi_reply_;
  hooks.local_ip=SipTransport::registration_local_ip_;hooks.random=esp_random;hooks.hash=SipTransport::registration_hash_;hooks.local_port=phone.sip_port_;
  phone.mwi_.set_hooks(hooks);phone.pump_registration_mwi_(clock_ms);const auto subscribe=one(old_peer,"SUBSCRIBE ");
+ const std::string aor="<sip:Caff%C3%A8%2020%25%40Casa@pbx.example>";
+ assert(header_value(subscribe,"From").find(aor)!=std::string::npos&&header_value(subscribe,"To")==aor);
  feed(phone,old_peer,notification(subscribe,1));one(old_peer,"SIP/2.0 200");feed(phone,old_peer,response(subscribe,200));
  assert(phone.mwi_.state(0).available&&phone.mwi_.state(0).new_messages==2);
- confirm_account_call(phone,old_peer);assert(phone.active_account_==0&&!phone.call_id_.empty());
+ start_account_call(phone,old_peer);auto invite=one(old_peer,"INVITE ");
+ assert(header_value(invite,"From").find(aor)!=std::string::npos);
+ feed(phone,old_peer,response(invite,401));const auto retry=old_peer.drain();invite=pick(retry,"INVITE");
+ assert(header_value(invite,"Authorization").find("username=\"Caffè 20%@Casa\"")!=std::string::npos);
+ feed(phone,old_peer,response(invite,200));one(old_peer,"ACK ");phone.media_active_=true;
+ assert(phone.active_account_==0&&!phone.call_id_.empty());
  const auto revision=phone.registration_.account(0).config_revision;
  const int original_fd=tcp?phone.registration_flows_[0].socket.load():phone.sip_socket_;
  Saved saved;Wake wake;phone.registration_context_=&wake;
@@ -72,7 +80,7 @@ int main(int argc,char**argv){
  assert(!phone.registration_.account(0).bound&&!phone.registration_subscriptions_retired_(0));
  const auto wake_count=wake.count;for(unsigned pass=0;pass<3;++pass)sip_step(phone,wake);
  assert(wake.count==wake_count&&saved.commits==0&&phone.managed_update_->active);
- assert(phone.registration_.account(0).config.username=="100"&&phone.registration_.account(0).config_revision==revision);
+ assert(phone.registration_.account(0).config.username==original_user&&phone.registration_.account(0).config_revision==revision);
  assert((tcp?phone.registration_flows_[0].socket.load():phone.sip_socket_)==original_fd);
  if(mode=="terminal"){
   feed(phone,old_peer,notification(subscribe,2,"terminated;reason=timeout"));one(old_peer,"SIP/2.0 200");

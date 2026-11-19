@@ -31,7 +31,7 @@ template<class T> struct RAMAllocator {
     source = ROOT / "esphome/components/voip_stack"
     binary = folder / "keepalive"
     result = subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
-        "-fno-omit-frame-pointer", "-DUSE_ESPHOME_VOIP_REGISTRATION",
+        "-fno-omit-frame-pointer", "-DUSE_ESPHOME_VOIP_REGISTRATION", "-DUSE_VOIP_HA_AUTO_REGISTER",
         *(["-DUSE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM"] if request.param else []), "-I", str(folder), "-I", str(source),
         str(source / "sip_registration.cpp"), str(ROOT / "tests/fixtures/registration_keepalive.cpp"),
         "-lcrypto", "-o", str(binary)], capture_output=True, text=True)

@@ -51,9 +51,9 @@ int main(){
  using namespace esphome;voip_stack::VoipStack parent;ldap_directory::LdapDirectory directory(parent);
  auto&registration=parent.transport.registration_;
  voip_stack::SipAccountConfig account;account.id="ha";account.registrar="pbx.example.test";account.domain=account.registrar;
- account.username="phone";account.password="fixture-password";account.port=5062;account.tcp=true;
+ account.username="Caffè 20%@Casa";account.password="fixture-password";account.port=5062;account.tcp=true;
  assert(registration.set_account(account,1));directory.account_changed_();
- assert(directory.account_loaded_&&directory.config_.credentials_ready&&directory.config_.username=="phone");
+ assert(directory.account_loaded_&&directory.config_.credentials_ready&&directory.config_.username=="Caffè 20%@Casa");
  assert(directory.config_.password==account.password&&directory.config_.sip_host==account.registrar&&directory.config_.sip_port==5062&&directory.config_.sip_tcp);
  auto revision=directory.account_revision_;auto generation=directory.generation_.load();assert(directory.refreshes==1);
  voip_stack::SipAccountSnapshot snapshot;assert(parent.transport.get_account_snapshot("ha",&snapshot));
@@ -80,7 +80,7 @@ int main(){
     binary = tmp_path / "account"
     built = subprocess.run(["g++", "-std=c++17", "-O1", "-g", "-pthread", "-Wall", "-Wextra", "-Werror",
         "-fsanitize=address,undefined", "-fno-pie", "-no-pie", "-DUSE_ESP32", "-DUSE_ESPHOME_VOIP_DIRECTORY",
-        "-DUSE_ESPHOME_VOIP_CONTACT_METADATA", "-DUSE_ESPHOME_VOIP_REGISTRATION", "-I", str(tmp_path),
+        "-DUSE_ESPHOME_VOIP_CONTACT_METADATA", "-DUSE_ESPHOME_VOIP_REGISTRATION", "-DUSE_VOIP_HA_AUTO_REGISTER", "-I", str(tmp_path),
         "-I", str(ROOT), str(cpp), str(core / "sip_registration.cpp"), "-lcrypto", "-o", str(binary)],
         capture_output=True, text=True, timeout=45)
     assert built.returncode == 0, built.stderr

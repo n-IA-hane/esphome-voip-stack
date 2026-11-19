@@ -31,6 +31,7 @@ def owner_binary(tmp_path_factory):
 #include <vector>
 #include "esphome/components/ldap_directory/directory_contact.h"
 #include "esphome/components/voip_stack/phonebook.h"
+#include "esphome/components/voip_stack/sip_uri_user.h"
 
 #define ESP_LOGW(...) ((void)0)
 namespace esphome::voip_stack {
@@ -64,7 +65,7 @@ struct Trigger {unsigned calls=0;void trigger(uint32_t){++calls;}};
 class LdapDirectory:public Component {
  public:
  struct Configuration {
-  std::string host="localhost",base_dn="ou=phonebook,dc=voip",bind_dn="uid=reader",filter="(cn=*)",username="reader",password="fixture-password",ca_pem,sip_host="pbx.example.test";
+  std::string host="localhost",base_dn="ou=phonebook,dc=voip",bind_dn="uid={username},dc=voip",filter="(cn=*)",username="Caffè 20%@Casa,1",password="fixture-password",ca_pem,sip_host="pbx.example.test";
   uint16_t port=389,sip_port=5060;bool tls=false,sip_tcp=false,credentials_ready=true;
  }config_;
  std::mutex mutex_;
@@ -124,8 +125,8 @@ int main(int argc,char**argv){
     core = ROOT / "esphome/components/voip_stack"
     uri = (core / "sip_message.cpp").read_text()
     source = source.replace("URI_METHODS", "\n".join(block(uri, marker) for marker in [
-        "std::string trim_copy(", "static bool is_sip_uri_unreserved(", "static uint8_t hex_value(",
-        "std::string sip_uri_user_encode(", "std::string sip_prefix_target_user(", "std::string sip_target_uri(",
+        "std::string trim_copy(", "static uint8_t hex_value(", "std::string sip_uri_user_decode(",
+        "std::string sip_prefix_target_user(", "std::string sip_target_uri(",
     ]))
     settings = (core / "voip_settings.cpp").read_text()
     source = source.replace("COMMIT_METHODS", "\n".join(block(settings, marker) for marker in [
@@ -217,6 +218,7 @@ def test_real_peer_atomic_snapshot_failure_manual_and_generation(owner_binary, t
                 with stream:
                     bind = message(stream)
                     assert bind["protocolOp"].getName() == "bindRequest"
+                    assert bytes(bind["protocolOp"]["bindRequest"]["name"]).decode() == r"uid=Caffè 20%@Casa\,1,dc=voip"
                     assert str(bind["protocolOp"]["bindRequest"]["authentication"]["simple"]) == "fixture-password"
                     stream.sendall(response(int(bind["messageID"]), "bindResponse"))
                     search = message(stream)

@@ -18,7 +18,7 @@ def registration_binary(tmp_path_factory):
     defines.write_text("")
     output = folder / "registration"
     command = ["g++", "-std=c++17", "-g", "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
-        "-fno-omit-frame-pointer", "-DUSE_ESPHOME_VOIP_REGISTRATION", "-DVOIP_REGISTRATION_CAPACITY=2",
+        "-fno-omit-frame-pointer", "-DUSE_ESPHOME_VOIP_REGISTRATION", "-DUSE_VOIP_HA_AUTO_REGISTER", "-DVOIP_REGISTRATION_CAPACITY=2",
         "-I", str(folder), "-I", str(SOURCE), str(SOURCE / "sip_registration.cpp"),
         str(ROOT / "tests/fixtures/registration_engine.cpp"), "-lcrypto", "-o", str(output)]
     result = subprocess.run(command, capture_output=True, text=True)
@@ -27,7 +27,7 @@ def registration_binary(tmp_path_factory):
 
 
 @pytest.mark.parametrize("tcp", ["udp", "tcp"])
-@pytest.mark.parametrize("scenario", ["auth", "identity", "incoming-transport", "minimum", "retry", "timeout", "multiple", "intent", "unauthorized", "invalid", "async", "deadline", "dual-auth", "refresh-binding", "contacts", "same-user", "send-rejected"])
+@pytest.mark.parametrize("scenario", ["managed-literal", "auth", "identity", "incoming-transport", "minimum", "retry", "timeout", "multiple", "intent", "unauthorized", "invalid", "async", "deadline", "dual-auth", "refresh-binding", "contacts", "same-user", "send-rejected"])
 def test_registration_wire_lifecycle(registration_binary, tcp, scenario):
     result = subprocess.run([registration_binary, scenario, tcp], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr

@@ -39,6 +39,10 @@ int main(int argc, char** argv) {
   h.manager.set_hooks(h.hooks);
   if (scenario != "default") h.manager.set_keepalive_interval(scenario == "disabled" ? 0 : 2000);
   auto config = h.config();
+  if (scenario == "allocation") {
+    config.id = "ha";
+    config.username = "Caffè 20%@Casa";
+  }
   if (scenario == "priority") h.manager.set_keepalive_interval(44000);
   assert(h.manager.set_account(config, 0));
   h.manager.tick(0);

@@ -1,6 +1,7 @@
 #pragma once
 #ifdef USE_VOIP_HA_INTEGRATION
 #include "esphome/components/api/custom_api_device.h"
+#include "esphome/core/application.h"
 #include "esphome/core/component.h"
 #include "voip_stack.h"
 
@@ -33,6 +34,9 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
     this->register_service(&VoipHAIntegration::flush_contacts, "flush_contacts");
     this->register_service(&VoipHAIntegration::update_contacts, "update_contacts");
 #ifdef USE_VOIP_HA_AUTO_REGISTER
+    // DeviceInfo publishes both effective names but does not expose the suffix policy.
+    this->register_service(&VoipHAIntegration::register_ha_account,
+        App.is_name_add_mac_suffix_enabled() ? "register_ha_account_by_node_name" : "register_ha_account_by_friendly_name");
     this->register_service(&VoipHAIntegration::set_ha_display_name, "set_ha_display_name", {"name"});
 #endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
@@ -50,6 +54,7 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
   }
   float get_setup_priority() const override { return setup_priority::AFTER_CONNECTION; }
 #ifdef USE_VOIP_HA_AUTO_REGISTER
+  void register_ha_account() { this->parent_->register_account("ha"); }
   void set_ha_display_name(std::string name) { this->parent_->set_ha_display_name(name); }
 #endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION

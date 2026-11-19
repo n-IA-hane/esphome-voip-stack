@@ -4,6 +4,7 @@
 
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_SIP_TRANSPORT)
 
+#include "sip_uri_user.h"
 #include "transport.h"
 
 #include <cstddef>
@@ -22,7 +23,6 @@ static constexpr size_t MAX_SIP_BODY_BYTES = 4096;
 static constexpr size_t MAX_SIP_TCP_RX_BUFFER = 8192;
 
 std::string trim_copy(const std::string &value);
-std::string sip_uri_user_encode(const std::string &raw);
 std::string sip_uri_user_decode(const std::string &raw);
 std::string sip_prefix_target_user(std::string_view target, std::string_view prefix);
 std::string sip_target_uri(const std::string &target, const std::string &fallback_authority);

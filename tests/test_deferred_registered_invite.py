@@ -67,13 +67,12 @@ def build(folder):
                       'std::string make_token(const char *prefix){static unsigned token=0;return std::string(prefix)+std::to_string(++token);}')
     fixture=(ROOT/'tests/fixtures/registration_transport.cpp').read_text()
     peers=(ROOT/'tests/fixtures/refer_wire_main.cpp').read_text().split('std::string begin(')[0]
-    helpers=fixture.split('int main(')[0].replace('"office"','"qa"').replace('config.username = "100"','config.username = "7101"')
+    helpers=fixture.split('int main(')[0].replace('"office"','"qa"')
     helpers=helpers.replace('hooks.random = esp_random;',
                             'hooks.random = +[]()->uint32_t{static uint32_t token=100;return ++token;};')
     code += '\n'+peers+'\n'+helpers
     parser=(SOURCE/'sip_message.cpp').read_text()
-    for marker in ['static bool is_sip_uri_unreserved(', 'std::string sip_uri_user_encode(',
-                   'std::string sip_prefix_target_user(', 'std::string sip_normalize_dial_target(']:
+    for marker in ['std::string sip_prefix_target_user(', 'std::string sip_normalize_dial_target(']:
         if marker not in code:
             code += '\n'+block(parser,marker)
     code += r'''
@@ -112,7 +111,7 @@ void bind_line(SipTransport&s,Peer&peer,size_t slot,const std::string&id,const s
 int main(int argc,char**argv){
  assert(argc==4);const std::string scenario=argv[1];unsigned status=std::stoul(argv[2]);bool tcp=std::string(argv[3])=="tcp";
  VoipStack app;auto&s=*app.transport_;Peer qa(tcp),ha(tcp);
- bind_account(s,qa); // actual REGISTER qa/7101 initializes the existing hooks/owner.
+ bind_account(s,qa,"7101"); // actual REGISTER qa/7101 initializes the existing hooks/owner.
  bind_line(s,ha,1,"ha","home-user");
  app.sink_ready=false;
  app.start_call_on_line_("7102","qa","delayed-qa");

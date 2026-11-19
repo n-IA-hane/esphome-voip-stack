@@ -538,6 +538,7 @@ void SipTransport::pump_managed_account_(uint32_t now) {
       }
       if (old.bound || old.pending) {
         update.retiring_revision = old.config_revision;
+        update.restore_registration = old.desired;
         update.retiring = true;
         this->registration_.request_registration(update.config.id, false, now);
         return;
@@ -565,7 +566,10 @@ void SipTransport::pump_managed_account_(uint32_t now) {
   if (update.commit != nullptr &&
       !update.commit(update.context, update.config.id, update.removing ? nullptr : &update.config)) {
     ESP_LOGE("voip_stack.registration", "Managed account persistence failed; current configuration retained");
+    if (index >= 0 && update.retiring && update.restore_registration)
+      this->registration_.request_registration(update.config.id, true, now);
     update.active = false;
+    update.retiring = false;
     return;
   }
   if (index >= 0) {
@@ -591,6 +595,15 @@ bool SipTransport::register_account(const std::string& id, bool enabled) {
   LockGuard lock(this->dialog_mutex_);
   const int i = this->registration_.find(id);
   if (i < 0) return false;
+#ifdef USE_VOIP_HA_AUTO_REGISTER
+  auto *update = this->managed_update_.get();
+  if (update != nullptr && update->active && update->retiring && update->config.id == id &&
+      update->retiring_revision == this->registration_.account(i).config_revision) {
+    // Preserve the latest explicit intent if saving the replacement fails.
+    update->restore_registration = enabled;
+    return true;
+  }
+#endif
   const bool result = this->registration_.request_registration(id, enabled, millis());
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
   this->mwi_.update_registered_account(i, this->registration_.account(i), millis());

@@ -71,7 +71,7 @@ def validate(config, full):
     for action in full["api"].get("actions", []):
         name = action.get("action", action.get("service", ""))
         registration_actions = {"set_account", "remove_account", "reset_account", "register_account", "unregister_account", "select_line", "start_call_on_line"} if "registration" in config else set()
-        managed_actions = {"set_ha_display_name"} if config[CONF_HA_INTEGRATION]["auto_register"] else set()
+        managed_actions = {"set_ha_display_name", "register_ha_account_by_node_name", "register_ha_account_by_friendly_name"} if config[CONF_HA_INTEGRATION]["auto_register"] else set()
         if name in ACTIONS | registration_actions | managed_actions:
             raise cv.Invalid(f"API action '{name}' is now provided by voip_stack. Remove the old VoIP HA package or copied action.")
     for item in full.get("text_sensor", []):

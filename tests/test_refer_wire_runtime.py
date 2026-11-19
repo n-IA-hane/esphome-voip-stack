@@ -29,9 +29,9 @@ const char*socket_errno_name(int){return "errno";}const char*socket_errno_text(i
 bool socket_errno_is_transient_tx_pressure(int){return false;}
 template<class T>void reset_string(T&s){s.clear();}
 '''
-    for marker in ['static bool is_sip_uri_unreserved(', 'std::string via_branch(', 'std::string message_body(', 'bool sip_content_length(',
+    for marker in ['std::string via_branch(', 'std::string message_body(', 'bool sip_content_length(',
                    'std::string reason_text_from_header(', 'bool sip_option_supported(', 'std::string sip_request_uri(',
-                   'std::string sip_uri_user_encode(', 'std::string sip_quoted(',
+                   'std::string sip_quoted(',
                    'std::string sip_prefix_target_user(', 'std::string sip_target_uri(',
                    'std::string sip_name_addr(', 'std::string response_via_with_rport(', 'bool sip_accepts_sdp(']:
         extra += block(parser, marker) + '\n'

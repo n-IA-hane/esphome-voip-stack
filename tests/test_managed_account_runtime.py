@@ -133,6 +133,7 @@ int main(int argc,char**argv){
  assert(quiet(h.first)&&h.manager.account(0).config_revision==revision&&saved.count==0);
  assert(!transport.main_wake.load()&&transport.wakes==1); // queue wake only, no main polling while a call owns it
  transport.active_call=false;transport.terminal=true;transport.step(4);assert(quiet(h.first)&&transport.wakes==1);
+ if(scenario=="persist-fail-inactive")assert(transport.register_account("ha",false));
  transport.terminal=false;transport.step(5);auto unregister=h.first.receive();
  assert(field(unregister,"Expires")=="0"&&field(unregister,"From").find(original.username+"@")!=std::string::npos);
  const unsigned waiting_wakes=transport.wakes;
@@ -141,7 +142,9 @@ int main(int argc,char**argv){
  auto latest=replacement;latest.username="latest-name";
  assert(transport.set_account(latest,persist,&saved));
  if(scenario=="remove")assert(transport.remove_account("ha",persist,&saved));
- if(scenario=="persist-fail")saved.fail=true;
+ const bool failed_write=scenario.rfind("persist-fail",0)==0;
+ if(failed_write)saved.fail=true;
+ if(scenario=="persist-fail-opt-out")assert(transport.register_account("ha",false));
  if(scenario=="subscription-wait")transport.subscriptions_retired=false;
  if(scenario=="timeout"){
   transport.step(32005);
@@ -160,16 +163,30 @@ int main(int argc,char**argv){
   assert(saved.count==1&&saved.removed&&h.manager.find("ha")<0);
   assert(!transport.managed_update_->active&&quiet(h.second));return 0;
  }
- if(scenario=="persist-fail"){
-  assert(saved.count==0&&h.manager.account(0).config.username==original.username&&quiet(h.second));
-  saved.fail=false;assert(transport.set_account(latest,persist,&saved));transport.step(8);
+ if(failed_write){
+  assert(saved.count==0&&h.manager.account(0).config_revision==revision&&quiet(h.second));
+  assert(!transport.managed_update_->active&&h.manager.account(0).config.username==original.username);
+  if(scenario!="persist-fail"){
+   assert(!h.manager.account(0).desired&&quiet(h.first));
+   transport.step(1000);assert(quiet(h.first)&&quiet(h.second));return 0;
+  }
+  assert(h.manager.account(0).desired);
+  const auto resume=h.first.receive();
+  assert(field(resume,"Expires")=="3600"&&field(resume,"From")==field(initial,"From"));
+  feed(h.first,h.success(resume),8);assert(h.manager.is_registered("ha"));
+  const auto wakes=transport.wakes;
+  transport.step(9);transport.step(10);
+  assert(quiet(h.first)&&quiet(h.second)&&wakes==transport.wakes);
+  saved.fail=false;assert(transport.set_account(latest,persist,&saved));transport.step(11);
+  const auto retire_again=h.first.receive();assert(field(retire_again,"Expires")=="0");
+  feed(h.first,h.success(retire_again,0),12);transport.step(13);
  }
  assert(saved.count==1&&!saved.removed&&saved.config.username=="latest-name");
  auto request=h.second.receive();assert(field(request,"From").find("latest-name@")!=std::string::npos);
  assert(field(request,"Call-ID")!=field(initial,"Call-ID"));
  assert(h.manager.account(0).config_revision!=revision&&transport.flow_retirements==1&&transport.dns_invalidations==1);
  const auto late=h.first.answer(h.success(initial));
- const uint32_t now=scenario=="timeout"?32007:9;
+ const uint32_t now=scenario=="timeout"?32007:14;
  const auto current_request=h.manager.account(0).request;
  assert(h.manager.handle_response(late,INADDR_LOOPBACK,h.first.port,h.first.tcp,0,now));
  assert(h.manager.account(0).request==current_request&&quiet(h.first)&&quiet(h.second));
@@ -189,7 +206,7 @@ int main(int argc,char**argv){
     return binary
 
 
-@pytest.mark.parametrize("scenario", ["bootstrap", "noop", "replace", "timeout", "remove", "persist-fail", "subscription-wait"])
+@pytest.mark.parametrize("scenario", ["bootstrap", "noop", "replace", "timeout", "remove", "persist-fail", "persist-fail-inactive", "persist-fail-opt-out", "subscription-wait"])
 @pytest.mark.parametrize("transport", ["udp", "tcp"])
 def test_managed_updates_are_idempotent_or_retire_one_old_generation(managed_binary, scenario, transport):
     result = subprocess.run([managed_binary, scenario, transport], capture_output=True, text=True, timeout=8)

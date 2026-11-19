@@ -21,6 +21,19 @@ def test_managed_account_codegen_reserves_real_registration_owner(tmp_path):
     assert "USE_ESPHOME_VOIP_BLF" not in defines
 
 
+@pytest.mark.parametrize("suffix", [True, False])
+@pytest.mark.parametrize("friendly", ["", "  friendly_name: Caffè in cucina\n"])
+def test_contact_and_caller_names_use_effective_esphome_names(tmp_path, suffix, friendly):
+    options = friendly + f"  name_add_mac_suffix: {str(suffix).lower()}\n"
+    result = run_config(tmp_path, MANAGED, extra=API, node_options=options)
+    assert result.returncode == 0, result.stdout + result.stderr
+    main = next(tmp_path.rglob("main.cpp")).read_text()
+    name = "get_friendly_name" if friendly else "get_name"
+    assert f"set_device_name(App.{name}().str())" in main
+    assert "set_device_route_id(App.get_name().str())" in main
+    assert main.index("App.pre_setup(") < main.index("->set_device_name(")
+
+
 @pytest.mark.parametrize("option", ["", "  ha_integration:\n    auto_register: false\n"])
 def test_omitted_or_false_auto_register_preserves_direct_legacy(tmp_path, option):
     result = run_config(tmp_path, option, extra=API)

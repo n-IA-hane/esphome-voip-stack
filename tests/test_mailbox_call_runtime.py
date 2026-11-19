@@ -34,6 +34,7 @@ void deallocate(T*p,size_t){std::free(p);}
     message = (SOURCE / "sip_message.cpp").read_text()
     code = r'''
 #include "sip_mwi.h"
+#include "sip_uri_user.h"
 #include "phonebook.h"
 #include <algorithm>
 #include <cctype>
@@ -42,8 +43,8 @@ using namespace esphome::voip_stack;
 constexpr size_t VOIP_STACK_MAX_ROUTE_ID_LEN=64;
 struct LockGuard{explicit LockGuard(int&){};};
 '''
-    for signature in ["std::string trim_copy(", "static bool is_sip_uri_unreserved(", "static uint8_t hex_value(",
-                      "std::string sip_uri_user_encode(", "std::string sip_prefix_target_user(",
+    for signature in ["std::string trim_copy(", "static uint8_t hex_value(", "std::string sip_uri_user_decode(",
+                      "std::string sip_prefix_target_user(",
                       "std::string sip_normalize_dial_target("]:
         code += block(message, signature) + "\n"
     code += r'''

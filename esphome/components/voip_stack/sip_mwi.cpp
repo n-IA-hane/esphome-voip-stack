@@ -598,7 +598,7 @@ bool SipMwi::begin_(size_t index, uint32_t now) {
   }
   ++a.cseq;
   a.branch = "z9hG4bK" + this->token_();
-  const std::string aor = "sip:" + a.config().username + "@" + a.config().domain;
+  const std::string aor = a.config().address_of_record();
   std::string observed = aor;
   const char *event_name = "message-summary";
   const char *content_type = "application/simple-message-summary";

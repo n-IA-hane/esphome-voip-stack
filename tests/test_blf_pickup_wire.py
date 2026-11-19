@@ -12,7 +12,7 @@ def blf_pickup_source():
     code = code.replace("uint32_t esp_random(){return 42;}", "uint32_t esp_random(){static uint32_t value=42;return ++value;}")
     code += "\nusing esphome::voip_stack::VOIP_STACK_MAX_ROUTE_ID_LEN;\n"
     parser = (SOURCE / "sip_message.cpp").read_text()
-    for marker in ["static bool is_sip_uri_unreserved(", "std::string sip_uri_user_encode(", "std::string sip_prefix_target_user(", "std::string sip_target_uri(", "std::string sip_normalize_dial_target("]:
+    for marker in ["std::string sip_prefix_target_user(", "std::string sip_target_uri(", "std::string sip_normalize_dial_target("]:
         if marker not in code:
             code += "\n" + block(parser, marker)
     adapter = (SOURCE / "sip_registration_transport.cpp").read_text()

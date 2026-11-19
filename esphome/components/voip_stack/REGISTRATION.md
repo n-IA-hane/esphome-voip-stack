@@ -48,8 +48,13 @@ An enabled manual account starts REGISTER through the existing SIP worker.
 With `ha_integration.auto_register: true`, the managed `ha` account uses one
 reserved slot in the same pool. Leave capacity for that account alongside
 manual PBX accounts. HA delivers its configuration privately over the existing
-ESPHome API connection. The engine handles
-renewal, UDP retransmission, response deadlines, bounded retry, 401/407 Digest
+ESPHome API connection. With a compatible HA integration, the username is the
+ESPHome friendly name, including spaces and UTF-8, or the node name if no
+friendly name is set. When `esphome.name_add_mac_suffix` is enabled, the username
+is the node name with its MAC suffix. SIP addresses encode the username on the
+wire, while Digest and LDAP use its original value.
+
+The engine handles renewal, UDP retransmission, response deadlines, bounded retry, 401/407 Digest
 and 423 minimum expiry. Supported Digest algorithms are MD5 and SHA-256,
 including their session variants, with `qop=auth` or the legacy no-qop form.
 Successful bindings must match the account Contact, including a verified

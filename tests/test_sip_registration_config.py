@@ -17,8 +17,9 @@ ACCOUNT = """  registration:
 """
 
 
-def run_config(tmp_path, registration=ACCOUNT, *, generate=True, extra=""):
+def run_config(tmp_path, registration=ACCOUNT, *, generate=True, extra="", node_options=""):
     config = (ROOT / "tests/minimal_no_text.yaml").read_text().replace("../esphome/components", str(ROOT / "esphome/components"))
+    config = config.replace("esphome:\n", "esphome:\n" + node_options)
     config = config.replace("voip_stack:\n", "voip_stack:\n" + registration)
     config += extra
     path = tmp_path / "registration.yaml"

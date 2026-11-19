@@ -12,6 +12,7 @@ def test_uri_targets_and_line_calls_preserve_authority_and_parameters(tmp_path):
     parser = (SOURCE / "sip_message.cpp").read_text()
     code = r'''
 #include "esphome/components/voip_stack/phonebook.h"
+#include "esphome/components/voip_stack/sip_uri_user.h"
 #include "esphome/components/voip_stack/sip_types.h"
 #include <algorithm>
 #include <cassert>
@@ -19,8 +20,8 @@ def test_uri_targets_and_line_calls_preserve_authority_and_parameters(tmp_path):
 #include <memory>
 using namespace esphome::voip_stack;
 '''
-    for marker in ["std::string trim_copy(", "static uint8_t hex_value(", "static bool is_sip_uri_unreserved(",
-                   "std::string sip_uri_user_encode(", "std::string sip_prefix_target_user(", "std::string sip_target_uri(",
+    for marker in ["std::string trim_copy(", "static uint8_t hex_value(", "std::string sip_uri_user_decode(",
+                   "std::string sip_prefix_target_user(", "std::string sip_target_uri(",
                    "std::string sip_normalize_dial_target("]:
         code += block(parser, marker) + "\n"
     code += r'''
@@ -45,6 +46,8 @@ struct VoipStack {
     code += block(registration, "void VoipStack::start_call_on_line_(") + "\n"
     code += block((SOURCE / "voip_settings.cpp").read_text(), "void VoipStack::call_via_ha(") + r'''
 int main(){
+ assert(sip_uri_user_decode("Caff%C3%A8%2020%25%40Casa")=="Caffè 20%@Casa");
+ assert(sip_uri_user_decode("Caff%0d%0aName").empty()&&sip_uri_user_decode("bad%2").empty());
  assert(sip_target_uri("sip:camera@pbx.example.test:5070;transport=tcp","ignored.example.test")=="sip:camera@pbx.example.test:5070;transport=tcp");
  assert(sip_target_uri("Front Door","pbx.example.test")=="sip:Front%20Door@pbx.example.test");
  assert(sip_target_uri("101","pbx.example.test")=="sip:101@pbx.example.test");

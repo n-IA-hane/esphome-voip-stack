@@ -934,7 +934,7 @@ class SipTransport : public SipPhoneTransport {
     AccountCommit commit{nullptr};
     void *context{nullptr};
     uint32_t retiring_revision{0};
-    bool active{false}, removing{false}, retiring{false};
+    bool active{false}, removing{false}, retiring{false}, restore_registration{false};
   };
   std::unique_ptr<ManagedAccountUpdate> managed_update_;
   std::atomic<uint16_t> managed_retirement_status_{0};

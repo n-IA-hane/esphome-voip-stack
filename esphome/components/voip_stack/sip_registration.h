@@ -32,6 +32,7 @@ struct SipAccountConfig {
   bool tcp{false}, enabled{true};
   bool allow_paging_auto_answer{false};
   bool valid() const;
+  std::string address_of_record() const;
   bool same_settings(const SipAccountConfig &other) const {
     return this->id == other.id && this->registrar == other.registrar && this->domain == other.domain &&
         this->username == other.username && this->password == other.password &&
