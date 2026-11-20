@@ -27,7 +27,9 @@ list permits runtime provisioning and restores previously persisted overrides.
 New incoming calls require a recognized PBX line by default. A call from the
 signaling peer where a line is registered belongs to that line, whether the PBX
 addresses it by extension, by name or by the registered Contact. The Contact
-user only selects between several lines on the same peer. To receive direct calls,
+user selects between several lines on the same peer; with more than one line
+there, a call that names none of them, or names one that is not registered, is
+rejected. To receive direct calls,
 set `registration.accept_direct_calls: true`. A block containing only
 this option enables manual direct calling without compiling the registration
 engine when direct calls are its only use. An empty `registration: {}` block,

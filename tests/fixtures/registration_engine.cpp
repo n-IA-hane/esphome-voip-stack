@@ -561,9 +561,12 @@ int main(int argc, char** argv) {
     assert(h.manager.is_registered("office") && h.manager.is_registered("home"));
     assert(h.manager.match_incoming("esphome-office", INADDR_LOOPBACK, tcp, tcp ? 0 : -1) == 0);
     assert(h.manager.match_incoming("esphome-home", INADDR_LOOPBACK, tcp, tcp ? 1 : -1) == 1);
-    // An unnamed line from the shared peer uses the flow owner, else the first bound line.
-    assert(h.manager.match_incoming(c.username, INADDR_LOOPBACK, tcp, tcp ? 0 : -1) == 0);
-    assert(h.manager.match_incoming(c.username, INADDR_LOOPBACK, tcp, tcp ? 1 : -1) == (tcp ? 1 : 0));
+    // Two lines share the peer: only an owned TCP flow or the Contact user selects one.
+    assert(h.manager.match_incoming(c.username, INADDR_LOOPBACK, tcp, tcp ? 0 : -1) == (tcp ? 0 : -1));
+    assert(h.manager.match_incoming(c.username, INADDR_LOOPBACK, tcp, tcp ? 1 : -1) == (tcp ? 1 : -1));
+    // A named line that is not registered never falls through to its neighbour.
+    assert(h.manager.request_registration("home", false, 3));
+    assert(h.manager.match_incoming("esphome-home", INADDR_LOOPBACK, tcp, -1) < 0);
   } else if (scenario == "refresh-binding") {
     h.feed(h.first, h.success(initial, 60), 1);
     h.manager.tick(48001);
