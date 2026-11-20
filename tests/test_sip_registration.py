@@ -76,6 +76,15 @@ def test_digest_against_independent_hashlib(registration_binary, algorithm):
 
 
 @pytest.mark.parametrize("tcp", ["udp", "tcp"])
+def test_bound_registrar_may_address_the_line_by_extension_username_or_name(registration_binary, tcp):
+    targets = ["101", "kitchen-panel", "Kitchen%20Panel", "Kitchen Panel", "esphome-office", "100"]
+    result = subprocess.run([registration_binary, "registrar-target", tcp, *targets],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"PASS registrar-target {tcp}\n"
+
+
+@pytest.mark.parametrize("tcp", ["udp", "tcp"])
 def test_proxy_authentication(registration_binary, tcp):
     result = subprocess.run([registration_binary, "auth", tcp, "proxy"], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr

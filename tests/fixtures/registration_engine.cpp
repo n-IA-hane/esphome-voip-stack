@@ -429,6 +429,16 @@ int main(int argc, char** argv) {
     assert(h.manager.match_incoming("101", INADDR_LOOPBACK, tcp, tcp ? 0 : -1) == 0);
     assert(h.manager.match_incoming("Kitchen Panel", INADDR_LOOPBACK, tcp, tcp ? 0 : -1) == 0);
     assert(h.manager.match_incoming("101", 0x7f000002, tcp, tcp ? 0 : -1) < 0);
+  } else if (scenario == "registrar-target") {
+    // Request-URI users exactly as a PBX resolved them: extension, username or text name.
+    assert(argc >= 4);
+    h.feed(h.first, h.success(initial), 1);
+    assert(h.manager.is_registered("office"));
+    for (int i = 3; i < argc; ++i) {
+      assert(h.manager.match_incoming(argv[i], INADDR_LOOPBACK, tcp, tcp ? 0 : -1) == 0);
+      assert(h.manager.match_incoming(argv[i], INADDR_LOOPBACK, tcp, -1) == 0);
+      assert(h.manager.match_incoming(argv[i], 0x7f000002, tcp, -1) < 0);
+    }
   } else if (scenario == "incoming-transport") {
     h.feed(h.first, h.success(initial), 1);
     assert(h.manager.is_registered("office"));
