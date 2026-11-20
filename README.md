@@ -342,14 +342,16 @@ account field is supported by the YAML `voip_stack.set_account` action. Account
 matching includes the registrar's bound signaling peer; a caller-supplied name
 alone does not grant paging access.
 
-For direct SIP without a matched account, opt in specific source IPv4 addresses:
+For direct paging, allow direct SIP calls and authorize the source IPv4 addresses for paging:
 
 ```yaml
 voip_stack:
+  registration:
+    accept_direct_calls: true
   paging_auto_answer_peers: [192.0.2.20]
 ```
 
-This list is empty by default and retains at most 16 distinct addresses. It does
+Ordinary direct calls require manual answer. The paging list is empty by default and retains at most 16 distinct addresses. It does
 not override a matched PBX account whose paging permission is disabled.
 `Priv-Answer-Mode` and vendor-specific auto-answer headers do not grant paging
 permission. Answer mode controls acceptance only; the negotiated SDP direction

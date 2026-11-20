@@ -300,6 +300,7 @@ bool VoipStack::setup_transport_() {
     ESP_LOGE(TAG, "Failed to allocate SIP transport signaling storage");
     return false;
   }
+  transport->set_accept_direct_calls(this->accept_direct_calls_);
   this->transport_ = std::move(transport);
 #else
   ESP_LOGE(TAG, "SIP transport was not compiled into this firmware");

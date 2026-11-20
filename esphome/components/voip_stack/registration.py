@@ -79,14 +79,26 @@ def validate_registration(value):
     if len(ids) > value["max_accounts"]:
         raise cv.Invalid("Increase registration.max_accounts to fit the configured accounts")
     if "default_line" not in value:
-        value["default_line"] = ids[0] if not value["accept_direct_calls"] and len(ids) == 1 else "direct"
+        # Preserve the legacy outgoing choice when no ingress policy was specified.
+        value["default_line"] = ids[0] if value.get("accept_direct_calls") is False and len(ids) == 1 else "direct"
+    value.setdefault("accept_direct_calls", False)
     return value
+
+
+def engine_enabled(config):
+    return "max_accounts" in config.get(CONF_REGISTRATION, {})
 
 
 def final_validate(config):
     conf = config.get(CONF_REGISTRATION)
     if conf is None:
         return
+    if not engine_enabled(config):
+        if ("on_registration_state" not in config and "blf" not in config
+                and not CORE.data.get("voip_stack_uses_account_automation")):
+            return
+        # The caller also declared a real consumer of the runtime account pool.
+        config[CONF_REGISTRATION] = conf = _ENGINE_SCHEMA(conf)
     ha = config.get("ha_integration") or {}
     managed = bool(ha.get("auto_register", False))
     ids = {item["account_id"] for item in conf["accounts"]}
@@ -98,14 +110,22 @@ def final_validate(config):
         raise cv.Invalid("default_line must be direct or the account_id of a configured account")
 
 
-SCHEMA = cv.All(cv.Schema({
+_ENGINE_SCHEMA = cv.All(cv.Schema({
     cv.Optional("keepalive_interval", default="15s"): keepalive_interval,
     cv.Optional("message_waiting", default=False): cv.boolean,
     cv.Optional("max_accounts", default=2): cv.int_range(min=1, max=4),
-    cv.Optional("accept_direct_calls", default=True): cv.boolean,
+    cv.Optional("accept_direct_calls"): cv.boolean,
     cv.Optional("default_line"): cv.Any("direct", account_id),
     cv.Optional("accounts", default=[]): cv.ensure_list(ACCOUNT_SCHEMA),
 }), validate_registration)
+
+
+def SCHEMA(value):
+    if (isinstance(value, dict) and set(value) == {"accept_direct_calls"}
+            and cv.boolean(value["accept_direct_calls"])):
+        # Only an explicit direct-call opt-in can stand alone without a registrar.
+        return {"accept_direct_calls": True}
+    return _ENGINE_SCHEMA(value)
 
 
 async def to_code(parent, config):
@@ -118,7 +138,9 @@ async def to_code(parent, config):
              (cg.uint32, "new_messages"), (cg.uint32, "old_messages"),
              (cg.uint32, "urgent_new"), (cg.uint32, "urgent_old")], trigger)
 
-    if CONF_REGISTRATION not in config:
+    if not engine_enabled(config):
+        if config.get(CONF_REGISTRATION, {}).get("accept_direct_calls"):
+            cg.add(parent.set_accept_direct_calls(True))
         if "on_registration_state" in config:
             raise cv.Invalid("on_registration_state requires voip_stack.registration")
         return
@@ -156,8 +178,15 @@ async def to_code(parent, config):
 
 
 def register_automations(parent_type):
+    def uses_account_automation(value):
+        CORE.data["voip_stack_uses_account_automation"] = True
+        return value
+
+    def account_action_schema(fields):
+        return cv.All(cv.Schema(fields), uses_account_automation)
+
     def require_registration():
-        if CONF_REGISTRATION not in ((CORE.config or {}).get("voip_stack") or {}):
+        if not engine_enabled((CORE.config or {}).get("voip_stack") or {}):
             raise cv.Invalid("This action requires voip_stack.registration")
 
     async def parented(conf, action_id, template_arg):
@@ -175,7 +204,7 @@ def register_automations(parent_type):
             fields[cv.Optional("persist", default=False)] = cv.templatable(cv.boolean)
 
         def register(name, code, fields):
-            @automation.register_action("voip_stack." + name, operation, cv.Schema(fields), synchronous=True)
+            @automation.register_action("voip_stack." + name, operation, account_action_schema(fields), synchronous=True)
             async def action_to_code(conf, action_id, template_arg, args):
                 action = await parented(conf, action_id, template_arg)
                 cg.add(action.set_operation(code))
@@ -186,7 +215,7 @@ def register_automations(parent_type):
         register(name, code, fields)
 
     start = NS.class_("StartCallOnLineAction", automation.Action)
-    @automation.register_action("voip_stack.start_call_on_line", start, cv.Schema({
+    @automation.register_action("voip_stack.start_call_on_line", start, account_action_schema({
         cv.GenerateID(): cv.use_id(parent_type),
         cv.Required("target"): cv.templatable(cv.string),
         cv.Required("line"): cv.templatable(cv.Any("direct", account_id)),
@@ -198,7 +227,7 @@ def register_automations(parent_type):
         return action
 
     condition = NS.class_("IsRegisteredCondition", automation.Condition)
-    @automation.register_condition("voip_stack.is_registered", condition, cv.Schema({
+    @automation.register_condition("voip_stack.is_registered", condition, account_action_schema({
         cv.GenerateID(): cv.use_id(parent_type), cv.Required("account_id"): cv.templatable(account_id),
     }))
     async def registered_to_code(conf, condition_id, template_arg, args):
@@ -207,7 +236,7 @@ def register_automations(parent_type):
         return action
 
     setter = NS.class_("SetAccountAction", automation.Action)
-    @automation.register_action("voip_stack.set_account", setter, cv.Schema({
+    @automation.register_action("voip_stack.set_account", setter, account_action_schema({
         cv.GenerateID(): cv.use_id(parent_type),
         cv.Required("account"): ACCOUNT_SCHEMA,
         cv.Optional("persist", default=False): cv.templatable(cv.boolean),

@@ -56,6 +56,9 @@ speaker:
     bits_per_sample: 16bit
 
 voip_stack:
+  # This standalone example accepts direct SIP calls for manual answer.
+  registration:
+    accept_direct_calls: true
   id: phone
   transport: udp
   sip_port: 5060

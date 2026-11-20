@@ -79,7 +79,7 @@ int main(int argc,char**argv){
   socklen_t len=sizeof(address);assert(getsockname(occupied,reinterpret_cast<sockaddr*>(&address),&len)==0);
   media_owner.rtp_port_=ntohs(address.sin_port);
  }
- SipSignal invite;invite.type=SipSignalType::INVITE;invite.call_id="failed-media";
+ SipSignal invite;invite.type=SipSignalType::INVITE; invite.from_registered_account=true;invite.call_id="failed-media";
  invite.caller_name="caller";invite.caller_route="100";invite.dest_name="esp";invite.dest_route="esp";
  audio_format_list_default(&invite.caller_tx_formats);audio_format_list_default(&invite.caller_rx_formats);
  phone.on_sip_signal_received_(invite);phone.drain();

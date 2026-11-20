@@ -125,9 +125,11 @@ class VoipStack : public Component {
   void loop() override;
   void dump_config() override;
   void dump_diagnostics();
+  void set_accept_direct_calls(bool enabled) { this->accept_direct_calls_ = enabled; }
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   void configure_registration(bool accept_direct, const std::string &default_line) {
-    this->registration_accept_direct_ = accept_direct; this->default_line_ = default_line;
+    this->set_accept_direct_calls(accept_direct);
+    this->default_line_ = default_line;
   }
   void set_registration_keepalive_interval(uint32_t milliseconds) {
     this->registration_keepalive_interval_ms_ = milliseconds;
@@ -1156,7 +1158,8 @@ class VoipStack : public Component {
   std::atomic<uint32_t> last_peer_audio_ms_{0};
   std::atomic<uint32_t> media_timeout_rtp_rx_packets_{0};
 
-  bool auto_answer_{true};
+  bool auto_answer_{false};
+  bool accept_direct_calls_{false};
   bool do_not_disturb_{false};
 
   // SIP call timeouts (0 = disabled). Pending outbound calls send CANCEL.
@@ -1322,7 +1325,7 @@ class VoipStack : public Component {
   static RegistrationSavedPtr allocate_registration_saved_(const SavedRegistration *copy_from = nullptr);
   RegistrationSavedPtr registration_saved_;
   nvs_handle_t registration_nvs_handle_{0};
-  bool registration_accept_direct_{true}, force_direct_call_{false};
+  bool force_direct_call_{false};
   uint32_t registration_keepalive_interval_ms_{15000};
   std::string default_line_{"direct"}, pending_line_;
   Trigger<std::string, std::string, int> registration_state_trigger_;

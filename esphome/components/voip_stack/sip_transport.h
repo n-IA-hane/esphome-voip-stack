@@ -80,6 +80,7 @@ class SipTransport : public SipPhoneTransport {
                bool task_stacks_in_psram);
   ~SipTransport() override;
 
+  void set_accept_direct_calls(bool enabled) { this->accept_direct_calls_ = enabled; }
   bool initialized() const {
 #ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
     if (!this->sip_rx_scratch_.initialized()) return false;
@@ -128,7 +129,6 @@ class SipTransport : public SipPhoneTransport {
     return index >= 0 ? this->registration_.account(index).config.domain : std::string();
   }
   void clear_account_line();
-  void set_accept_direct_calls(bool enabled) { this->accept_direct_calls_ = enabled; }
   using RegistrationCallback = void (*)(void *, const std::string &, RegistrationState, uint16_t);
   using RegistrationWakeCallback = void (*)(void *, SipTransport *);
   void set_registration_callback(RegistrationCallback cb, void *ctx, RegistrationWakeCallback wake) {
@@ -657,6 +657,7 @@ class SipTransport : public SipPhoneTransport {
   std::string logical_wire_id_;
   std::string refer_wire_id_;
 
+  bool accept_direct_calls_{false};
   uint16_t sip_port_{5060};
   uint16_t rtp_port_{40000};
   size_t udp_max_payload_{UDP_SAFE_AUDIO_PAYLOAD_BYTES};
@@ -945,7 +946,6 @@ class SipTransport : public SipPhoneTransport {
 #endif
   std::array<SipTcpFlow, SipRegistration::CAPACITY> registration_flows_{};
   int active_account_{-1}, next_account_{-1}, dispatch_socket_{-2};
-  bool accept_direct_calls_{true};
   SipDigest dialog_digest_, dialog_proxy_digest_;
   uint8_t dialog_auth_attempts_{0}, dialog_proxy_auth_attempts_{0};
   std::string authenticated_invite_body_, invite_authorization_;

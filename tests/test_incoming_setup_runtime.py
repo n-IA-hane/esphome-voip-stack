@@ -37,7 +37,7 @@ def test_incoming_and_refer_identity_compile_with_optional_speaker(tmp_path, spe
 int main() {
   VoipStack phone;
   SipSignal invite;
-  invite.type=SipSignalType::INVITE; invite.call_id="incoming";
+  invite.type=SipSignalType::INVITE; invite.from_registered_account=true; invite.call_id="incoming";
   invite.caller_name="caller"; invite.caller_route="100";
   invite.dest_name="esp"; invite.dest_route="esp";
   audio_format_list_default(&invite.caller_tx_formats);
@@ -80,7 +80,7 @@ int main(int argc,char **argv) {
   if(failure=="ringing"){phone.auto_answer_=false;phone.t.ringing_ok=false;}
   if(failure=="final-send")phone.t.final_ok=false;
   SipSignal invite;
-  invite.type=SipSignalType::INVITE; invite.call_id="failed-incoming";
+  invite.type=SipSignalType::INVITE; invite.from_registered_account=true; invite.call_id="failed-incoming";
   invite.caller_name="caller"; invite.caller_route="100";
   invite.dest_name="esp"; invite.dest_route="esp";
   audio_format_list_default(&invite.caller_tx_formats);

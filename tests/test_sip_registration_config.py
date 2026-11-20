@@ -38,7 +38,7 @@ def test_registration_generates_only_when_enabled(tmp_path):
     assert "#define USE_ESPHOME_VOIP_REGISTRATION" in defines
     assert "#define VOIP_REGISTRATION_CAPACITY 2" in defines
     assert "#define USE_ESPHOME_VOIP_MWI" not in defines
-    assert 'configure_registration(true, "direct")' in generated
+    assert 'configure_registration(false, "direct")' in generated
     assert "static const voip_stack::SipAccountConfigView phone_registration_accounts[]" in generated
     assert '.id = "office"' in generated and '.registrar = "pbx.example.org"' in generated
     assert 'set_registration_accounts(phone_registration_accounts, 1)' in generated
@@ -52,6 +52,61 @@ def test_direct_profile_has_no_registration_code(tmp_path):
     assert "USE_ESPHOME_VOIP_REGISTRATION" not in defines
     assert "VOIP_REGISTRATION_CAPACITY" not in defines
     assert "configure_registration" not in next(tmp_path.rglob("main.cpp")).read_text()
+
+
+@pytest.mark.parametrize("registration", [
+    "  registration: {}\n",
+    "  registration:\n    accept_direct_calls: false\n",
+    "  registration:\n    accept_direct_calls: true\n",
+])
+def test_registration_without_initial_accounts_can_provision_one_at_runtime(tmp_path, registration):
+    button = """
+button:
+  - platform: template
+    name: Set office account
+    on_press:
+      - voip_stack.set_account:
+          id: phone
+          account:
+            account_id: office
+            registrar: pbx.example.org
+            username: '100'
+            password: test-only-password
+"""
+    result = run_config(tmp_path, registration, extra=button)
+    assert result.returncode == 0, result.stdout + result.stderr
+    generated = next(tmp_path.rglob("main.cpp")).read_text()
+    defines = next(tmp_path.rglob("defines.h")).read_text()
+    assert "#define USE_ESPHOME_VOIP_REGISTRATION" in defines
+    assert "#define VOIP_REGISTRATION_CAPACITY 2" in defines
+    assert "SetAccountAction" in generated and "phone_registration_accounts" not in generated
+    if "accept_direct_calls" in registration:
+        setting = registration.split("accept_direct_calls: ")[1].strip()
+        assert f'configure_registration({setting}, "direct")' in generated
+    else:
+        assert 'configure_registration(false, "direct")' in generated
+
+
+@pytest.mark.parametrize("consumer", [
+    "  on_registration_state:\n    then:\n      - logger.log: Account changed\n",
+    "  blf:\n    account_id: office\n",
+])
+def test_direct_opt_in_with_account_observers_retains_registration(tmp_path, consumer):
+    result = run_config(tmp_path, "  registration:\n    accept_direct_calls: true\n" + consumer)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "#define USE_ESPHOME_VOIP_REGISTRATION" in next(tmp_path.rglob("defines.h")).read_text()
+    assert 'configure_registration(true, "direct")' in next(tmp_path.rglob("main.cpp")).read_text()
+
+
+def test_explicit_direct_ingress_does_not_enable_registration(tmp_path):
+    result = run_config(tmp_path, "  registration:\n    accept_direct_calls: true\n")
+    assert result.returncode == 0, result.stdout + result.stderr
+    defines = next(tmp_path.rglob("defines.h")).read_text()
+    generated = next(tmp_path.rglob("main.cpp")).read_text()
+    assert "USE_ESPHOME_VOIP_REGISTRATION" not in defines
+    assert "VOIP_REGISTRATION_CAPACITY" not in defines
+    assert "set_accept_direct_calls(true)" in generated
+    assert "configure_registration" not in generated
 
 
 @pytest.mark.parametrize("count", [0, 1, 2, 3, 4])

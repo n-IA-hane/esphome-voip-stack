@@ -208,6 +208,7 @@ struct SipSignal {
   bool media_source_changed{false};
   // An offer in our UAS 200 is provisional until its matching ACK answers it.
   bool media_answer_pending{false};
+  bool from_registered_account{false};
 #ifdef USE_ESPHOME_VOIP_PAGING
   bool paging_auto_answer{false};
   bool paging_manual_answer{false};

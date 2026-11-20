@@ -22,7 +22,7 @@ def test_running_input_without_output_progress_cannot_answer(tmp_path):
                         "bool send_sip_answer_(const std::string&){++t.answers;return true;}")
     code += r'''
 int main(){
- VoipStack phone;phone.rx_clock_ready=false;SipSignal invite;invite.type=SipSignalType::INVITE;
+ VoipStack phone;phone.rx_clock_ready=false;SipSignal invite;invite.type=SipSignalType::INVITE; invite.from_registered_account=true;
  invite.call_id="running-without-output";invite.caller_name="caller";invite.caller_route="100";
  invite.dest_name="esp";invite.dest_route="esp";
  audio_format_list_default(&invite.caller_tx_formats);audio_format_list_default(&invite.caller_rx_formats);
@@ -155,7 +155,7 @@ def test_incoming_does_not_answer_before_async_sink_is_ready(tmp_path):
     cpp = tmp_path / "prepare.cpp"
     cpp.write_text(code + r'''
 int main(){
- VoipStack phone;SipSignal invite;invite.type=SipSignalType::INVITE;
+ VoipStack phone;SipSignal invite;invite.type=SipSignalType::INVITE; invite.from_registered_account=true;
  invite.call_id="prepare";invite.caller_name="caller";invite.caller_route="100";
  invite.dest_name="esp";invite.dest_route="esp";
  audio_format_list_default(&invite.caller_tx_formats);audio_format_list_default(&invite.caller_rx_formats);
@@ -233,9 +233,12 @@ int main(int argc,char**argv){
   }
   assert(provisional.size()==1&&provisional[0].rfind("SIP/2.0 100",0)==0);
   assert(s.delivered.size()==1);phone.on_sip_signal_received_(s.delivered.back());phone.drain();
+  auto ringing=peer.drain();assert(ringing.size()==1&&ringing[0].rfind("SIP/2.0 180",0)==0);
+  assert(phone.call_state_==CallState::RINGING&&!phone.mic_owned);
+  phone.answer_call();phone.drain();
   assert(peer.drain().empty()&&phone.call_state_==CallState::CONNECTING&&!s.media_active_);
   peer.send_to(s,invite);auto retry=peer.drain();
-  assert(retry.size()==1&&retry[0].rfind("SIP/2.0 100",0)==0&&s.delivered.size()==1);
+  assert(retry==ringing&&s.delivered.size()==1);
   phone.sink_ready=true;phone.pump_application_media_start_();
   auto accepted=peer.drain();assert(accepted.size()==1&&accepted[0].rfind("SIP/2.0 200",0)==0);
   assert(phone.call_state_==CallState::IN_CALL&&s.media_active_);

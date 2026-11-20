@@ -155,6 +155,7 @@ struct SipTransport: SipPhoneTransport {
  SipSignalType refer_signal_type_=SipSignalType::PROTOCOL_ERROR;uint16_t refer_status_=0;
  uint32_t refer_cseq_=0,refer_expires_=0;
  std::string logical_call_id_,logical_wire_id_,refer_wire_id_;
+''' + next(line for line in header.splitlines() if 'bool accept_direct_calls_{' in line) + r'''
  std::atomic<bool> media_active_{true};
  std::atomic<bool> refer_media_waiting_{false};
  struct Mutex{};struct LockGuard{explicit LockGuard(Mutex&) {}};

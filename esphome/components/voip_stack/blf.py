@@ -4,7 +4,7 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import automation
 from esphome.core import CORE
-from .registration import account_id
+from .registration import account_id, engine_enabled
 
 SCHEMA = cv.Schema({
     cv.Optional("account_id", default="ha"): account_id,
@@ -21,7 +21,7 @@ def final_validate(config, full):
         if "on_blf_state" in config:
             raise cv.Invalid("on_blf_state requires voip_stack.blf")
         return
-    if "registration" not in config:
+    if not engine_enabled(config):
         raise cv.Invalid("BLF requires a configured SIP registration account")
     conf = config["blf"]
     if conf.get("buffers_in_psram", "psram" in full) and "psram" not in full:

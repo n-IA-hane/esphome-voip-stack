@@ -15,7 +15,7 @@ def test_managed_account_codegen_reserves_real_registration_owner(tmp_path):
     assert "#define USE_VOIP_HA_AUTO_REGISTER" in defines
     assert "#define USE_ESPHOME_VOIP_REGISTRATION" in defines
     assert "#define VOIP_REGISTRATION_CAPACITY 2" in defines
-    assert 'configure_registration(true, "ha")' in main
+    assert 'configure_registration(false, "ha")' in main
     assert "phone_registration_accounts" not in main
     assert "USE_ESPHOME_VOIP_MWI" not in defines
     assert "USE_ESPHOME_VOIP_BLF" not in defines
@@ -53,7 +53,7 @@ def test_managed_and_manual_account_have_explicit_independent_lines(tmp_path, li
     result = run_config(tmp_path, config, extra=API)
     assert result.returncode == 0, result.stdout + result.stderr
     main = next(tmp_path.rglob("main.cpp")).read_text()
-    assert f'configure_registration(true, "{line}")' in main
+    assert f'configure_registration(false, "{line}")' in main
     assert 'set_registration_accounts(phone_registration_accounts, 1)' in main
     assert '.id = "office"' in main and '.id = "ha"' not in main
 

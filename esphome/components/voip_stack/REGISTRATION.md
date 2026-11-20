@@ -24,7 +24,18 @@ voip_stack:
 
 `max_accounts` is the compiled capacity, from 1 to 4, default 2. An empty account
 list permits runtime provisioning and restores previously persisted overrides.
-`accept_direct_calls` defaults to true. `default_line` defaults to `direct`;
+New incoming calls require a recognized PBX line by default. The ESP matches
+the destination account and its bound signaling peer. To receive direct calls,
+set `registration.accept_direct_calls: true`. A block containing only
+this option enables manual direct calling without compiling the registration
+engine when direct calls are its only use. An empty `registration: {}` block,
+`accept_direct_calls: false` alone, or an explicit `max_accounts` keeps the
+registrar available for runtime provisioning. Configured account actions,
+registration triggers and BLF also retain it when direct calls are enabled.
+Ordinary direct calls ring for manual answer, even when automatic answering is
+enabled for registered lines.
+
+The outgoing `default_line` defaults to `direct`;
 when direct calls are explicitly disabled and exactly one account is configured,
 that account becomes the default. A line selection made at runtime is volatile.
 

@@ -98,7 +98,7 @@ ldap_directory:
     for flag in ["USE_VOIP_HA_AUTO_REGISTER", "USE_ESPHOME_VOIP_REGISTRATION", "USE_ESPHOME_VOIP_DIRECTORY",
                  "USE_ESPHOME_VOIP_CONTACT_METADATA", "USE_LDAP_DIRECTORY_API", "USE_PHONE_CLIENT_TLS"]:
         assert flag in defines
-    assert 'configure_registration(true, "ha")' in main
+    assert 'configure_registration(false, "ha")' in main
     assert 'set_managed_by_ha(true)' in main and 'set_account_id("ha")' in main
     assert 'set_registration_accounts(phone_registration_accounts, 1)' in main
     assert '.id = "office"' in main

@@ -3165,15 +3165,15 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
     return this->send_stateless_response_(message, src, 481,
                                           "Call/Transaction Does Not Exist");
   }
-#ifdef USE_ESPHOME_VOIP_REGISTRATION
   int incoming_account = -1;
   if (!matching_dialog && this->call_id_.empty()) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
     incoming_account = this->registration_.match_incoming(sip_user_from_header(sip_request_uri(message)), src_ip,
         this->dispatch_socket_ >= 0, this->registration_socket_index_(this->dispatch_socket_));
+#endif
     if (!this->accept_direct_calls_ && incoming_account < 0)
       return this->send_stateless_response_(message, src, 403, "Forbidden");
   }
-#endif
   const bool in_dialog_invite = matching_dialog;
   if (in_dialog_invite &&
       incoming_cseq_number == this->last_invite_cseq_number_ &&
@@ -3379,6 +3379,7 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   signal.selected_rx_format = selected_rx;
   signal.selected_tx_format = selected_tx;
   signal.media_answer_pending = this->delayed_offer_pending_;
+  signal.from_registered_account = incoming_account >= 0;
 #ifdef USE_ESPHOME_VOIP_PAGING
   signal.paging_auto_answer = paging_auto_answer;
   signal.paging_manual_answer = answer_mode.manual;
@@ -4552,14 +4553,16 @@ void SipTransport::handle_options_(const std::string &message, const sockaddr_in
         return;
       }
     }
+    bool admitted = this->accept_direct_calls_;
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
-    if (!this->accept_direct_calls_ && this->registration_.match_incoming(
+    admitted = admitted || this->registration_.match_incoming(
         sip_user_from_header(sip_request_uri(message)), ntohl(src.sin_addr.s_addr),
-        this->dispatch_socket_ >= 0, this->registration_socket_index_(this->dispatch_socket_)) < 0) {
+        this->dispatch_socket_ >= 0, this->registration_socket_index_(this->dispatch_socket_)) >= 0;
+#endif
+    if (!admitted) {
       this->send_stateless_response_(message, src, 403, "Forbidden");
       return;
     }
-#endif
   }
   // A capability description is not an offer and acquires no dialog or media.
   this->send_stateless_response_(message, src, 200, "OK", "", false, -1,

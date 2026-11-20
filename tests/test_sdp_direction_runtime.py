@@ -63,7 +63,7 @@ int main(int argc,char**argv){
  VoipStack phone;
  const bool mic=std::string(argv[1])=="mic";
  if(mic)phone.rx_audio_formats_.count=0;else phone.tx_audio_formats_.count=0;
- SipSignal invite;invite.type=SipSignalType::INVITE;invite.call_id="one-way";
+ SipSignal invite;invite.type=SipSignalType::INVITE; invite.from_registered_account=true;invite.call_id="one-way";
  invite.caller_name="caller";invite.caller_route="100";invite.dest_name="esp";invite.dest_route="esp";
  if(mic)invite.caller_tx_formats.count=0;else invite.caller_rx_formats.count=0;
  phone.on_sip_signal_received_(invite);phone.drain();

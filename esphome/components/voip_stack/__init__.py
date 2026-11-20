@@ -755,7 +755,7 @@ def _consume_voip_sockets(config):
     socket.consume_sockets(3, "voip_stack_sip", socket.SocketType.UDP)(config)
     socket.consume_sockets(3, "voip_stack_sip_tcp")(config)
     socket.consume_sockets(1, "voip_stack_sip", socket.SocketType.TCP_LISTEN)(config)
-    if "registration" in config:
+    if registration.engine_enabled(config):
         # Runtime provisioning can fill every compiled slot with a TCP account.
         # UDP registrations reuse the existing bound signaling socket. One
         # additional accepted stream can coexist with both dialog owners;
@@ -773,8 +773,8 @@ def _consume_voip_sockets(config):
 
 def _final_validate(config):
     """Cross-component validation + socket reservation."""
-    ha_integration.validate(config, fv.full_config.get())
     registration.final_validate(config)
+    ha_integration.validate(config, fv.full_config.get())
     blf.final_validate(config, fv.full_config.get())
     protocol = config.get(CONF_TRANSPORT, TRANSPORT_UDP)
     audio_task_stacks_in_psram = config[CONF_AUDIO_TASK_STACKS_IN_PSRAM]

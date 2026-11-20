@@ -100,7 +100,9 @@ AudioFormat fmt(unsigned ptime){AudioFormat f;f.frame_ms=ptime;return f;}
 void assert_reusable(SipTransport&s,Peer&peer,VoipStack&phone,std::string invite,const std::string&answer){
  phone.auto_answer_=true;phone.t.prepare_ok=phone.t.commit_ok=phone.t.final_ok=true;
  const unsigned starts=phone.mic_starts;auto id=invite.find("Call-ID: delayed");invite.replace(id,16,"Call-ID: second");
- peer.send_to(s,invite);assert(peer.drain().size()==1);phone.on_sip_signal_received_(s.delivered.back());phone.drain();assert(peer.drain().size()==1);
+ peer.send_to(s,invite);assert(peer.drain().size()==1);phone.on_sip_signal_received_(s.delivered.back());phone.drain();
+ auto ringing=peer.drain();assert(ringing.size()==1&&ringing[0].rfind("SIP/2.0 180",0)==0&&!phone.mic_owned);
+ phone.answer_call();phone.drain();assert(peer.drain().size()==1);
  assert(phone.call_state_==CallState::CONNECTING&&!phone.mic_owned&&phone.mic_starts==starts);
  auto ack=request(peer,"ACK",1,"","second",s.local_tag_,s.remote_tag_);auto len=ack.find("Content-Length: 0");
  ack.replace(len,17,"Content-Type: application/sdp\r\nContent-Length: "+std::to_string(answer.size()));ack+=answer;
@@ -113,7 +115,7 @@ void assert_reusable(SipTransport&s,Peer&peer,VoipStack&phone,std::string invite
 int main(int argc,char**argv){
  const bool tcp=std::string(argv[1])=="tcp";const std::string direction=argv[2];
  const std::string scenario=argc>3?argv[3]:"normal";
- SipTransport s;wire_transport=&s;Peer peer(tcp);setup(s,peer);
+ SipTransport s;const bool initial_direct=s.accept_direct_calls_;wire_transport=&s;Peer peer(tcp);setup(s,peer);
  s.call_id_.clear();s.local_tag_.clear();s.remote_tag_.clear();s.media_active_=false;
  s.offer_tx_formats_.count=s.offer_rx_formats_.count=2;
  s.offer_tx_formats_.formats[0]=s.offer_rx_formats_.formats[0]=fmt(16);
@@ -132,19 +134,31 @@ int main(int argc,char**argv){
  phone.auto_answer_=scenario!="manual";
  if(scenario=="sendfail")phone.t.final_ok=false;
  auto invite=request(peer,"INVITE",1,"","delayed");auto tag=invite.find(";tag=local");invite.erase(tag,10);
+ if(scenario=="default-blocked"||scenario=="default-blocked-offered"){
+  if(scenario=="default-blocked-offered"){
+   const std::string offer="v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=direct\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+                           "m=audio 30000 RTP/AVP 96\r\na=rtpmap:96 L16/16000/1\r\na=ptime:16\r\na=sendrecv\r\n";
+   invite.replace(invite.find("Content-Length: 0"),17,"Content-Type: application/sdp\r\nContent-Length: "+std::to_string(offer.size()));
+   invite+=offer;
+  }
+  s.accept_direct_calls_=initial_direct;
+  peer.send_to(s,invite);auto rejected=peer.drain();
+  assert(rejected.size()==1&&rejected[0].rfind("SIP/2.0 403",0)==0);
+  assert(s.delivered.empty()&&s.call_id_.empty()&&!s.media_active_&&!phone.mic_owned);
+  cleanup(s);return 0;
+ }
  peer.send_to(s,invite);const auto progress=peer.drain();assert(progress.size()==1);
  assert(progress[0].rfind("SIP/2.0 100",0)==0&&"Offerless INVITE must retain independently configured TX/RX durations");
  assert(s.delivered.size()==1);
- phone.on_sip_signal_received_(s.delivered[0]);phone.drain();auto accepted=peer.drain();
+ phone.on_sip_signal_received_(s.delivered[0]);phone.drain();auto ringing=peer.drain();
+ assert(phone.call_state_==CallState::RINGING&&ringing.size()==1&&ringing[0].rfind("SIP/2.0 180",0)==0);
+ assert(!phone.mic_owned&&!s.media_active_&&phone.mic_starts==0);
+ phone.answer_call();phone.drain();auto accepted=peer.drain();
  if(scenario=="sendfail"){
   assert(accepted.empty()&&!phone.incoming_answer_accepted_&&s.pending_bye_.empty());
   assert(phone.call_state_==CallState::IDLE&&!phone.mic_owned&&phone.identity.call_id.empty());
   const std::string answer="v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio 40002 RTP/AVP 96\r\na=rtpmap:96 L16/16000/1\r\na=ptime:10\r\na=sendrecv\r\n";
   assert_reusable(s,peer,phone,invite,answer);cleanup(s);return 0;
- }
- if(scenario=="manual"){
-  assert(phone.call_state_==CallState::RINGING&&accepted.size()==1&&accepted[0].rfind("SIP/2.0 180",0)==0);
-  phone.answer_call();phone.drain();accepted=peer.drain();
  }
  assert(accepted.size()==1&&accepted[0].rfind("SIP/2.0 200",0)==0);
  const auto ptime_header=accepted[0].find("\r\na=ptime:");assert(ptime_header!=std::string::npos);
@@ -224,4 +238,12 @@ def test_delayed_ack_finalizes_application_format_and_device_ownership(delayed_b
 @pytest.mark.parametrize("scenario", ["asymmetric", "resample", "missing", "invalid", "prepare", "commit", "timeout", "cancel", "sendfail"])
 def test_delayed_ack_failure_or_resampler_uses_final_contract(delayed_binary, transport, scenario):
     result = subprocess.run([str(delayed_binary), transport, "sendrecv", scenario], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("transport", ["udp", "tcp"])
+@pytest.mark.parametrize("scenario", ["default-blocked", "default-blocked-offered"])
+def test_direct_initial_invite_is_closed_by_default_without_registration(delayed_binary, transport, scenario):
+    result = subprocess.run([delayed_binary, transport, "sendrecv", scenario],
+                            capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr

@@ -36,6 +36,9 @@ struct Peer {
  }
 };
 void setup(SipTransport&s,Peer&original){
+#ifndef USE_ESPHOME_VOIP_REGISTRATION
+ s.accept_direct_calls_=true; // Standalone wire scenarios opt in to direct SIP.
+#endif
  if(s.sip_socket_<0){s.sip_socket_=socket(AF_INET,SOCK_DGRAM,0);assert(s.sip_socket_>=0);sockaddr_in a{};a.sin_family=AF_INET;a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);assert(bind(s.sip_socket_,reinterpret_cast<sockaddr*>(&a),sizeof(a))==0);socklen_t n=sizeof(a);getsockname(s.sip_socket_,reinterpret_cast<sockaddr*>(&a),&n);s.sip_port_=ntohs(a.sin_port);}
  s.call_id_="original";s.local_tag_="local";s.remote_tag_="remote";s.cseq_=1;s.remote_dialog_cseq_=1;
  s.local_uri_="<sip:esp@127.0.0.1:"+std::to_string(s.sip_port_)+">";s.remote_uri_="<"+original.uri()+">";
