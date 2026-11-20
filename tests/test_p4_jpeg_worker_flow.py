@@ -18,12 +18,21 @@ def jpeg_owner_binary(tmp_path_factory, request):
     folder = tmp_path_factory.mktemp("jpeg-owner")
     renderer = Path(os.environ.get("VIDEO_RENDERER_SOURCE", ROOT.parent / "esphome-video-renderer"))
     source_path = Path(os.environ.get("P4_JPEG_TEST_SOURCE", renderer / "esphome/components/p4_video_renderer/p4_video_renderer.cpp"))
+    component = renderer / "esphome/components/p4_video_renderer"
     source = source_path.read_text()
+    jpeg = (component / "p4_jpeg_decoder.cpp").read_text()
+    presentation = (component / "p4_presentation.cpp").read_text()
     methods = "\n".join(method(source, name) for name in (
         "bool P4VideoRenderer::prepare(", "bool P4VideoRenderer::set_active(",
         "void P4VideoRenderer::stop()", "bool P4VideoRenderer::submit_frame(",
+    ))
+    methods += "\n" + "\n".join(method(jpeg, name) for name in (
+        "bool P4VideoRenderer::decode_jpeg_access_unit_(",
         "uint16_t P4VideoRenderer::jpeg_storage_width_(", "uint16_t P4VideoRenderer::jpeg_storage_height_(",
-        "bool P4VideoRenderer::read_jpeg_picture_info_(", "bool P4VideoRenderer::present_surface_direct_(",
+        "bool P4VideoRenderer::read_jpeg_picture_info_(",
+    ))
+    methods += "\n" + "\n".join(method(presentation, name) for name in (
+        "bool P4VideoRenderer::present_surface_direct_(",
         "bool P4VideoRenderer::refresh_layout_(", "void P4VideoRenderer::on_display_refresh_ready_(",
         "void P4VideoRenderer::loop()",
     ))
@@ -42,6 +51,9 @@ def jpeg_owner_binary(tmp_path_factory, request):
 #include <mutex>
 #include <vector>
 #include "esphome/components/video_renderer/video_renderer.h"
+#include "esphome/components/p4_video_renderer/p4_presentation_geometry.h"
+using esphome::p4_video_renderer::fit_scale_units;
+using esphome::p4_video_renderer::PPA_SCALE_UNITS;
 using namespace esphome;
 constexpr int ESP_OK=0,ESP_FAIL=1,ESP_ERR_INVALID_SIZE=2,ESP_ERR_INVALID_ARG=3,pdTRUE=1;
 using esp_err_t=int;
@@ -116,6 +128,7 @@ struct P4VideoRenderer {
  bool has_remote_frame()const{const auto g=remote_frame_visible_.load();return rx_active_&&g!=0&&g==rx_session_generation_;}
  bool prepare(const video_renderer::StreamFormat&);bool set_active(bool);void stop();void dump_state()const{};bool submit_frame(const video_renderer::EncodedFrame&);
  static uint16_t jpeg_storage_width_(const jpeg_decode_picture_info_t&);static uint16_t jpeg_storage_height_(const jpeg_decode_picture_info_t&);
+ bool decode_jpeg_access_unit_(uint32_t);
  bool read_jpeg_picture_info_(const uint8_t*,size_t,const video_renderer::JpegFrameInfo&,jpeg_decode_picture_info_t*)const;
  bool present_surface_direct_(int);bool refresh_layout_();void loop();void on_display_refresh_ready_();
  void worker_one(){do{WORKER}while(false);}
@@ -169,7 +182,7 @@ int main(int argc,char**argv){
     binary = folder / "jpeg_owner"
     command = ["g++", "-std=c++17", "-pthread", "-Wall", "-Wextra", "-Werror",
                "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-no-pie",
-               "-DUSE_P4_VIDEO_RENDERER_JPEG", "-I", str(source_path.parents[3])]
+               "-DUSE_P4_VIDEO_RENDERER_JPEG", "-I", str(renderer)]
     if request.param:
         command.append("-DFRAME_METADATA")
     built = subprocess.run([*command, str(cpp), "-o", str(binary)], capture_output=True, text=True)

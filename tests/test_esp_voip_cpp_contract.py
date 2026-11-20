@@ -419,21 +419,23 @@ def renderer_read(name: str) -> str:
 def test_p4_h264_renderer_publishes_only_through_owned_display() -> None:
     header = renderer_read("p4_video_renderer.h")
     codegen = renderer_read("__init__.py")
-    source = renderer_read("p4_video_renderer.cpp")
+    h264 = renderer_read("p4_h264_decoder.cpp")
+    presentation = renderer_read("p4_presentation.cpp")
+    source = renderer_read("p4_video_renderer.cpp") + renderer_read("p4_jpeg_decoder.cpp") + h264 + presentation
     assert "mipi_dsi::MipiDsi *value" in header
     assert "rgb565_transform_ids" in codegen
     assert "public video_renderer::EncodedFrameRenderer" in header
     assert "lv_image_set_src" not in source and "lv_image_create" not in source
     assert "get_frame_buffer(" not in source
-    worker = cpp_method(source, r"P4VideoRenderer::render_i420_")
+    worker = cpp_method(h264, r"P4VideoRenderer::render_i420_")
     assert "this->pending_surface_.store(0" in worker
     assert "this->enable_loop_soon_any_context()" in worker
     assert "ppa_do_scale_rotate_mirror" not in worker
     assert "draw_rgb565_transformed" not in worker
-    loop = cpp_method(source, r"P4VideoRenderer::loop")
+    loop = cpp_method(presentation, r"P4VideoRenderer::loop")
     assert "present_surface_direct_" in loop
-    assert "LV_EVENT_REFR_READY" in source
-    assert "PPA_SRM_ROTATION_ANGLE_0" in source
+    assert "LV_EVENT_REFR_READY" in presentation
+    assert "PPA_SRM_ROTATION_ANGLE_0" in presentation
 
 
 def test_p4_renderer_requires_transfer_callback_only_for_h264() -> None:
@@ -448,8 +450,10 @@ def test_p4_renderer_requires_transfer_callback_only_for_h264() -> None:
     rejected_queue = h264_path.split("if (xQueueSend", 1)[1].split("if (access_unit.key_frame)", 1)[0]
     assert "slot.access_unit = {};" in rejected_queue
     assert "release()" not in rejected_queue
-    assert "operation.in.srm_cm = PPA_SRM_COLOR_MODE_YUV420;" in source
-    assert "ppa_do_scale_rotate_mirror(" not in source
+    presentation = renderer_read("p4_presentation.cpp")
+    assert "operation.in.srm_cm = PPA_SRM_COLOR_MODE_YUV420;" in presentation
+    for unit in (source, presentation, renderer_read("p4_h264_decoder.cpp"), renderer_read("p4_jpeg_decoder.cpp")):
+        assert "ppa_do_scale_rotate_mirror(" not in unit
 
 
 def test_video_rtp_latches_only_codec_valid_media_packets() -> None:

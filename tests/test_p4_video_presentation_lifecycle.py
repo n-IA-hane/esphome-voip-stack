@@ -96,7 +96,7 @@ int main() {
 
 def test_public_lvgl_debug_intervals_include_nested_flush(tmp_path):
     """Actual profiler method distinguishes total render and callback duration."""
-    source = (RENDERER / "p4_video_renderer.cpp").read_text()
+    source = (RENDERER / "p4_presentation.cpp").read_text()
     start = source.index("void P4VideoRenderer::on_display_debug_event_(")
     opening = source.index("{", start)
     depth, end = 1, opening + 1
@@ -104,6 +104,9 @@ def test_public_lvgl_debug_intervals_include_nested_flush(tmp_path):
         depth += (source[end] == "{") - (source[end] == "}")
         end += 1
     method = source[start:end]
+    core = (RENDERER / "p4_video_renderer.cpp").read_text()
+    maximum = core.index("void P4VideoRenderer::update_max(")
+    update_max = core[maximum:core.index("\n}", maximum) + 2]
     header = (RENDERER / "p4_video_renderer.h").read_text()
     import re
     fields = "\n".join(re.findall(r"  std::atomic<uint32_t> debug_[^;]+;", header))
@@ -117,14 +120,13 @@ constexpr int LV_EVENT_RENDER_START=1, LV_EVENT_RENDER_READY=2;
 constexpr int LV_EVENT_FLUSH_START=3, LV_EVENT_FLUSH_FINISH=4;
 struct lv_area_t {int32_t x1,y1,x2,y2;};
 uint32_t clock_us=1;uint32_t micros(){return clock_us;}
-void update_max(std::atomic<uint32_t>& target,uint32_t value){
- auto current=target.load();while(value>current&&!target.compare_exchange_weak(current,value)){}
-}
 struct P4VideoRenderer {
+ static void update_max(std::atomic<uint32_t>&, uint32_t);
  std::atomic<bool> rx_active_{true},rx_session_prepared_{true};
 FIELDS
  void on_display_debug_event_(lv_event_code_t,const lv_area_t*);
 };
+UPDATE_MAX
 METHOD
 int main(){
  P4VideoRenderer renderer;lv_area_t area{2,4,321,243};
@@ -147,7 +149,7 @@ int main(){
  renderer.on_display_debug_event_(LV_EVENT_FLUSH_FINISH,&area);
  assert(renderer.debug_render_count_==1&&renderer.debug_flush_count_==1);
 }
-'''.replace("FIELDS", fields).replace("METHOD", method))
+'''.replace("FIELDS", fields).replace("UPDATE_MAX", update_max).replace("METHOD", method))
     binary = tmp_path / "lvgl_debug_timing"
     compiled = subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
                                str(cpp), "-o", str(binary)], capture_output=True, text=True)
@@ -161,7 +163,7 @@ int main(){
 def h264_owner_binary(tmp_path_factory):
     """Exercise real conversion/publication and the shared owned pixel commit."""
     folder = tmp_path_factory.mktemp("h264-owner")
-    source = (RENDERER / "p4_video_renderer.cpp").read_text()
+    source = (RENDERER / "p4_h264_decoder.cpp").read_text() + (RENDERER / "p4_presentation.cpp").read_text()
     signatures = ["bool P4VideoRenderer::h264_resolution_fits_(", "bool P4VideoRenderer::configure_i420_converter_(",
                   "bool P4VideoRenderer::render_i420_(", "bool P4VideoRenderer::present_surface_direct_("]
     methods = []
@@ -170,6 +172,9 @@ def h264_owner_binary(tmp_path_factory):
         methods.append(source[start:source.index("\n}", start) + 2])
     cpp = folder / "h264-owner.cpp"
     cpp.write_text(r'''
+#include "p4_presentation_geometry.h"
+using esphome::p4_video_renderer::fit_scale_units;
+using esphome::p4_video_renderer::PPA_SCALE_UNITS;
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -231,7 +236,7 @@ int main(int argc,char**argv){
     binary = folder / "h264-owner"
     built = subprocess.run(["g++", "-std=c++17", "-pthread", "-Wall", "-Wextra", "-Werror",
                             "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-no-pie",
-                            "-DUSE_P4_VIDEO_RENDERER_H264", str(cpp), "-o", str(binary)], capture_output=True, text=True)
+                            "-DUSE_P4_VIDEO_RENDERER_H264", "-I", str(RENDERER), str(cpp), "-o", str(binary)], capture_output=True, text=True)
     assert built.returncode == 0, built.stderr
     return binary
 
