@@ -828,14 +828,7 @@ class SipTransport : public SipPhoneTransport {
   } remote_media_shape_;
   // A complete signaling proposal. Runtime tasks, counters, source latches
   // and consumable resume notifications stay with their existing owners.
-  struct NegotiatedMedia {
-    AudioFormat tx{DEFAULT_AUDIO_FORMAT}, rx{DEFAULT_AUDIO_FORMAT};
-    uint8_t tx_pt{96}, rx_pt{96};
-    RtpAudioPayloads rx_payloads;
-    bool send{true}, receive{true}, zero_connection{false};
-    uint32_t audio_ip{0};
-    uint16_t audio_port{0};
-    bool directional_audio{false};
+  struct NegotiatedMedia : SdpAudioMedia {
     RemoteMediaShape shape;
 #ifdef USE_ESPHOME_VOIP_DTMF
     DtmfConfig dtmf;

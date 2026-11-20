@@ -984,19 +984,35 @@ def test_rtp_jpeg_host_behavioral_contract(tmp_path: Path) -> None:
     assert "this->jpeg_depacketizer_.reset_session();" in negotiation
 
 
-def test_rejected_video_answer_preserves_the_first_offered_payload_type() -> None:
-    sip_cpp = read("sip_transport.cpp")
-    learn = cpp_method(
-        sip_cpp, r"SipTransport::parse_remote_video_"
+@pytest.fixture(scope="module")
+def native_sdp_contract(tmp_path_factory):
+    folder = tmp_path_factory.mktemp("remote-sdp")
+    # Compile the production parser and negotiation headers. Only ESP-specific
+    # clock, RNG and socket declarations need platform headers on the host.
+    for name, contents in {
+        "esphome/core/defines.h": "",
+        "esphome/core/hal.h": "#include <cstdint>\nnamespace esphome { uint32_t millis(); }",
+        "esp_system.h": "#include <cstdint>\nuint32_t esp_random();",
+        "lwip/sockets.h": "#include <arpa/inet.h>\n#define inet_ntoa_r(a,b,n) inet_ntop(AF_INET,&(a),b,n)",
+    }.items():
+        header = folder / name
+        header.parent.mkdir(parents=True, exist_ok=True)
+        header.write_text(contents + "\n")
+    binary = folder / "remote-sdp"
+    subprocess.run([
+        "g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-ffunction-sections",
+        "-fdata-sections", "-Wl,--gc-sections", "-DUSE_ESP32", "-DUSE_ESPHOME_VOIP_SIP_TRANSPORT", "-DUSE_ESPHOME_VOIP_DTMF",
+        "-DUSE_ESPHOME_VOIP_STACK_VIDEO", "-DUSE_ESPHOME_VOIP_STACK_VIDEO_JPEG",
+        "-I", str(folder), "-I", str(ROOT), "-I", str(VOIP), str(VOIP / "sip_message.cpp"),
+        str(ROOT / "tests/fixtures/remote_sdp_negotiation.cpp"), "-o", str(binary),
+    ], check=True)
+    return lambda case: subprocess.run(
+        [str(binary), case, str(ROOT / "tests/fixtures/freeswitch_vanilla_g722_answer.sdp")], check=True
     )
 
-    preserve = learn.index(
-        "media->video.payload_type ="
-    )
-    disabled = learn.index("if (media_port == 0) return true;")
-    rejected_rtcp = learn.index("if (rtcp_mux_only")
-    assert preserve < disabled < rejected_rtcp
-    assert "candidate_order[0]" in learn[preserve : preserve + 180]
+
+def test_rejected_video_answer_preserves_the_first_offered_payload_type(native_sdp_contract) -> None:
+    native_sdp_contract("disabled")
 
 
 def test_video_reinvite_admits_resources_before_success_and_rolls_back() -> None:
@@ -2689,8 +2705,8 @@ def test_sip_response_validation_precedes_retarget_and_bad_sdp_closes_dialog() -
     assert "std::atomic<uint32_t> remote_rtp_ip_v4_{0};" in sip_h
     learn = cpp_method(sip_cpp, r"SipTransport::learn_remote_rtp_from_sdp_")
     assert "this->commit_negotiated_media_(media);" in learn
-    parsed = cpp_method(sip_cpp, r"SipTransport::parse_remote_media_")
-    assert "media->audio_ip = zero_connection ? retained.audio_ip : media_ip;" in parsed
+    selection = read("sip_sdp_audio_selection.h")
+    assert "media.audio_ip = zero_connection ? retained.audio_ip : media_ip;" in selection
     commit = cpp_method(sip_cpp, r"SipTransport::commit_negotiated_media_")
     assert "remote_rtp_ip_v4_.store(media.audio_ip" in commit
     assert "remote_ip_v4_.store(media_ip" not in learn
@@ -2770,41 +2786,19 @@ def test_l24_wire_negotiation_accepts_packed_and_s32_container_variants() -> Non
     assert "candidate == remote" not in match
 
 
-def test_sdp_only_negotiates_payloads_from_the_selected_audio_media() -> None:
-    sip_cpp = read("sip_transport.cpp")
-    parser = sip_cpp[
-        sip_cpp.index("bool parse_audio_media_line") :
-        sip_cpp.index("\nsize_t pcm_to_rtp_payload")
-    ]
-    learn = cpp_method(sip_cpp, r"SipTransport::parse_remote_media_")
-
-    assert 'media.substr(protocol_start, protocol_end - protocol_start) != "RTP/AVP"' in parser
-    assert "payload_types[payload_type] = true;" in parser
-    assert "selected_audio_line" in learn
-    assert "offered_payload[pt]" in learn
-    assert "pos == selected_audio_line" in learn
-    assert 'line == "a=sendonly"' in learn
-    assert 'line == "a=recvonly"' in learn
-    assert 'line == "a=inactive"' in learn
-    assert "uint8_t session_flow = 0x03;" in learn
-    assert "media_flow = session_flow;" in learn
-    assert "(!seen_any_media || in_audio)" in learn
+def test_sdp_only_negotiates_payloads_from_the_selected_audio_media(native_sdp_contract) -> None:
+    native_sdp_contract("audio")
 
 
-def test_inactive_video_reoffer_retains_the_negotiated_media_line() -> None:
+def test_inactive_video_reoffer_retains_the_negotiated_media_line(native_sdp_contract) -> None:
     sip_sdp = read("sip_sdp.cpp")
     append_video = sip_sdp[
         sip_sdp.index("std::string SipTransport::append_video_sdp_") :
         sip_sdp.index("\nstd::string SipTransport::build_sdp_offer_")
     ]
-    learn_video = cpp_method(
-        sip_sdp, r"SipTransport::parse_remote_video_"
-    )
-
     assert 'receive ? "recvonly" : "inactive"' in append_video
     assert "if (!send && !receive && !answer) return sdp;" in append_video
-    assert "const bool inactive_direction = media_direction == 0;" in learn_video
-    assert "(!inactive_direction || (!send_compatible && !receive_compatible))" in learn_video
+    native_sdp_contract("inactive")
 
 
 def test_sip_compact_headers_and_tcp_close_are_centralized() -> None:

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "sip_types.h"
+#include "rtp_audio_payloads.h"
 
 #include <algorithm>
 #include <cstring>
@@ -35,6 +35,18 @@ struct AudioSdpFacts {
   }
 
   bool valid() const { return this->maxptime == 0 || this->required_minimum <= this->maxptime; }
+};
+
+// The audio part of a signaling proposal. RTP runtime state and task
+// ownership stay with the transport that commits the negotiated values.
+struct SdpAudioMedia {
+  AudioFormat tx{DEFAULT_AUDIO_FORMAT}, rx{DEFAULT_AUDIO_FORMAT};
+  uint8_t tx_pt{96}, rx_pt{96};
+  RtpAudioPayloads rx_payloads;
+  bool send{true}, receive{true}, zero_connection{false};
+  uint32_t audio_ip{0};
+  uint16_t audio_port{0};
+  bool directional_audio{false};
 };
 
 struct AudioSdpEnvelope {

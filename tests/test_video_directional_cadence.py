@@ -21,7 +21,7 @@ def test_production_sdp_and_direction_caps_preserve_independent_frame_budgets(tm
         rtp = (COMPONENT / "video_rtp.cpp").read_text()
         helpers = "\n".join(block(message, signature) for signature in
                             ["std::string fmtp_parameter(", "bool parse_video_rtcp_feedback("])
-        helpers += "\nnamespace esphome::voip_stack {\n" + "\n".join(block(rtp, signature) for signature in
+        helpers = "\nnamespace esphome::voip_stack {\n" + helpers + "\n" + "\n".join(block(rtp, signature) for signature in
             ["uint8_t hex_nibble(", "bool parse_profile_level_id(", "int h264_level_value(",
              "bool h264_same_subprofile(", "bool h264_level_fits("]) + "\n}\n"
         code = code.replace("struct SipTransport {", helpers + "\nstruct SipTransport {")

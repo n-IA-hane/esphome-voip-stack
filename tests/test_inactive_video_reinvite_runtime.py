@@ -30,12 +30,13 @@ def source():
 constexpr unsigned MAX_SIP_BODY_BYTES=4096;
 '''+sdp_fixture_source()
     code = code.replace('\"192.0.2.1\"', '\"192.168.1.192\"')
-    prototype = 'bool parse_video_media_line(const std::string&,uint16_t*,bool[128],uint8_t* = nullptr,size_t* = nullptr);\n'
-    helpers = prototype+'\n'.join(block(parser, marker) for marker in [
+    helpers = '\n'.join(block(parser, marker) for marker in [
         'std::string header_value(', 'std::string header_values(', 'std::string tag_from_header(',
         'uint32_t cseq_number(', 'std::string message_body(', 'std::string name_addr_uri(',
-        'std::string strip_angle_uri(', 'bool parse_video_media_line(',
-        'bool parse_video_rtpmap(', 'bool parse_rtcp_attribute('])
+        'std::string strip_angle_uri('])
+    helpers += '\nnamespace esphome::voip_stack {\n' + '\n'.join(block(parser, marker) for marker in [
+        'bool parse_video_media_line(',
+        'bool parse_video_rtpmap(', 'bool parse_rtcp_attribute(']) + '\n}\n'
     helpers += '\nuint32_t esp_random(){return 123;}\n'+block(owner,'class ScopedMediaProposal {')+';\n'
     # Only the transport boundary and dormant hardware child are controlled.
     # All SDP choices, transaction admission, rollback and response status use

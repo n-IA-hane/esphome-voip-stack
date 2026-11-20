@@ -10,15 +10,9 @@ from test_sdp_receive_payloads import sdp_fixture_source
 @pytest.fixture(scope='module')
 def typed_writer(tmp_path_factory):
     code = sdp_fixture_source()
-    mapping = block(code, 'bool parse_rtpmap_format(')
-    implementation = mapping.replace('parse_rtpmap_format(', 'parse_mapping_control(', 1)
-    probe = r'''
-unsigned parsed_mappings=0;
-bool parse_rtpmap_format(const std::string&line,AudioFormat*format,uint8_t*pt){
- ++parsed_mappings;return parse_mapping_control(line,format,pt);
-}
-'''
-    code = code.replace(mapping, implementation + '\n' + probe)
+    mapping = block(code, 'bool esphome::voip_stack::parse_rtpmap_format(')
+    counted = mapping.replace('{', '{ ++parsed_mappings;', 1)
+    code = code.replace(mapping, 'unsigned parsed_mappings=0;\n' + counted)
     code = '#include <array>\n#include <cstdint>\nuint32_t esp_random(){return 7;}\n' + code
     code = code.replace('struct SipTransport {', 'struct SipTransport {std::string build_sdp_capabilities_(uint32_t)const;')
     code += '\n' + block((SOURCE / 'sip_sdp.cpp').read_text(), 'std::string SipTransport::build_sdp_capabilities_(')

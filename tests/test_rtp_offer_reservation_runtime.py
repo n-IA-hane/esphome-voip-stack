@@ -50,8 +50,8 @@ int xSemaphoreTake(void*,int){return 1;}
 unsigned notifications=0;void xTaskNotifyGive(void*){++notifications;}
 ssize_t observed_send(int,const void*,size_t,int);
 ssize_t observed_sendto(int,const void*,size_t,int,const sockaddr*,socklen_t);
-#define send observed_send
-#define sendto observed_sendto
+#define send(...) observed_send(__VA_ARGS__)
+#define sendto(...) observed_sendto(__VA_ARGS__)
 constexpr uint32_t SIP_T1_MS=500;""", 1)
     old = block(code, "std::string build_sdp_offer_()")
     code = code.replace(old, r'''std::string build_sdp_offer_(){return

@@ -21,15 +21,15 @@ def block(source, marker):
 def negotiated_fixture_source(code, *, sdp=False, video=False):
     """Compile the complete production media value and its current owners."""
     header = (SOURCE / 'sip_transport.h').read_text()
-    if 'struct NegotiatedMedia {' not in header:
+    if 'struct NegotiatedMedia : SdpAudioMedia {' not in header:
         return code
     owner = (SOURCE / 'sip_transport.cpp').read_text()
     parser = (SOURCE / 'sip_sdp.cpp').read_text()
     declarations = 'struct NegotiatedMedia;\n'
     implementations = ''
-    if 'struct NegotiatedMedia {' not in code:
+    if 'struct NegotiatedMedia : SdpAudioMedia {' not in code:
         declarations += 'bool audio_zero_connection_=false;\n#ifdef USE_ESPHOME_VOIP_STACK_VIDEO\nbool video_zero_connection_=false;\n#endif\n'
-        declarations += 'using RemoteMediaShape=::RemoteMediaShape;\n' + block(header, 'struct NegotiatedMedia {') + ';\n'
+        declarations += 'using RemoteMediaShape=::RemoteMediaShape;\n' + block(header, 'struct NegotiatedMedia : SdpAudioMedia {') + ';\n'
         markers = ['SipTransport::NegotiatedMedia SipTransport::negotiated_media_(',
                    'void SipTransport::commit_negotiated_media_(',
                    'void SipTransport::exchange_negotiated_media_(',
@@ -57,6 +57,15 @@ def negotiated_fixture_source(code, *, sdp=False, video=False):
                 body = '#ifdef USE_ESPHOME_VOIP_STACK_VIDEO\n' + body + '\n#endif\n'
             declarations += declaration
             implementations += '\n' + body
+    if sdp or video:
+        # The legacy wire harness supplies the SIP dialog and platform edges.
+        # Compile the production negotiation headers and use their real namespace.
+        policy = '#include "esphome/components/voip_stack/sip_sdp_audio_negotiation.h"\n'
+        policy += '#ifdef USE_ESPHOME_VOIP_STACK_VIDEO\n#include "esphome/components/voip_stack/sip_sdp_video_selection.h"\n#endif\n'
+        code = code.replace('using namespace esphome::voip_stack;', policy + 'using namespace esphome::voip_stack;', 1)
+        for name in ('trim_copy', 'parse_decimal_u32', 'parse_rtpmap_format', 'parse_audio_media_line',
+                     'parse_video_media_line', 'parse_video_rtpmap', 'parse_rtcp_attribute'):
+            code = re.sub(rf'^(std::string|bool) {name}\(', rf'\1 esphome::voip_stack::{name}(', code, flags=re.M)
     marker = 'struct SipTransport: SipPhoneTransport {' if 'struct SipTransport: SipPhoneTransport {' in code else 'struct SipTransport {'
     alias = 'using RemoteMediaShape=::RemoteMediaShape;\n'
     code = code.replace(alias, '')

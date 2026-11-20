@@ -616,8 +616,9 @@ bool parse_rtpmap_format(const std::string &line, AudioFormat *fmt, uint8_t *pay
   return true;
 }
 
-bool parse_audio_media_line(const std::string &line, uint16_t *port, bool payload_types[128]) {
-  if (port == nullptr || payload_types == nullptr || line.rfind("m=audio ", 0) != 0) return false;
+bool parse_audio_media_line(const std::string &line, uint16_t *port, bool payload_types[128],
+                           uint8_t *preference_rank) {
+  if (port == nullptr || (payload_types == nullptr && preference_rank == nullptr) || line.rfind("m=audio ", 0) != 0) return false;
   const std::string media = trim_copy(line.substr(8));
   const size_t port_end = media.find_first_of(" \t");
   if (port_end == std::string::npos) return false;
@@ -630,6 +631,7 @@ bool parse_audio_media_line(const std::string &line, uint16_t *port, bool payloa
   uint32_t parsed_port = 0;
   if (!parse_decimal_u32(media.substr(0, port_end), UINT16_MAX, &parsed_port) || parsed_port == 0) return false;
 
+  uint8_t rank = 0;
   bool any_payload = false;
   size_t pos = media.find_first_not_of(" \t", protocol_end);
   while (pos != std::string::npos) {
@@ -639,7 +641,9 @@ bool parse_audio_media_line(const std::string &line, uint16_t *port, bool payloa
                            127, &payload_type)) {
       return false;
     }
-    payload_types[payload_type] = true;
+    if (payload_types != nullptr) payload_types[payload_type] = true;
+    if (preference_rank != nullptr && preference_rank[payload_type] == UINT8_MAX)
+      preference_rank[payload_type] = rank++;
     any_payload = true;
     if (end == std::string::npos) break;
     pos = media.find_first_not_of(" \t", end);

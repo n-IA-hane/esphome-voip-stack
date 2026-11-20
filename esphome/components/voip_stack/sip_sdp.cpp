@@ -3,6 +3,11 @@
 
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_SIP_TRANSPORT)
 
+#include "sip_sdp_audio_negotiation.h"
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+#include "sip_sdp_video_selection.h"
+#endif
+
 #include <algorithm>
 #include <cstring>
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
@@ -572,379 +577,53 @@ bool SipTransport::parse_remote_media_(const std::string &sdp, uint32_t default_
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   media->imageattr_state = retained.imageattr_state;
 #endif
-  media->directional_audio = false;
   media->shape = this->parse_remote_media_shape_(sdp);
   if (media->shape.overflow) {
     ESP_LOGW(TAG, "SIP SDP rejected: too many media lines");
     return false;
   }
-  uint16_t media_port = 0;
-  uint32_t media_ip = default_ip;
-  bool zero_connection = false;
-  uint8_t media_ptime = 0; // Missing ptime leaves the explicit local TX preference available.
-  uint32_t media_maxptime = 0;
-  bool has_maxptime = false;
-  bool selected_tx = false;
-  bool selected_rx = false;
-  bool shared_format = false;
-  RtpAudioPayloads received_payloads;
-  AudioFormat selected_tx_format = disabled_audio_format();
-  AudioFormat selected_rx_format = disabled_audio_format();
-  uint8_t selected_tx_payload_type = 0;
-  uint8_t selected_rx_payload_type = 0;
-  uint8_t payload_flow[128]{};
-  bool offered_payload[128]{};
-  uint8_t payload_rank[128];
-  std::fill(payload_rank, payload_rank + 128, 255);
-  uint8_t selected_tx_rank = 255;
-  uint32_t seen_mapping[128]{};
-  uint8_t session_flow = 0x03;
-  uint8_t media_flow = session_flow;
-  size_t selected_audio_line = std::string::npos;
-  bool seen_any_media = false;
-  bool in_audio = false;
-  bool independent_audio_ptime = false;
-  size_t ptime_pos = 0;
-  while (ptime_pos < sdp.size()) {
-    size_t end = sdp.find("\r\n", ptime_pos);
-    if (end == std::string::npos) end = sdp.size();
-    const std::string line = sdp.substr(ptime_pos, end - ptime_pos);
-    if (line.rfind("m=", 0) == 0) {
-      seen_any_media = true;
-      in_audio = false;
-      if (selected_audio_line == std::string::npos) {
-        bool candidate_payload[128]{};
-        uint16_t candidate_port = 0;
-        if (parse_audio_media_line(line, &candidate_port, candidate_payload)) {
-          // The m-line, not the order of rtpmap attributes, owns preference.
-          size_t cursor = line.find("RTP/AVP") + 7;
-          uint8_t rank = 0;
-          while ((cursor = line.find_first_not_of(" \t", cursor)) != std::string::npos) {
-            const size_t last = line.find_first_of(" \t", cursor);
-            uint32_t value = 0;
-            if (!parse_decimal_u32(line.substr(cursor, last - cursor), 127, &value)) return false;
-            if (payload_rank[value] == 255) payload_rank[value] = rank++;
-            if (last == std::string::npos) break;
-            cursor = last;
-          }
-          media_port = candidate_port;
-          std::copy(candidate_payload, candidate_payload + 128, offered_payload);
-          selected_audio_line = ptime_pos;
-          media_flow = session_flow;
-          in_audio = true;
-        }
-      }
-    } else if (in_audio && line == "a=x-voip-stack-independent-ptime:1") {
-      independent_audio_ptime = true;
-    } else if (in_audio && line.rfind("a=ptime:", 0) == 0) {
-      uint32_t parsed = 0;
-      if (parse_decimal_u32(line.substr(8), UINT8_MAX, &parsed) &&
-          (parsed == 10 || parsed == 16 || parsed == 20 || parsed == 32)) {
-        media_ptime = static_cast<uint8_t>(parsed);
-      }
-    } else if (in_audio && line.rfind("a=maxptime:", 0) == 0) {
-      // RFC 8866 allows a nonzero integer or decimal. Durations in our
-      // explicit format list are integral, so flooring the bound is exact.
-      const auto value = line.substr(11);
-      const auto dot = value.find('.');
-      uint32_t whole = 0;
-      if (!parse_decimal_u32(value.substr(0, dot), UINT32_MAX, &whole)) return false;
-      bool fraction_nonzero = false;
-      if (dot != std::string::npos) {
-        if (dot + 1 == value.size()) return false;
-        for (size_t i = dot + 1; i < value.size(); ++i) {
-          if (value[i] < '0' || value[i] > '9') return false;
-          fraction_nonzero |= value[i] != '0';
-        }
-      }
-      if (whole == 0 && !fraction_nonzero) return false;
-      media_maxptime = has_maxptime ? std::min(media_maxptime, whole) : whole;
-      has_maxptime = true;
-    } else if (in_audio && line.rfind("a=x-voip-stack-flow:", 0) == 0) {
-      const size_t value_start = sizeof("a=x-voip-stack-flow:") - 1;
-      const size_t space = line.find(' ', value_start);
-      if (space != std::string::npos) {
-        uint32_t parsed_pt = 0;
-        const std::string flow = trim_copy(line.substr(space + 1));
-        if (parse_decimal_u32(line.substr(value_start, space - value_start), 127, &parsed_pt)) {
-          uint8_t flags = 0;
-          if (flow == "send" || flow == "sendrecv") flags |= 0x01;
-          if (flow == "recv" || flow == "sendrecv") flags |= 0x02;
-          payload_flow[parsed_pt] = flags;
-        }
-      }
-    } else if ((!seen_any_media || in_audio) && line == "a=sendonly") {
-      if (!seen_any_media) session_flow = 0x01;
-      if (in_audio) media_flow = 0x01;
-    } else if ((!seen_any_media || in_audio) && line == "a=recvonly") {
-      if (!seen_any_media) session_flow = 0x02;
-      if (in_audio) media_flow = 0x02;
-    } else if ((!seen_any_media || in_audio) && line == "a=inactive") {
-      if (!seen_any_media) session_flow = 0;
-      if (in_audio) media_flow = 0;
-    } else if ((!seen_any_media || in_audio) && line == "a=sendrecv") {
-      if (!seen_any_media) session_flow = 0x03;
-      if (in_audio) media_flow = 0x03;
-    }
-    if (end == sdp.size()) break;
-    ptime_pos = end + 2;
-  }
-  for (uint8_t pt = 0; pt < 128; ++pt)
-    if (offered_payload[pt] && payload_flow[pt] != 0 &&
-        (!remote_is_answer || this->local_offered_directional_audio_v1_))
-      media->directional_audio = true;
-  // Only the earlier private D1 contract coupled both directions. Ordinary
-  // SIP and peers explicitly declaring this version use RFC 3264 semantics.
-  const bool legacy_directional_ptime = media->directional_audio && !independent_audio_ptime;
-  const uint16_t transmit_ptime = legacy_directional_ptime && media_ptime == 0
-      ? choose_common_audio_ptime(this->offer_tx_formats_, this->offer_rx_formats_, this->udp_max_payload_)
-      : media_ptime;
-  if (legacy_directional_ptime && transmit_ptime == 0) return false;
-  AudioFormat retained_tx_format = disabled_audio_format();
-  if (retained_call && !remote_is_answer && media_ptime == 0)
-    retained_tx_format = retained.tx;
-  auto consider_mapping = [&](AudioFormat fmt, uint8_t pt) {
-    if (pt == 9 && fmt.codec != AudioCodec::G722) return false;
-    fmt.frame_ms = media_ptime;
-    const uint32_t packed_mapping = pack_audio_format(fmt);
-    if (seen_mapping[pt] != 0 && seen_mapping[pt] != packed_mapping) return false;
-    seen_mapping[pt] = packed_mapping;
-    AudioFormat local_rx;
-    AudioFormat local_tx;
-    // Preserve the prepared codec geometry during a direction-only proposal.
-    // D1 payload capabilities remain directional; the m-line gates activity.
-    const uint8_t flow = !media->directional_audio || payload_flow[pt] == 0
-                             ? (retained_call ? 0x03 : media_flow) : payload_flow[pt];
-    const bool peer_can_send = (flow & 0x01) != 0;
-    const bool peer_can_recv = (flow & 0x02) != 0;
-    const auto match_tx = [&](uint16_t preferred_time) {
-      for (uint8_t i = 0; i < this->offer_tx_formats_.count; ++i) {
-        const auto &candidate = this->offer_tx_formats_.formats[i];
-        if ((preferred_time == 0 || candidate.frame_ms == preferred_time) &&
-            (!has_maxptime || candidate.frame_ms <= media_maxptime) &&
-            audio_formats_share_rtp_mapping(candidate, fmt) &&
-            audio_format_rtp_encoding(candidate, this->udp_max_payload_) != nullptr) {
-          local_tx = candidate;
-          return true;
-        }
-      }
-      return false;
-    };
-    uint16_t preferred_tx_ptime = transmit_ptime;
-    // Omitting an optional preference in a direction-only reoffer must not
-    // invent a TX quantum change. match_tx still enforces the declared
-    // mapping, peer maxptime and UDP budget before retaining that duration.
-    if (preferred_tx_ptime == 0 && retained_tx_format.is_valid() &&
-        audio_formats_share_rtp_mapping(retained_tx_format, fmt))
-      preferred_tx_ptime = retained_tx_format.frame_ms;
-    bool tx_ok = peer_can_recv && (match_tx(preferred_tx_ptime) ||
-        (!legacy_directional_ptime && preferred_tx_ptime != 0 && match_tx(0)));
-    // The peer's ptime is its receive preference, hence our TX duration.
-    // Our receive duration belongs to our own offer/answer, not that hint.
-    const uint16_t offered_rx_ptime = legacy_directional_ptime ? transmit_ptime : remote_is_answer
-        ? preferred_audio_ptime(this->offer_rx_formats_, this->udp_max_payload_) : 0;
-    bool rx_ok = peer_can_send &&
-                       (audio_format_list_match_rtp_mapping(this->offer_rx_formats_, fmt, offered_rx_ptime, &local_rx,
-                                                            this->udp_max_payload_) ||
-                        (!legacy_directional_ptime &&
-                         audio_format_list_match_rtp_mapping(this->offer_rx_formats_, fmt, 0, &local_rx,
-                                                             this->udp_max_payload_)));
-    const auto local_rank = [](const AudioFormatList &list, const AudioFormat &format) {
-      for (uint8_t i = 0; i < list.count; ++i) if (list.formats[i] == format) return i;
-      return static_cast<uint8_t>(VOIP_STACK_MAX_AUDIO_FORMATS);
-    };
-    uint8_t receive_pt = pt;
-    if (remote_is_answer) {
-      // Configured duration and UDP budget were checked above. The answer
-      // may request another ptime while retaining an offered RTP mapping.
-      bool offered_tx = false;
-      for (uint8_t i = 0; i < this->local_offered_tx_formats_.count; ++i) {
-        if (audio_formats_share_rtp_mapping(this->local_offered_tx_formats_.formats[i], fmt)) {
-          offered_tx = true;
-          break;
-        }
-      }
-      tx_ok = tx_ok && offered_tx;
-      bool offered_rx = false;
-      for (uint8_t i = 0; i < this->local_offered_rx_payloads_.count; ++i) {
-        const auto &entry = this->local_offered_rx_payloads_.entries[i];
-        if (audio_formats_share_rtp_mapping(entry.format, fmt)) {
-          receive_pt = entry.payload_type;
-          offered_rx = true;
-          break;
-        }
-      }
-      rx_ok = rx_ok && offered_rx;
-    }
-    shared_format |= tx_ok && rx_ok;
-    bool alternate_pcm = false;
-#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
-    alternate_pcm = local_rx.codec == AudioCodec::PCM && local_rx.pcm_format == PcmFormat::S16LE;
+  const LocalAudioOffer local{this->offer_tx_formats_, this->offer_rx_formats_,
+                             this->local_offered_tx_formats_, this->local_offered_rx_payloads_,
+                             this->udp_max_payload_, this->local_offered_directional_audio_v1_
+#ifdef USE_ESPHOME_VOIP_DTMF
+                             , this->dtmf_offered_clocks_
 #endif
-    const bool unidirectional = this->offer_tx_formats_.count == 0 || this->offer_rx_formats_.count == 0;
-    const bool eligible = unidirectional || media->directional_audio || media_flow != 0x03 ||
-                          (tx_ok && rx_ok) || alternate_pcm;
-    // RFC 3264 allows independent send preferences. Keep every accepted
-    // receive mapping; select the first compatible local preference.
-    // Accepted lower S16 rates use the existing audio-library resampler.
-    if (rx_ok && eligible && !received_payloads.add(receive_pt, local_rx)) return false;
-    if (rx_ok && eligible && (!selected_rx ||
-        local_rank(this->offer_rx_formats_, local_rx) < local_rank(this->offer_rx_formats_, selected_rx_format))) {
-      selected_rx_format = local_rx;
-      selected_rx_payload_type = receive_pt;
-      selected_rx = true;
-      ESP_LOGI(TAG, "SIP SDP selected RX PT=%u %s/%u/%u frame=%ums",
-               (unsigned) pt, audio_format_rtp_encoding(selected_rx_format),
-               (unsigned) audio_format_rtp_clock_rate(selected_rx_format),
-               (unsigned) audio_format_rtp_channels(selected_rx_format),
-               (unsigned) selected_rx_format.frame_ms);
-    }
-    if (tx_ok && eligible && (unidirectional || media->directional_audio || media_flow != 0x03 || rx_ok) &&
-        (!selected_tx ||
-         local_rank(this->offer_tx_formats_, local_tx) < local_rank(this->offer_tx_formats_, selected_tx_format) ||
-         (local_rank(this->offer_tx_formats_, local_tx) == local_rank(this->offer_tx_formats_, selected_tx_format) &&
-          payload_rank[pt] < selected_tx_rank))) {
-      selected_tx_format = local_tx;
-      selected_tx_payload_type = pt;
-      selected_tx_rank = payload_rank[pt];
-      selected_tx = true;
-      ESP_LOGI(TAG, "SIP SDP selected TX PT=%u %s/%u/%u frame=%ums",
-               (unsigned) pt, audio_format_rtp_encoding(selected_tx_format),
-               (unsigned) audio_format_rtp_clock_rate(selected_tx_format),
-               (unsigned) audio_format_rtp_channels(selected_tx_format),
-               (unsigned) selected_tx_format.frame_ms);
-    } else if (!selected_tx && !selected_rx) {
-      ESP_LOGD(TAG, "SIP SDP skipping unsupported PT=%u rate=%u pcm=%u channels=%u",
-               (unsigned) pt,
-               (unsigned) fmt.sample_rate,
-               (unsigned) fmt.pcm_format,
-               (unsigned) fmt.channels);
-    }
-
-    return true;
   };
-  size_t pos = 0;
-  bool seen_media = false;
-  in_audio = false;
-  while (pos < sdp.size()) {
-    size_t end = sdp.find("\r\n", pos);
-    if (end == std::string::npos) end = sdp.size();
-    const std::string line = sdp.substr(pos, end - pos);
-    if (line.rfind("m=", 0) == 0) {
-      seen_media = true;
-      in_audio = pos == selected_audio_line;
-    } else if (line.rfind("c=IN IP4 ", 0) == 0 && (!seen_media || in_audio)) {
-      struct in_addr a{};
-      if (inet_aton(line.substr(9).c_str(), &a) != 0) {
-        zero_connection = a.s_addr == 0;
-        if (!zero_connection) media_ip = ntohl(a.s_addr);
-      }
-    } else if (in_audio && line.rfind("a=rtpmap:", 0) == 0) {
-      AudioFormat fmt;
-      uint8_t pt = 0;
-      const bool valid_mapping = parse_rtpmap_format(line, &fmt, &pt);
-      uint32_t declared_pt = 0;
-      const size_t separator = line.find_first_of(" \t", 9);
-      if (offered_payload[9] && parse_decimal_u32(line.substr(9, separator - 9), 127, &declared_pt) &&
-          declared_pt == 9 && !valid_mapping) return false;
-      if (valid_mapping && offered_payload[pt]) {
-        if (!consider_mapping(fmt, pt)) return false;
-      }
+  const auto report_mapping = []([[maybe_unused]] uint8_t pt, [[maybe_unused]] const AudioFormat &fmt,
+                                 [[maybe_unused]] const AudioPayloadSelection &selection,
+                                 const AudioMappingChanges &changes) {
+    if (changes.rx) {
+      ESP_LOGI(TAG, "SIP SDP selected RX PT=%u %s/%u/%u frame=%ums",
+               (unsigned) pt, audio_format_rtp_encoding(selection.selected_rx_format),
+               (unsigned) audio_format_rtp_clock_rate(selection.selected_rx_format),
+               (unsigned) audio_format_rtp_channels(selection.selected_rx_format),
+               (unsigned) selection.selected_rx_format.frame_ms);
     }
-    if (end == sdp.size()) break;
-    pos = end + 2;
-  }
-  if (offered_payload[9] && seen_mapping[9] == 0) {
-    const AudioFormat g722{16000, PcmFormat::S16LE, 1, 20, AudioCodec::G722};
-    if (!consider_mapping(g722, 9)) return false;
-  }
-  const bool want_tx = this->offer_tx_formats_.count != 0 &&
-      !zero_connection && (media_flow & 0x02) != 0;
-  const bool want_rx = this->offer_rx_formats_.count != 0 &&
-      !zero_connection && (media_flow & 0x01) != 0;
-  if (retained_call) {
-    AudioFormat retained_tx, retained_rx;
-    uint8_t retained_tx_pt = 0, retained_rx_pt = 0;
-    retained_tx = retained.tx; retained_rx = retained.rx;
-    retained_tx_pt = retained.tx_pt; retained_rx_pt = retained.rx_pt;
-    const auto retained_mapping_offered = [&](const AudioFormat &format, uint8_t pt) {
-      return format.is_valid() && seen_mapping[pt] != 0 &&
-          audio_formats_share_rtp_mapping(format, unpack_audio_format(seen_mapping[pt]));
-    };
-    // A suspended direction need not appear in a one-way offer. Keep exactly
-    // its admitted geometry/PT instead of inventing or migrating a mapping.
-    if (!want_tx && !want_rx &&
-        !retained_mapping_offered(retained_tx, retained_tx_pt) &&
-        !retained_mapping_offered(retained_rx, retained_rx_pt)) return false;
-    if (!want_tx) {
-      selected_tx_format = retained_tx;
-      selected_tx_payload_type = retained_tx_pt;
-      selected_tx = retained_tx.is_valid();
+    if (changes.tx) {
+      ESP_LOGI(TAG, "SIP SDP selected TX PT=%u %s/%u/%u frame=%ums",
+               (unsigned) pt, audio_format_rtp_encoding(selection.selected_tx_format),
+               (unsigned) audio_format_rtp_clock_rate(selection.selected_tx_format),
+               (unsigned) audio_format_rtp_channels(selection.selected_tx_format),
+               (unsigned) selection.selected_tx_format.frame_ms);
+    } else if (changes.unsupported) {
+      ESP_LOGD(TAG, "SIP SDP skipping unsupported PT=%u rate=%u pcm=%u channels=%u",
+               (unsigned) pt, (unsigned) fmt.sample_rate, (unsigned) fmt.pcm_format, (unsigned) fmt.channels);
     }
-    if (!want_rx) {
-      selected_rx_format = retained_rx;
-      selected_rx_payload_type = retained_rx_pt;
-      selected_rx = retained_rx.is_valid();
-    }
-  }
-  if (media_port == 0 || media_ip == 0 ||
-      (!want_tx && !want_rx && !retained_call) ||
-      (!selected_tx && !selected_rx) ||
-      (want_tx && !selected_tx) || (want_rx && !selected_rx) ||
-      (want_tx && want_rx && !media->directional_audio && media_flow == 0x03 && !shared_format)) {
+  };
+  const auto report_incompatible = []([[maybe_unused]] size_t body_size, [[maybe_unused]] uint16_t port,
+                                      [[maybe_unused]] uint32_t media_ip, [[maybe_unused]] bool tx,
+                                      [[maybe_unused]] bool rx) {
     ESP_LOGW(TAG,
              "SIP SDP rejected: body_len=%u media_port=%u media_ip=%08x "
              "selected_tx=%s selected_rx=%s",
-             (unsigned) sdp.size(), (unsigned) media_port, (unsigned) media_ip, selected_tx ? "yes" : "no",
-             selected_rx ? "yes" : "no");
-    return false;
-  }
-  // Initial setup has no retained media owner to pause. Reject the legacy
-  // address rather than acknowledging it while transmitting to the fallback.
-  if (zero_connection && !retained_call) return false;
-  media->zero_connection = zero_connection;
-  media->send = !zero_connection && selected_tx && (media_flow & 0x02) != 0;
-  media->receive = !zero_connection && selected_rx && (media_flow & 0x01) != 0;
-  RtpAudioPayloads accepted_rx;
-  for (uint8_t i = 0; i < received_payloads.count; ++i) {
-    const auto &entry = received_payloads.entries[i];
-    bool usable = entry.format == selected_rx_format;
-#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
-    AudioFormat target_pcm = decoded_pcm_format(selected_rx_format);
-    target_pcm.frame_ms = entry.format.frame_ms;
-    // D1 keeps configured PCM alternatives supported by the existing receive
-    // converter, while other codecs retain their directional geometry rule.
-    usable |= (!media->directional_audio || entry.format.codec == AudioCodec::PCM) &&
-              pcm_receive_conversion_supported(decoded_pcm_format(entry.format), target_pcm);
-#endif
-#ifdef USE_ESPHOME_VOIP_STACK_OPUS
-    usable |= !media->directional_audio &&
-              same_decoded_audio_geometry(entry.format, selected_rx_format);
-#endif
-    if (usable && !accepted_rx.add(entry.payload_type, entry.format)) return false;
-  }
-  if (retained_call && !media->receive) accepted_rx = retained.rx_payloads;
+             (unsigned) body_size, (unsigned) port, (unsigned) media_ip, tx ? "yes" : "no",
+             rx ? "yes" : "no");
+  };
+  if (!negotiate_remote_audio(sdp, default_ip, remote_is_answer, retained_call, local, retained, *media,
 #ifdef USE_ESPHOME_VOIP_DTMF
-  const auto next_media = sdp.find("\r\nm=", selected_audio_line);
-  const std::string_view audio_section(sdp.data() + selected_audio_line,
-      (next_media == std::string::npos ? sdp.size() : next_media + 2) - selected_audio_line);
-  auto dtmf = negotiate_dtmf(audio_section, payload_rank,
-      audio_format_rtp_clock_rate(selected_tx ? selected_tx_format : selected_rx_format),
-      remote_is_answer, this->dtmf_offered_clocks_);
-  if (dtmf.valid() && (seen_mapping[dtmf.payload_type] != 0 ||
-      received_payloads.find(dtmf.payload_type, nullptr) ||
-      (selected_tx && selected_tx_payload_type == dtmf.payload_type))) dtmf = {};
-  DtmfConfig dtmf_config{selected_tx ? dtmf : DtmfFormat{}, selected_rx ? dtmf : DtmfFormat{}};
-  if (remote_is_answer && dtmf_config.rx.valid()) dtmf_config.rx.payload_type = 120 + dtmf_clock_index(dtmf.clock);
-  media->dtmf = dtmf_config;
+                              media->dtmf,
 #endif
-  media->tx = selected_tx_format; media->rx = selected_rx_format;
-  media->tx_pt = selected_tx_payload_type; media->rx_pt = selected_rx_payload_type;
-  media->rx_payloads = accepted_rx;
-  // Signaling can traverse a PBX/proxy while RTP terminates on a separate
-  // media address from SDP. Never overwrite the SIP peer with the media peer.
-  media->audio_ip = zero_connection ? retained.audio_ip : media_ip;
-  media->audio_port = media_port;
+                              report_mapping, report_incompatible)) return false;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   if (!this->refer_context_active_ && !this->parse_remote_video_(sdp, default_ip, remote_is_answer, retained, media, retained_call)) {
     // An unsupported video m-line is rejected independently. Audio remains
@@ -984,375 +663,39 @@ bool SipTransport::parse_remote_video_(const std::string &sdp, uint32_t default_
 #endif
   const VideoCapability local_send = this->local_video_send_capability_();
   const VideoCapability local_receive = this->local_video_receive_capability_();
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-  ImageAttributeMatch imageattr_specific, imageattr_wildcard;
-#endif
-  bool offered_payloads[128]{};
-  uint8_t offered_payload_order[128]{};
-  size_t offered_payload_count = 0;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
-  bool h264_payloads[128]{};
-#endif
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-  bool jpeg_payloads[128]{};
-#endif
-  bool rtpmap_seen[128]{};
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
-  char profiles[128][7]{};
-  bool profile_valid[128]{};
-  uint8_t packetization_modes[128]{};
-  bool level_asymmetry_allowed[128]{};
-  bool rtcp_feedback_pli[128]{};
-  bool rtcp_feedback_fir[128]{};
-#endif
-  uint8_t media_max_fps = 0;
-  uint32_t media_max_bitrate_bps = 0;
-  uint16_t media_port = 0;
-  uint32_t media_ip = default_ip;
-  uint32_t session_ip = default_ip;
-  bool session_zero_connection = false;
-  bool media_zero_connection = false;
-  uint16_t media_rtcp_port = 0;
-  uint32_t media_rtcp_ip = default_ip;
-  bool media_rtcp_address_explicit = false;
-  bool media_rtcp_attribute_invalid = false;
-  bool rtcp_mux_only = false;
-  uint8_t media_direction = 0x03;  // peer send + receive
-  uint8_t session_direction = 0x03;
-  bool seen_media = false;
-  bool in_video = false;
-  bool selected_video_line = false;
-
-  size_t pos = 0;
-  while (pos < sdp.size()) {
-    size_t end = sdp.find("\r\n", pos);
-    if (end == std::string::npos) end = sdp.size();
-    const std::string line = sdp.substr(pos, end - pos);
-    if (line.rfind("m=", 0) == 0) {
-      seen_media = true;
-      in_video = false;
-      if (!selected_video_line) {
-        bool candidate_payloads[128]{};
-        uint16_t candidate_port = 0;
-        uint8_t candidate_order[128]{};
-        size_t candidate_count = 0;
-        if (parse_video_media_line(line, &candidate_port,
-                                   candidate_payloads, candidate_order,
-                                   &candidate_count)) {
-          selected_video_line = true;
-          media->video_offered = true;
-          media_port = candidate_port;
-          std::copy(candidate_payloads, candidate_payloads + 128,
-                    offered_payloads);
-          std::copy(candidate_order, candidate_order + candidate_count,
-                    offered_payload_order);
-          offered_payload_count = candidate_count;
-          // Keep the first offered PT even when the stream is disabled or
-          // rejected before codec matching. RFC 3264 still requires the
-          // corresponding answer m-line, with port zero and a payload format
-          // taken from the offer rather than our unrelated local default.
-          if (candidate_count > 0) {
-            media->video.payload_type =
-                candidate_order[0];
-          }
-          media_ip = session_ip;
-          media_zero_connection = session_zero_connection;
-          media_rtcp_ip = session_ip;
-          media_rtcp_port =
-              candidate_port == UINT16_MAX
-                  ? 0
-                  : static_cast<uint16_t>(candidate_port + 1);
-          media_rtcp_address_explicit = false;
-          media_direction = session_direction;
-          in_video = true;
-        }
-      }
-    } else if (!seen_media && line.rfind("c=IN IP4 ", 0) == 0) {
-      struct in_addr address{};
-      if (inet_aton(line.substr(9).c_str(), &address) != 0) {
-        session_zero_connection = address.s_addr == 0;
-        if (!session_zero_connection) {
-          session_ip = ntohl(address.s_addr);
-          media_ip = session_ip;
-          media_rtcp_ip = session_ip;
-        }
-      }
-    } else if (line.rfind("a=sendonly", 0) == 0 &&
-               (!seen_media || in_video)) {
-      if (!seen_media) session_direction = 0x01;
-      if (in_video) media_direction = 0x01;
-    } else if (line.rfind("a=recvonly", 0) == 0 &&
-               (!seen_media || in_video)) {
-      if (!seen_media) session_direction = 0x02;
-      if (in_video) media_direction = 0x02;
-    } else if (line.rfind("a=inactive", 0) == 0 &&
-               (!seen_media || in_video)) {
-      if (!seen_media) session_direction = 0;
-      if (in_video) media_direction = 0;
-    } else if (line.rfind("a=sendrecv", 0) == 0 &&
-               (!seen_media || in_video)) {
-      if (!seen_media) session_direction = 0x03;
-      if (in_video) media_direction = 0x03;
-    } else if (in_video && line.rfind("c=IN IP4 ", 0) == 0) {
-      struct in_addr address{};
-      if (inet_aton(line.substr(9).c_str(), &address) != 0) {
-        media_zero_connection = address.s_addr == 0;
-        if (!media_zero_connection) {
-          media_ip = ntohl(address.s_addr);
-          if (!media_rtcp_address_explicit) media_rtcp_ip = media_ip;
-        }
-      }
-    } else if (in_video && line.rfind("a=rtcp:", 0) == 0) {
-      uint16_t parsed_port = 0;
-      uint32_t parsed_ip = media_ip;
-      bool has_address = false;
-      if (parse_rtcp_attribute(line, &parsed_port, &parsed_ip,
-                               &has_address)) {
-        media_rtcp_port = parsed_port;
-        media_rtcp_ip = has_address ? parsed_ip : media_ip;
-        media_rtcp_address_explicit = has_address;
-      } else {
-        media_rtcp_attribute_invalid = true;
-      }
-    } else if (in_video && line == "a=rtcp-mux-only") {
-      rtcp_mux_only = true;
-    } else if (in_video && line.rfind("a=rtpmap:", 0) == 0) {
-      uint8_t payload_type = 0;
-      std::string encoding;
-      if (parse_video_rtpmap(line, &payload_type, &encoding) &&
-          offered_payloads[payload_type]) {
-        rtpmap_seen[payload_type] = true;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
-        h264_payloads[payload_type] = encoding == "H264/90000";
-#endif
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-        jpeg_payloads[payload_type] = encoding == "JPEG/90000";
-#endif
-      }
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
-    } else if (in_video && line.rfind("a=fmtp:", 0) == 0) {
-      uint8_t payload_type = 0;
-      const std::string profile =
-          fmtp_parameter(line, "profile-level-id", &payload_type);
-      if (offered_payloads[payload_type] && profile.size() == 6) {
-        memcpy(profiles[payload_type], profile.data(), 6);
-        profile_valid[payload_type] = true;
-      }
-      uint8_t mode_payload = 0;
-      const std::string mode =
-          fmtp_parameter(line, "packetization-mode", &mode_payload);
-      if (offered_payloads[mode_payload] && mode == "1")
-        packetization_modes[mode_payload] = 1;
-      uint8_t asymmetry_payload = 0;
-      const std::string asymmetry =
-          fmtp_parameter(line, "level-asymmetry-allowed",
-                         &asymmetry_payload);
-      if (offered_payloads[asymmetry_payload] && asymmetry == "1")
-        level_asymmetry_allowed[asymmetry_payload] = true;
-    } else if (in_video && line.rfind("a=rtcp-fb:", 0) == 0) {
-      parse_video_rtcp_feedback(line, offered_payloads,
-                                rtcp_feedback_pli,
-                                rtcp_feedback_fir);
-#endif
-    } else if (in_video && line.rfind("b=TIAS:", 0) == 0) {
-      uint32_t parsed_bitrate = 0;
-      if (parse_decimal_u32(trim_copy(line.substr(7)), UINT32_MAX,
-                            &parsed_bitrate) &&
-          parsed_bitrate > 0) {
-        media_max_bitrate_bps = parsed_bitrate;
-      }
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-    } else if (in_video && line.rfind("a=imageattr:", 0) == 0) {
-      const auto parsed = ImageAttributeParser::parse(std::string_view(line).substr(12),
-          local_receive.width, local_receive.height, local_send.width, local_send.height);
-      if (parsed.valid) {
-        // RFC6236 permits send/recv on separate attribute lines. Merge each
-        // direction independently; payload-specific entries override wildcard
-        // entries only for the direction they actually declare.
-        auto &target = parsed.explicit_payload ? imageattr_specific : imageattr_wildcard;
-        target.valid = true;
-        if (parsed.send_present) {
-          target.send_compatible = (!target.send_present || target.send_compatible) && parsed.send_compatible;
-          target.send_present = true;
-        }
-        if (parsed.recv_present) {
-          target.recv_compatible = (!target.recv_present || target.recv_compatible) && parsed.recv_compatible;
-          target.recv_present = true;
-        }
-      }
-#endif
-    } else if (in_video && line.rfind("a=framerate:", 0) == 0) {
-      uint32_t parsed_fps = 0;
-      if (parse_decimal_u32(trim_copy(line.substr(12)), UINT8_MAX,
-                            &parsed_fps) &&
-          parsed_fps > 0) {
-        media_max_fps = static_cast<uint8_t>(parsed_fps);
-      }
-    }
-    if (end == sdp.size()) break;
-    pos = end + 2;
-  }
-
-  if (!media->video_offered) return true;
-  // A disabled answer is not an error and must not disturb audio.
-  if (media_port == 0) return true;
-  if (media_zero_connection) {
-    // Legacy hold applies to this media section after connection inheritance.
-    // Keep the prepared child's peer identity for a direction-only pause.
-    if (!allow_zero_connection) return false;
-    media->video_zero_connection = true;
-    media_direction = 0;
-    if (retained_ip != 0) media_ip = retained_ip;
-    if (retained_rtcp_ip != 0) media_rtcp_ip = retained_rtcp_ip;
-  }
-  // This implementation owns a distinct RTCP socket. Do not claim support for
-  // a peer that requires multiplexing both protocols on one port.
-  if (rtcp_mux_only || media_rtcp_attribute_invalid ||
-      media_rtcp_port == 0 || media_rtcp_ip == 0) {
+  VideoOfferAttributes offer;
+  read_video_offer_attributes(sdp, default_ip, local_send, local_receive, offer);
+  media->video_offered = offer.offered;
+  const auto disposition = validate_video_offer(offer, retained_ip, retained_rtcp_ip, allow_zero_connection,
+                                                media->video.payload_type, media->video_zero_connection);
+  if (disposition != VideoOfferDisposition::SELECT_PAYLOAD)
+    return disposition == VideoOfferDisposition::DISABLED;
+  VideoPayloadSelection selected{media->video};
+  if (!select_video_payload(offer, local_send, local_receive, this->video_send_requested_.load(std::memory_order_acquire),
+                            remote_is_answer, this->video_offer_payload_type_, selected))
     return false;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
+  if (selected.imageattr_present) {
+    if (selected.imageattr_compatible) {
+      media->imageattr_state |= IMAGEATTR_PEER;
+    } else if (remote_is_answer && (media->imageattr_state & IMAGEATTR_OFFERED) &&
+               !(media->imageattr_state & IMAGEATTR_DISABLED)) {
+      media->imageattr_state |= IMAGEATTR_DISABLED | IMAGEATTR_FALLBACK;
+    }
   }
-  // RFC 3551 statically assigns PT 26 to JPEG/90000, so rtpmap is optional.
-  // An explicit conflicting rtpmap always wins and makes PT 26 incompatible.
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-  if (offered_payloads[26] && !rtpmap_seen[26])
-    jpeg_payloads[26] = true;
 #endif
-
-  for (size_t payload_index = 0; payload_index < offered_payload_count;
-       payload_index++) {
-    const uint8_t pt = offered_payload_order[payload_index];
-    if (remote_is_answer && pt != this->video_offer_payload_type_) continue;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-    const bool jpeg = jpeg_payloads[pt] && pt == 26;
-    const bool h264 = false;
-#else
-    const bool jpeg = false;
-    const bool h264 = h264_payloads[pt] &&
-                      packetization_modes[pt] == 1 && profile_valid[pt];
-#endif
-    if (!jpeg && !h264) continue;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
-    const std::string peer_profile(profiles[pt], 6);
-#else
-    const std::string peer_profile;
-#endif
-    const bool peer_sends = (media_direction & 0x01) != 0;
-    const bool peer_receives = (media_direction & 0x02) != 0;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
-    const bool bilateral_asymmetry =
-        level_asymmetry_allowed[pt] &&
-        (!peer_sends || local_receive.level_asymmetry_allowed) &&
-        (!peer_receives || local_send.level_asymmetry_allowed);
-#else
-    const bool bilateral_asymmetry = false;
-#endif
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-    const bool send_compatible =
-        this->video_source_ != nullptr && local_send.valid() && jpeg &&
-        local_send.is_jpeg();
-    const bool receive_compatible =
-        this->video_sink_ != nullptr && local_receive.valid() && jpeg &&
-        local_receive.is_jpeg();
-#else
-    const bool send_compatible =
-        this->video_source_ != nullptr && local_send.valid() && h264 &&
-        local_send.is_h264() &&
-        h264_level_fits(local_send.profile_level_id, peer_profile);
-    const bool receive_compatible =
-        this->video_sink_ != nullptr && local_receive.valid() && h264 &&
-        local_receive.is_h264() &&
-        h264_same_subprofile(local_receive.profile_level_id, peer_profile);
-#endif
-    bool local_sends =
-        this->video_send_requested_.load(std::memory_order_acquire) &&
-        peer_receives && send_compatible;
-    const bool local_receives = peer_sends && receive_compatible;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
-    if (!bilateral_asymmetry && local_sends && local_receives &&
-        !h264_level_fits(local_send.profile_level_id,
-                         local_receive.profile_level_id))
-      local_sends = false;
-#endif
-    const bool inactive_direction = media_direction == 0;
-    if (!local_sends && !local_receives &&
-        (!inactive_direction || (!send_compatible && !receive_compatible)))
-      continue;
-
-    // Keep the shared RTP capability stable across direction-only re-INVITEs.
-    // Endpoint dimensions remain directional local metadata (RFC 2435 carries
-    // JPEG frame dimensions in-band), so choose the same compatible endpoint
-    // whether or not that direction is active in the current offer.
-    VideoCapability negotiated =
-        receive_compatible ? local_receive : local_send;
-    // Keep the peer's recommendation on our encoder direction. The decoder
-    // retains its own budget in local_video_direction_capability_().
-    negotiated.max_fps = send_compatible ? local_send.max_fps : local_receive.max_fps;
-    if (send_compatible && receive_compatible) {
-      if (local_send.max_bitrate_bps != 0 &&
-          (negotiated.max_bitrate_bps == 0 ||
-           local_send.max_bitrate_bps < negotiated.max_bitrate_bps)) {
-        negotiated.max_bitrate_bps = local_send.max_bitrate_bps;
-      }
-    }
-    if (media_max_fps > 0)
-      negotiated.max_fps = std::min(negotiated.max_fps, media_max_fps);
-    negotiated.payload_type = static_cast<uint8_t>(pt);
-    negotiated.level_asymmetry_allowed =
-        h264 && bilateral_asymmetry;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
-    negotiated.rtcp_feedback_pli = rtcp_feedback_pli[pt];
-    negotiated.rtcp_feedback_fir = rtcp_feedback_fir[pt];
-#else
-    negotiated.rtcp_feedback_pli = false;
-    negotiated.rtcp_feedback_fir = false;
-#endif
-    if (media_max_bitrate_bps != 0 &&
-        (negotiated.max_bitrate_bps == 0 ||
-         media_max_bitrate_bps < negotiated.max_bitrate_bps)) {
-      negotiated.max_bitrate_bps = media_max_bitrate_bps;
-    }
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
-    if (!bilateral_asymmetry &&
-        h264_level_fits(peer_profile, negotiated.profile_level_id)) {
-      // Lowering a decoder advertisement is safe; lowering the encoder SPS is
-      // not. Preserve our profile_idc/profile_iop and select the common level.
-      negotiated.profile_level_id.replace(4, 2, peer_profile.substr(4, 2));
-    }
-#endif
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-    media->imageattr_state &= ~IMAGEATTR_PEER;
-    if (imageattr_specific.valid || imageattr_wildcard.valid) {
-      const auto &send_attr = imageattr_specific.send_present ? imageattr_specific : imageattr_wildcard;
-      const auto &recv_attr = imageattr_specific.recv_present ? imageattr_specific : imageattr_wildcard;
-      const bool compatible = (!local_receives || !send_attr.send_present || send_attr.send_compatible) &&
-                              (!local_sends || !recv_attr.recv_present || recv_attr.recv_compatible);
-      if (compatible) {
-        media->imageattr_state |= IMAGEATTR_PEER;
-      } else if (remote_is_answer && (media->imageattr_state & IMAGEATTR_OFFERED) &&
-                 !(media->imageattr_state & IMAGEATTR_DISABLED)) {
-        // RFC6236: do not silently accept an unusable answer. Preserve media
-        // and let the existing SIP transaction owner offer once without it.
-        media->imageattr_state |= IMAGEATTR_DISABLED | IMAGEATTR_FALLBACK;
-      }
-    }
-#endif
-    media->video = negotiated;
-    media->video_ip = media_ip;
-    media->video_port = media_port;
-    media->video_rtcp_ip = media_rtcp_ip;
-    media->video_rtcp_port = media_rtcp_port;
-    media->video_send = local_sends;
-    media->video_receive = local_receives;
-    media->video_negotiated = true;
-    ESP_LOGI(TAG,
-             "SIP SDP selected video PT=%u %s remote=%08x:%u dir=%s%s",
-             (unsigned) pt, negotiated.encoding.c_str(),
-             (unsigned) media_ip, (unsigned) media_port,
-             local_sends ? "send" : "", local_receives ? "recv" : "");
-    return true;
-  }
-
-  return false;
+  media->video_ip = offer.media_ip;
+  media->video_port = offer.media_port;
+  media->video_rtcp_ip = offer.media_rtcp_ip;
+  media->video_rtcp_port = offer.media_rtcp_port;
+  media->video_send = selected.send;
+  media->video_receive = selected.receive;
+  media->video_negotiated = true;
+  ESP_LOGI(TAG, "SIP SDP selected video PT=%u %s remote=%08x:%u dir=%s%s",
+           (unsigned) media->video.payload_type, media->video.encoding.c_str(),
+           (unsigned) offer.media_ip, (unsigned) offer.media_port,
+           selected.send ? "send" : "", selected.receive ? "recv" : "");
+  return true;
 }
 #endif
 
