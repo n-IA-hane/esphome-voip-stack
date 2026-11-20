@@ -7,6 +7,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 #include <arpa/inet.h>
@@ -24,6 +25,7 @@ const char*socket_errno_text(int error){return std::strerror(error);}
 namespace probe {
 unsigned attempts=0,releases=0,created_tasks=0,joined_tasks=0,binds=0,initializations=0;
 std::map<void*,size_t> live;
+std::optional<bool> factory_direct_calls;
 void*allocate(size_t n,unsigned flags){
  assert(flags==1);++attempts;if(attempts==FAIL_STAGE)return nullptr;
  auto*p=std::malloc(n);assert(p);assert(live.emplace(p,n).second);return p;
@@ -72,6 +74,11 @@ public:
  }
  static constexpr unsigned kSipTaskStackBytes=12288,kSipTaskPriority=4,kRtpTaskStackBytes=4096,kRtpTaskPriority=5;
  static void sip_task_trampoline_(void*){}static void rtp_task_trampoline_(void*){}
+ // Observe the application factory boundary before acquiring sockets or workers.
+ void set_accept_direct_calls(bool enabled) {
+   assert(!running_.load() && probe::binds == 0 && !probe::factory_direct_calls.has_value());
+   probe::factory_direct_calls = enabled;
+ }
  void set_sip_signaling_transport(bool){}
  template<class...T>void set_audio_formats(T...){ }
  template<class...T>void set_audio_callback(T...){ }
@@ -100,6 +107,7 @@ public:
 // REAL_STOP
 struct VoipStack{
  std::unique_ptr<SipTransport>transport_;uint16_t sip_port_=0,rtp_port_=0;size_t udp_max_payload_=2048;
+ bool accept_direct_calls_{false};
  bool task_stacks_in_psram_=true;enum class TransportType{UDP,TCP};TransportType protocol_=TransportType::TCP;
  int tx_audio_formats_=0,rx_audio_formats_=0;
  static void transport_audio_callback_(){}static void transport_sip_signal_callback_(){}
@@ -133,9 +141,19 @@ void accounts(SipTransport&t){
  t.stop();assert(probe::joined_tasks==2);for(unsigned i=0;i<4;++i)assert(t.mwi_.config_at(i)->id==r.account(i).config.id);
 }
 #endif
-int main(){
+int main(int argc, char **argv){
+ assert(argc == 1 || (argc == 2 && std::strcmp(argv[1], "--accept-direct") == 0));
+ const bool requested_direct_calls = argc == 2;
  {
-  VoipStack v;bool ok=v.setup_transport_();
+  VoipStack v;
+  v.accept_direct_calls_ = requested_direct_calls;
+  bool ok = v.setup_transport_();
+  if (ok) {
+    assert(probe::factory_direct_calls.has_value());
+    assert(*probe::factory_direct_calls == requested_direct_calls);
+  } else {
+    assert(!probe::factory_direct_calls.has_value());
+  }
   if(FAIL_STAGE){assert(!ok&&!v.transport_);assert(probe::binds==0&&probe::created_tasks==0&&probe::initializations==0);}
   else{
    assert(ok&&v.transport_&&v.transport_->initialized());assert(internal_objects>=1);assert(probe::binds==3&&probe::created_tasks==2);

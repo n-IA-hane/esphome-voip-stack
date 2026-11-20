@@ -76,9 +76,10 @@ inline void heap_caps_free(void*p){std::free(p);}
         str(SOURCE / "sip_registration.cpp"), str(SOURCE / "sip_mwi.cpp"), "-o", str(binary),
     ], capture_output=True, text=True)
     assert built.returncode == 0, built.stderr
-    ran = subprocess.run([binary], capture_output=True, text=True, timeout=15)
-    assert ran.returncode == 0, ran.stderr
-    assert "COLD_STORAGE_OK" in ran.stdout
+    for options in ((), ("--accept-direct",)):
+        ran = subprocess.run([binary, *options], capture_output=True, text=True, timeout=15)
+        assert ran.returncode == 0, ran.stderr
+        assert "COLD_STORAGE_OK" in ran.stdout
 
 
 def test_registration_array_uses_requested_psram_region(tmp_path):
