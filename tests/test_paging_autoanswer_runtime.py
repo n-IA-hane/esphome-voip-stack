@@ -123,6 +123,8 @@ int main(int argc,char**argv){
  const bool direct=std::string(argv[2])=="direct",allowed=std::string(argv[3])=="allowed";
  const std::string mode=argv[4];
  s.accept_direct_calls_=true;
+ // A direct caller is any peer other than the registrar that owns the line.
+ if(direct)s.registration_.account(0).binding_ip=0x7f000002;
  s.registration_.account(0).config.allow_paging_auto_answer=allowed;
  if(direct&&allowed)s.set_paging_auto_answer_peers({"127.0.0.1","invalid","127.0.0.1"});
  assert(s.paging_auto_answer_peers_.size()==(direct&&allowed?1:0));

@@ -831,15 +831,19 @@ void SipRegistration::resolution_complete(size_t i, uint32_t ip, uint32_t now, b
 }
 int SipRegistration::match_incoming(const std::string& user, uint32_t ip, bool tcp, int flow_index) const {
   if (!this->initialized()) return -1;
-  // The current binding identifies an account, independent of request transport.
-  // An existing account-owned TCP flow must still belong to that account.
+  // The bound signaling peer identifies the line, so a PBX may address it by
+  // extension, name or Contact. The Contact user only selects between several
+  // lines on that peer. An account-owned TCP flow still belongs to its account.
+  int line = -1;
   for (size_t i = 0; i < CAPACITY; ++i) {
     const auto& a = this->accounts_[i];
-    if (a.occupied && a.desired && a.bound && ("esphome-" + a.config.id) == user && a.binding_ip == ip &&
-        (!tcp || flow_index < 0 || flow_index == static_cast<int>(i)))
-      return i;
+    if (!a.occupied || !a.desired || !a.bound || a.binding_ip != ip ||
+        (tcp && flow_index >= 0 && flow_index != static_cast<int>(i)))
+      continue;
+    if (("esphome-" + a.config.id) == user) return static_cast<int>(i);
+    if (line < 0) line = static_cast<int>(i);
   }
-  return -1;
+  return line;
 }
 }  // namespace esphome::voip_stack
 #endif

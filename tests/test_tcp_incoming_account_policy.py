@@ -66,7 +66,8 @@ int main(int argc,char**argv){
  assert(send(caller.fd,invite.data(),invite.size(),MSG_NOSIGNAL)==ssize_t(invite.size()));
  s.handle_sip_stream_(caller.esp,incoming);
  auto replies=caller.drain();
- if(scenario!="accepted"){
+ // The bound registrar may address its line by extension or name.
+ if(scenario!="accepted"&&scenario!="unknown-user"){
   assert(replies.size()==1&&replies[0].rfind("SIP/2.0 403",0)==0);
   assert(s.call_id_.empty()&&s.active_account_==-1&&s.tcp_flow_.socket==untouched);
   assert(fcntl(options.esp,F_GETFD)>=0&&s.inbound_tcp_flow_.socket<0);
@@ -245,9 +246,12 @@ int main(int argc,char**argv){
    assert(s.call_id_=="udp-call"&&!s.remote_sip_tcp_);
    hangup(s,udp,"udp-call",tag);
   }else{
+   // A probe from a peer other than the line's registrar is a direct request.
+   auto&bound_peer=s.registration_.account(0).binding_ip;const auto registrar_ip=bound_peer;bound_peer=0x7f000002;
    udp.send_to(s,request(udp,"OPTIONS",1,"","forbidden-direct-probe","","probe"));
    const auto forbidden=udp.drain();assert(forbidden.size()==1&&forbidden[0].rfind("SIP/2.0 403",0)==0);
    assert(fcntl(tcp.esp,F_GETFD)>=0&&s.call_id_.empty());
+   bound_peer=registrar_ip;
    udp.send_to(s,control_probe(udp,"udp-probe"));
    const auto replies=udp.drain();assert(replies.size()==1&&replies[0].rfind("SIP/2.0 200",0)==0);
    assert(fcntl(tcp.esp,F_GETFD)>=0&&"UDP OPTIONS must preserve the unread TCP stream");

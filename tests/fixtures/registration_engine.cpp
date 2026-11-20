@@ -425,18 +425,24 @@ int main(int argc, char** argv) {
     h.feed(h.first, h.success(initial), 3);
     assert(h.manager.is_registered("office"));
     assert(h.manager.match_incoming("esphome-office", INADDR_LOOPBACK, tcp, tcp ? 0 : -1) == 0);
-    assert(h.manager.match_incoming("101", INADDR_LOOPBACK, tcp, tcp ? 0 : -1) < 0);
+    // The registrar may address its registered line by extension or name.
+    assert(h.manager.match_incoming("101", INADDR_LOOPBACK, tcp, tcp ? 0 : -1) == 0);
+    assert(h.manager.match_incoming("Kitchen Panel", INADDR_LOOPBACK, tcp, tcp ? 0 : -1) == 0);
+    assert(h.manager.match_incoming("101", 0x7f000002, tcp, tcp ? 0 : -1) < 0);
   } else if (scenario == "incoming-transport") {
     h.feed(h.first, h.success(initial), 1);
     assert(h.manager.is_registered("office"));
     assert(h.manager.match_incoming("esphome-office", INADDR_LOOPBACK, !tcp, -1) == 0);
     assert(h.manager.match_incoming("esphome-office", 0x7f000002, !tcp, -1) < 0);
-    assert(h.manager.match_incoming("101", INADDR_LOOPBACK, !tcp, -1) < 0);
+    assert(h.manager.match_incoming("101", INADDR_LOOPBACK, !tcp, -1) == 0);
+    assert(h.manager.match_incoming("101", 0x7f000002, !tcp, -1) < 0);
     assert(h.manager.match_incoming("esphome-office", INADDR_LOOPBACK, true, 1) < 0);
+    assert(h.manager.match_incoming("101", INADDR_LOOPBACK, true, 1) < 0);
     auto replacement = c;
     replacement.password = "new-fixture-value";
     assert(h.manager.set_account(replacement, 2));
     assert(h.manager.match_incoming("esphome-office", INADDR_LOOPBACK, !tcp, -1) < 0);
+    assert(h.manager.match_incoming("101", INADDR_LOOPBACK, !tcp, -1) < 0);
     h.manager.tick(2);
     auto request = h.first.receive();
     h.feed(h.first, h.success(request), 3);
@@ -555,7 +561,9 @@ int main(int argc, char** argv) {
     assert(h.manager.is_registered("office") && h.manager.is_registered("home"));
     assert(h.manager.match_incoming("esphome-office", INADDR_LOOPBACK, tcp, tcp ? 0 : -1) == 0);
     assert(h.manager.match_incoming("esphome-home", INADDR_LOOPBACK, tcp, tcp ? 1 : -1) == 1);
-    assert(h.manager.match_incoming(c.username, INADDR_LOOPBACK, tcp, tcp ? 0 : -1) < 0);
+    // An unnamed line from the shared peer uses the flow owner, else the first bound line.
+    assert(h.manager.match_incoming(c.username, INADDR_LOOPBACK, tcp, tcp ? 0 : -1) == 0);
+    assert(h.manager.match_incoming(c.username, INADDR_LOOPBACK, tcp, tcp ? 1 : -1) == (tcp ? 1 : 0));
   } else if (scenario == "refresh-binding") {
     h.feed(h.first, h.success(initial, 60), 1);
     h.manager.tick(48001);
@@ -569,6 +577,7 @@ int main(int argc, char** argv) {
     h.manager.tick(60001);
     assert(!h.manager.is_registered("office"));
     assert(h.manager.match_incoming("esphome-office", INADDR_LOOPBACK, tcp, tcp ? 0 : -1) < 0);
+    assert(h.manager.match_incoming("101", INADDR_LOOPBACK, tcp, tcp ? 0 : -1) < 0);
   } else if (scenario == "intent") {
     assert(h.manager.request_registration("office", false, 1));
     h.feed(h.first, h.success(initial), 2);
