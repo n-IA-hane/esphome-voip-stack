@@ -43,6 +43,8 @@ struct SipSignalingString:std::string {
     code += r'''
 std::string control(Peer &peer,unsigned sequence,const std::string &body=""){
  auto message=request(peer,"OPTIONS",sequence,"","probe-"+std::to_string(sequence),"","probe");
+ // The registrar delivers this request to the Contact advertised by the office account.
+ message.replace(message.find("sip:esp@127.0.0.1"), strlen("sip:esp@127.0.0.1"), "sip:esphome-office@127.0.0.1");
  message.replace(message.find("Content-Length: 0"),strlen("Content-Length: 0"),
                  "Content-Length: "+std::to_string(body.size()));
  return message+body;

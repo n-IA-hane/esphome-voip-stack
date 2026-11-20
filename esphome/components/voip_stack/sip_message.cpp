@@ -175,24 +175,9 @@ std::string message_body(const std::string &msg) {
 
 bool sip_content_length(const std::string &msg, size_t *out) {
   if (out == nullptr) return false;
-  *out = 0;
-  bool seen = false, valid = true;
-  sip_record_fields(msg, "Content-Length", [&](std::string_view field) {
-    if (seen) { valid = false; return false; }
-    seen = true;
-    const auto value = sip_record_unfold(field);
-    if (value.empty()) { valid = false; return false; }
-    size_t parsed = 0;
-    for (char ch : value) {
-      if (!std::isdigit(static_cast<unsigned char>(ch))) { valid = false; return false; }
-      const size_t digit = static_cast<size_t>(ch - '0');
-      if (parsed > (MAX_SIP_TCP_RX_BUFFER - digit) / 10) { valid = false; return false; }
-      parsed = parsed * 10 + digit;
-    }
-    *out = parsed;
-    return true;
-  });
-  return valid;
+  const auto length = sip_record_content_length(msg, MAX_SIP_TCP_RX_BUFFER);
+  *out = length.bytes;
+  return length.valid;
 }
 
 std::string sip_header_token(const std::string &raw, size_t max_bytes) {

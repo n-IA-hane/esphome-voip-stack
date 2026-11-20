@@ -63,6 +63,14 @@ def cpp_method(source: str, qualified_name_pattern: str) -> str:
     raise AssertionError(f"Unbalanced C++ method: {qualified_name_pattern}")
 
 
+def dialog_response_method(name: str) -> str:
+    return cpp_method(read("sip_dialog_response.cpp"), "SipTransport::" + name)
+
+
+def dialog_request_method(name: str) -> str:
+    return cpp_method(read("sip_dialog_request.cpp"), "SipTransport::" + name)
+
+
 def cpp_methods(source: str, name_pattern: str) -> str:
     """Join C++ method definitions whose unqualified names match a regex."""
 
@@ -1561,10 +1569,7 @@ def test_media_lifecycle_is_serialized_across_fsm_and_sip_tasks() -> None:
         source.index("void SipTransport::stop_audio_path()") :
         source.index("\nbool SipTransport::originate")
     ]
-    reinvite = source[
-        source.index("bool SipTransport::handle_reinvite_") :
-        source.index("\nbool SipTransport::handle_response_")
-    ]
+    reinvite = cpp_method(source, r"SipTransport::handle_reinvite_")
     lock = "LockGuard media_lock(this->media_lifecycle_mutex_);"
     assert lock in start
     assert lock in stop
@@ -1586,11 +1591,12 @@ def test_media_lifecycle_is_serialized_across_fsm_and_sip_tasks() -> None:
         ("bool SipTransport::send_invite(", "\nvoid SipTransport::send_audio_frame", "this->build_sdp_offer_()"),
         ("bool SipTransport::send_answer(", "\nbool SipTransport::send_cancel", "this->build_sdp_answer_()"),
         ("bool SipTransport::handle_invite_(", "\nbool SipTransport::handle_reinvite_", "this->learn_remote_rtp_from_sdp_(body, src_ip)"),
-        ("bool SipTransport::handle_response_(", "\nvoid SipTransport::handle_sip_datagram_", "this->learn_remote_rtp_from_sdp_"),
     ):
         section = source[source.index(begin) : source.index(end)]
         assert lock in section
         assert section.index(lock) < section.index(operation)
+    confirmed = dialog_response_method("accept_invite_response_")
+    assert confirmed.index(lock) < confirmed.index("this->learn_remote_rtp_from_sdp_")
 
 
 def test_incoming_answer_prepares_before_200_and_commits_after_send() -> None:
@@ -1642,7 +1648,7 @@ def test_incoming_answer_prepares_before_200_and_commits_after_send() -> None:
         source.index("uint16_t SipTransport::acknowledge_completed_invite_") :
         source.index("\nbool SipTransport::replay_completed_invite_ack_")
     ]
-    datagram = cpp_method(source, r"SipTransport::handle_sip_datagram_unlocked_")
+    datagram = dialog_request_method("handle_dialog_ack_")
     assert "this->terminate_after_invite_ack_" in acknowledge
     assert "if (terminate_after_ack)" in datagram
     assert "this->send_bye_unlocked_(call_id)" in datagram
@@ -1796,10 +1802,7 @@ def test_call_teardown_is_deferred_to_the_event_driven_rtp_worker() -> None:
         source.index("bool SipTransport::handle_invite_(") :
         source.index("\nbool SipTransport::handle_reinvite_(")
     ]
-    reinvite = source[
-        source.index("bool SipTransport::handle_reinvite_(") :
-        source.index("\nbool SipTransport::handle_response_(")
-    ]
+    reinvite = cpp_method(source, r"SipTransport::handle_reinvite_")
     assert (
         'message, src, 503, "Service Unavailable", "media_cleanup", true, 1'
         in invite
@@ -1999,8 +2002,8 @@ def test_sip_udp_transactions_are_minimal_and_explicit() -> None:
     assert "remember_udp_transaction_" in sip_h
     assert "pump_udp_retransmits_" in sip_h
     assert 'remember_udp_transaction_(method, msg, ip, port)' in sip_cpp
-    assert "clear_invite_transaction_();" in sip_cpp
-    assert "clear_bye_transaction_();" in sip_cpp
+    assert "clear_invite_transaction_();" in dialog_response_method("handle_response_")
+    assert "clear_bye_transaction_();" in dialog_response_method("finish_control_response_")
     assert "SIP UDP %s retransmit" in sip_cpp
     assert "SIP_TRANSACTION_TIMEOUT_MS = 64 * SIP_T1_MS" in sip_cpp
     assert "txn->deadline_ms = now + SIP_TRANSACTION_TIMEOUT_MS" in sip_cpp
@@ -2016,10 +2019,7 @@ def test_sip_udp_transactions_are_minimal_and_explicit() -> None:
     assert "if (sent || udp_transaction)" in request
     assert "this->remember_udp_transaction_(method, msg, ip, port);" in request
     assert "return sent || udp_transaction;" in request
-    response = sip_cpp[
-        sip_cpp.index("bool SipTransport::handle_response_") :
-        sip_cpp.index("\nvoid SipTransport::handle_sip_datagram_")
-    ]
+    response = dialog_response_method("handle_response_")
     assert "if (status < 200 && !this->pending_invite_.empty())" in response
     assert "this->pending_invite_.completed = true;" in response
     assert "this->pending_invite_.next_ms = this->pending_invite_.deadline_ms;" in response
@@ -2043,7 +2043,7 @@ def test_uas_bye_waits_for_final_response_ack() -> None:
     )
     assert "this->pending_update_.clear();" in bye
 
-    datagram = cpp_method(sip_cpp, r"SipTransport::handle_sip_datagram_unlocked_")
+    datagram = dialog_request_method("handle_dialog_ack_")
     assert datagram.index("if (terminate_after_ack)") < datagram.index(
         "this->open_media_session_();"
     )
@@ -2059,14 +2059,12 @@ def test_completed_sip_server_transactions_are_bounded_and_replayed() -> None:
     assert "std::vector<CompletedServerTransaction>" not in sip_h
     assert "replay_completed_response_" in sip_h
     assert "remember_completed_response_" in sip_h
-    datagram = sip_cpp[
-        sip_cpp.index("void SipTransport::handle_sip_datagram_") :
-        sip_cpp.index("\nbool SipTransport::reject_if_stale_dialog_")
-    ]
-    replay = datagram.index("this->replay_completed_response_")
-    stale_bye = datagram.index('this->reject_if_stale_dialog_(msg, src, "BYE")')
-    assert replay < stale_bye
-    assert 'this->send_stateless_response_(msg, src, 200, "OK", "", true);' in datagram
+    dispatch = dialog_request_method("dispatch_dialog_message_")
+    assert dispatch.index("this->replay_completed_response_") < dispatch.index("this->handle_dialog_bye_")
+    bye = dialog_request_method("handle_dialog_bye_")
+    assert bye.index('this->reject_if_stale_dialog_(msg, src, "BYE")') < bye.index(
+        'this->send_stateless_response_(msg, src, 200, "OK", "", true);'
+    )
     invite = cpp_method(sip_cpp, r"SipTransport::handle_invite_")
     assert 'this->replay_completed_response_(message, src, "INVITE",' in invite
     assert "this->dispatch_is_udp_()" in invite
@@ -2087,10 +2085,7 @@ def test_retransmitted_invite_final_replays_the_cached_ack() -> None:
         sip_cpp.index("\nbool SipTransport::send_invite_error_ack_")
     ]
     assert request.index("remember_completed_invite_ack_") < request.index("const bool sent")
-    response = sip_cpp[
-        sip_cpp.index("bool SipTransport::handle_response_") :
-        sip_cpp.index("\nvoid SipTransport::handle_sip_datagram_")
-    ]
+    response = dialog_response_method("handle_response_")
     assert response.index("replay_completed_invite_ack_") < response.index("response_call_id.empty()")
 
 
@@ -2118,8 +2113,8 @@ def test_sip_header_parsing_stops_before_sdp_and_validates_datagram_framing() ->
         sip_cpp.index("void SipTransport::handle_sip_datagram_") :
         sip_cpp.index("\nbool SipTransport::reject_if_stale_dialog_")
     ]
-    assert "const bool invalid_framing = !sip_content_length" in datagram
-    assert "declared_body_len != msg.size() - body_separator - 4" in datagram
+    assert "sip_record_content_length(msg, MAX_SIP_TCP_RX_BUFFER).matches_body(msg)" in datagram
+    assert "bytes == message.size() - separator - 4" in read("sip_record.h")
     assert 'this->send_stateless_response_(msg, src, 400, "Bad Request")' in datagram
 
 
@@ -2194,7 +2189,7 @@ def test_sip_tcp_rx_is_bounded_and_active_dialog_accept_is_guarded() -> None:
     assert "drop_tcp_stream(\"SIP TCP Content-Length exceeds limit\")" in stream
     assert "SIP TCP invalid or ambiguous Content-Length" in stream
     assert stream.count("this->handle_tcp_peer_loss_(flow);") >= 3
-    assert 'sip_record_fields(msg, "Content-Length"' in sip_cpp
+    assert 'sip_record_fields(message, "Content-Length"' in read("sip_record.h")
     assert 'case \'l\': return "Content-Length";' in read("sip_header_name.h")
 
     send = sip_cpp[
@@ -2492,7 +2487,7 @@ def test_non_2xx_invite_final_response_sends_ack() -> None:
     assert 'header_value(original, "From")' in control
     assert 'header_value(ack_request ? response : original, "To")' in control
     assert 'transaction.ip_v4, transaction.port' in control
-    assert 'this->send_invite_error_ack_(message, this->pending_invite_' in sip_cpp
+    assert 'this->send_invite_error_ack_(message, this->pending_invite_' in dialog_response_method("handle_response_")
 
 
 def test_tcp_connect_queue_never_overwrites_the_pending_invite() -> None:
@@ -2512,10 +2507,10 @@ def test_tcp_connect_queue_never_overwrites_the_pending_invite() -> None:
 
 
 def test_all_meaningful_invite_progress_responses_stop_local_calling_state() -> None:
-    sip_cpp = read("sip_transport.cpp")
+    response = dialog_response_method("handle_response_")
 
-    assert 'if (status > 100 && status < 200 && method == "INVITE")' in sip_cpp
-    assert "signal.status_code = static_cast<uint16_t>(status);" in sip_cpp
+    assert 'if (status > 100 && status < 200 && method == "INVITE")' in response
+    assert "emit_dialog_status_(SipSignalType::STATUS_180_RINGING, status" in response
 
 
 def test_reinvite_and_rtp_latch_are_explicit() -> None:
@@ -2547,10 +2542,7 @@ def test_reinvite_and_rtp_latch_are_explicit() -> None:
 def test_simultaneous_invites_preserve_local_transaction_and_reject_glare() -> None:
     sip_cpp = read("sip_transport.cpp")
     fsm = read("voip_fsm.cpp")
-    inbound = sip_cpp[
-        sip_cpp.index("bool SipTransport::handle_invite_") :
-        sip_cpp.index("\nbool SipTransport::handle_response_")
-    ]
+    inbound = cpp_method(sip_cpp, r"SipTransport::handle_invite_")
 
     assert "const bool glare = this->outgoing_invite_pending_" in inbound
     assert "active_peer_ip == src_ip" in inbound
@@ -2588,10 +2580,7 @@ def test_in_progress_invite_retransmission_replays_without_refiring_fsm() -> Non
         sip_cpp.index("\nbool SipTransport::send_stateless_response_")
     ]
     assert "this->last_invite_response_ = msg;" in response
-    inbound = sip_cpp[
-        sip_cpp.index("bool SipTransport::handle_invite_") :
-        sip_cpp.index("\nbool SipTransport::handle_response_")
-    ]
+    inbound = cpp_method(sip_cpp, r"SipTransport::handle_invite_")
     replay = inbound.index("if (!this->last_invite_response_.empty())")
     emit = inbound.index("this->emit_sip_signal_(std::move(signal))")
     assert replay < emit
@@ -2687,20 +2676,21 @@ def test_call_identity_formats_survive_teardown_and_invalid_route_is_terminal() 
 def test_sip_response_validation_precedes_retarget_and_bad_sdp_closes_dialog() -> None:
     sip_h = read("sip_transport.h")
     sip_cpp = read("sip_transport.cpp")
-    response = cpp_method(sip_cpp, r"SipTransport::handle_response_")
+    response = dialog_response_method("handle_response_")
+    confirmed = dialog_response_method("accept_invite_response_")
 
     call_id_check = response.index("response_call_id != this->call_id_")
-    cseq_check = response.index("response_cseq_number != this->invite_cseq_")
+    cseq_check = response.index("match_sip_response(")
     retarget = response.index("this->remote_ip_v4_.store(src_ip")
     assert call_id_check < cseq_check < retarget
-    incompatible = response[
-        response.index("if (!media_ok || !video_prepared)")
-        : response.index("this->open_media_session_()")
+    incompatible = confirmed[
+        confirmed.index("if (!media_ok || !video_prepared)")
+        : confirmed.index("this->open_media_session_()")
     ]
-    assert 'this->send_request_("ACK", "", options);' in response
+    assert 'this->send_request_("ACK", "", options);' in confirmed
     assert "this->send_bye_unlocked_(this->call_id_)" in incompatible
-    assert "signal.type = SipSignalType::MEDIA_INCOMPATIBLE;" in incompatible
-    assert "signal.terminal_transaction_pending = bye_pending;" in incompatible
+    assert "emit_dialog_status_(SipSignalType::MEDIA_INCOMPATIBLE, 488" in incompatible
+    assert '"media_incompatible", bye_pending)' in incompatible
     assert "this->reset_dialog_();" in incompatible
     assert "std::atomic<uint32_t> remote_rtp_ip_v4_{0};" in sip_h
     learn = cpp_method(sip_cpp, r"SipTransport::learn_remote_rtp_from_sdp_")
@@ -2882,10 +2872,10 @@ def test_cancel_transactions_are_serialized_and_handle_crossed_200() -> None:
     assert "this->clear_invite_transaction_();" not in wire_cancel
     assert 'send_invite_transaction_request_("CANCEL", "", this->pending_invite_' in wire_cancel
     assert "this->pending_invite_.completed = true;" in wire_cancel
-    response = sip_cpp[sip_cpp.index("bool SipTransport::handle_response_(") : sip_cpp.index("\nvoid SipTransport::handle_sip_datagram_")]
+    response = dialog_response_method("accept_invite_response_")
     assert "CANCEL crossed the final 2xx" in response
     assert "this->send_bye_unlocked_(this->call_id_)" in response
-    datagram = sip_cpp[sip_cpp.index("void SipTransport::handle_sip_datagram_") : sip_cpp.index("\nbool SipTransport::reject_if_stale_dialog_")]
+    datagram = dialog_request_method("handle_dialog_cancel_")
     assert "incoming_cseq_number != this->last_invite_cseq_number_" in datagram
     assert "incoming_branch == invite_branch" in datagram
     assert "!same_transaction_via" in datagram
@@ -2974,10 +2964,7 @@ def test_udp_invite_server_final_retransmits_until_matching_ack() -> None:
     assert "branch == this->completed_invite_.branch" in acknowledge
     assert "this->completed_invite_.awaiting_ack = false;" in acknowledge
 
-    datagram = sip_cpp[
-        sip_cpp.index("void SipTransport::handle_sip_datagram_") :
-        sip_cpp.index("\nbool SipTransport::reject_if_stale_dialog_")
-    ]
+    datagram = dialog_request_method("handle_dialog_ack_")
     assert "acknowledge_completed_invite_(msg, src," in datagram
     assert "if (terminate_after_ack)" in datagram
     assert "this->send_bye_unlocked_(call_id)" in datagram
@@ -2985,11 +2972,7 @@ def test_udp_invite_server_final_retransmits_until_matching_ack() -> None:
         datagram.index("if (completed_status >= 300)") :
         datagram.index("const uint32_t expected_ip")
     ]
-    assert "SipSignalType::TERMINAL_COMPLETE" in non_2xx_ack
-    assert "signal.status_code = completed_status;" in non_2xx_ack
-    assert "signal.call_id = request_call_id;" in non_2xx_ack
-    assert "this->emit_sip_signal_(std::move(signal));" in non_2xx_ack
-
+    assert "emit_dialog_status_(SipSignalType::TERMINAL_COMPLETE, completed_status, std::move(request_call_id))" in non_2xx_ack
     assert "return;" in non_2xx_ack
     assert "completed_status >= 200 && completed_status < 300" in datagram
 
@@ -3209,19 +3192,17 @@ def test_terminal_sip_transaction_remains_owned_until_peer_completion() -> None:
     assert 'same_dialog ? 500 : 503' in gate
     assert '"transaction_pending", false, 1' in gate
 
-    datagram = cpp_method(sip_cpp, r"SipTransport::handle_sip_datagram_unlocked_")
-    bye = datagram[datagram.index('} else if (method == "BYE")') :]
+    bye = dialog_request_method("handle_dialog_bye_")
     assert "const bool local_bye_pending = !this->pending_bye_.empty();" in bye
     assert "!local_bye_pending" in bye
-    assert "signal.terminal_transaction_pending = local_bye_pending;" in bye
+    assert "emit_dialog_status_(SipSignalType::BYE, 0, this->call_id_, {}, local_bye_pending)" in bye
     assert "if (!local_bye_pending) this->reset_dialog_();" in bye
 
-    response = cpp_method(sip_cpp, r"SipTransport::handle_response_")
-    success = response.index("if (status >= 200 && status < 300)")
-    completed_bye = response[success : response.index('if (method == "CANCEL")', success)]
+    control = dialog_response_method("finish_control_response_")
+    completed_bye = control[control.index("case SipClientMethod::BYE:"):control.index("case SipClientMethod::CANCEL:")]
     assert "SipSignalType::TERMINAL_COMPLETE" in completed_bye
     assert completed_bye.index("clear_bye_transaction_()") < completed_bye.index(
-        "emit_sip_signal_"
+        "emit_dialog_status_"
     )
 
     retransmit = cpp_method(sip_cpp, r"SipTransport::pump_udp_retransmits_unlocked_")
@@ -3272,11 +3253,11 @@ def test_dialog_remote_target_and_in_dialog_requests_are_kept_separate() -> None
     request = sip_cpp[sip_cpp.index("bool SipTransport::send_request_(") : sip_cpp.index("\nbool SipTransport::send_invite_error_ack_")]
     assert "this->remote_target_uri_" in request
     assert 'msg += "To: " + this->remote_uri_;' in request
-    inbound = sip_cpp[sip_cpp.index("bool SipTransport::handle_invite_(") : sip_cpp.index("\nbool SipTransport::handle_response_")]
+    inbound = cpp_method(sip_cpp, r"SipTransport::handle_invite_")
     assert 'strip_angle_uri(header_value(message, "Contact"))' in inbound
     assert "sip_name_addr(remote_identity_uri," in inbound
     assert "incoming_caller_name" in inbound
-    response = sip_cpp[sip_cpp.index("bool SipTransport::handle_response_(") : sip_cpp.index("\nvoid SipTransport::handle_sip_datagram_")]
+    response = dialog_response_method("accept_invite_response_")
     assert 'const std::string contact_target = strip_angle_uri(header_value(message, "Contact"));' in response
     assert "this->remote_target_uri_ = contact_target;" in response
 
@@ -3347,11 +3328,8 @@ def test_connected_identity_uses_rfc4916_without_retargeting_contact() -> None:
     )
     assert "SipSignalType::CONNECTED_IDENTITY" in accept_update
 
-    datagram = cpp_method(sip_cpp, r"SipTransport::handle_sip_datagram_unlocked_")
-    initial_ack = datagram[
-        datagram.index('if (method == "ACK")') :
-        datagram.index('} else if (method == "BYE")')
-    ]
+    datagram = dialog_request_method("dispatch_dialog_message_")
+    initial_ack = dialog_request_method("handle_dialog_ack_")
     assert (
         initial_ack.index("this->open_media_session_();")
         < initial_ack.index("this->send_connected_identity_update_();")
@@ -3367,32 +3345,22 @@ def test_connected_identity_uses_rfc4916_without_retargeting_contact() -> None:
 
 
 def test_ack_bye_and_cancel_validate_their_dialog_or_transaction() -> None:
-    sip_cpp = read("sip_transport.cpp")
+    matching = read("sip_dialog_message.h")
+    assert "key.method == SipClientMethod::OTHER" in matching
+    assert "!expected.has_transaction || key.sequence != expected.sequence || key.branch != expected.branch" in matching
+    assert "key.from_tag != expected.local_tag" in matching
+    assert "key.to_tag != expected.remote_tag" in matching
+    ack = dialog_request_method("handle_dialog_ack_")
+    assert "request_cseq == this->last_invite_cseq_number_" in ack
+    assert 'cseq_method(header_value(msg, "CSeq")) == "ACK"' in ack
+    assert 'tag_from_header(header_value(msg, "From")) == this->remote_tag_' in ack
+    assert 'tag_from_header(header_value(msg, "To")) == this->local_tag_' in ack
+    assert "completed_status >= 200 && completed_status < 300" in ack
+    assert "incoming_from_tag != this->remote_tag_" in dialog_request_method("handle_dialog_cancel_")
+    control = dialog_response_method("finish_control_response_")
+    cancelled = control[control.index("case SipClientMethod::CANCEL:"):control.index("case SipClientMethod::UPDATE:")]
+    assert "this->reset_dialog_();" not in cancelled
 
-    response = sip_cpp[sip_cpp.index("bool SipTransport::handle_response_(") : sip_cpp.index("\nvoid SipTransport::handle_sip_datagram_")]
-    assert 'method != "INVITE" && method != "CANCEL" && method != "BYE"' in response
-    assert 'method != "UPDATE"' in response
-    assert "this->pending_bye_.empty()" in response
-    assert "mismatched BYE transaction" in response
-    datagram = sip_cpp[sip_cpp.index("void SipTransport::handle_sip_datagram_") : sip_cpp.index("\nbool SipTransport::reject_if_stale_dialog_")]
-    assert "request_cseq == this->last_invite_cseq_number_" in datagram
-    assert 'cseq_method(header_value(msg, "CSeq")) == "ACK"' in datagram
-    assert 'tag_from_header(header_value(msg, "From")) == this->remote_tag_' in datagram
-    assert 'tag_from_header(header_value(msg, "To")) == this->local_tag_' in datagram
-    assert "incoming_from_tag != this->remote_tag_" in datagram
-    assert "completed_status >= 200 && completed_status < 300" in datagram
-
-    response = sip_cpp[
-        sip_cpp.index("bool SipTransport::handle_response_(") :
-        sip_cpp.index("\nvoid SipTransport::handle_sip_datagram_")
-    ]
-    assert "response_from_tag != this->local_tag_" in response
-    assert "response_to_tag != this->remote_tag_" in response
-    cancel_failure = response[
-        response.index('} else if (method == "CANCEL")', response.index("if (status >= 300)")) :
-        response.index("\n      }", response.index('} else if (method == "CANCEL")', response.index("if (status >= 300)")))
-    ]
-    assert "this->reset_dialog_();" not in cancel_failure
 
 
 def test_trying_response_does_not_create_an_early_dialog_tag() -> None:

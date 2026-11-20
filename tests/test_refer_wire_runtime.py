@@ -15,7 +15,8 @@ def wire_source(*, full_invite=False):
     source = (SOURCE / 'sip_transport.cpp').read_text()
     requests = (SOURCE / 'sip_request_response.cpp').read_text()
     parser = (SOURCE / 'sip_message.cpp').read_text()
-    code = refer_fixture_source()
+    response_owner = (SOURCE / 'sip_dialog_response.cpp').read_text()
+    code = '#include "esphome/components/voip_stack/sip_dialog_message.h"\n' + refer_fixture_source()
     code = code.replace('#include <algorithm>', '#include <algorithm>\n#include <cstring>\n#include <cerrno>\n#include <unistd.h>\n#include <fcntl.h>\n#include <sys/socket.h>\n#include <netinet/tcp.h>\n#include <poll.h>\n#include <cstdio>')
     code = code.replace('using SipSignalingString=std::string;', 'struct SipSignalingString:std::string {using std::string::string;using std::string::operator=;std::string str()const{return *this;}};')
     code = code.replace('return std::string(prefix)+"new";', 'static unsigned n=0;return std::string(prefix)+std::to_string(++n);')
@@ -58,7 +59,7 @@ template<class T>void reset_string(T&s){s.clear();}
         declaration = declarations.get(name, implementation[:implementation.index('{')].replace('SipTransport::','').strip()+';')
         code = code.replace(old, declaration, 1) + '\n' + implementation
     more = [
-        'bool SipTransport::handle_response_(', 'void SipTransport::handle_sip_datagram_(',
+        'void SipTransport::handle_sip_datagram_(',
         'void SipTransport::handle_sip_datagram_unlocked_(', 'void SipTransport::handle_options_(', 'bool SipTransport::replay_completed_response_(',
         'void SipTransport::remember_completed_response_(', 'bool SipTransport::replay_completed_invite_ack_(',
         'uint16_t SipTransport::acknowledge_completed_invite_(', 'void SipTransport::reset_dialog_media_locked_(',
@@ -90,6 +91,17 @@ template<class T>void reset_string(T&s){s.clear();}
         decl = body[:body.index('{')].replace('SipTransport::','').strip()+';'
         declarations_extra += '#ifdef USE_ESPHOME_VOIP_REGISTRATION\n'+decl+'\n#endif\n'
         code += '\n#ifdef USE_ESPHOME_VOIP_REGISTRATION\n'+body+'\n#endif\n'
+    request_owner = (SOURCE / 'sip_dialog_request.cpp').read_text()
+    for name in ('dispatch_dialog_message_', 'handle_dialog_ack_', 'handle_dialog_bye_', 'handle_dialog_cancel_'):
+        body = block(request_owner, f'void SipTransport::{name}(')
+        declarations_extra += body[:body.index('{')].replace('SipTransport::', '').strip() + ';\n'
+        code += '\n' + body
+    for type_name, name in (('bool', 'handle_response_'), ('bool', 'accept_invite_response_'),
+                            ('void', 'finish_control_response_'), ('void', 'emit_dialog_status_'),
+                            ('void', 'emit_negotiated_media_')):
+        decl = header.index(f"  {type_name} {name}(")
+        declarations_extra += header[decl:header.index(';', decl) + 1] + '\n'
+        code += '\n' + block(response_owner, f"{type_name} SipTransport::{name}(")
     for marker in ['bool SipTransport::send_invite_error_ack_(', 'bool SipTransport::send_invite_transaction_request_(', 'std::string SipTransport::format_response_(']:
         body = block(requests, marker)
         declarations_extra += body[:body.index('{')].replace('SipTransport::','').strip()+';\n'

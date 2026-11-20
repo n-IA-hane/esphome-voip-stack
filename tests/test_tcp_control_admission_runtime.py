@@ -66,6 +66,8 @@ int main(int argc,char **argv){
   }else{
    assert(scenario=="busy-invite");
    auto invite=request(incoming,"INVITE",1,"","unowned","","caller");
+   // The registrar delivers this request to the Contact advertised by the office account.
+   invite.replace(invite.find("sip:esp@127.0.0.1"), strlen("sip:esp@127.0.0.1"), "sip:esphome-office@127.0.0.1");
    invite.replace(invite.find("To: <sip:esp@127.0.0.1>;tag=\r\n"),strlen("To: <sip:esp@127.0.0.1>;tag=\r\n"),"To: <sip:esp@127.0.0.1>\r\n");
    incoming.send_to(s,invite);expect_status(incoming,486);
   }

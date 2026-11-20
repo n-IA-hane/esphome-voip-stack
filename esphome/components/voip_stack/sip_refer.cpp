@@ -26,7 +26,7 @@ SipTransport::ReferScope::~ReferScope() {
   transport_.media_proposal_epoch_.fetch_add(1);
 }
 
-void SipTransport::emit_sip_signal_(SipSignal signal) {
+void SipTransport::emit_sip_signal_(SipSignal &&signal) {
   if (this->refer_context_active_) {
     this->refer_signal_type_ = signal.type;
     this->refer_status_ = signal.status_code;

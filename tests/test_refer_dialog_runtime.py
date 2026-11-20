@@ -180,7 +180,7 @@ struct SipTransport: SipPhoneTransport {
  void open_media_session_(){if(!refer_context_active_)media_active_=true;}
  void close_media_session_(){if(!refer_context_active_)media_active_=false;}
  void reset_dialog_(){call_id_.clear();outgoing_invite_pending_=false;if(!refer_context_active_)media_active_=false;}
- void emit_sip_signal_(SipSignal);
+ void emit_sip_signal_(SipSignal &&);
  bool prepare_refer_media_(ReferDialog&);
  void release_refer_dialog_(){refer_dialog_.reset();}
  void pump_refer_();void swap_dialog_(ReferDialog&);void swap_negotiation_(ReferDialog&);
@@ -245,7 +245,7 @@ int main(){
   {SipTransport::ReferScope scope(s);
    assert(s.remote_sip_tcp_==target_tcp);s.tcp_flow_.socket=target_tcp?42:-1;
    s.tcp_flow_.connect_requested=false;s.outgoing_invite_pending_=false;
-   SipSignal r;r.type=accepted?SipSignalType::STATUS_200_OK:SipSignalType::FINAL_RESPONSE;r.status_code=accepted?200:486;s.emit_sip_signal_(r);
+   SipSignal r;r.type=accepted?SipSignalType::STATUS_200_OK:SipSignalType::FINAL_RESPONSE;r.status_code=accepted?200:486;s.emit_sip_signal_(std::move(r));
   }
   s.pump_refer_();
   assert(s.remote_sip_tcp_==(accepted?target_tcp:original_tcp));
@@ -260,7 +260,7 @@ int main(){
   assert(s.end_refer_invite_usage_(true));assert(!s.media_active_&&s.call_id_=="original"&&s.delivered.empty());
   {SipTransport::ReferScope scope(s);s.outgoing_invite_pending_=false;
    if(!accepted)s.call_id_.clear();
-   SipSignal r;r.type=accepted?SipSignalType::STATUS_200_OK:SipSignalType::FINAL_RESPONSE;r.status_code=accepted?200:486;s.emit_sip_signal_(r);
+   SipSignal r;r.type=accepted?SipSignalType::STATUS_200_OK:SipSignalType::FINAL_RESPONSE;r.status_code=accepted?200:486;s.emit_sip_signal_(std::move(r));
   }
   s.pump_refer_();assert(s.cancel_count==0&&s.bye_count==0);
   if(accepted){assert(s.call_id_=="refer-new"&&s.media_active_&&s.delivered.back().type==SipSignalType::CONNECTED_IDENTITY);}
@@ -276,7 +276,7 @@ int main(){
    assert(s.handle_refer_(retry,peer));s.refer_dialog_->accepted_refer.call_id="original";
    s.refer_dialog_->accepted_refer.udp=false;
    {SipTransport::ReferScope scope(s);s.call_id_.clear();s.outgoing_invite_pending_=false;
-    SipSignal r;r.type=SipSignalType::FINAL_RESPONSE;r.status_code=486;s.emit_sip_signal_(r);}
+    SipSignal r;r.type=SipSignalType::FINAL_RESPONSE;r.status_code=486;s.emit_sip_signal_(std::move(r));}
    s.pump_refer_();assert(!s.refer_dialog_);assert(s.call_id_=="original");
   }
  }
@@ -291,7 +291,7 @@ int main(){
   {SipTransport::ReferScope scope(s);assert(s.call_id_=="refer-new");
    s.outgoing_invite_pending_=false;s.remote_rtp_port_=42000;
    SipSignal result;result.type=success?SipSignalType::STATUS_200_OK:SipSignalType::FINAL_RESPONSE;
-   result.status_code=success?200:486;s.emit_sip_signal_(result);}
+   result.status_code=success?200:486;s.emit_sip_signal_(std::move(result));}
   assert(s.call_id_=="original" && s.remote_rtp_port_==40000 && s.delivered.empty());
   s.pump_refer_();assert(s.media_active_ && s.media_proposal_epoch_%2==0);
   if(success){assert(s.call_id_=="refer-new" && s.logical_call_id_=="original");
@@ -304,7 +304,7 @@ int main(){
  {SipTransport s;setup(s);assert(!s.handle_refer_(request("sip:room@192.0.2.20","wrong"),peer));assert(s.response==481 && !s.refer_dialog_);}
  {SipTransport s;setup(s);assert(s.handle_refer_(request(),peer));
   {SipTransport::ReferScope scope(s);s.call_id_.clear();s.outgoing_invite_pending_=false;
-   SipSignal r;r.type=SipSignalType::FINAL_RESPONSE;r.status_code=486;s.emit_sip_signal_(r);}
+   SipSignal r;r.type=SipSignalType::FINAL_RESPONSE;r.status_code=486;s.emit_sip_signal_(std::move(r));}
   s.pump_refer_();assert(!s.refer_dialog_ && s.completed_refers_[0]);
   auto retry=request();retry.replace(retry.find("CSeq: 2"),7,"CSeq: 3");
   assert(s.handle_refer_(retry,peer));assert(s.call_id_=="original");}
@@ -312,7 +312,7 @@ int main(){
   assert(s.call_id_=="original" && s.wire.back().body=="SIP/2.0 503 Service Unavailable\r\n");}
  {SipTransport s;setup(s);assert(s.handle_refer_(request(),peer));
   {SipTransport::ReferScope scope(s);s.outgoing_invite_pending_=false;SipSignal result;
-   result.type=SipSignalType::STATUS_200_OK;result.status_code=200;s.emit_sip_signal_(result);}
+   result.type=SipSignalType::STATUS_200_OK;result.status_code=200;s.emit_sip_signal_(std::move(result));}
   s.call_id_="unrelated-next-call";s.pump_refer_();assert(s.call_id_=="unrelated-next-call");
   assert(s.bye_count==1 && s.delivered.empty());}
  {SipTransport s;setup(s);assert(s.handle_refer_(request(),peer));s.call_id_.clear();s.pump_refer_();

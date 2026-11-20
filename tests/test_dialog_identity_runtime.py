@@ -63,3 +63,38 @@ int main(int argc,char**argv){
 def test_foreign_invite_tags_preserve_dialog_and_legitimate_bye(dialog_identity_binary, transport):
     proc = subprocess.run([str(dialog_identity_binary), transport], capture_output=True, text=True, timeout=5)
     assert proc.returncode == 0, proc.stderr
+
+
+@pytest.fixture(scope="module")
+def native_dialog_owner(tmp_path_factory):
+    """Link whole production translation units to the real POSIX UDP socket."""
+    folder = tmp_path_factory.mktemp("native-dialog-owner")
+    component = ROOT / "esphome/components/voip_stack"
+    fixtures = ROOT / "tests/fixtures"
+    for header_name in (
+        "esphome/core/defines.h", "esphome/core/helpers.h", "esphome/core/log.h",
+        "esphome/core/hal.h", "esphome/components/network/util.h", "esp_system.h",
+        "esp_heap_caps.h", "lwip/sockets.h", "freertos/FreeRTOS.h",
+        "freertos/task.h", "freertos/portmacro.h", "freertos/semphr.h",
+    ):
+        header = folder / header_name
+        header.parent.mkdir(parents=True, exist_ok=True)
+        header.write_text('#include "sip_dialog_host_sdk.h"\n')
+    units = [component / name for name in ("sip_transport.cpp", "sip_message.cpp", "sip_request_response.cpp",
+                                           "sip_sdp.cpp", "sip_refer.cpp")]
+    units.extend(sorted(component.glob("sip_dialog_*.cpp")))
+    binary = folder / "dialog"
+    subprocess.run(
+        ["g++", "-std=c++17", "-O1", "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
+         "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-no-pie", "-DUSE_ESP32",
+         "-DUSE_ESPHOME_VOIP_SIP_TRANSPORT", "-DUSE_ESPHOME_VOIP_STACK_PCM",
+         "-I", str(folder), "-I", str(fixtures), "-I", str(ROOT), "-I", str(component),
+         str(fixtures / "sip_dialog_owner.cpp"), *map(str, units), "-o", str(binary)],
+        check=True,
+    )
+    return binary
+
+
+@pytest.mark.parametrize("mode", ["decline", "success", "crossed", "incompatible", "incoming"])
+def test_native_dialog_owner_ack_terminal_and_reuse(native_dialog_owner, mode):
+    subprocess.run([native_dialog_owner, mode], check=True, timeout=5)

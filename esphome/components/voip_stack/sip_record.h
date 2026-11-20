@@ -112,4 +112,48 @@ inline std::string sip_record_unfold(std::string_view field) {
   return result;
 }
 
+struct SipContentLength {
+  size_t bytes{0};
+  bool present{false}, valid{true};
+
+  bool matches_body(std::string_view message) const {
+    if (!valid) return false;
+    if (!present) return true;
+    const auto separator = message.find("\r\n\r\n");
+    return separator != message.npos && bytes == message.size() - separator - 4;
+  }
+};
+
+inline SipContentLength sip_record_content_length(std::string_view message, size_t limit) {
+  SipContentLength result;
+  sip_record_fields(message, "Content-Length", [&](std::string_view field) {
+    if (result.present) {
+      result.valid = false;
+      return false;
+    }
+    result.present = true;
+    const auto value = sip_record_unfold(field);
+    if (value.empty()) {
+      result.valid = false;
+      return false;
+    }
+    size_t length = 0;
+    for (const char ch : value) {
+      if (ch < '0' || ch > '9') {
+        result.valid = false;
+        return false;
+      }
+      const size_t digit = static_cast<size_t>(ch - '0');
+      if (digit > limit || length > (limit - digit) / 10) {
+        result.valid = false;
+        return false;
+      }
+      length = length * 10 + digit;
+    }
+    result.bytes = length;
+    return true;
+  });
+  return result;
+}
+
 }  // namespace esphome::voip_stack

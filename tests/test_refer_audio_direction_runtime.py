@@ -118,7 +118,7 @@ int main(int argc,char**argv){
     s.set_media_config_(pcm,pcm,96,96,&payloads);s.remote_rtp_ip_v4_=INADDR_LOOPBACK;s.remote_rtp_port_=remote_port;
    }
    SipSignal result;result.type=outcome=="completed"?SipSignalType::STATUS_200_OK:SipSignalType::FINAL_RESPONSE;
-   result.status_code=outcome=="completed"?200:486;s.emit_sip_signal_(result);}
+   result.status_code=outcome=="completed"?200:486;s.emit_sip_signal_(std::move(result));}
   s.pump_refer_();
   const bool complete=outcome=="completed";
   assert(s.audio_send_enabled_==(complete||send)&&s.audio_receive_enabled_==(complete||receive));

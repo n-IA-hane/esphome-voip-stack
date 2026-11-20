@@ -51,12 +51,16 @@
 #include <vector>
 #include <utility>
 #ifdef USE_VOIP_HA_AUTO_REGISTER
+#include "esphome/core/hal.h"
 #include <esp_heap_caps.h>
 #include <new>
 #endif
 
 namespace esphome {
 namespace voip_stack {
+
+struct SipStartLine;
+enum class SipClientMethod;
 
 class SipTransport : public SipPhoneTransport {
  public:
@@ -328,6 +332,10 @@ class SipTransport : public SipPhoneTransport {
                              const std::string &caller_name, const std::string &dest_route,
                              const std::string &dest_name);
   void handle_sip_datagram_unlocked_(const char *data, size_t len, const sockaddr_in &src);
+  void dispatch_dialog_message_(const std::string &message, const SipStartLine &start, const sockaddr_in &src);
+  void handle_dialog_ack_(const std::string &message, const sockaddr_in &src);
+  void handle_dialog_bye_(const std::string &message, const sockaddr_in &src);
+  void handle_dialog_cancel_(const std::string &message, const sockaddr_in &src);
   void pump_udp_retransmits_unlocked_();
   void swap_negotiation_(ReferDialog &other);
   bool prepare_refer_media_(ReferDialog &other);
@@ -338,7 +346,7 @@ class SipTransport : public SipPhoneTransport {
   bool end_refer_invite_usage_(bool reporter_available);
   void cancel_refer_();
   void finish_failed_refer_(uint16_t status, const char *reason);
-  void emit_sip_signal_(SipSignal signal);
+  void emit_sip_signal_(SipSignal &&signal);
 
   void handle_sip_datagram_(const char *data, size_t len, const sockaddr_in &src);
   void handle_sip_stream_(int socket, const sockaddr_in &src);
@@ -347,6 +355,11 @@ class SipTransport : public SipPhoneTransport {
   bool handle_reinvite_(const std::string &message, const sockaddr_in &src);
   bool handle_update_(const std::string &message, const sockaddr_in &src);
   bool handle_response_(const std::string &message, const sockaddr_in &src);
+  bool accept_invite_response_(const std::string &message, uint32_t src_ip, uint16_t status);
+  void finish_control_response_(SipClientMethod method, uint16_t status);
+  void emit_dialog_status_(SipSignalType type, uint16_t status, std::string call_id,
+                           std::string reason = {}, bool terminal_pending = false);
+  void emit_negotiated_media_(SipSignalType type, uint16_t status);
   bool send_connected_identity_update_();
   std::string build_sdp_capabilities_(uint32_t peer_ip) const;
   std::string build_sdp_offer_();
