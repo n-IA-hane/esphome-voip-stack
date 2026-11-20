@@ -554,6 +554,19 @@ int main(int argc, char** argv) {
       assert(h.manager.account(0).state == RegistrationState::RETRY);
       assert(h.manager.is_registered("office") && h.manager.is_registered("home"));
     }
+    // Two lines with distinct usernames on one peer: the target must name its line.
+    const int any_flow = -1;
+    assert(h.manager.match_incoming("esphome-home", INADDR_LOOPBACK, tcp, any_flow) == 1);
+    assert(h.manager.match_incoming("101", INADDR_LOOPBACK, tcp, any_flow) == 1);
+    assert(h.manager.match_incoming("100", INADDR_LOOPBACK, tcp, any_flow) == 0);
+    assert(h.manager.match_incoming("Kitchen Panel", INADDR_LOOPBACK, tcp, any_flow) < 0);
+    assert(h.manager.match_incoming("101", 0x7f000002, tcp, any_flow) < 0);
+    // A disabled line keeps its names: its calls and answer policy do not move to the other line.
+    assert(h.manager.request_registration("home", false, 5));
+    assert(h.manager.match_incoming("esphome-home", INADDR_LOOPBACK, tcp, any_flow) < 0);
+    assert(h.manager.match_incoming("101", INADDR_LOOPBACK, tcp, any_flow) < 0);
+    assert(h.manager.match_incoming("100", INADDR_LOOPBACK, tcp, any_flow) == 0);
+    assert(h.manager.match_incoming("Kitchen Panel", INADDR_LOOPBACK, tcp, any_flow) == 0);
   } else if (scenario == "same-user") {
     auto other_config = h.config("home", 1); other_config.username = c.username;
     assert(h.manager.set_account(other_config, 0)); h.manager.tick(0); auto other = h.second.receive();
@@ -564,9 +577,10 @@ int main(int argc, char** argv) {
     // Two lines share the peer: only an owned TCP flow or the Contact user selects one.
     assert(h.manager.match_incoming(c.username, INADDR_LOOPBACK, tcp, tcp ? 0 : -1) == (tcp ? 0 : -1));
     assert(h.manager.match_incoming(c.username, INADDR_LOOPBACK, tcp, tcp ? 1 : -1) == (tcp ? 1 : -1));
-    // A named line that is not registered never falls through to its neighbour.
+    // A shared username names both lines, so disabling one leaves the other selectable.
     assert(h.manager.request_registration("home", false, 3));
     assert(h.manager.match_incoming("esphome-home", INADDR_LOOPBACK, tcp, -1) < 0);
+    assert(h.manager.match_incoming(c.username, INADDR_LOOPBACK, tcp, -1) == 0);
   } else if (scenario == "refresh-binding") {
     h.feed(h.first, h.success(initial, 60), 1);
     h.manager.tick(48001);

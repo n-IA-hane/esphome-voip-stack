@@ -832,23 +832,31 @@ void SipRegistration::resolution_complete(size_t i, uint32_t ip, uint32_t now, b
 int SipRegistration::match_incoming(const std::string& user, uint32_t ip, bool tcp, int flow_index) const {
   if (!this->initialized()) return -1;
   // The bound signaling peer identifies the line, so a PBX may address it by
-  // extension, name or Contact. With several lines on one peer the Contact user
-  // must name the line: its answer policy is never borrowed from another line.
+  // extension or text name. A target that names a line (its Contact user or its
+  // account username) selects only that line: a disabled or unbound line never
+  // lends its calls, or its answer policy, to a neighbour. Without a named line
+  // the call belongs to the peer's only usable line; several are ambiguous.
   // An account-owned TCP flow still belongs to its account.
-  int line = -1;
-  unsigned lines = 0;
+  int named = -1, any = -1;
+  unsigned named_usable = 0, any_usable = 0;
+  bool names_a_line = false;
   for (size_t i = 0; i < CAPACITY; ++i) {
     const auto& a = this->accounts_[i];
     if (!a.occupied) continue;
     const bool usable = a.desired && a.bound && a.binding_ip == ip &&
                         (!tcp || flow_index < 0 || flow_index == static_cast<int>(i));
-    if (("esphome-" + a.config.id) == user) return usable ? static_cast<int>(i) : -1;
-    if (usable) {
-      line = static_cast<int>(i);
-      ++lines;
+    const bool names = user == "esphome-" + a.config.id || user == a.config.username;
+    names_a_line = names_a_line || names;
+    if (!usable) continue;
+    any = static_cast<int>(i);
+    ++any_usable;
+    if (names) {
+      named = static_cast<int>(i);
+      ++named_usable;
     }
   }
-  return lines == 1 ? line : -1;
+  if (names_a_line) return named_usable == 1 ? named : -1;
+  return any_usable == 1 ? any : -1;
 }
 }  // namespace esphome::voip_stack
 #endif
