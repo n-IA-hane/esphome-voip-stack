@@ -136,5 +136,15 @@ int main(int argc, char **argv) {
   entry.attributes.pop_back();
   entry.attributes[1].values[0] = "Living room";
   assert(!map_contact(entry, "pbx.example.test", 5060, false, &contact));
+  Entry no_name{"uid=opaque,dc=voip", {{"uid", {"opaque-stable-key"}}, {"telephoneNumber", {"101"}}}};
+  assert(map_contact(no_name, "pbx.example.test", 5060, false, &contact));
+  assert(contact.id == "opaque-stable-key" && contact.name == "101");
+  no_name.attributes.push_back({"labeledURI", {"sip:front-desk@pbx.example.test"}});
+  assert(map_contact(no_name, "pbx.example.test", 5060, false, &contact));
+  assert(contact.name == "sip:front-desk@pbx.example.test");
+  no_name.attributes.push_back({"displayName", {std::string(63, 'a') + "è room"}});
+  assert(map_contact(no_name, "pbx.example.test", 5060, false, &contact) && contact.name == std::string(63, 'a'));
+  no_name.attributes.back().values[0] += '\n';
+  assert(!map_contact(no_name, "pbx.example.test", 5060, false, &contact));
   std::cout << "PASS bounded BER/filter/framing/atomic failure/mapping" << '\n';
 }

@@ -22,7 +22,6 @@ bool map_contact(const Entry &entry, const std::string &default_host, uint16_t d
     char key[24]; snprintf(key, sizeof(key), "ldap:%016llx", static_cast<unsigned long long>(hash));
     result.id = key;
   }
-  if (result.name.empty()) result.name = result.id;
   result.number = entry.first("telephoneNumber");
   // Optional display metadata must not invalidate an otherwise valid SIP URI.
   if (!result.number.empty() && !voip_stack::sip_valid_text(result.number, voip_stack::CONTACT_ID_BYTES)) result.number.clear();
@@ -55,6 +54,8 @@ bool map_contact(const Entry &entry, const std::string &default_host, uint16_t d
     result.port = parsed.port;
     if (parsed.has_transport) result.tcp = parsed.tcp;
   } else result.user = entry.first("telephoneNumber");
+  if (result.name.empty()) result.name = result.uri.empty() ? result.user : result.uri;
+  if (!voip_stack::sip_valid_text(result.name, result.name.size())) return false;
   if (result.name.size() > voip_stack::SIP_NAME_BYTES) {
     size_t end = voip_stack::SIP_NAME_BYTES;
     while (end != 0 && (static_cast<unsigned char>(result.name[end]) & 0xc0) == 0x80) --end;
