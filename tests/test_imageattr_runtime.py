@@ -19,6 +19,7 @@ def compile_run(tmp_path, code, *args):
     binary = tmp_path / "imageattr"
     result = subprocess.run(["g++", "-std=c++17", "-O1", "-Wall", "-Wextra", "-Werror",
                              "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+                             "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
                              "-I", str(tmp_path), "-I", str(ROOT), str(source), "-o", str(binary)],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

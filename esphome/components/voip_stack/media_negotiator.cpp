@@ -1,4 +1,7 @@
 #include "media_negotiator.h"
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+#include "sip_sdp_video_attributes.h"
+#endif
 
 #ifdef ESP_PLATFORM
 #include <lwip/sockets.h>
@@ -112,5 +115,33 @@ bool negotiate_audio_contract(const std::string &sdp, uint32_t default_ip, bool 
   return true;
 }
 
+
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+bool video_payload_history_allows(const VideoOfferAttributes &offer, bool remote_is_answer,
+                                  const VideoPayloadContract &retained) {
+  for (uint8_t pt = 0; pt < 128; ++pt) {
+    if (!offer.offered_payloads[pt]) continue;
+    const auto next = offer.payload_meanings[pt];
+    if (next == VideoPayloadMeaning::UNDECLARED) continue;
+    if (!VideoPayloadContract::permits(retained.tx_meanings, pt, next) ||
+        (!remote_is_answer && !VideoPayloadContract::permits(retained.rx_meanings, pt, next))) return false;
+  }
+  return true;
+}
+
+bool negotiate_video_payload_contract(const VideoOfferAttributes &offer, bool remote_is_answer,
+                                      uint8_t offered_pt, uint8_t selected_pt,
+                                      const VideoPayloadContract &retained, VideoPayloadContract *result) {
+  if (result == nullptr || selected_pt > 127 || !offer.offered_payloads[selected_pt] ||
+      !video_payload_history_allows(offer, remote_is_answer, retained)) return false;
+  auto next = retained;
+  auto codec = offer.payload_meanings[selected_pt];
+  if (selected_pt == 26 && codec == VideoPayloadMeaning::UNDECLARED) codec = VideoPayloadMeaning::JPEG;
+  if (!next.remember(selected_pt, remote_is_answer ? offered_pt : selected_pt, codec)) return false;
+  next.conflict = false;
+  *result = next;
+  return true;
+}
+#endif
 
 }  // namespace esphome::voip_stack

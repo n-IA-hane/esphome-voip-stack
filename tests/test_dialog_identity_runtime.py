@@ -81,7 +81,7 @@ def native_dialog_owner(tmp_path_factory):
         header.parent.mkdir(parents=True, exist_ok=True)
         header.write_text('#include "sip_dialog_host_sdk.h"\n')
     units = [component / name for name in ("sip_transport.cpp", "sip_message.cpp", "sip_request_response.cpp",
-                                           "sip_sdp.cpp", "sip_refer.cpp")]
+                                           "sip_sdp.cpp", "sip_refer.cpp", "media_negotiator.cpp")]
     units.extend(sorted(component.glob("sip_dialog_*.cpp")))
     binary = folder / "dialog"
     subprocess.run(

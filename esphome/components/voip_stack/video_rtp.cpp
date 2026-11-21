@@ -408,6 +408,7 @@ bool VideoRtpSession::negotiation_matches(
   const auto same_capability = [](const VideoCapability &left,
                                   const VideoCapability &right) {
     return left.payload_type == right.payload_type &&
+           left.receive_payload_type() == right.receive_payload_type() &&
            left.clock_rate == right.clock_rate &&
            left.width == right.width &&
            left.height == right.height &&
@@ -1616,7 +1617,7 @@ void VideoRtpSession::task_() {
           continue;
         }
         const uint32_t source_ssrc = read_be32(packet + 8);
-        if ((packet[1] & 0x7F) != this->capability_.payload_type) {
+        if ((packet[1] & 0x7F) != this->capability_.receive_payload_type()) {
           this->handle_rtp_keepalive_(packet, static_cast<size_t>(received),
                                       source_port, source_ssrc);
           continue;
@@ -1746,7 +1747,7 @@ bool VideoRtpSession::handle_rtp_keepalive_(const uint8_t *packet, size_t size,
                                             uint32_t source_ssrc) {
   if (packet == nullptr || size < 12 || (packet[0] >> 6) != 2) return false;
   const uint8_t payload_type = packet[1] & 0x7F;
-  if (payload_type < 96 || payload_type == this->capability_.payload_type ||
+  if (payload_type < 96 || payload_type == this->capability_.receive_payload_type() ||
       (packet[1] & 0x80) != 0 ||
       !this->remote_ssrc_latched_.load(std::memory_order_acquire) ||
       source_ssrc != this->remote_ssrc_.load(std::memory_order_acquire) ||
@@ -1781,7 +1782,7 @@ bool VideoRtpSession::handle_rtp_packet_(const uint8_t *packet, size_t size) {
   size_t payload_size = 0;
   if (!rtp_payload_bounds(packet, size, &offset, &payload_size)) return false;
   const uint8_t payload_type = packet[1] & 0x7F;
-  if (payload_type != this->capability_.payload_type || payload_size == 0)
+  if (payload_type != this->capability_.receive_payload_type() || payload_size == 0)
     return false;
   if (this->reassembly_ == nullptr && !this->acquire_reassembly_slot_()) {
     this->dropped_access_units_.fetch_add(1, std::memory_order_acq_rel);

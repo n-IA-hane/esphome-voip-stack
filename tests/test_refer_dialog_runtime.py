@@ -28,6 +28,7 @@ def negotiated_fixture_source(code, *, sdp=False, video=False):
     declarations = 'struct NegotiatedMedia;\n'
     implementations = ''
     if 'struct NegotiatedMedia : SdpAudioMedia {' not in code:
+        declarations += '#ifdef USE_ESPHOME_VOIP_STACK_VIDEO\nVideoPayloadContract video_payloads_;\n#endif\n'
         declarations += 'bool audio_zero_connection_=false;\n#ifdef USE_ESPHOME_VOIP_STACK_VIDEO\nbool video_zero_connection_=false;\n#endif\n'
         declarations += 'using RemoteMediaShape=::RemoteMediaShape;\n' + block(header, 'struct NegotiatedMedia : SdpAudioMedia {') + ';\n'
         markers = ['SipTransport::NegotiatedMedia SipTransport::negotiated_media_(',

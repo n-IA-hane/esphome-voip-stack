@@ -545,7 +545,8 @@ def test_video_rtp_keeps_directional_endpoint_capabilities() -> None:
     ]
     assert "send ? this->local_video_send_capability_()" in helper
     assert ": this->local_video_receive_capability_();" in helper
-    assert "capability.payload_type = negotiated.payload_type;" in helper
+    # Contract P3/CC-9 keeps the offerer's receive namespace after renumbering.
+    assert "capability.payload_type = send ? negotiated.payload_type : negotiated.receive_payload_type();" in helper
     assert "capability.width = negotiated.width;" not in helper
     assert "capability.height = negotiated.height;" not in helper
     assert "capability.profile_level_id = negotiated.profile_level_id;" not in helper

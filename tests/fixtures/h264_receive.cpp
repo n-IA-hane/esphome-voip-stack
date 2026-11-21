@@ -62,6 +62,10 @@ int main(int argc, char **argv) {
   }
   session.receive_enabled_ = true;
   session.capability_.payload_type = 105;
+  if (std::string(argv[2]) == "renumbered") {
+    session.capability_.payload_type = 120;
+    session.capability_.rx_payload_type = 105;
+  }
   session.capability_.encoding = "H264";
   session.send_remote_pli_ = std::atoi(argv[3]) != 0;
   session.remote_ssrc_ = 1;
@@ -71,7 +75,8 @@ int main(int argc, char **argv) {
   for (;;) {
     const auto n = recv(std::atoi(argv[1]), packet, sizeof(packet), MSG_DONTWAIT);
     if (n < 0) break;
-    session.handle_rtp_packet_(packet, n);
+    const bool accepted = session.handle_rtp_packet_(packet, n);
+    if (std::string(argv[2]) == "renumbered" && (packet[1] & 127) == 120) assert(!accepted);
     if (esphome::voip_stack::read_be32(packet + 4) == 27000)
       sink.release_held();
   }

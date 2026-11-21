@@ -224,6 +224,7 @@ SipTransport::NegotiatedMedia SipTransport::negotiated_media_() const {
   media.video_rtcp_ip = this->remote_video_rtcp_ip_v4_;
   media.video_rtcp_port = this->remote_video_rtcp_port_;
   media.video = this->negotiated_video_capability_;
+  media.video_payloads = this->video_payloads_;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   media.imageattr_state = this->video_imageattr_state_;
 #endif
@@ -253,6 +254,7 @@ void SipTransport::commit_negotiated_media_(const NegotiatedMedia &media) {
   this->remote_video_rtcp_ip_v4_ = media.video_rtcp_ip;
   this->remote_video_rtcp_port_ = media.video_rtcp_port;
   this->negotiated_video_capability_ = media.video;
+  this->video_payloads_ = media.video_payloads;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   this->video_imageattr_state_ = media.imageattr_state;
 #endif
@@ -293,6 +295,7 @@ void SipTransport::exchange_negotiated_media_(NegotiatedMedia &media) {
   swap(this->remote_video_rtcp_ip_v4_, media.video_rtcp_ip);
   swap(this->remote_video_rtcp_port_, media.video_rtcp_port);
   swap(this->negotiated_video_capability_, media.video);
+  swap(this->video_payloads_, media.video_payloads);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   swap(this->video_imageattr_state_, media.imageattr_state);
 #endif
@@ -474,7 +477,8 @@ VideoCapability SipTransport::local_video_direction_capability_(
   // PT, clock and codec parameters are the shared RTP contract. Dimensions
   // stay directional: RFC 2435 carries each JPEG frame's actual width/height
   // in-band, and an encoder need not have the same envelope as the decoder.
-  capability.payload_type = negotiated.payload_type;
+  capability.payload_type = send ? negotiated.payload_type : negotiated.receive_payload_type();
+  capability.rx_payload_type = negotiated.rx_payload_type;
   capability.clock_rate = negotiated.clock_rate;
   capability.packetization_mode = negotiated.packetization_mode;
   capability.level_asymmetry_allowed =
@@ -1623,6 +1627,9 @@ void SipTransport::reset_dialog_media_locked_() {
   this->delayed_offer_pending_ = false;
   this->remote_directional_audio_v1_ = false;
   this->remote_media_shape_.clear();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  this->video_payloads_ = {};
+#endif
   this->audio_zero_connection_ = false;
   this->close_media_session_();
   this->outgoing_invite_pending_.store(false, std::memory_order_release);
@@ -3544,6 +3551,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   // directions are inactive and commit through the existing prepared child.
   const bool same_video_format =
       old_video_capability.payload_type == new_video_capability.payload_type &&
+      old_video_capability.receive_payload_type() == new_video_capability.receive_payload_type() &&
       old_video_capability.clock_rate == new_video_capability.clock_rate &&
       old_video_capability.max_fps == new_video_capability.max_fps &&
       old_video_capability.packetization_mode ==

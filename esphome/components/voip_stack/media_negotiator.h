@@ -7,6 +7,9 @@
 #ifdef USE_ESPHOME_VOIP_DTMF
 #include "rtp_dtmf.h"
 #endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+#include "video_payload_contract.h"
+#endif
 
 namespace esphome::voip_stack {
 
@@ -25,5 +28,14 @@ bool negotiate_audio_contract(const std::string &sdp, uint32_t default_ip, bool 
                               DtmfConfig &dtmf_result,
 #endif
                               const MediaNegotiationTrace &trace = {});
+
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+struct VideoOfferAttributes;
+bool video_payload_history_allows(const VideoOfferAttributes &offer, bool remote_is_answer,
+                                  const VideoPayloadContract &retained);
+bool negotiate_video_payload_contract(const VideoOfferAttributes &offer, bool remote_is_answer,
+                                      uint8_t offered_pt, uint8_t selected_pt,
+                                      const VideoPayloadContract &retained, VideoPayloadContract *result);
+#endif
 
 }  // namespace esphome::voip_stack

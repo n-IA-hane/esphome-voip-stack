@@ -114,6 +114,7 @@ struct VideoCapability {
   // its real codec contract (and H.264 must derive profile-level-id from the
   // encoder SPS) instead of inheriting a plausible but fabricated profile.
   uint8_t payload_type{0};
+  uint8_t rx_payload_type{255};
   uint32_t clock_rate{90000};
   uint16_t width{0};
   uint16_t height{0};
@@ -128,9 +129,10 @@ struct VideoCapability {
 
   bool is_h264() const { return this->encoding == "H264"; }
   bool is_jpeg() const { return this->encoding == "JPEG"; }
+  uint8_t receive_payload_type() const { return this->rx_payload_type == 255 ? this->payload_type : this->rx_payload_type; }
 
   bool valid() const {
-    if (this->payload_type > 127 || this->clock_rate != 90000 ||
+    if (this->payload_type > 127 || this->receive_payload_type() > 127 || this->clock_rate != 90000 ||
         this->width == 0 || this->height == 0 || this->max_fps == 0) {
       return false;
     }
@@ -138,12 +140,12 @@ struct VideoCapability {
     if (this->is_jpeg()) {
       // JPEG has a static RTP/AVP assignment. Refuse private remappings so an
       // SDP answer can never silently disagree with RFC 3551 section 6.
-      return this->payload_type == 26;
+      return this->payload_type == 26 && this->receive_payload_type() == 26;
     }
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
     if (this->is_h264()) {
-      return this->payload_type >= 96 && this->packetization_mode == 1 &&
+      return this->payload_type >= 96 && this->receive_payload_type() >= 96 && this->packetization_mode == 1 &&
              this->profile_level_id.size() == 6;
     }
 #endif

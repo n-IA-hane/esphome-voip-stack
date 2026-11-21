@@ -82,6 +82,7 @@ int main(int argc,char**argv){
  input.resize(completed);
 #else
  session.capability_.payload_type=103;
+ if(mode=="renumbered"){session.capability_.payload_type=120;session.capability_.rx_payload_type=103;}
  input={0,0,0,1,0x67,0x42,0xe0,0x1e,0,0,0,1,0x65};expected={0x67,0x42,0xe0,0x1e,0x65};
  for(unsigned n=0;n<4096;++n){input.push_back(uint8_t(1+n%200));expected.push_back(uint8_t(1+n%200));}
 #endif
@@ -161,10 +162,13 @@ def packet_writer(tmp_path_factory, request):
     return binary
 
 
-@pytest.mark.parametrize('mode', ['normal', 'retry', 'failure', 'paused', 'pacing-stop', 'stop-before-send'])
+@pytest.mark.parametrize('mode', ['normal', 'retry', 'failure', 'paused', 'pacing-stop', 'stop-before-send', 'renumbered'])
 def test_real_packetizers_preserve_media_and_retry_contract(packet_writer, mode):
     run = subprocess.run([str(packet_writer), mode, str(packet_writer.parent / f'{mode}.wire')],
                          capture_output=True, text=True, timeout=5)
     assert run.returncode == 0, run.stdout + run.stderr
     receipt = json.loads(run.stdout)
+    if mode == 'renumbered' and 'H264' in str(packet_writer):
+        wire = (packet_writer.parent / f'{mode}.wire').read_bytes()
+        assert wire[3] & 127 == 120
     (packet_writer.parent / f'{mode}.json').write_text(json.dumps(receipt, indent=2) + '\n')

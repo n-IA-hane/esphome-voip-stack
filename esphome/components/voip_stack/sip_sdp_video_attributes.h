@@ -4,6 +4,7 @@
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 
 #include "sip_sdp_fields.h"
+#include "video_payload_contract.h"
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
 #include "sdp_imageattr.h"
 #endif
@@ -19,6 +20,7 @@ struct VideoOfferAttributes {
   ImageAttributeMatch imageattr_specific, imageattr_wildcard;
 #endif
   bool offered_payloads[128]{};
+  VideoPayloadMeaning payload_meanings[128]{};
   uint8_t offered_payload_order[128]{};
   size_t offered_payload_count = 0;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
@@ -118,6 +120,8 @@ inline void read_video_offer_attributes(const std::string &sdp, uint32_t default
       uint8_t payload_type = 0;
       std::string encoding;
       if (parse_video_rtpmap(line, &payload_type, &encoding) && offer.offered_payloads[payload_type]) {
+        offer.payload_meanings[payload_type] = encoding == "H264/90000" ? VideoPayloadMeaning::H264
+            : encoding == "JPEG/90000" ? VideoPayloadMeaning::JPEG : VideoPayloadMeaning::OTHER;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
         offer.h264_payloads[payload_type] = encoding == "H264/90000";
 #endif

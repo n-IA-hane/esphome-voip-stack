@@ -627,7 +627,9 @@ bool SipTransport::parse_remote_media_(const std::string &sdp, uint32_t default_
 #endif
                               report_mapping, report_incompatible)) return false;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  media->video_payloads = retained.video_payloads;
   if (!this->refer_context_active_ && !this->parse_remote_video_(sdp, default_ip, remote_is_answer, retained, media, retained_call)) {
+    if (media->video_payloads.conflict) return false;
     // An unsupported video m-line is rejected independently. Audio remains
     // valid and build_sdp_answer_ will return m=video 0.
     ESP_LOGW(TAG, "SIP SDP video rejected while retaining negotiated audio");
@@ -645,6 +647,7 @@ bool SipTransport::learn_remote_video_from_sdp_(const std::string &sdp,
   auto media = retained;
   const bool valid = this->parse_remote_video_(sdp, default_ip, remote_is_answer, retained,
                                                &media, zero_connection != nullptr);
+  if (!valid && media.video_payloads.conflict) return false;
   if (zero_connection != nullptr) *zero_connection = media.video_zero_connection;
   this->commit_negotiated_media_(media);
   return valid;
@@ -667,6 +670,12 @@ bool SipTransport::parse_remote_video_(const std::string &sdp, uint32_t default_
   const VideoCapability local_receive = this->local_video_receive_capability_();
   VideoOfferAttributes offer;
   read_video_offer_attributes(sdp, default_ip, local_send, local_receive, offer);
+  media->video_payloads = retained.video_payloads;
+  media->video_payloads.conflict = false;
+  if (offer.media_port != 0 && !video_payload_history_allows(offer, remote_is_answer, retained.video_payloads)) {
+    media->video_payloads.conflict = true;
+    return false;
+  }
   media->video_offered = offer.offered;
   const auto disposition = validate_video_offer(offer, retained_ip, retained_rtcp_ip, allow_zero_connection,
                                                 media->video.payload_type, media->video_zero_connection);
@@ -676,6 +685,11 @@ bool SipTransport::parse_remote_video_(const std::string &sdp, uint32_t default_
   if (!select_video_payload(offer, local_send, local_receive, this->video_send_requested_.load(std::memory_order_acquire),
                             remote_is_answer, this->video_offer_payload_type_, selected))
     return false;
+  if (!negotiate_video_payload_contract(offer, remote_is_answer, this->video_offer_payload_type_,
+                                        media->video.payload_type, retained.video_payloads, &media->video_payloads)) {
+    media->video_payloads.conflict = true;
+    return false;
+  }
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   if (selected.imageattr_present) {
     if (selected.imageattr_compatible) {

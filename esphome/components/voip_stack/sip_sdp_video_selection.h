@@ -46,14 +46,13 @@ inline bool select_video_payload(const VideoOfferAttributes &offer, const VideoC
                                  uint8_t offered_pt, VideoPayloadSelection &selected) {
   for (size_t payload_index = 0; payload_index < offer.offered_payload_count; payload_index++) {
     const uint8_t pt = offer.offered_payload_order[payload_index];
-    if (remote_is_answer && pt != offered_pt) continue;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
     // Static PT 26 needs no rtpmap, but an explicit conflicting mapping wins.
     const bool jpeg = pt == 26 && (!offer.jpeg_mapping_seen || offer.jpeg_mapping_matches);
     const bool h264 = false;
 #else
     const bool jpeg = false;
-    const bool h264 = offer.h264_payloads[pt] && offer.packetization_modes[pt] == 1 && offer.profile_valid[pt];
+    const bool h264 = pt >= 96 && offer.h264_payloads[pt] && offer.packetization_modes[pt] == 1 && offer.profile_valid[pt];
 #endif
     if (!jpeg && !h264) continue;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
@@ -106,6 +105,7 @@ inline bool select_video_payload(const VideoOfferAttributes &offer, const VideoC
     }
     if (offer.media_max_fps > 0) negotiated.max_fps = std::min(negotiated.max_fps, offer.media_max_fps);
     negotiated.payload_type = static_cast<uint8_t>(pt);
+    negotiated.rx_payload_type = remote_is_answer ? offered_pt : pt;
     negotiated.level_asymmetry_allowed = h264 && bilateral_asymmetry;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_H264
     negotiated.rtcp_feedback_pli = offer.rtcp_feedback_pli[pt];

@@ -31,6 +31,7 @@
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 #include "video_rtp.h"
+#include "video_payload_contract.h"
 #endif
 
 #include "esphome/core/helpers.h"
@@ -852,6 +853,7 @@ class SipTransport : public SipPhoneTransport {
     uint32_t video_ip{0}, video_rtcp_ip{0};
     uint16_t video_port{0}, video_rtcp_port{0};
     VideoCapability video;
+    VideoPayloadContract video_payloads;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
     uint8_t imageattr_state{0};
 #endif
@@ -1059,6 +1061,7 @@ class SipTransport : public SipPhoneTransport {
   uint32_t remote_video_rtcp_ip_v4_{0};
   uint16_t remote_video_rtcp_port_{0};
   VideoCapability negotiated_video_capability_{};
+  VideoPayloadContract video_payloads_;
   PendingVideoDirectionInvite pending_video_direction_invite_{};
   CompletedInviteClientTransaction completed_video_direction_invite_{};
   SipSignalingString confirmed_local_sdp_;

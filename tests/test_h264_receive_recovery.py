@@ -57,7 +57,7 @@ def receiver(tmp_path_factory):
 
 
 @pytest.mark.parametrize('feedback', [False, True])
-@pytest.mark.parametrize('fault', ['none', 'packet-loss', 'fragment-loss', 'missing-marker', 'sink-reject', 'no-slot'])
+@pytest.mark.parametrize('fault', ['none', 'packet-loss', 'fragment-loss', 'missing-marker', 'sink-reject', 'no-slot', 'renumbered'])
 def test_h264_receive_resynchronizes_at_next_complete_idr(receiver, fault, feedback):
     # First IDR carries SPS/PPS; the next IDR reuses those cached parameters.
     stream = [(0, SPS, False), (0, PPS, False), (0, IDR, True),
@@ -73,6 +73,8 @@ def test_h264_receive_resynchronizes_at_next_complete_idr(receiver, fault, feedb
     with (socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as inbox,
           socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender):
         inbox.bind(('127.0.0.1', 0))
+        if fault == 'renumbered':
+            sender.sendto(struct.pack('!BBHII', 0x80, 120, 65535, 0, 1) + SPS, inbox.getsockname())
         for seq, (frame, payload, marker) in enumerate(stream):
             if payload is None or (fault == 'packet-loss' and frame == 1):
                 continue
@@ -84,9 +86,9 @@ def test_h264_receive_resynchronizes_at_next_complete_idr(receiver, fault, feedb
     assert output[0] == (0, START + SPS + START + PPS + START + IDR)
     assert output[-2:] == [(6, START + SPS + START + PPS + START + NEXT_IDR), (7, START + NEXT_P1)]
     expected = [0, 6, 7]
-    if fault == 'none':
+    if fault in ('none', 'renumbered'):
         expected = list(range(8))
     elif fault == 'no-slot':
         expected = [0, 1, 2, 6, 7]
     assert [index for index, _ in output] == expected
-    assert int(run.stderr) == int(feedback and fault != 'none')
+    assert int(run.stderr) == int(feedback and fault not in ('none', 'renumbered'))

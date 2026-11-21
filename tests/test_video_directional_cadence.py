@@ -10,7 +10,8 @@ from test_refer_dialog_runtime import block
 
 @pytest.mark.parametrize("tx_fps,rx_fps,peer_fps", [(15, 2, 10), (2, 15, 10), (15, 2, 0), (15, 15, 15)])
 @pytest.mark.parametrize("codec", ["jpeg", "h264"])
-def test_production_sdp_and_direction_caps_preserve_independent_frame_budgets(tmp_path, tx_fps, rx_fps, peer_fps, codec):
+@pytest.mark.parametrize("role", ["offer", "answer"])
+def test_production_sdp_and_direction_caps_preserve_independent_frame_budgets(tmp_path, tx_fps, rx_fps, peer_fps, codec, role):
     code = sdp_source().replace(" void reset_video_negotiation_();", " VideoCapability local_video_direction_capability_(const VideoCapability&,bool)const;\n void reset_video_negotiation_();")
     if codec == "h264":
         # The unchanged firmware baseline sets JPEG's rtpmap_seen in H264
@@ -48,6 +49,21 @@ int main(int argc,char**argv){
     if codec == "h264":
         code = code.replace("call.tx.max_fps=", 'call.tx.encoding=call.rx.encoding="H264";call.tx.payload_type=call.rx.payload_type=call.video_offer_payload_type_=103;call.tx.profile_level_id=call.rx.profile_level_id="42e01e";call.tx.packetization_mode=call.rx.packetization_mode=1;call.tx.max_fps=')
         code = code.replace("RTP/AVP 26", "RTP/AVP 103").replace("a=rtpmap:26 JPEG/90000", "a=rtpmap:103 H264/90000\\r\\na=fmtp:103 packetization-mode=1;profile-level-id=42e01e;level-asymmetry-allowed=1")
+        if role == "answer":
+            code = code.replace("RTP/AVP 103", "RTP/AVP 120").replace("a=rtpmap:103 H264", "a=rtpmap:120 H264").replace("a=fmtp:103 packetization", "a=fmtp:120 packetization")
+            code = code.replace("offer,0,false", "offer,0,true")
+            code = code.replace("const unsigned expected_tx=", "assert(tx.payload_type==120&&rx.payload_type==103);\n const unsigned expected_tx=")
+            code = code.replace('std::cout<<call.append_video_sdp_("","192.0.2.1",true);', r'''
+ std::cout<<call.append_video_sdp_("","192.0.2.1",false);
+ const std::string remap="v=0\r\nc=IN IP4 192.0.2.2\r\nm=video 42002 RTP/AVP 120 121\r\n"
+  "a=rtpmap:120 JPEG/90000\r\na=rtpmap:121 H264/90000\r\na=fmtp:121 packetization-mode=1;profile-level-id=42e01e\r\n";
+ assert(!call.learn_remote_video_from_sdp_(remap,0,false));
+ assert(call.video_negotiated_&&call.negotiated_video_capability_.payload_type==120);
+ assert(call.learn_remote_video_from_sdp_("v=0\r\nc=IN IP4 192.0.2.2\r\nm=video 0 RTP/AVP 120\r\n",0,false));
+ assert(!call.video_negotiated_);
+ assert(!call.learn_remote_video_from_sdp_(remap,0,false));
+ assert(!call.video_negotiated_);
+''')
     # Keep the common compiler/sanitizer contract, then independently parse the
     # exact serialized answer instead of asserting a production string builder.
     compile_run(tmp_path, code, str(tx_fps), str(rx_fps), str(peer_fps))
