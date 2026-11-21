@@ -61,7 +61,8 @@ struct AudioPayloadSelection {
   bool consider(AudioFormat fmt, uint8_t pt, const AudioMappingPolicy &policy, AudioMappingChanges &changes) {
     const auto &local = policy.local;
     const auto &attributes = policy.attributes;
-    if (pt == 9 && fmt.codec != AudioCodec::G722) return false;
+    const auto fixed = static_rtp_audio_format(pt);
+    if (fixed.is_valid() && !audio_formats_share_rtp_mapping(fmt, fixed)) return false;
     fmt.frame_ms = attributes.ptime;
     const uint32_t packed_mapping = pack_audio_format(fmt);
     if (seen_mapping[pt] != 0 && seen_mapping[pt] != packed_mapping) return false;

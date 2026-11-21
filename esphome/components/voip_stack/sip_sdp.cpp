@@ -245,7 +245,8 @@ std::string SipTransport::build_sdp_capabilities_(uint32_t peer_ip) const {
   for (uint8_t i = 0; i < formats.count && i < 24; ++i) {
     const auto &format = formats.formats[i];
     if (directions[i] & 2) facts.include_receive(format, this->offer_rx_formats_, this->udp_max_payload_);
-    const uint8_t pt = format.codec == AudioCodec::G722 ? 9 : 96 + i;
+    const int fixed_pt = static_rtp_audio_payload(format);
+    const uint8_t pt = fixed_pt >= 0 ? fixed_pt : 96 + i;
     if (!payloads.empty()) payloads.push_back(' ');
     payloads += std::to_string(pt);
     maps += "a=rtpmap:" + std::to_string(pt) + " " + audio_format_rtp_encoding(format, this->udp_max_payload_) +
@@ -343,7 +344,8 @@ std::string SipTransport::build_sdp_offer_() {
     if (retained_tx != nullptr && !audio_formats_share_rtp_mapping(fmt, *retained_tx)) return;
     const char *enc = audio_format_rtp_encoding(fmt, this->udp_max_payload_);
     if (enc == nullptr) return;
-    const uint8_t payload_pt = fmt.codec == AudioCodec::G722 ? 9 : pt;
+    const int fixed_pt = static_rtp_audio_payload(fmt);
+    const uint8_t payload_pt = fixed_pt >= 0 ? fixed_pt : pt;
     offered_mappings[offered_count++] = fmt;
     if (!payloads.empty()) payloads.push_back(' ');
     payloads += std::to_string(payload_pt);

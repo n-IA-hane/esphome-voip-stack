@@ -27,6 +27,15 @@ inline bool read_audio_offer_attributes(const std::string &sdp, AudioOfferAttrib
       }
     } else if (in_audio && line == "a=x-voip-stack-independent-ptime:1") {
       attributes.independent_ptime = true;
+    } else if (in_audio && line.rfind("a=rtpmap:", 0) == 0) {
+      uint32_t declared = 0;
+      const auto separator = line.find_first_of(" \t", 9);
+      if (parse_decimal_u32(line.substr(9, separator - 9), 127, &declared) && (declared == 10 || declared == 11)) {
+        AudioFormat mapped; uint8_t payload = 0;
+        // CC-7/CC-12: an invalid explicit static mapping removes that payload;
+        // it must not become a valid bare static mapping in the second pass.
+        if (!parse_rtpmap_format(line, &mapped, &payload)) attributes.payload_rank[declared] = UINT8_MAX;
+      }
     } else if (in_audio && line.rfind("a=ptime:", 0) == 0) {
       uint32_t parsed = 0;
       if (parse_decimal_u32(line.substr(8), UINT8_MAX, &parsed) &&

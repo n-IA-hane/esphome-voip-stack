@@ -23,6 +23,14 @@ AudioFormat format(unsigned rate,unsigned ms,AudioCodec codec=AudioCodec::PCM){
 }
 int main(int argc,char **argv){
  assert(argc>=2);const std::string mode=argv[1];SipTransport s;
+ if(mode=="static-l16"){
+  s.offer_tx_formats_.count=s.offer_rx_formats_.count=1;
+  s.offer_tx_formats_.formats[0]=s.offer_rx_formats_.formats[0]=format(44100,10);
+  const auto offer=s.build_sdp_offer_();assert(offer.find("RTP/AVP 11\r\n")!=std::string::npos);
+  assert(offer.find("a=rtpmap:11 L16/44100/1\r\n")!=std::string::npos);
+  const auto catalog=s.build_sdp_capabilities_(0);assert(catalog.find("RTP/AVP 11\r\n")!=std::string::npos);
+  std::cout<<offer;return 0;
+ }
  const auto g20=format(16000,20,AudioCodec::G722),g10=format(16000,10,AudioCodec::G722);
  s.offer_tx_formats_.count=s.offer_rx_formats_.count=4;
  s.offer_tx_formats_.formats[0]=s.offer_rx_formats_.formats[0]=format(16000,20);
@@ -83,4 +91,9 @@ def test_actual_stock_witness_preserves_static_and_dynamic_received_mapping(stat
     witness = Path(__file__).parent / "fixtures" / ("freeswitch_vanilla_g722_answer.sdp"
         if mode == "stock-answer" else "freeswitch_vanilla_native_static9.sdp")
     result = subprocess.run([static_g722_binary, mode, witness], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_declared_l16_mono_uses_rfc_static_payload_11(static_g722_binary):
+    result = subprocess.run([static_g722_binary, "static-l16"], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

@@ -77,10 +77,9 @@ bool negotiate_audio_contract(const std::string &sdp, uint32_t default_ip, bool 
       }
     }
   }
-  if (attributes.offered(9) && selection.seen_mapping[9] == 0) {
-    const AudioFormat g722{16000, PcmFormat::S16LE, 1, 20, AudioCodec::G722};
-    if (!consider_mapping(g722, 9)) return false;
-  }
+  for (uint8_t pt = 9; pt <= 11; ++pt)
+    if (attributes.offered(pt) && selection.seen_mapping[pt] == 0 &&
+        !consider_mapping(static_rtp_audio_format(pt), pt)) return false;
   const auto result = selection.finish(local, attributes, retained, retained_call, media_ip, zero_connection, media);
   if (result == AudioSelectionResult::INCOMPATIBLE) {
     if (trace.incompatible != nullptr)

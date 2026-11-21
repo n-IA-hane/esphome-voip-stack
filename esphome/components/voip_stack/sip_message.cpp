@@ -596,6 +596,8 @@ bool parse_rtpmap_format(const std::string &line, AudioFormat *fmt, uint8_t *pay
     return false;
   }
   if (!candidate.is_valid()) return false;
+  const auto fixed = static_rtp_audio_format(static_cast<uint8_t>(pt));
+  if (fixed.is_valid() && !audio_formats_share_rtp_mapping(candidate, fixed)) return false;
   *fmt = candidate;
   *payload_type = static_cast<uint8_t>(pt);
   return true;

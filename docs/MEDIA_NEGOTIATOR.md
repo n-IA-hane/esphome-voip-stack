@@ -12,6 +12,13 @@ policy in CC-11 does not enlarge an ESP fixed set. The compiled production
 fixture preserves 16 kHz/20 ms transmit and 48 kHz/10 ms receive as caller and
 callee with the independent directional profile.
 
+The static audio registry recognizes G.722/9 and L16 at 44.1 kHz as stereo/10
+and mono/11 (CC-12). An explicit conflicting mapping removes the L16 payload
+without suppressing another usable mapping. Recognition grants no encoder or
+duration: undeclared 44.1 kHz remains unavailable, and stereo/10 at 10 ms
+exceeds the 1200-byte budget and is refused. A declared mono/11 at 10 ms uses
+882 bytes and keeps the configured duration.
+
 Telephone events negotiate payload, events and RTP clock separately per
 direction (P5/CC-4). G.722 uses its 8 kHz RTP clock even though decoded PCM is
 16 kHz. An offered 8 kHz event mapping remains the fallback. A running digit

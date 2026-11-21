@@ -34,7 +34,7 @@ def media_negotiator_binary(tmp_path_factory):
     return binary
 
 
-@pytest.mark.parametrize("mode", ["offer", "answer", "hard-maximum", "directional-dtmf", "directional-dtmf-answer", "g722-dtmf"])
+@pytest.mark.parametrize("mode", ["offer", "answer", "hard-maximum", "directional-dtmf", "directional-dtmf-answer", "g722-dtmf", "static-l16-mono", "static-l16-stereo"])
 def test_declared_directional_capabilities_and_independent_packet_times(media_negotiator_binary, mode):
     result = subprocess.run([media_negotiator_binary, mode], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stdout + result.stderr

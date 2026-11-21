@@ -280,6 +280,21 @@ inline bool audio_formats_share_rtp_mapping(const AudioFormat &left, AudioFormat
   return audio_formats_share_wire_encoding(left, right);
 }
 
+// RFC 3551 section 6. The mapping is a registry fact, not permission to use
+// a format absent from the YAML fixed set or outside its packet budget.
+inline AudioFormat static_rtp_audio_format(uint8_t payload) {
+  if (payload == 9) return {16000, PcmFormat::S16LE, 1, 20, AudioCodec::G722};
+  if (payload == 10 || payload == 11)
+    return {44100, PcmFormat::S16LE, static_cast<uint8_t>(payload == 10 ? 2 : 1), 20, AudioCodec::PCM};
+  return disabled_audio_format();
+}
+
+inline int static_rtp_audio_payload(const AudioFormat &format) {
+  for (uint8_t pt = 9; pt <= 11; ++pt)
+    if (audio_formats_share_rtp_mapping(format, static_rtp_audio_format(pt))) return pt;
+  return -1;
+}
+
 inline bool audio_format_list_match_rtp_mapping(const AudioFormatList &list, const AudioFormat &remote,
                                                uint16_t ptime, AudioFormat *local, size_t max_payload) {
   for (uint8_t i = 0; i < list.count; ++i) {

@@ -12,6 +12,36 @@ AudioFormat pcm(uint32_t rate, uint16_t ms) {
 int main(int argc, char **argv) {
   assert(argc == 2);
   const std::string mode = argv[1];
+  if (mode.rfind("static-l16", 0) == 0) {
+    AudioFormatList formats; formats.count = 1;
+    formats.formats[0] = pcm(44100, 10);
+    const bool stereo = mode == "static-l16-stereo";
+    if (stereo) formats.formats[0].channels = 2;
+    RtpAudioPayloads sent; assert(sent.add(stereo ? 10 : 11, formats.formats[0]));
+    const LocalAudioOffer local{formats, formats, formats, sent, 1200, false, 0x7f};
+    SdpAudioMedia retained, selected; DtmfConfig events;
+    const auto base = std::string("v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP ") +
+                      (stereo ? "10" : "11") + "\r\na=ptime:20\r\n";
+    const auto mapping = std::string("a=rtpmap:") + (stereo ? "10" : "11") + " L16/44100/" + (stereo ? "2" : "1") + "\r\n";
+    assert(static_rtp_audio_format(10).channels == 2 && static_rtp_audio_format(11).channels == 1);
+    assert(static_rtp_audio_payload(formats.formats[0]) == (stereo ? 10 : 11));
+    for (const auto &body : {base, base + mapping}) {
+      const bool accepted = negotiate_audio_contract(body, 0, false, false, local, retained, selected, events);
+      assert(accepted == !stereo);
+      if (accepted) assert(selected.tx == formats.formats[0] && selected.tx_pt == 11 && selected.rx_pt == 11);
+    }
+    assert(formats.formats[0].nominal_rtp_payload_bytes() == (stereo ? 1764 : 882));
+    assert(!negotiate_audio_contract(base + "a=rtpmap:11 L16/16000/1\r\n", 0, false, false,
+                                     local, retained, selected, events));
+    formats.formats[0] = pcm(16000, 10);
+    assert(!negotiate_audio_contract(base, 0, false, false, local, retained, selected, events));
+    assert(negotiate_audio_contract(
+        "v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 11 96\r\n"
+        "a=rtpmap:11 L16/16000/1\r\na=rtpmap:96 L16/16000/1\r\n", 0, false, false,
+        local, retained, selected, events));
+    assert(selected.tx_pt == 96 && selected.rx_pt == 96);
+    return 0;
+  }
   if (mode == "g722-dtmf") {
     AudioFormatList formats; formats.count = 1;
     formats.formats[0] = {16000, PcmFormat::S16LE, 1, 20, AudioCodec::G722};
