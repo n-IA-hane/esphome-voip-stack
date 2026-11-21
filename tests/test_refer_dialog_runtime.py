@@ -62,6 +62,7 @@ def negotiated_fixture_source(code, *, sdp=False, video=False):
         # Compile the production negotiation headers and use their real namespace.
         policy = '#include "esphome/components/voip_stack/sip_sdp_audio_negotiation.h"\n'
         policy += '#ifdef USE_ESPHOME_VOIP_STACK_VIDEO\n#include "esphome/components/voip_stack/sip_sdp_video_selection.h"\n#endif\n'
+        implementations += '\n#include "esphome/components/voip_stack/media_negotiator.cpp"\n'
         code = code.replace('using namespace esphome::voip_stack;', policy + 'using namespace esphome::voip_stack;', 1)
         for name in ('trim_copy', 'parse_decimal_u32', 'parse_rtpmap_format', 'parse_audio_media_line',
                      'parse_video_media_line', 'parse_video_rtpmap', 'parse_rtcp_attribute'):

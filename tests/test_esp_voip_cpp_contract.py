@@ -1012,7 +1012,7 @@ def native_sdp_contract(tmp_path_factory):
         "-fdata-sections", "-Wl,--gc-sections", "-DUSE_ESP32", "-DUSE_ESPHOME_VOIP_SIP_TRANSPORT", "-DUSE_ESPHOME_VOIP_DTMF",
         "-DUSE_ESPHOME_VOIP_STACK_VIDEO", "-DUSE_ESPHOME_VOIP_STACK_VIDEO_JPEG",
         "-I", str(folder), "-I", str(ROOT), "-I", str(VOIP), str(VOIP / "sip_message.cpp"),
-        str(ROOT / "tests/fixtures/remote_sdp_negotiation.cpp"), "-o", str(binary),
+        str(VOIP / "media_negotiator.cpp"), str(ROOT / "tests/fixtures/remote_sdp_negotiation.cpp"), "-o", str(binary),
     ], check=True)
     return lambda case: subprocess.run(
         [str(binary), case, str(ROOT / "tests/fixtures/freeswitch_vanilla_g722_answer.sdp")], check=True
