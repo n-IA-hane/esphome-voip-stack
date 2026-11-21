@@ -28,6 +28,7 @@ struct VoipStack {
  std::string blf_account_id_="fallback",default_line_="office",device_route_id_="self";unsigned publications=0;
  struct DirectoryProvider{const void*owner=nullptr;std::string account_id;};std::array<DirectoryProvider,4>directory_providers_{};
  bool get_account_snapshot(const std::string&,SipAccountSnapshot*);
+ bool is_registered(const std::string&id){return transport_->is_registered(id);}
  std::string get_contact_account(std::string_view)const;bool set_blf_watches(const std::vector<BlfWatchConfig>&);void sync_blf_contacts_();
  DirectoryCommitResult commit_contact_directory(const void*,ContactEntry*,size_t,const std::string&);
  void publish_phonebook_changed_(){++publications;sync_blf_contacts_();}
@@ -100,8 +101,8 @@ int main(int argc, char **){
   return 0;
  }
  auto manual=row("manual","Manual fallback","103");assert(app.phonebook_.add_entry(manual)==AddResult::Added);
- int provider;ContactEntry initial[]={row("ldap-explicit","Directory explicit phone","101","explicit"),row("ldap-provider","Directory provider phone","102")};
- assert(app.commit_contact_directory(&provider,initial,2,"office")==DirectoryCommitResult::APPLIED);
+ int provider;ContactEntry initial[]={row("ldap-unresolved","Unresolved phone","404","missing"),row("ldap-explicit","Directory explicit phone","101","explicit"),row("ldap-provider","Directory provider phone","102")};
+ assert(app.commit_contact_directory(&provider,initial,3,"office")==DirectoryCommitResult::APPLIED);
  assert(app.get_contact_account("ldap-explicit")=="explicit"&&app.get_contact_account("ldap-provider")=="office"&&app.get_contact_account("manual")=="fallback");
  assert(app.phonebook_.select("ldap-provider"));phone.pump_registration_mwi_(clock_ms);auto initial_wire=peer.drain();assert(initial_wire.size()==6);
  std::string old_provider,explicit_sub;unsigned dialogs=0,mailboxes=0;

@@ -192,8 +192,8 @@ bool SipTransport::configure_blf(uint8_t capacity, BlfCallback callback) {
 }
 bool SipTransport::set_blf_watches(const std::vector<BlfWatchConfig> &watches) {
   LockGuard lock(this->dialog_mutex_);
-  if (watches.size() > this->mwi_.blf_capacity()) return false;
   bool all_accounts_found = true;
+  size_t resolved_count = 0;
   for (size_t i = 0; i < watches.size(); ++i) {
     const auto &watch = watches[i];
     const int owner_index = this->registration_.find(watch.account_id);
@@ -206,6 +206,7 @@ bool SipTransport::set_blf_watches(const std::vector<BlfWatchConfig> &watches) {
       all_accounts_found = false;
       continue;
     }
+    if (++resolved_count > this->mwi_.blf_capacity()) return false;
     if (sip_target_uri(normalized, this->registration_.account(owner_index).config.domain).empty()) return false;
   }
   const uint32_t now = millis();

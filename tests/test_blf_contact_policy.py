@@ -65,6 +65,7 @@ bool cJSON_IsBool(const cJSON*p){return p&&(p->type==1||p->type==2);}bool cJSON_
 struct SipTransport{std::vector<BlfWatchConfig>desired;bool set_blf_watches(const std::vector<BlfWatchConfig>&v){desired=v;return true;}};
 struct VoipStack{Phonebook phonebook_;bool blf_ready_=true,blf_watch_contacts_=true;uint8_t blf_capacity_=16;
  std::string blf_account_id_="ha",default_line_="qa";std::unique_ptr<SipTransport>transport_=std::make_unique<SipTransport>();
+ bool is_registered(const std::string&)const{return true;}
  std::string get_contact_account(std::string_view)const;bool set_blf_watches(const std::vector<BlfWatchConfig>&);void sync_blf_contacts_();};
 '''
     facade = (SOURCE / "voip_blf.cpp").read_text()

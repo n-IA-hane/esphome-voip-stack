@@ -80,6 +80,10 @@ void VoipStack::sync_blf_contacts_() {
     if (entry == nullptr || !contact_can_auto_blf(*entry)) continue;
     std::string account = this->get_contact_account(entry->stable_id());
     if (account == "direct") account = this->blf_account_id_;
+    if (!this->is_registered(account)) {
+      ESP_LOGW("voip_stack.blf", "Skipping '%s': Account SIP is not registered", entry->name.c_str());
+      continue;
+    }
     watches.push_back({std::string(entry->stable_id()), std::move(account), static_cast<std::string>(entry->route)});
   }
   if (!this->set_blf_watches(watches))

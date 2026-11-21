@@ -53,14 +53,14 @@ int main(int argc,char**argv){
  VoipStack app;auto&phone=*app.transport_;Peer peer(tcp);bind_account(phone,peer);
  assert(app.phonebook_.add_one("Desk|101|127.0.0.1|5060|40000|sip_udp")==AddResult::Added);
  assert(app.phonebook_.set_metadata("Desk","endpoint-desk",ContactKind::SIP_ACCOUNT,"office",true));
- assert(phone.configure_blf(mode=="admission"||mode=="partial-admission"?2:1,nullptr));
+ assert(phone.configure_blf(mode=="admission"?2:1,nullptr));
  SipMwi::Hooks hooks;hooks.context=&phone;hooks.send=SipTransport::registration_send_view_;hooks.reply=SipTransport::registration_mwi_reply_;
  hooks.local_ip=SipTransport::registration_local_ip_;hooks.random=esp_random;hooks.hash=SipTransport::registration_hash_;hooks.local_port=phone.sip_port_;
  phone.mwi_.set_hooks(hooks);
  if(mode=="partial-admission"){
   // The unresolved row precedes a real account and must not stop its watch.
   assert(!phone.set_blf_watches({{"unresolved","missing","102"},{"endpoint-desk","office","101"}}));
-  assert(phone.mwi_.blf_watch_id(0)=="endpoint-desk"&&!phone.mwi_.blf_watch_requested(1));
+  assert(phone.mwi_.blf_capacity()==1&&phone.mwi_.blf_watch_id(0)=="endpoint-desk");
  }else assert(phone.set_blf_watches({{"endpoint-desk","office","101"}}));
  phone.pump_registration_mwi_(clock_ms);
  const auto packages=peer.drain();assert(packages.size()==2);std::string subscribe,mailbox;

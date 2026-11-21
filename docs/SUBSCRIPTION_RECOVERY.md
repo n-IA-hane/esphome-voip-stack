@@ -24,6 +24,9 @@ The independent admission witness also showed that one unresolved Account SIP
 previously rejected the complete contact watch list. Known accounts are now
 applied, unresolved rows are omitted, and the caller receives a partial result
 and logs it. Account changes trigger another contact synchronization.
+Unresolved rows do not consume the pool capacity. Automatic contact watches
+also skip accounts that are not registered, before applying the capacity
+limit; a registration change rebuilds them from the same phonebook.
 
 UDP ingress now uses `recvmsg` and rejects `MSG_TRUNC` before SIP dispatch.
 This matters because lwIP can report the original datagram length after
