@@ -38,6 +38,7 @@ def test_real_ha_roster_metadata_and_explicit_ldap_contract_drive_watch_policy(t
     code = r'''
 #include "phonebook.h"
 #include "sip_blf.h"
+#include "roster_contact.h"
 #include <cassert>
 #include <cctype>
 #include <cmath>
@@ -75,7 +76,7 @@ struct VoipStack{Phonebook phonebook_;bool blf_ready_=true,blf_watch_contacts_=t
  for(const auto&item:contacts->elements){JsonRosterSlot slot;assert(parse_json_roster_slot(item.get(),&slot));ContactEntry e;
   e.name=slot.name;e.route=slot.route;e.id=slot.stable_id;e.kind=slot.kind;e.account_id=slot.account_id;e.auto_blf=slot.auto_blf;rows.push_back(e);}
  assert(phone.phonebook_.replace_all(rows));phone.sync_blf_contacts_();const auto&w=phone.transport_->desired;
- assert(w.size()==3);std::map<std::string,std::string>expected{{"browser-primary","Casa"},{"esphome:d74c0c09d06d0a7433e003f341e42a6b","esp_84c7bb000001"},{"sip-qa","qa"}};
+ assert(w.size()==3);std::map<std::string,std::string>expected{{"browser-primary","100"},{"esphome:d74c0c09d06d0a7433e003f341e42a6b","esp_84c7bb000001"},{"sip-qa","200"}};
  for(const auto&row:w){assert(expected.at(row.contact_id)==row.target&&row.account_id=="ha");}
  assert(phone.phonebook_.find_id("group:ring:Family")&&!contact_can_auto_blf(*phone.phonebook_.find_id("group:ring:Family")));
  ContactEntry external;external.id="ldap-phone";external.name="External phone";external.route="103";external.kind=ContactKind::CONTACT;external.auto_blf=true;external.account_id="office";
@@ -89,7 +90,7 @@ struct VoipStack{Phonebook phonebook_;bool blf_ready_=true,blf_watch_contacts_=t
     binary = tmp_path / "policy"
     result = subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-Wno-misleading-indentation", "-g",
         "-fsanitize=address,undefined", "-fno-pie", "-no-pie", "-DUSE_ESP32", "-DUSE_ESPHOME_VOIP_BLF", "-DUSE_ESPHOME_VOIP_REGISTRATION", "-DUSE_ESPHOME_VOIP_CONTACT_METADATA",
-        "-I", str(tmp_path), "-I", str(SOURCE), str(cpp), "-o", str(binary)], capture_output=True, text=True)
+        "-I", str(tmp_path), "-I", str(SOURCE), str(cpp), str(SOURCE / "roster_contact.cpp"), "-o", str(binary)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     result = subprocess.run([binary], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr

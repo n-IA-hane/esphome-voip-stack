@@ -9,6 +9,7 @@
 
 #include "cJSON.h"
 #include "sip_message.h"
+#include "roster_contact.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
@@ -40,6 +41,7 @@ struct JsonRosterSlot {
 #endif
   std::string name;
   std::string route;
+  std::string number;
   std::string address;
   std::string endpoint_type;
   std::string sip_transport;
@@ -161,26 +163,14 @@ bool json_metadata_string_array_contains(const cJSON *obj, const char *key,
 
 bool parse_json_roster_slot(const cJSON *obj, JsonRosterSlot *slot) {
   if (!cJSON_IsObject(obj)) return false;
-  std::string id = Phonebook::trim(json_string(obj, "id"));
-  std::string name = Phonebook::trim(json_string(obj, "name"));
-  if (name.empty()) name = id;
-  if (id.empty()) id = name;
-  if (!sip_valid_text(id, id.rfind("sip:", 0) == 0 ? Phonebook::MAX_ROUTE_BYTES : Phonebook::MAX_ID_BYTES))
-    return false;
-  const auto valid_name = [](const std::string &value) {
-    return !value.empty() && sip_valid_text(value, Phonebook::MAX_NAME_BYTES);
-  };
-  // A human-friendly UTF-8 display name may exceed the ESP phonebook's byte
-  // budget even when its stable SIP/account id is short. Keep the contact
-  // dialable under that id instead of dropping the whole roster row.
-  if (!valid_name(name)) name = id;
-  if (!valid_name(name)) {
-    return false;
-  }
+  const std::string endpoint_id = json_metadata_string(obj, "endpoint_id");
+  RosterContactIdentity identity;
+  if (!resolve_roster_contact({json_string(obj, "id"), endpoint_id, json_string(obj, "name"),
+                               json_string(obj, "extension"), json_string(obj, "number"),
+                               json_string(obj, "sip_uri")}, &identity)) return false;
 
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
-  slot->stable_id = json_metadata_string(obj, "endpoint_id");
-  if (!sip_valid_text(slot->stable_id, Phonebook::MAX_ID_BYTES)) return false;
+  slot->stable_id = std::move(identity.stable_id);
   slot->account_id = json_metadata_string(obj, "account_id");
   slot->kind = contact_kind_from_string(json_metadata_string(obj, "endpoint_kind"));
   if (slot->kind == ContactKind::UNKNOWN) slot->kind = contact_kind_from_string(json_metadata_string(obj, "kind"));
@@ -190,8 +180,9 @@ bool parse_json_roster_slot(const cJSON *obj, JsonRosterSlot *slot) {
   const bool phone_kind = slot->kind == ContactKind::ESP || slot->kind == ContactKind::SIP_ACCOUNT || slot->kind == ContactKind::BROWSER;
   slot->auto_blf = cJSON_IsBool(automatic) ? cJSON_IsTrue(automatic) : phone_kind;
 #endif
-  slot->name = name;
-  slot->route = id;
+  slot->name = std::move(identity.name);
+  slot->route = std::move(identity.route);
+  slot->number = std::move(identity.number);
   slot->address = Phonebook::trim(json_string(obj, "address"));
   if (slot->address.empty()) slot->address = Phonebook::trim(json_string(obj, "host"));
   if (!slot->address.empty() && !sip_valid_host(slot->address)) {
@@ -594,7 +585,8 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
     JsonRosterSlot slot;
     if (!parse_json_roster_slot(item, &slot)) continue;
     saw_valid_slot = true;
-    if (!this->device_route_id_.empty() && (slot.route == this->device_route_id_
+    if (!this->device_route_id_.empty() && (slot.route == this->device_route_id_ ||
+        Phonebook::trim(json_string(item, "id")) == this->device_route_id_
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
         || slot.stable_id == this->device_route_id_
 #endif
@@ -644,6 +636,7 @@ bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
     ContactEntry entry;
     entry.name = slot.name;
     entry.route = slot.route;
+    entry.number = slot.number;
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
     entry.id = slot.stable_id; entry.kind = slot.kind;
     entry.account_id = slot.account_id; entry.auto_blf = slot.auto_blf;

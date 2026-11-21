@@ -2307,7 +2307,8 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
     roster_parser = settings[
         settings.index("bool parse_json_roster_slot") : settings.index("\n}  // namespace")
     ]
-    assert "if (!valid_name(name)) name = id;" in roster_parser
+    assert "resolve_roster_contact(" in roster_parser
+    assert "slot->route = std::move(identity.route);" in roster_parser
 
 
 def test_voip_media_tasks_are_not_idle_polling() -> None:
