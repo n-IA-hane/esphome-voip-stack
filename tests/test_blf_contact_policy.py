@@ -39,6 +39,7 @@ def test_real_ha_roster_metadata_and_explicit_ldap_contract_drive_watch_policy(t
 #include "phonebook.h"
 #include "sip_blf.h"
 #include "roster_contact.h"
+#define ESP_LOGW(...) ((void)0)
 #include <cassert>
 #include <cctype>
 #include <cmath>

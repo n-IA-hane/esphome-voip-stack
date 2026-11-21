@@ -2709,7 +2709,8 @@ def test_sip_response_validation_precedes_retarget_and_bad_sdp_closes_dialog() -
 def test_udp_listener_cannot_flip_an_active_tcp_dialog() -> None:
     sip_cpp = read("sip_transport.cpp")
     udp_receive = cpp_method(sip_cpp, r"SipTransport::handle_sip_udp_datagram_")
-    assert "this->handle_sip_udp_datagram_(buf, n, src);" in sip_cpp
+    assert "this->handle_sip_udp_datagram_(buf, received.bytes, src);" in sip_cpp
+    assert "if (received.truncated)" in sip_cpp
     assert "replay_completed_response_(message, src, method, true)" in udp_receive
 
     active_guard = udp_receive.index("if (tcp_session_active && !refer_udp)")

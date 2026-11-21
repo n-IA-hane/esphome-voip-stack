@@ -236,8 +236,33 @@ int main(int argc,char**argv){
  account.bound=true;account.target_ip=INADDR_LOOPBACK;account.target_port=h.first.port;account.contact="sip:alice@127.0.0.1:5060";
  assert(h.client.configure_blf(1));assert(h.client.set_blf_watch(0,0,account,"target","sip:101@example.test",0));h.client.tick(0);
  const auto first=h.first.receive();h.answer(response(first,200,"Expires: 60\r\n"),1);
- const auto initial=xml(0,"full",mode=="version"?"<dialog id='call'><state>confirmed</state></dialog>":"");
- assert(h.notification(dialog_notify(first,1,initial),2).rfind("SIP/2.0 200",0)==0);
+ const bool lease = mode.rfind("lease-",0)==0;
+ const auto initial=xml(0,"full",mode=="version"||lease?"<dialog id='call'><state>confirmed</state></dialog>":"");
+ assert(h.notification(dialog_notify(first,1,initial,lease?"active;expires=3600":"active;expires=60"),2).rfind("SIP/2.0 200",0)==0);
+ if(lease){
+  // RFC 6665 4.1.2: quiet state is valid until its lease expires. A refresh
+  // requires its own NOTIFY and does not manufacture an idle snapshot.
+  h.client.tick(2880001);assert(h.first.quiet());
+  assert(h.client.blf_state(0)->available&&h.client.blf_state(0)->state==BlfState::ACTIVE);
+  h.client.tick(2880002);const auto refresh=h.first.receive();
+  assert(field(refresh,"Call-ID")==field(first,"Call-ID")&&field(refresh,"Expires")=="3600");
+  h.answer(response(refresh,200,"Expires: 3600\r\n"),2880003);
+  if(mode=="lease-renew"){
+   assert(h.notification(dialog_notify(refresh,2,xml(1,"full","<dialog id='call'><state>confirmed</state></dialog>"),"active;expires=3600"),2880004).rfind("SIP/2.0 200",0)==0);
+   h.client.tick(3600003);
+   assert(h.first.quiet()&&h.client.blf_state(0)->available&&h.client.blf_state(0)->state==BlfState::ACTIVE);
+  }else{
+   h.client.tick(2912001);assert(h.first.quiet()&&h.client.blf_state(0)->available);
+   h.client.tick(2912002);
+   assert(!h.client.blf_state(0)->available&&h.client.blf_state(0)->state==BlfState::UNKNOWN);
+   h.client.tick(2914002);const auto retry=h.first.receive();
+   assert(field(retry,"Call-ID")!=field(first,"Call-ID"));
+   h.answer(response(retry,200,"Expires: 60\r\n"),2914003);
+   assert(h.notification(dialog_notify(retry,1,xml(0,"full","")),2914004).rfind("SIP/2.0 200",0)==0);
+   assert(h.client.blf_state(0)->available&&h.client.blf_state(0)->state==BlfState::IDLE);
+  }
+  return 0;
+ }
  if(mode=="version"){
   assert(h.notification(dialog_notify(first,2,xml(2,"partial","")),3).rfind("SIP/2.0 200",0)==0);
   assert(!h.client.blf_state(0)->available);h.client.tick(4);const auto resync=h.first.receive();

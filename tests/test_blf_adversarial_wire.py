@@ -21,7 +21,7 @@ def adversarial_blf_binary(tmp_path_factory):
     return binary
 
 
-@pytest.mark.parametrize("scenario", ["version", "atomic", "reply-failure"])
+@pytest.mark.parametrize("scenario", ["version", "atomic", "reply-failure", "lease-renew", "lease-notify-timeout"])
 def test_old_full_and_rejected_notify_never_commit_a_false_state(adversarial_blf_binary, scenario):
     def no_core():
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))

@@ -82,7 +82,8 @@ void VoipStack::sync_blf_contacts_() {
     if (account == "direct") account = this->blf_account_id_;
     watches.push_back({std::string(entry->stable_id()), std::move(account), static_cast<std::string>(entry->route)});
   }
-  this->set_blf_watches(watches);
+  if (!this->set_blf_watches(watches))
+    ESP_LOGW("voip_stack.blf", "Contact watches are incomplete; check Account SIP and targets");
 }
 
 

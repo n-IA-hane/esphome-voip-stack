@@ -2,6 +2,7 @@
 #include "sip_message.h"
 #include "sip_record.h"
 #include "sip_dialog_message.h"
+#include "sip_udp_receive.h"
 #ifdef USE_ESPHOME_VOIP_PAGING
 #include "sip_answer_mode.h"
 #endif
@@ -4804,11 +4805,11 @@ void SipTransport::sip_task_() {
 
     if (this->sip_socket_ >= 0 && FD_ISSET(this->sip_socket_, &readfds)) {
       struct sockaddr_in src{};
-      socklen_t slen = sizeof(src);
-      int n = recvfrom(this->sip_socket_, buf, this->sip_rx_scratch_.size() - 1, 0,
-                       reinterpret_cast<struct sockaddr *>(&src), &slen);
-      if (n > 0) {
-        this->handle_sip_udp_datagram_(buf, n, src);
+      const auto received = receive_sip_udp(this->sip_socket_, buf, this->sip_rx_scratch_.size(), &src);
+      if (received.truncated) {
+        ESP_LOGW(TAG, "SIP UDP datagram exceeds receive capacity; discarded");
+      } else if (received.bytes > 0) {
+        this->handle_sip_udp_datagram_(buf, received.bytes, src);
       }
     }
 

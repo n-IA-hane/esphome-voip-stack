@@ -53,10 +53,16 @@ int main(int argc,char**argv){
  VoipStack app;auto&phone=*app.transport_;Peer peer(tcp);bind_account(phone,peer);
  assert(app.phonebook_.add_one("Desk|101|127.0.0.1|5060|40000|sip_udp")==AddResult::Added);
  assert(app.phonebook_.set_metadata("Desk","endpoint-desk",ContactKind::SIP_ACCOUNT,"office",true));
- assert(phone.configure_blf(mode=="admission"?2:1,nullptr));
+ assert(phone.configure_blf(mode=="admission"||mode=="partial-admission"?2:1,nullptr));
  SipMwi::Hooks hooks;hooks.context=&phone;hooks.send=SipTransport::registration_send_view_;hooks.reply=SipTransport::registration_mwi_reply_;
  hooks.local_ip=SipTransport::registration_local_ip_;hooks.random=esp_random;hooks.hash=SipTransport::registration_hash_;hooks.local_port=phone.sip_port_;
- phone.mwi_.set_hooks(hooks);assert(phone.set_blf_watches({{"endpoint-desk","office","101"}}));phone.pump_registration_mwi_(clock_ms);
+ phone.mwi_.set_hooks(hooks);
+ if(mode=="partial-admission"){
+  // The unresolved row precedes a real account and must not stop its watch.
+  assert(!phone.set_blf_watches({{"unresolved","missing","102"},{"endpoint-desk","office","101"}}));
+  assert(phone.mwi_.blf_watch_id(0)=="endpoint-desk"&&!phone.mwi_.blf_watch_requested(1));
+ }else assert(phone.set_blf_watches({{"endpoint-desk","office","101"}}));
+ phone.pump_registration_mwi_(clock_ms);
  const auto packages=peer.drain();assert(packages.size()==2);std::string subscribe,mailbox;
  for(const auto&record:packages){assert(record.rfind("SUBSCRIBE ",0)==0);
   if(header_value(record,"Event")=="dialog")subscribe=record;
@@ -69,6 +75,11 @@ int main(int argc,char**argv){
  const std::string state=mode=="active"?"confirmed":"early";
  peer.send_to(phone,notify_dialog(subscribe,1,dialog_document("<dialog id='incoming'"+direction+"><state>"+state+"</state></dialog>")));
  one(peer,"SIP/2.0 200");
+ if(mode=="partial-admission"){
+  BlfStateInfo info;assert(phone.get_blf_info("endpoint-desk",&info)&&info.available&&info.state==BlfState::RINGING);
+  assert(!phone.get_blf_info("unresolved",&info));
+  for(auto&flow:phone.registration_flows_)phone.close_tcp_flow_(flow);close(phone.sip_socket_);return 0;
+ }
  if(mode=="admission"){
   const BlfWatchConfig valid{"endpoint-desk","office","101"};
   assert(!phone.set_blf_watches({valid,valid}));
@@ -132,7 +143,7 @@ def pickup_wire_binary(tmp_path_factory):
     return binary
 
 
-@pytest.mark.parametrize("mode,transport", [(m,p) for m in ["recipient","initiator","legacy","active","gap","prefix-empty","busy","unregistered","admission"] for p in ["udp","tcp"]]+[("auxiliary","udp")])
+@pytest.mark.parametrize("mode,transport", [(m,p) for m in ["recipient","initiator","legacy","active","gap","prefix-empty","busy","unregistered","admission","partial-admission"] for p in ["udp","tcp"]]+[("auxiliary","udp")])
 def test_only_recipient_pickup_originates_and_auxiliary_notify_preserves_call(pickup_wire_binary, mode, transport):
     def no_core():
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))

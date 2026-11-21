@@ -193,24 +193,32 @@ bool SipTransport::configure_blf(uint8_t capacity, BlfCallback callback) {
 bool SipTransport::set_blf_watches(const std::vector<BlfWatchConfig> &watches) {
   LockGuard lock(this->dialog_mutex_);
   if (watches.size() > this->mwi_.blf_capacity()) return false;
+  bool all_accounts_found = true;
   for (size_t i = 0; i < watches.size(); ++i) {
     const auto &watch = watches[i];
     const int owner_index = this->registration_.find(watch.account_id);
-    if (watch.contact_id.empty() || !sip_valid_text(watch.contact_id, CONTACT_ID_BYTES) || owner_index < 0) return false;
+    if (watch.contact_id.empty() || !sip_valid_text(watch.contact_id, CONTACT_ID_BYTES)) return false;
     for (size_t j = 0; j < i; ++j)
       if (watches[j].contact_id == watch.contact_id) return false;
     const auto normalized = sip_normalize_dial_target(watch.target, SIP_URI_BYTES);
-    if (normalized.empty() ||
-        sip_target_uri(normalized, this->registration_.account(owner_index).config.domain).empty()) return false;
+    if (normalized.empty()) return false;
+    if (owner_index < 0) {
+      all_accounts_found = false;
+      continue;
+    }
+    if (sip_target_uri(normalized, this->registration_.account(owner_index).config.domain).empty()) return false;
   }
   const uint32_t now = millis();
   for (size_t slot = 0; slot < this->mwi_.blf_capacity(); ++slot) {
     if (!this->mwi_.blf_watch_requested(slot)) continue;
     bool retained = false;
-    for (const auto &watch : watches) retained |= watch.contact_id == this->mwi_.blf_watch_id(slot);
+    for (const auto &watch : watches)
+      retained |= watch.contact_id == this->mwi_.blf_watch_id(slot) && this->registration_.find(watch.account_id) >= 0;
     if (!retained) this->mwi_.clear_blf_watch(slot, now);
   }
   for (const auto &watch : watches) {
+    const int owner_index = this->registration_.find(watch.account_id);
+    if (owner_index < 0) continue;
     size_t slot = 0;
     while (slot < this->mwi_.blf_capacity() &&
            (!this->mwi_.blf_watch_requested(slot) || this->mwi_.blf_watch_id(slot) != watch.contact_id)) ++slot;
@@ -219,13 +227,15 @@ bool SipTransport::set_blf_watches(const std::vector<BlfWatchConfig> &watches) {
       while (slot < this->mwi_.blf_capacity() && this->mwi_.blf_watch_requested(slot)) ++slot;
     }
     if (slot == this->mwi_.blf_capacity()) return false;
-    const size_t account_index = this->registration_.find(watch.account_id);
+    const size_t account_index = static_cast<size_t>(owner_index);
     const auto &account = this->registration_.account(account_index);
     const std::string target = sip_target_uri(watch.target, account.config.domain);
     if (!this->mwi_.set_blf_watch(slot, account_index, account, watch.contact_id, target, now)) return false;
   }
   this->wake_sip_task_();
-  return true;
+  // Account creation triggers another contact sync. Known accounts must remain
+  // watched while an unrelated directory row waits for its account to exist.
+  return all_accounts_found;
 }
 template<typename Result> bool SipTransport::copy_blf_state_(std::string_view id, Result *out) {
   if (out == nullptr) return false;
