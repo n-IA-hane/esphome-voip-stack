@@ -488,8 +488,10 @@ std::string SipTransport::build_negotiated_sdp_answer_(const NegotiatedMedia &me
       !append(tx_payload_type, selected_tx,
               advertise_rx && rx_payloads.find(tx_payload_type, nullptr) ? "sendrecv" : "send")) return "";
 #ifdef USE_ESPHOME_VOIP_DTMF
-  const DtmfFormat dtmf = media.dtmf.rx.valid() ? media.dtmf.rx : media.dtmf.tx;
-  if (dtmf.valid()) {
+  uint8_t previous_event_pt = 0;
+  for (const auto &dtmf : {media.dtmf.rx, media.dtmf.tx}) {
+    if (!dtmf.valid() || dtmf.payload_type == previous_event_pt) continue;
+    previous_event_pt = dtmf.payload_type;
     const auto pt = std::to_string(dtmf.payload_type);
     payloads += " " + pt;
     maps += "a=rtpmap:" + pt + " telephone-event/" + std::to_string(dtmf.clock) + "\r\n";

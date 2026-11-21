@@ -122,6 +122,7 @@ uint32_t u32(const uint8_t*p){return uint32_t(p[0])<<24|uint32_t(p[1])<<16|uint3
 struct Event {uint32_t timestamp=0;unsigned ends=0,packets=0;};
 int main(int argc,char**argv){
  assert(argc==2);const bool same=std::string(argv[1])=="shared";const bool terminate=std::string(argv[1])=="terminate";
+ const bool renegotiate=std::string(argv[1])=="renegotiate";bool changed=false;
  SipTransport dut;dut.audio.frame_ms=10;dut.audio.sample_rate=16000;
  dut.offer_rx_formats_.count=1;dut.offer_rx_formats_.formats[0]=dut.audio;assert(dut.negotiated_rx_payloads_.add(96,dut.audio));
  dut.dtmf_tx_format_.clock=same?16000:8000;
@@ -156,10 +157,12 @@ int main(int argc,char**argv){
    auto found=last_sequence.find(ssrc);if(found!=last_sequence.end())assert(seq==uint16_t(found->second+1));last_sequence[ssrc]=seq;
    if(pt==96){assert(n==332&&ssrc==1234);if(last_audio_ts.count(ssrc))assert(timestamp==last_audio_ts[ssrc]+160);last_audio_ts[ssrc]=timestamp;
     for(unsigned i=0;i<160;++i)assert(u16(p+12+i*2)==uint16_t(audio_received+i));++audio_received;
-   }else{assert(pt==109&&n==16&&(same?ssrc==1234:ssrc!=1234));const unsigned digit=p[12];assert(digit<12);
+   }else{const unsigned digit=p[12];assert(digit<12);const bool shared_event=same||(renegotiate&&digit!=0);
+    assert(pt==(renegotiate&&digit!=0?110:109)&&n==16&&(shared_event?ssrc==1234:ssrc!=1234));
     auto &event=events[digit];if(!event.packets){assert(p[1]&0x80);event.timestamp=timestamp;}else assert(!(p[1]&0x80)&&event.timestamp==timestamp);
-    assert(!(p[13]&0x40));const unsigned duration=u16(p+14);assert(duration>0&&duration<=(terminate?1600U:same?640U:320U));
-    if(p[13]&0x80){++event.ends;assert(duration==(same?640U:320U));}++event.packets;
+    assert(!(p[13]&0x40));const unsigned duration=u16(p+14);assert(duration>0&&duration<=(terminate?1600U:shared_event?640U:320U));
+    if(p[13]&0x80){++event.ends;assert(duration==(shared_event?640U:320U));}++event.packets;
+    if(renegotiate&&!changed){changed=true;dut.set_dtmf_config_({16000,0xffff,110},dut.dtmf_rx_format_);}
    }
   }
  }
@@ -193,7 +196,7 @@ def worker_binary(tmp_path_factory):
     return binary
 
 
-@pytest.mark.parametrize('clock',['shared','separate','terminate'])
+@pytest.mark.parametrize('clock',['shared','separate','terminate','renegotiate'])
 def test_worker_owns_dtmf_and_continuous_audio(worker_binary,clock):
     run=subprocess.run([str(worker_binary),clock],capture_output=True,text=True,timeout=8)
     assert run.returncode==0,run.stdout+run.stderr

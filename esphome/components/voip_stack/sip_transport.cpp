@@ -4875,15 +4875,17 @@ void SipTransport::rtp_task_() {
       const uint32_t dtmf_now = millis();
       DtmfFormat dtmf_tx; uint32_t dtmf_epoch = 0;
       this->get_dtmf_config_(&dtmf_tx, nullptr, &dtmf_epoch);
-      if (dtmf_epoch != dtmf_session_epoch) {
-        dtmf_sender.cancel(); dtmf_session_epoch = dtmf_epoch;
+      if (dtmf_epoch != dtmf_session_epoch && !dtmf_sender.active()) {
+        dtmf_session_epoch = dtmf_epoch;
         dtmf_ssrc = esp_random(); if (dtmf_ssrc == this->rtp_ssrc_) dtmf_ssrc ^= 0x80000000U;
         dtmf_sequence = static_cast<uint16_t>(esp_random());
         dtmf_clock_ms = dtmf_now; dtmf_clock_ts = esp_random();
       }
       const bool stable_proposal = !(this->media_proposal_epoch_.load(std::memory_order_acquire) & 1U);
-      if (!dtmf_tx.valid() || !this->media_active_.load(std::memory_order_acquire)) {
+      if (!this->media_active_.load(std::memory_order_acquire)) {
         dtmf_sender.cancel(); if (this->dtmf_queue_ != nullptr) xQueueReset(this->dtmf_queue_);
+      } else if (!dtmf_tx.valid()) {
+        if (this->dtmf_queue_ != nullptr) xQueueReset(this->dtmf_queue_);
       } else if (stable_proposal && dtmf_sender.ready(dtmf_now) && this->dtmf_queue_ != nullptr) {
         LockGuard socket_lock(this->rtp_socket_mutex_);
         DtmfRequest request{};
@@ -4917,7 +4919,9 @@ void SipTransport::rtp_task_() {
 #ifdef USE_ESPHOME_VOIP_DTMF
       DtmfSender::Report report;
       if (!(this->media_proposal_epoch_.load(std::memory_order_acquire) & 1U) && dtmf_sender.poll(millis(), &report))
-        this->send_dtmf_packet_(report, dtmf_sender.format, dtmf_sender.epoch,
+        // The active digit keeps its format, clock, SSRC and timestamp through
+        // a re-offer. Queue admission still rejects retired configurations.
+        this->send_dtmf_packet_(report, dtmf_sender.format, this->dtmf_generation_.load(std::memory_order_acquire),
                                 dtmf_ssrc, dtmf_separate ? &dtmf_sequence : nullptr);
 #endif
       if (ready == 0 || !FD_ISSET(socket, &readfds)) {

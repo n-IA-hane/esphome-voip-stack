@@ -89,16 +89,24 @@ bool negotiate_audio_contract(const std::string &sdp, uint32_t default_ip, bool 
   const std::string_view audio_section(
       sdp.data() + attributes.section,
       (next_media == std::string::npos ? sdp.size() : next_media + 2) - attributes.section);
-  auto dtmf = negotiate_dtmf(
-      audio_section, attributes.payload_rank,
-      audio_format_rtp_clock_rate(selection.selected_tx ? selection.selected_tx_format : selection.selected_rx_format),
-      remote_is_answer, local.offered_dtmf_clocks);
-  if (dtmf.valid() &&
-      (selection.seen_mapping[dtmf.payload_type] != 0 || selection.received_payloads.find(dtmf.payload_type, nullptr) ||
-       (selection.selected_tx && selection.selected_tx_payload_type == dtmf.payload_type)))
-    dtmf = {};
-  DtmfConfig dtmf_config{selection.selected_tx ? dtmf : DtmfFormat{}, selection.selected_rx ? dtmf : DtmfFormat{}};
-  if (remote_is_answer && dtmf_config.rx.valid()) dtmf_config.rx.payload_type = 120 + dtmf_clock_index(dtmf.clock);
+  const auto events_for = [&](const AudioFormat &audio, bool receive) {
+    auto events = negotiate_dtmf(audio_section, attributes.payload_rank, audio_format_rtp_clock_rate(audio),
+                                 remote_is_answer, local.offered_dtmf_clocks);
+    if (events.valid() &&
+        (selection.seen_mapping[events.payload_type] != 0 ||
+         selection.received_payloads.find(events.payload_type, nullptr) ||
+         (selection.selected_tx && selection.selected_tx_payload_type == events.payload_type))) return DtmfFormat{};
+    if (receive && remote_is_answer && events.valid()) {
+      events.payload_type = 120 + dtmf_clock_index(events.clock);
+      if (local.offered_rx.find(events.payload_type, nullptr)) return DtmfFormat{};
+    }
+    return events;
+  };
+  // Contract P5/CC-4: each direction follows its actual RTP clock. G.722
+  // decodes at 16 kHz but its audio and telephone-event timestamps use 8 kHz.
+  const DtmfConfig dtmf_config{
+      selection.selected_tx ? events_for(selection.selected_tx_format, false) : DtmfFormat{},
+      selection.selected_rx ? events_for(selection.selected_rx_format, true) : DtmfFormat{}};
   dtmf_result = dtmf_config;
 #endif
   return true;

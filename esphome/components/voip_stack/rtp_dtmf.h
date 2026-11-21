@@ -93,7 +93,8 @@ inline DtmfFormat negotiate_dtmf(std::string_view media, const uint8_t *ranks,
     DtmfFormat candidate;
     if (dtmf_rtpmap(line, &candidate) && ranks[candidate.payload_type] != 255) {
       const int index = dtmf_clock_index(candidate.clock);
-      bool valid = !answer || (offered_clocks & (1U << index));
+      bool valid = (!answer || (offered_clocks & (1U << index))) &&
+                   (candidate.clock == preferred_clock || candidate.clock == 8000);
       bool seen_fmtp = false;
       for (size_t other = 0; valid && other < media.size();) {
         const auto last = media.find('\n', other); const auto attribute = dtmf_trim(media.substr(other, last - other));
