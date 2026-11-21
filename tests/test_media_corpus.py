@@ -5,6 +5,7 @@ Home Assistant sent to an ESP phone and the answer that phone returned. The host
 firmware negotiator receives the same offer with the same local formats and must select the
 formats the device announced.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import pytest
 from test_sdp_receive_payloads import ROOT, sdp_fixture_source
 
 CORPUS = Path(os.environ.get("VOIP_MEDIA_CORPUS", ROOT.parent / "esphome-intercom" / "tests" / "media_corpus"))
+LOCK = Path(__file__).parent / "fixtures" / "media_corpus.sha256"
 # Local formats of the two phones the captures were taken from are set inside the harness.
 DEVICES = ("esp-p4", "esp-box-opus")
 
@@ -64,7 +66,9 @@ def _announced(answer: str) -> dict:
     flow = dict((int(pt), role) for pt, role in re.findall(r"a=x-voip-stack-flow:(\d+) (\w+)", audio))
     receive = next(pt for pt in rate if "recv" in flow.get(pt, "sendrecv"))
     send = next(pt for pt in reversed(list(rate)) if "send" in flow.get(pt, "sendrecv"))
-    return {"rx_pt": receive, "rx_rate": rate[receive], "tx_pt": send}
+    packet_ms = int(re.search(r"a=ptime:(\d+)", audio).group(1))
+    # The answer's ptime is the packet time the device receives with.
+    return {"rx_pt": receive, "rx_rate": rate[receive], "rx_ms": packet_ms, "tx_pt": send}
 
 
 @pytest.fixture(scope="module")
@@ -97,3 +101,21 @@ def test_firmware_selects_what_the_device_announced(negotiator, case, device):
     assert selected["outcome"] == "accept", selected
     announced = _announced((case / step["sdp"]).read_text())
     assert {key: selected[key] for key in announced} == announced, (selected, announced)
+    # The device sends with the first packet time of its transmit list.
+    assert selected["tx_ms"] == 20, selected
+
+
+def _digest() -> str:
+    digest = hashlib.sha256()
+    for case, _device in (parameters.values for parameters in _cases()):
+        for path in sorted(case.glob("*")):
+            digest.update(path.name.encode() + b"\0" + path.read_bytes())
+    return digest.hexdigest()
+
+
+def test_the_corpus_is_the_version_this_repository_was_checked_against():
+    """The cases live in the integration repository. A change there must be looked at here."""
+    if not _cases():
+        pytest.skip("shared corpus not available")
+    assert _digest() == LOCK.read_text().strip(), (
+        "the ESP cases of the shared corpus changed: review them, then update " + LOCK.name)
