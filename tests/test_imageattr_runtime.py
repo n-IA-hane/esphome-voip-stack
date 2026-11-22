@@ -69,6 +69,7 @@ int main(int argc,char**argv){assert(argc==2);auto value=ImageAttributeParser::p
 
 
 def sdp_source():
+    """Select unchanged production methods around a host class/platform adapter."""
     sdp = (COMPONENT / "sip_sdp.cpp").read_text()
     message = (COMPONENT / "sip_message.cpp").read_text()
     owner = read_production_source(COMPONENT / "sip_transport.cpp")
@@ -104,7 +105,7 @@ struct SipTransport {
  uint8_t rtp_tx_payload_type_=96,rtp_rx_payload_type_=96;
  RtpAudioPayloads negotiated_rx_payloads_;
  std::atomic<bool>audio_send_enabled_{true},audio_receive_enabled_{true};
- std::atomic<uint32_t>remote_rtp_ip_v4_{0};std::atomic<uint16_t>remote_rtp_port_{0};
+ std::atomic<uint32_t>remote_ip_v4_{0xc0000202},remote_rtp_ip_v4_{0};std::atomic<uint16_t>remote_rtp_port_{0};
  RemoteMediaShape remote_media_shape_;
  bool refer_context_active_=false,video_offered_=false,video_negotiated_=false,video_send_enabled_=false,video_receive_enabled_=false;
  void *video_source_=nullptr,*video_sink_=this;VideoCapability tx,rx,negotiated_video_capability_;
@@ -119,6 +120,7 @@ struct SipTransport {
   tx=rx;tx.width=320;tx.height=240;}
  VideoCapability local_video_send_capability_()const{return video_source_?tx:VideoCapability{};}
  VideoCapability local_video_receive_capability_()const{return video_sink_?rx:VideoCapability{};}
+ bool local_ip_for_peer_(uint32_t,std::string *out)const{*out="192.0.2.1";return true;}
  void reset_video_negotiation_();
  bool learn_remote_video_from_sdp_(const std::string&,uint32_t,bool);
  std::string append_video_sdp_(const std::string&,const std::string&,bool,bool=false)const;
