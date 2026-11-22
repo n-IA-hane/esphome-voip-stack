@@ -26,7 +26,6 @@ def app_source():
   void end_call_(CallEndReason why,const std::string&){++terminations;termination_reason=why;terminated_identity=identity;call_state_=CallState::IDLE;identity={};}
   bool is_registered(const std::string&id){return transport_->is_registered(id);}
   bool select_line(const std::string&);
-  void start_call_on_line(const std::string&,const std::string&,bool,bool);
   void start_call_on_line_(const std::string&,const std::string&,const std::string&);
 ''')
     for marker, replacement in [

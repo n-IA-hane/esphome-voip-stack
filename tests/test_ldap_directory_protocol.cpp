@@ -135,6 +135,10 @@ int main(int argc, char **argv) {
   }
   entry.attributes.pop_back();
   entry.attributes[1].values[0] = "Living room";
+  assert(map_contact(entry, "pbx.example.test", 5060, false, &contact));
+  assert(contact.id == "Living room" && contact.user == "Living room" && contact.kind == "sip_account");
+  assert(contact.uri == "sip:Living%20room@pbx.example.test" && contact.host == "pbx.example.test" && contact.port == 5060);
+  entry.attributes[2].values[0] = "contact";
   assert(!map_contact(entry, "pbx.example.test", 5060, false, &contact));
   Entry no_name{"uid=opaque,dc=voip", {{"uid", {"opaque-stable-key"}}, {"telephoneNumber", {"101"}}}};
   assert(map_contact(no_name, "pbx.example.test", 5060, false, &contact));
