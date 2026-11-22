@@ -25,7 +25,7 @@ def pcm_clock_binary(tmp_path_factory):
         "struct CurrentMediaFormats {AudioFormat caller_to_dest,dest_to_caller,tx,rx;};"
         "CurrentMediaFormats current_media_formats_;mutable int media_format_mutex_=0;"
         "std::atomic<uint32_t>current_tx_audio_format_packed_{0},current_rx_audio_format_packed_{0};"
-        "std::atomic<size_t>current_tx_audio_frame_bytes_{0};AudioFormat rx_audio_format_;",
+        "AudioFormat rx_audio_format_;",
     )
     for marker in ("CurrentMediaFormats snapshot_current_media_formats_(", "void set_current_media_formats_("):
         source = source.replace(block(source, marker), block(header, marker))

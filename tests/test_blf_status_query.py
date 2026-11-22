@@ -32,9 +32,11 @@ using namespace esphome::voip_stack;
 struct LockGuard{explicit LockGuard(int&){};};
 struct Cached {
  BlfStateInfo info;
+ std::array<bool,1> requested{{true}};
  Cached(){info.contact_id="stable-directory-identity-123456789";info.account_id="long-account-identity-1234";
   info.available=true;info.presence=PresenceState::OPEN;info.state=BlfState::ACTIVE;info.active_dialogs=1;info.version=7;}
  size_t blf_capacity()const{return 1;}
+ bool blf_watch_requested(size_t i)const{return requested.at(i);}
  const BlfStateInfo*blf_state(size_t i)const{return i==0?&info:nullptr;}
 };
 struct SipTransport {

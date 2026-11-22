@@ -39,11 +39,11 @@ def preservation_source():
     code = code.replace(old, r'''
  mutable int media_format_mutex_=0;CurrentMediaFormats current_media_formats_;
  std::atomic<uint32_t>current_tx_audio_format_packed_{0},current_rx_audio_format_packed_{0};
- std::atomic<size_t>current_tx_audio_frame_bytes_{0};
  AudioFormat&tx=current_media_formats_.tx;AudioFormat&rx=current_media_formats_.rx;
 ''' + block(header, "void set_current_media_formats_(") + "\n"
         + block(header, "AudioFormat get_current_tx_audio_format_() const") + "\n"
-        + block(header, "AudioFormat get_current_rx_audio_format_() const"))
+        + block(header, "AudioFormat get_current_rx_audio_format_() const") + "\n"
+        + block(header, "size_t tx_audio_chunk_bytes_() const"))
     # Outgoing preparation also enters through the production FSM method. Only
     # the selected contact, hardware and publication boundaries are adapters.
     code = code.replace("void start_call_attempt_(bool){assert(false);}", r'''
@@ -131,14 +131,14 @@ int main(int argc,char**argv){
  }
  // The application setter must have published actual packed geometry.
  assert(phone.get_current_tx_audio_format_().sample_rate==16000);
- assert(phone.current_tx_audio_frame_bytes_==phone.tx.nominal_frame_bytes());
+ assert(phone.tx_audio_chunk_bytes_()==phone.tx.nominal_frame_bytes());
  const bool reset_pending=!automatic;
  s.audio_receive_reset_pending_=reset_pending;s.rtp_source_reacquire_pending_=reset_pending;
  const ActiveSnapshot retained(s);const auto formats=phone.snapshot_current_media_formats_();
  const auto sdp_before=s.build_sdp_answer_();const auto next_account=s.next_account_;
  const bool send_enabled=s.audio_send_enabled_.load(),receive_enabled=s.audio_receive_enabled_.load();
  const auto packed_tx=phone.current_tx_audio_format_packed_.load(),packed_rx=phone.current_rx_audio_format_packed_.load();
- const auto frame_bytes=phone.current_tx_audio_frame_bytes_.load();const auto identity=phone.identity.call_id;
+ const auto frame_bytes=phone.tx_audio_chunk_bytes_();const auto identity=phone.identity.call_id;
  const auto state=phone.call_state_.load();const auto pending=phone.pending_media_start_;
  const auto revision=phone.rx_audio_revision_.load(),rx_state=phone.rx_playout_state_.load();
  const auto starts=phone.mic_starts,watchdog=phone.watchdog_resets,resets=phone.rx_resets,prepares=phone.t.prepares;
@@ -151,7 +151,7 @@ int main(int argc,char**argv){
   assert(header_value(rejected[0],"Call-ID")=="competing-g722");retained.unchanged(s);dispatch(s,phone,handled);
   const auto now=phone.snapshot_current_media_formats_();
   assert(now.caller_to_dest==formats.caller_to_dest&&now.dest_to_caller==formats.dest_to_caller&&now.tx==formats.tx&&now.rx==formats.rx);
-  assert(phone.current_tx_audio_format_packed_==packed_tx&&phone.current_rx_audio_format_packed_==packed_rx&&phone.current_tx_audio_frame_bytes_==frame_bytes);
+  assert(phone.current_tx_audio_format_packed_==packed_tx&&phone.current_rx_audio_format_packed_==packed_rx&&phone.tx_audio_chunk_bytes_()==frame_bytes);
   assert(phone.identity.call_id==identity&&phone.call_state_==state&&phone.pending_media_start_==pending&&phone.auto_answer_==automatic);
   assert(phone.rx_audio_revision_==revision&&phone.rx_playout_state_==rx_state&&phone.rx_resets==resets&&phone.watchdog_resets==watchdog);
   assert(phone.mic_starts==starts&&phone.t.prepares==prepares&&phone.calling_start_time_==calling&&phone.ringing_start_time_==ringing);
