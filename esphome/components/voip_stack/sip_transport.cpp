@@ -322,7 +322,8 @@ void SipTransport::stop() {
   this->tcp_flow_.close_requested.store(true,
                                                std::memory_order_release);
   if (this->sip_task_handle_ != nullptr) {
-    xSemaphoreTake(this->sip_task_done_, 0);
+    // Startup clears the previous generation. A worker may already have
+    // completed after running_ became false; retain its latched signal.
     this->wake_sip_task_();
     xSemaphoreTake(this->sip_task_done_, portMAX_DELAY);
     voip_audio_core::cleanup_pinned_task(&this->sip_task_handle_,
@@ -353,7 +354,7 @@ void SipTransport::stop() {
       this->media_lifecycle_phase_.store(
           MediaLifecyclePhase::SHUTTING_DOWN, std::memory_order_release);
     }
-    xSemaphoreTake(this->rtp_task_done_, 0);
+    // Completion signals are cleared before task creation, never at join.
     this->rtp_task_terminate_.store(true, std::memory_order_release);
     xTaskNotifyGive(this->rtp_task_handle_);
     xSemaphoreTake(this->rtp_task_done_, portMAX_DELAY);
