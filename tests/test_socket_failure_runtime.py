@@ -1,5 +1,7 @@
 """Inject socket/bind/listen failures into production helpers, then retry."""
 
+from production_sip_source import read_production_source
+
 from pathlib import Path
 import subprocess
 
@@ -7,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_socket_failures_release_descriptors_and_allow_retry(tmp_path):
-    source = (ROOT / "esphome/components/voip_stack/sip_transport.cpp").read_text()
+    source = read_production_source(ROOT / "esphome/components/voip_stack/sip_transport.cpp")
     methods = []
     for sig in ["bool SipTransport::bind_udp_", "bool SipTransport::bind_tcp_"]:
         start = source.index(sig)

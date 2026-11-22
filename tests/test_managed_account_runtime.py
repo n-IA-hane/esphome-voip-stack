@@ -1,5 +1,7 @@
 """Managed config changes retire old REGISTER generations on the same worker."""
 
+from production_sip_source import read_production_source
+
 import subprocess
 
 import pytest
@@ -15,7 +17,7 @@ def managed_binary(tmp_path_factory):
     defines.write_text("")
     header = (SOURCE / "sip_transport.h").read_text()
     adapter = (SOURCE / "sip_registration_transport.cpp").read_text()
-    worker = block((SOURCE / "sip_transport.cpp").read_text(), "void SipTransport::sip_task_()")
+    worker = block(read_production_source(SOURCE / "sip_transport.cpp"), "void SipTransport::sip_task_()")
     start = worker.index("#ifdef USE_VOIP_HA_AUTO_REGISTER") + len("#ifdef USE_VOIP_HA_AUTO_REGISTER")
     worker_stage = worker[start:worker.index("#endif", start)]
     harness = (ROOT / "tests/fixtures/registration_engine.cpp").read_text()

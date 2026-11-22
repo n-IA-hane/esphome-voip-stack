@@ -9,6 +9,8 @@ disappears, and minimal SIP transaction behavior for UDP.
 
 from __future__ import annotations
 
+from production_sip_source import read_production_source
+
 import importlib.util
 import os
 import sys
@@ -26,7 +28,7 @@ VOIP = ROOT / "esphome" / "components" / "voip_stack"
 
 
 def read(name: str) -> str:
-    source = (VOIP / name).read_text(encoding="utf-8")
+    source = read_production_source(VOIP / name, encoding="utf-8")
     if name == "sip_transport.cpp":
         helpers = [
             (VOIP / helper).read_text(encoding="utf-8")
@@ -1711,7 +1713,7 @@ def test_video_workers_share_one_bounded_stop_deadline_without_forced_delete() -
 
 def test_voip_media_paths_do_not_use_periodic_delay_macros() -> None:
     component = ROOT / "esphome" / "components" / "voip_stack"
-    sip = (component / "sip_transport.cpp").read_text()
+    sip = read_production_source(component / "sip_transport.cpp")
     rtp_start = sip.index("void SipTransport::rtp_task_()")
     sources = "\n".join(
         (

@@ -1,4 +1,6 @@
 """Exercise production REFER ownership and notifications without an ESP scheduler."""
+
+from production_sip_source import read_production_source
 from pathlib import Path
 import subprocess
 import re
@@ -23,7 +25,7 @@ def negotiated_fixture_source(code, *, sdp=False, video=False):
     header = (SOURCE / 'sip_transport.h').read_text()
     if 'struct NegotiatedMedia : SdpAudioMedia {' not in header:
         return code
-    owner = (SOURCE / 'sip_transport.cpp').read_text()
+    owner = read_production_source(SOURCE / 'sip_transport.cpp')
     parser = (SOURCE / 'sip_sdp.cpp').read_text()
     declarations = 'struct NegotiatedMedia;\n'
     implementations = ''
@@ -37,6 +39,12 @@ def negotiated_fixture_source(code, *, sdp=False, video=False):
                    'void SipTransport::commit_audio_config_(']
         if 'get_media_config_(' not in code:
             markers.append('void SipTransport::get_media_config_(')
+        declarations += '#ifdef USE_ESPHOME_VOIP_STACK_OPUS\nOpusReceiveConstraints opus_tx_constraints_{};\n#endif\n'
+        for marker in ('OpusReceiveConstraints SipTransport::get_opus_tx_constraints_(',
+                       'void SipTransport::set_opus_tx_constraints_('):
+            body = block(owner, marker)
+            declarations += '#ifdef USE_ESPHOME_VOIP_STACK_OPUS\n' + body[:body.index('{')].replace('SipTransport::', '').strip() + ';\n#endif\n'
+            implementations += '\n#ifdef USE_ESPHOME_VOIP_STACK_OPUS\n' + body + '\n#endif\n'
         for marker in markers:
             body = block(owner, marker)
             declarations += body[:body.index('{')].replace('SipTransport::', '').strip() + ';\n'
@@ -211,10 +219,10 @@ struct SipTransport: SipPhoneTransport {
  void set_media_config_(const AudioFormat&t,const AudioFormat&r,uint8_t tp,uint8_t rp,const RtpAudioPayloads*p){
   selected_tx_format_=t;selected_rx_format_=r;rtp_tx_payload_type_=tp;rtp_rx_payload_type_=rp;negotiated_rx_payloads_=*p;}
 };
-''' + block((SOURCE/'sip_transport.cpp').read_text(), 'bool SipTransport::reject_if_stale_dialog_(') + '\n' + block((SOURCE/'sip_request_response.cpp').read_text(), 'bool SipTransport::send_request_(const std::string &method, const std::string &body,') + '\n' + production
+''' + block(read_production_source(SOURCE/'sip_transport.cpp'), 'bool SipTransport::reject_if_stale_dialog_(') + '\n' + block((SOURCE/'sip_request_response.cpp').read_text(), 'bool SipTransport::send_request_(const std::string &method, const std::string &body,') + '\n' + production
     # Keep the real configuration side effects: valid retained formats do not
     # imply that their held directions are currently enabled.
-    owner = (SOURCE / 'sip_transport.cpp').read_text()
+    owner = read_production_source(SOURCE / 'sip_transport.cpp')
     for marker in ('void set_media_config_(', 'void get_media_config_('):
         implementation = block(owner, marker.replace('void ', 'void SipTransport::', 1))
         implementation = implementation.replace('SipTransport::', '')

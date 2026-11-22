@@ -1,5 +1,7 @@
 """Actual UDP/TCP ACK parsing must finalize the application's media contract."""
 
+from production_sip_source import read_production_source
+
 import os
 from pathlib import Path
 import subprocess
@@ -22,7 +24,7 @@ def delayed_source(*, registered=False):
         code = wire_source()
     parser = (COMPONENT / "sip_message.cpp").read_text()
     sdp = (COMPONENT / "sip_sdp.cpp").read_text()
-    transport = (COMPONENT / "sip_transport.cpp").read_text()
+    transport = read_production_source(COMPONENT / "sip_transport.cpp")
     responses = (COMPONENT / "sip_request_response.cpp").read_text()
     extra = ""
     for marker in ("bool parse_rtpmap_format(", "bool parse_audio_media_line("):

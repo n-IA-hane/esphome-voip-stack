@@ -1,5 +1,7 @@
 """Mixed codec offers retain every negotiated same-geometry receive mapping."""
 
+from production_sip_source import read_production_source
+
 from pathlib import Path
 import os
 import subprocess
@@ -92,7 +94,7 @@ def mixed_playout_binary(tmp_path_factory):
  void emit_sip_signal_(SipSignal){assert(false);}
 '''
     code += sdp.replace("struct SipTransport {", "struct SipTransport {" + fields) + after
-    transport = (component / "sip_transport.cpp").read_text()
+    transport = read_production_source(component / "sip_transport.cpp")
     parser = (component / "sip_message.cpp").read_text()
     audio = (component / "voip_audio.cpp").read_text()
     fsm = (component / "voip_fsm.cpp").read_text()
@@ -141,7 +143,7 @@ def g722_playout_binary(mixed_playout_binary, tmp_path_factory):
     code = code[:code.index("int main(")]
     code = code.replace("#define USE_ESPHOME_VOIP_STACK_OPUS", "#define USE_ESPHOME_VOIP_STACK_G722")
     code = code.replace("#define USE_ESPHOME_VOIP_STACK_G722\n", "", 1)
-    transport = (ROOT / "esphome/components/voip_stack/sip_transport.cpp").read_text()
+    transport = read_production_source(ROOT / "esphome/components/voip_stack/sip_transport.cpp")
     getter_declaration = block(transport, "void SipTransport::get_media_config_(").split("{")[0].replace("SipTransport::", "").strip() + ";"
     getter_declaration = getter_declaration.replace("RtpAudioPayloads *rx_payloads)", "RtpAudioPayloads *rx_payloads = nullptr)")
     assert getter_declaration in code
@@ -166,7 +168,7 @@ int bounded_select(int nfds,fd_set*r,fd_set*w,fd_set*e,timeval*timeout){
     code = code.replace("void SipTransport::rtp_task_() {", poll_adapter + "\nvoid SipTransport::rtp_task_() {", 1)
     component = ROOT / "esphome/components/voip_stack"
     code += block((component / "sip_message.cpp").read_text(), "size_t pcm_to_rtp_payload(") + "\n"
-    code += block((component / "sip_transport.cpp").read_text(), "void SipTransport::send_audio_frame(") + "\n"
+    code += block(read_production_source(component / "sip_transport.cpp"), "void SipTransport::send_audio_frame(") + "\n"
     code = audio_tx_fixture(code)
     code += r'''
 #include <spandsp.h>

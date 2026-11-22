@@ -1,4 +1,6 @@
 """Production REFER and RTP owners retain each negotiated audio direction."""
+
+from production_sip_source import read_production_source
 import subprocess
 
 import pytest
@@ -9,7 +11,7 @@ from audio_tx_fixture import audio_tx_fixture
 
 def source():
     code = refer_fixture_source()
-    owner = (SOURCE / 'sip_transport.cpp').read_text()
+    owner = read_production_source(SOURCE / 'sip_transport.cpp')
     parser = (SOURCE / 'sip_message.cpp').read_text()
     code = '#define portENTER_CRITICAL(p) (p)->lock()\n#define portEXIT_CRITICAL(p) (p)->unlock()\n#define USE_ESPHOME_VOIP_STACK_PCM\n#include <mutex>\n#include <functional>\n#include <thread>\n#include <chrono>\n#include <cstring>\n#include <cinttypes>\n#include <cerrno>\n#include <unistd.h>\n' + code
     code = code.replace('struct Mutex{};struct LockGuard{explicit LockGuard(Mutex&) {}};',

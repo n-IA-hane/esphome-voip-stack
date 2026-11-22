@@ -1,4 +1,6 @@
 """Established audio hold uses the production re-INVITE and RTP owners."""
+
+from production_sip_source import read_production_source
 import os
 import shutil
 import subprocess
@@ -48,7 +50,7 @@ uint32_t millis(){return 100;}
         ("sip_transport.cpp", ["void SipTransport::send_audio_frame(", "bool SipTransport::received_audio_format_("]),
         ("sip_dtmf.cpp", ["bool SipTransport::can_send_dtmf_locked_(", "bool SipTransport::send_dtmf_packet_("]),
     ):
-        implementation = (SOURCE / filename).read_text()
+        implementation = read_production_source(SOURCE / filename)
         source += "\n" + "\n".join(block(implementation, marker) for marker in markers)
     return audio_tx_fixture(source) + r'''
 int main(int argc,char**argv){
@@ -340,7 +342,7 @@ def video_hold_binary(tmp_path_factory):
         "bool request_media_direction(bool,bool){++calls;return true;}",
         "bool request_media_direction(bool s,bool r){++calls;send=s;receive=r;return true;}",
     )
-    source += "\n" + block((SOURCE / "sip_transport.cpp").read_text(), "bool SipTransport::apply_video_direction_answer_(")
+    source += "\n" + block(read_production_source(SOURCE / "sip_transport.cpp"), "bool SipTransport::apply_video_direction_answer_(")
     source += r'''
 int main(int argc,char**argv){
  assert(argc==2);const std::string mode=argv[1];SipTransport t;AudioFormat pcm;pcm.frame_ms=10;
@@ -459,7 +461,7 @@ def video_control_binary(tmp_path_factory):
             return subprocess.check_output(
                 ["git", "show", f"{ref}:esphome/components/voip_stack/{name}"], cwd=ROOT, text=True,
             )
-        return (SOURCE / name).read_text()
+        return read_production_source(SOURCE / name)
 
     header = read_video("video_rtp.h")
     implementation = read_video("video_rtp.cpp")

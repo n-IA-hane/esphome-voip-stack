@@ -1,5 +1,7 @@
 """Startup metadata is bounded, allocated once and absent without audio_debug."""
 
+from production_sip_source import read_production_source
+
 from pathlib import Path
 import subprocess
 
@@ -14,7 +16,7 @@ COMPONENT = ROOT / "esphome/components/voip_stack"
 @pytest.mark.parametrize("enabled", [False, True])
 def test_real_fixed_startup_trace_debug_boundary_and_quiescent_dump(tmp_path, enabled):
     header = (COMPONENT / "sip_transport.h").read_text()
-    source = (COMPONENT / "sip_transport.cpp").read_text()
+    source = read_production_source(COMPONENT / "sip_transport.cpp")
     start = header.index("  enum class StartupEvent")
     types = header[start:header.index("  std::unique_ptr<StartupTrace", start)]
     methods = "\n".join(block(source, marker) for marker in (

@@ -1,5 +1,7 @@
 """TCP storage admission stays separate from INVITE method admission."""
 
+from production_sip_source import read_production_source
+
 from pathlib import Path
 import subprocess
 
@@ -19,7 +21,7 @@ def control_admission_binary(tmp_path_factory):
     gate = "bool should_accept_session_()const{return true;}"
     assert gate in code
     code = code.replace(gate, "bool app_accept=true;bool should_accept_session_()const{return app_accept;}")
-    code += "\n" + block((SOURCE / "sip_transport.cpp").read_text(), "void SipTransport::accept_tcp_client_(")
+    code += "\n" + block(read_production_source(SOURCE / "sip_transport.cpp"), "void SipTransport::accept_tcp_client_(")
     peers = (Path(__file__).parent / "fixtures/refer_wire_main.cpp").read_text()
     code += "\n" + peers[:peers.index("std::string begin(")]
     account = (Path(__file__).parent / "fixtures/registration_transport.cpp").read_text()

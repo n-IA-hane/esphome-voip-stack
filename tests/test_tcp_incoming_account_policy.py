@@ -1,5 +1,7 @@
 """Actual account INVITE admission, dialog identity and socket ownership."""
 
+from production_sip_source import read_production_source
+
 from pathlib import Path
 import subprocess
 
@@ -10,7 +12,7 @@ from test_sip_registration_transport import registration_transport_source
 
 
 def incoming_account_source():
-    source = (SOURCE / "sip_transport.cpp").read_text()
+    source = read_production_source(SOURCE / "sip_transport.cpp")
     code = registration_transport_source(full_invite=True)
     code += "\n" + block(source, "void SipTransport::accept_tcp_client_(")
     helpers = (Path(__file__).parent / "fixtures/refer_wire_main.cpp").read_text()

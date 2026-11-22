@@ -1,5 +1,7 @@
 """Run production bounded TCP flow helpers on real localhost sockets."""
 
+from production_sip_source import read_production_source
+
 from pathlib import Path
 import subprocess
 
@@ -18,7 +20,7 @@ def block(source, marker):
 
 def test_tcp_connect_retry_and_stream_transaction_ownership(tmp_path):
     base = ROOT / "esphome/components/voip_stack"
-    source = (base / "sip_transport.cpp").read_text()
+    source = read_production_source(base / "sip_transport.cpp")
     header = (base / "sip_transport.h").read_text()
     cpp = tmp_path / "tcp.cpp"
     prelude = r'''

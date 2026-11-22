@@ -1,5 +1,7 @@
 """The original offer owns one kernel RTP socket through final preparation."""
 
+from production_sip_source import read_production_source
+
 from pathlib import Path
 import subprocess
 
@@ -12,7 +14,7 @@ from test_refer_wire_runtime import wire_source
 @pytest.fixture(scope="module")
 def reservation_binary(tmp_path_factory):
     folder = tmp_path_factory.mktemp("rtp-offer-reservation")
-    source = (SOURCE / "sip_transport.cpp").read_text()
+    source = read_production_source(SOURCE / "sip_transport.cpp")
     code = wire_source()
     code = code.replace("#define ESP_LOGI", "#define ESP_LOGE(...) ((void)0)\n#define ESP_LOGI", 1)
     code = code.replace("enum class MediaLifecyclePhase {IDLE}",

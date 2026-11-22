@@ -1,5 +1,7 @@
 """The final local-setup error uses the existing SIP transaction cache and sockets."""
 
+from production_sip_source import read_production_source
+
 from pathlib import Path
 import subprocess
 
@@ -16,7 +18,7 @@ def replay_binary(tmp_path_factory):
     path = tmp_path_factory.mktemp("incoming-replay")
     code = wire_source()
     requests = (COMPONENT / "sip_request_response.cpp").read_text()
-    source = (COMPONENT / "sip_transport.cpp").read_text()
+    source = read_production_source(COMPONENT / "sip_transport.cpp")
     old = "bool send_response_(uint16_t,const char*){assert(false);return false;}"
     assert old in code
     code = code.replace(

@@ -1,4 +1,6 @@
 """UA OPTIONS is advisory SDP on real sockets, without acquiring media ownership."""
+
+from production_sip_source import read_production_source
 import subprocess
 
 import pytest
@@ -9,7 +11,7 @@ from test_refer_wire_runtime import wire_source
 
 def options_source():
     code = wire_source(full_invite=True)
-    source = (SOURCE / "sip_transport.cpp").read_text()
+    source = read_production_source(SOURCE / "sip_transport.cpp")
     sdp = (SOURCE / "sip_sdp.cpp").read_text()
     _parser = (SOURCE / "sip_message.cpp").read_text()
     code = code.replace("struct SipPhoneTransport {",

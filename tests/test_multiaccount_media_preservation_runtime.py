@@ -1,5 +1,7 @@
 """The registered-account busy gate preserves the real application media setter."""
 
+from production_sip_source import read_production_source
+
 import os
 from pathlib import Path
 import subprocess
@@ -71,7 +73,7 @@ def preservation_source():
         "return {wire_transport->terminal_transaction_pending_locked_(),0,wire_transport->remote_ip_v4_.load(),wire_transport->remote_sip_port_.load(),wire_transport->remote_sip_tcp_.load()};")
     code = code.replace("std::atomic<bool> running_{true},transport_stopping_{false},audio_receive_reset_pending_{false};",
         "std::atomic<bool> running_{true},transport_stopping_{false},audio_receive_reset_pending_{false},rtp_source_reacquire_pending_{false};")
-    transport = (SOURCE / "sip_transport.cpp").read_text()
+    transport = read_production_source(SOURCE / "sip_transport.cpp")
     code = code.replace(" uint16_t sip_port_=5060;", "bool parse_remote_(const std::string&);void set_remote(const std::string&,uint16_t,uint16_t);void set_sip_signaling_transport(bool);void request_tcp_client_close_();\n uint16_t sip_port_=5060;", 1)
     code += "\n" + block(transport, "bool SipTransport::parse_remote_(")
     code += "\n" + block(transport, "void SipTransport::set_remote(")

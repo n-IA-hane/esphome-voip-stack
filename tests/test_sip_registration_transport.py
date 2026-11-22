@@ -1,4 +1,6 @@
 """Compose actual account ownership, dialog dispatch and TCP/UDP socket methods."""
+
+from production_sip_source import read_production_source
 from pathlib import Path
 import subprocess
 
@@ -25,7 +27,7 @@ def conditional_body(header, begin):
 
 
 def registration_transport_source(*, full_invite=False):
-    source = (SOURCE / "sip_transport.cpp").read_text()
+    source = read_production_source(SOURCE / "sip_transport.cpp")
     header = (SOURCE / "sip_transport.h").read_text()
     adapter = (SOURCE / "sip_registration_transport.cpp").read_text()
     code = wire_source(full_invite=full_invite)

@@ -1,5 +1,7 @@
 """Per-call paging authorization uses real parsing and the existing FSM."""
 
+from production_sip_source import read_production_source
+
 from pathlib import Path
 import subprocess
 
@@ -110,7 +112,7 @@ def paging_wire_binary(tmp_path_factory):
     code = '#include "sip_answer_mode.h"\nusing namespace esphome::voip_stack;\n' + registration_transport_source(full_invite=True)
     code = code.replace("struct SipTransport: SipPhoneTransport {", "struct SipTransport: SipPhoneTransport {\n"
                         "std::vector<uint32_t>paging_auto_answer_peers_;void set_paging_auto_answer_peers(const std::vector<std::string>&);\n")
-    code += "\n" + block((SOURCE / "sip_transport.cpp").read_text(), "void SipTransport::set_paging_auto_answer_peers(")
+    code += "\n" + block(read_production_source(SOURCE / "sip_transport.cpp"), "void SipTransport::set_paging_auto_answer_peers(")
     peers = (ROOT / "tests/fixtures/refer_wire_main.cpp").read_text().split("std::string begin(")[0]
     code += "\n" + peers
     registration = (ROOT / "tests/fixtures/registration_transport.cpp").read_text()

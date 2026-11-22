@@ -1,4 +1,5 @@
 """Link complete signaling/codec owners to libopus and POSIX sockets."""
+from production_sip_source import transport_units
 from pathlib import Path
 import shlex
 import subprocess
@@ -27,6 +28,7 @@ def opus_owner_binary(tmp_path_factory):
         "sip_refer.cpp", "media_negotiator.cpp", "opus_rtp_codec.cpp",
     )]
     units.extend(sorted(SOURCE.glob("sip_dialog_*.cpp")))
+    units.extend(unit for unit in transport_units(SOURCE) if unit not in units)
     binary = folder / "opus-owner"
     built = subprocess.run([
         "g++", "-std=c++17", "-O1", "-g", "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",

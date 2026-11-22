@@ -1,4 +1,6 @@
 """Existing re-INVITE owner commits DTMF only after successful final publication."""
+
+from production_sip_source import read_production_source
 import subprocess
 import pytest
 from test_refer_dialog_runtime import SOURCE, ROOT, block
@@ -44,7 +46,7 @@ def reinvite_binary(tmp_path_factory):
     for marker in ['std::string header_value(', 'std::string header_values(', 'std::string tag_from_header(',
                    'uint32_t cseq_number(', 'std::string message_body(', 'std::string name_addr_uri(', 'std::string strip_angle_uri(']:
         helpers+=block(parser,marker)+'\n'
-    transport=(SOURCE/'sip_transport.cpp').read_text()
+    transport=read_production_source(SOURCE/'sip_transport.cpp')
     helpers+='uint32_t esp_random(){return 123;}\n'+block(transport,'class ScopedMediaProposal {')+';\n'
     source=source.replace('struct RetainedCall {',helpers+'\nstruct RetainedCall {')
     for marker in ['void SipTransport::get_dtmf_config_(', 'void SipTransport::set_dtmf_config_(', 'void SipTransport::append_dtmf_sdp_(']:

@@ -1,4 +1,6 @@
 """An accepted real UPDATE changes connected identity within its owned dialog."""
+
+from production_sip_source import read_production_source
 import subprocess
 import pytest
 from test_refer_dialog_runtime import SOURCE, block
@@ -15,7 +17,7 @@ def identity_wire_binary(tmp_path_factory):
     code = code.replace("bool handle_update_(const std::string&,const sockaddr_in&){assert(false);return false;}", "bool handle_update_(const std::string&,const sockaddr_in&);")
     code = code.replace('std::string sip_display_name_from_header(const std::string&,size_t){return "Room";}',
                         block((SOURCE / "sip_message.cpp").read_text(), "std::string sip_display_name_from_header("))
-    code += block((SOURCE / "sip_transport.cpp").read_text(), "bool SipTransport::handle_update_(") + r'''
+    code += block(read_production_source(SOURCE / "sip_transport.cpp"), "bool SipTransport::handle_update_(") + r'''
 int main(int argc,char**argv){
  assert(argc==3);const bool tcp=std::string(argv[1])=="tcp";const std::string mode=argv[2];SipTransport phone;Peer peer(tcp);bind_account(phone,peer);
  confirm_account_call(phone,peer);const auto call=phone.call_id_;const auto count=phone.delivered.size();

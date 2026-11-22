@@ -3,6 +3,8 @@
 This is a compiler regression for ESPHome 2026.10 precompiled-header lookup,
 not a substitute for the separate network and media runtime tests.
 """
+
+from production_sip_source import read_production_source
 from pathlib import Path
 import re
 import subprocess
@@ -13,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_socket_waits_resolve_the_posix_function(tmp_path):
     expressions = []
     for name in ('sip_transport.cpp', 'video_rtp.cpp'):
-        source = (ROOT / 'esphome/components/voip_stack' / name).read_text()
+        source = read_production_source(ROOT / 'esphome/components/voip_stack' / name)
         calls = re.findall(r'const int ready\s*=\s*((?:::)?select\([^;]+\));', source)
         assert len(calls) == 2, f'Update the network-wait compilation witness for {name}'
         expressions.extend(calls)

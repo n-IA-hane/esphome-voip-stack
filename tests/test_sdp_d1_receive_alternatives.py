@@ -1,4 +1,6 @@
 """D1 retains configured PCM receive alternatives from the captured HA offer."""
+
+from production_sip_source import read_production_source
 import json
 import subprocess
 
@@ -57,7 +59,7 @@ def d1_receive_binary(tmp_path_factory):
  bool received_audio_format_(uint8_t,AudioFormat*,const uint8_t* =nullptr,size_t=0)const;
 """, 1)
     source += "\n#define portENTER_CRITICAL(p) ((void)0)\n#define portEXIT_CRITICAL(p) ((void)0)\n"
-    transport = (ROOT / "esphome/components/voip_stack/sip_transport.cpp").read_text()
+    transport = read_production_source(ROOT / "esphome/components/voip_stack/sip_transport.cpp")
     source += method(transport, "bool SipTransport::received_audio_format_(")
     source += '\nconst std::string captured_offer=' + json.dumps(HA_OFFER) + ';\n'
     source += r'''

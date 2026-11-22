@@ -53,6 +53,21 @@ proposal before commit (P4). Two-bit meaning tables use 67 bytes per stored
 video contract, compile-gated with video. There is no allocation in the
 history lookup and no extra media task or lifecycle.
 
+`SipTransport` retains the only dialog, media and socket-reader owner. Its
+implementation is partitioned along existing boundaries: `sip_transport.cpp`
+keeps construction, startup and teardown; `sip_transport_media.cpp` handles the
+selected media value and audio path; `sip_flow_io.cpp` owns flow/socket I/O;
+`sip_dialog_transactions.cpp` pumps transaction state;
+`sip_dialog_requests.cpp` and `sip_dialog_dispatch.cpp` send and dispatch SIP;
+`sip_dialog_video.cpp` handles in-dialog video changes; and
+`sip_transport_tasks.cpp` contains the existing SIP/RTP task entries. Private
+TU-local utilities live in `sip_transport_internal.h`. No additional socket
+reader, media task, registry or transport instance is created by this split.
+
+The codec/dialog fixtures link every production translation unit separately.
+Legacy narrow fixtures use one shared source reader to locate the original
+member definitions across files, retaining their existing expectations.
+
 Direct unit fixtures link complete production C++ files. Existing signaling
 fixtures retain their platform adapters and compile the same owner. Some
 video-only fixtures previously depended on header instantiation omitting

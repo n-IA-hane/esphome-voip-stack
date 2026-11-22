@@ -1,4 +1,6 @@
 """Exact parking offer reaches the production SDP parsers and re-INVITE owner."""
+
+from production_sip_source import read_production_source
 import json
 from pathlib import Path
 import subprocess
@@ -10,7 +12,7 @@ from test_sdp_receive_payloads import sdp_fixture_source
 
 
 def source():
-    owner = (SOURCE/'sip_transport.cpp').read_text()
+    owner = read_production_source(SOURCE/'sip_transport.cpp')
     parser = (SOURCE/'sip_message.cpp').read_text()
     sdp = (SOURCE/'sip_sdp.cpp').read_text()
     header = (SOURCE/'sip_transport.h').read_text()

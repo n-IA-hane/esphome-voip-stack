@@ -7,6 +7,8 @@ injected. The desired assertions must fail while a retired Call-ID can be
 assigned back into SipTransport.
 """
 
+from production_sip_source import read_production_source
+
 import subprocess
 
 import pytest
@@ -17,7 +19,7 @@ from test_refer_wire_runtime import wire_source
 
 
 def cross_bye_source():
-    transport = (SOURCE / "sip_transport.cpp").read_text()
+    transport = read_production_source(SOURCE / "sip_transport.cpp")
     fsm = (SOURCE / "voip_fsm.cpp").read_text()
     owner = (SOURCE / "voip_stack.cpp").read_text()
     header = (SOURCE / "voip_stack.h").read_text()

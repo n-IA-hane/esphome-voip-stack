@@ -1,4 +1,6 @@
 """Negotiated named events: bounded timing, masks, clocks and real UDP packets."""
+
+from production_sip_source import read_production_source
 import subprocess
 
 import pytest
@@ -48,7 +50,7 @@ struct SipTransport {
     code += block(media, "size_t pcm_to_rtp_payload(") + "\n"
     code += block(media, "size_t rtp_payload_to_pcm(") + "\n"
     code += block((SOURCE / "sip_dtmf.cpp").read_text(), "bool SipTransport::send_dtmf_packet_(")
-    code += block((SOURCE / "sip_transport.cpp").read_text(), "void SipTransport::send_audio_frame(")
+    code += block(read_production_source(SOURCE / "sip_transport.cpp"), "void SipTransport::send_audio_frame(")
     code = audio_tx_fixture(code)
     code += r'''
 int main(int argc,char**argv){

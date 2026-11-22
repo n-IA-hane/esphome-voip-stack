@@ -1,4 +1,6 @@
 """Production RTP worker and independent loopback packet peer, without ESP hardware."""
+
+from production_sip_source import read_production_source
 import subprocess
 import pytest
 from audio_tx_fixture import audio_tx_fixture
@@ -109,7 +111,7 @@ struct SipTransport {
                       'bool SipTransport::send_dtmf(', 'bool SipTransport::send_dtmf_packet_(',
                       'bool SipTransport::handle_dtmf_packet_(']:
         code += block(impl,signature)+'\n'
-    impl=(SOURCE/'sip_transport.cpp').read_text()
+    impl=read_production_source(SOURCE/'sip_transport.cpp')
     for signature in ['bool SipTransport::received_audio_format_(', 'void SipTransport::close_media_session_(', 'void SipTransport::wake_rtp_task_(',
                       'void SipTransport::request_audio_path_stop_locked_(', 'void SipTransport::finish_audio_path_stop_(',
                       'void SipTransport::send_audio_frame(', 'void SipTransport::rtp_task_(']:

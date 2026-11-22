@@ -1,5 +1,7 @@
 """Real registered TCP traffic is framed per record, not per kernel backlog."""
 
+from production_sip_source import read_production_source
+
 from pathlib import Path
 import subprocess
 
@@ -16,7 +18,7 @@ def tcp_burst_binary(tmp_path_factory):
     defines.parent.mkdir(parents=True)
     defines.write_text("")
     code = "#include <chrono>\n" + registration_transport_source()
-    code += "\n" + block((SOURCE / "sip_transport.cpp").read_text(), "void SipTransport::accept_tcp_client_(")
+    code += "\n" + block(read_production_source(SOURCE / "sip_transport.cpp"), "void SipTransport::accept_tcp_client_(")
     # Observe the existing buffer and receive work, without replacing dispatch.
     original = "struct SipSignalingString:std::string {using std::string::string;using std::string::operator=;std::string str()const{return *this;}};"
     assert original in code
@@ -33,7 +35,7 @@ struct SipSignalingString:std::string {
  }
 };
 ''')
-    stream = block((SOURCE / "sip_transport.cpp").read_text(), "void SipTransport::handle_sip_stream_(")
+    stream = block(read_production_source(SOURCE / "sip_transport.cpp"), "void SipTransport::handle_sip_stream_(")
     assert stream in code
     code = code.replace(stream, stream.replace("if (n > 0) {", "if (n > 0) { rx_read_bytes += static_cast<size_t>(n);"))
     peers = (Path(__file__).parent / "fixtures/refer_wire_main.cpp").read_text()

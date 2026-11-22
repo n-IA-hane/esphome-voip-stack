@@ -1,5 +1,7 @@
 """Exercise the production allocator, including OOM before object construction."""
 
+from production_sip_source import read_production_source
+
 from pathlib import Path
 import subprocess
 
@@ -7,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_transport_control_storage_is_internal_and_oom_is_safe(tmp_path):
-    source = (ROOT / "esphome/components/voip_stack/sip_transport.cpp").read_text()
+    source = read_production_source(ROOT / "esphome/components/voip_stack/sip_transport.cpp")
     methods = source[
         source.index("void *SipTransport::operator new(") : source.index(
             "SipTransport::SipTransport("

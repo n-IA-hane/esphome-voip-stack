@@ -1,4 +1,6 @@
 """Execute real cold storage, account APIs, factory admission and joined teardown."""
+
+from production_sip_source import read_production_source
 from pathlib import Path
 import os
 import resource
@@ -45,7 +47,7 @@ inline void*heap_caps_malloc(size_t n,unsigned caps){
 inline void heap_caps_free(void*p){std::free(p);}
 ''')
     header = (SOURCE / "sip_transport.h").read_text()
-    cpp = (SOURCE / "sip_transport.cpp").read_text()
+    cpp = read_production_source(SOURCE / "sip_transport.cpp")
     scratch_start = header.index("#ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM\n  struct SipRxScratch")
     scratch_end = header.index("  AudioFormatList offer_tx_formats_", scratch_start)
     pieces = {

@@ -1,4 +1,6 @@
 """Encoding recommendation cannot throttle the opposite local video direction."""
+
+from production_sip_source import read_production_source
 import json
 import subprocess
 
@@ -26,7 +28,7 @@ def test_production_sdp_and_direction_caps_preserve_independent_frame_budgets(tm
             ["uint8_t hex_nibble(", "bool parse_profile_level_id(", "int h264_level_value(",
              "bool h264_same_subprofile(", "bool h264_level_fits("]) + "\n}\n"
         code = code.replace("struct SipTransport {", helpers + "\nstruct SipTransport {")
-    code += block((COMPONENT / "sip_transport.cpp").read_text(), "VideoCapability SipTransport::local_video_direction_capability_(") + r'''
+    code += block(read_production_source(COMPONENT / "sip_transport.cpp"), "VideoCapability SipTransport::local_video_direction_capability_(") + r'''
 #include <iostream>
 int main(int argc,char**argv){
  assert(argc==4);SipTransport call;call.video_source_=&call;call.video_send_requested_=true;

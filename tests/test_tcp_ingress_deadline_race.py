@@ -1,5 +1,7 @@
 """An observed idle timeout cannot retire a newly owned TCP call generation."""
 
+from production_sip_source import read_production_source
+
 import re
 import subprocess
 
@@ -8,7 +10,7 @@ from test_tcp_incoming_account_policy import incoming_account_source
 
 
 def test_idle_expiry_rechecks_the_owned_deadline_after_a_new_originate(tmp_path):
-    source = (SOURCE / "sip_transport.cpp").read_text()
+    source = read_production_source(SOURCE / "sip_transport.cpp")
     after_select = source[source.index("const int ready = ::select"):]
     begin = after_select.index("    for (auto *flow : {&this->tcp_flow_, &this->inbound_tcp_flow_})")
     opening = after_select.index(") {", begin) + 2

@@ -1,5 +1,7 @@
 """Compose actual auto-answer termination with actual media preparation failures."""
 
+from production_sip_source import read_production_source
+
 from pathlib import Path
 import subprocess
 
@@ -12,7 +14,7 @@ COMPONENT = ROOT / "esphome/components/voip_stack"
 
 
 def media_failure_source():
-    transport = (COMPONENT / "sip_transport.cpp").read_text()
+    transport = read_production_source(COMPONENT / "sip_transport.cpp")
     methods = "\n".join(
         block(transport, marker).replace("SipTransport::", "MediaOwner::")
         for marker in (

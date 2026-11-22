@@ -1,4 +1,6 @@
 """Final SDP selection drives actual PCM RTP bytes, payload IDs and timestamps."""
+
+from production_sip_source import read_production_source
 import subprocess
 
 import pytest
@@ -32,7 +34,7 @@ struct Mutex{};struct LockGuard{explicit LockGuard(Mutex&){}};
     for marker in ["size_t pcm_to_rtp_payload(", "size_t rtp_payload_to_pcm("]:
         body = block(parser, marker)
         code = code.replace("struct SipTransport {", body + "\nstruct SipTransport {", 1)
-    code += "\n" + block((SOURCE / "sip_transport.cpp").read_text(), "void SipTransport::send_audio_frame(")
+    code += "\n" + block(read_production_source(SOURCE / "sip_transport.cpp"), "void SipTransport::send_audio_frame(")
     code = audio_tx_fixture(code)
     code += r'''
 AudioFormat fmt(unsigned rate,unsigned frame){AudioFormat f;f.sample_rate=rate;f.frame_ms=frame;return f;}

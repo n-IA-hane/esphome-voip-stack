@@ -3,6 +3,8 @@
 Only the ESP scheduler, hardware/media adapters and initial established call
 are fixtures. No response classification, REFER result or replay is injected.
 """
+
+from production_sip_source import read_production_source
 from pathlib import Path
 import subprocess
 
@@ -12,7 +14,7 @@ from test_refer_dialog_runtime import ROOT, SOURCE, block, refer_fixture_source
 
 def wire_source(*, full_invite=False):
     header = (SOURCE / 'sip_transport.h').read_text()
-    source = (SOURCE / 'sip_transport.cpp').read_text()
+    source = read_production_source(SOURCE / 'sip_transport.cpp')
     requests = (SOURCE / 'sip_request_response.cpp').read_text()
     parser = (SOURCE / 'sip_message.cpp').read_text()
     response_owner = (SOURCE / 'sip_dialog_response.cpp').read_text()
@@ -158,7 +160,7 @@ template<class T>void reset_string(T&s){s.clear();}
 
 def complete_invite_owner(code):
     """Use the actual INVITE owner with controlled hardware/media adapters."""
-    source = (SOURCE / "sip_transport.cpp").read_text()
+    source = read_production_source(SOURCE / "sip_transport.cpp")
     requests = (SOURCE / "sip_request_response.cpp").read_text()
     _parser = (SOURCE / "sip_message.cpp").read_text()
     code = code.replace(

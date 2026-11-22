@@ -1,4 +1,6 @@
 """RFC6236 JPEG preferences use directional limits and bounded legacy fallback."""
+
+from production_sip_source import read_production_source
 from pathlib import Path
 import subprocess
 
@@ -69,7 +71,7 @@ int main(int argc,char**argv){assert(argc==2);auto value=ImageAttributeParser::p
 def sdp_source():
     sdp = (COMPONENT / "sip_sdp.cpp").read_text()
     message = (COMPONENT / "sip_message.cpp").read_text()
-    owner = (COMPONENT / "sip_transport.cpp").read_text()
+    owner = read_production_source(COMPONENT / "sip_transport.cpp")
     header = (COMPONENT / "sip_transport.h").read_text()
     enum_start = header.index("  enum : uint8_t { IMAGEATTR_PEER")
     enum_end = header.index("#endif", enum_start)
@@ -199,7 +201,7 @@ int main(){SipTransport call;call.refer_context_active_=true;call.video_send_req
 
 
 def test_fallback_runs_once_in_the_existing_sip_pump_and_keeps_audio(tmp_path):
-    source = (COMPONENT / "sip_transport.cpp").read_text()
+    source = read_production_source(COMPONENT / "sip_transport.cpp")
     code = r'''
 #define USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
 #define ESP_LOGW(...) ((void)0)

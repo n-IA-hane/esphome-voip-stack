@@ -1,4 +1,7 @@
 """Production INVITE ownership checks through UDP/TCP parser and socket replies."""
+
+from production_sip_source import read_production_source
+from production_sip_source import transport_units
 from pathlib import Path
 import subprocess
 
@@ -17,7 +20,7 @@ def dialog_identity_binary(tmp_path_factory):
     code = code.replace(' uint16_t sip_port_=5060;', ' AudioFormatList offer_tx_formats_,offer_rx_formats_;\n uint16_t sip_port_=5060;')
     code = code.replace('const RtpAudioPayloads*p){', 'const RtpAudioPayloads*p=nullptr){').replace('negotiated_rx_payloads_=*p;', 'if(p)negotiated_rx_payloads_=*p;')
     code = code.replace('const std::string&,uint32_t,bool){return true;}', 'const std::string&,uint32_t,bool=false){return true;}')
-    source = (COMPONENT / 'sip_transport.cpp').read_text()
+    source = read_production_source(COMPONENT / 'sip_transport.cpp')
     responses = (COMPONENT / 'sip_request_response.cpp').read_text()
     code = code.replace('bool handle_invite_(const std::string&,const sockaddr_in&){assert(false);return false;}',
                         'bool handle_invite_(const std::string&,const sockaddr_in&);')
@@ -83,6 +86,7 @@ def native_dialog_owner(tmp_path_factory):
     units = [component / name for name in ("sip_transport.cpp", "sip_message.cpp", "sip_request_response.cpp",
                                            "sip_sdp.cpp", "sip_refer.cpp", "media_negotiator.cpp")]
     units.extend(sorted(component.glob("sip_dialog_*.cpp")))
+    units.extend(unit for unit in transport_units(component) if unit not in units)
     binary = folder / "dialog"
     subprocess.run(
         ["g++", "-std=c++17", "-O1", "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",

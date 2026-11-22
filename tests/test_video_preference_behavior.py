@@ -1,5 +1,7 @@
 """Execute the actual transport request method with controlled dialog state."""
 
+from production_sip_source import read_production_source
+
 from pathlib import Path
 import subprocess
 
@@ -8,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_video_preference_uses_existing_dialog_transaction(tmp_path):
-    source = (ROOT / 'esphome/components/voip_stack/sip_transport.cpp').read_text()
+    source = read_production_source(ROOT / 'esphome/components/voip_stack/sip_transport.cpp')
     start = source.index('bool SipTransport::request_video_send(bool enabled)')
     end = source.index('\nbool SipTransport::apply_video_direction_answer_', start)
     method = source[start:end]

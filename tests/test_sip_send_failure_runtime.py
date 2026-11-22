@@ -1,5 +1,7 @@
 """A failed partial TCP SIP record closes the stream; a fresh stream can send."""
 
+from production_sip_source import read_production_source
+
 from pathlib import Path
 import subprocess
 
@@ -7,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_partial_sip_record_failure_and_retry(tmp_path):
-    source = (ROOT / "esphome/components/voip_stack/sip_transport.cpp").read_text()
+    source = read_production_source(ROOT / "esphome/components/voip_stack/sip_transport.cpp")
     start = source.index("bool SipTransport::send_sip_tcp_record_(const char *data")
     method = source[start : source.index("\n}", start) + 2]
     cpp = tmp_path / "send.cpp"

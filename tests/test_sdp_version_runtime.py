@@ -1,4 +1,6 @@
 """SDP origin versions belong to audio dialogs with or without video support."""
+
+from production_sip_source import read_production_source
 import subprocess
 
 import pytest
@@ -21,7 +23,7 @@ def version_source(video):
                        'void SipTransport::reset_video_negotiation_('):
             code = code.replace(block(code, marker), '')
     header = (SOURCE / 'sip_transport.h').read_text()
-    owner = (SOURCE / 'sip_transport.cpp').read_text()
+    owner = read_production_source(SOURCE / 'sip_transport.cpp')
     parser = (SOURCE / 'sip_message.cpp').read_text()
     completed = block(header, 'struct CompletedServerTransaction {') + ';'
     code = code.replace(completed + 'CompletedServerTransaction completed_invite_,completed_control_;',

@@ -1,12 +1,14 @@
 """Compile the complete production TX overloads in existing host adapters."""
 
+from production_sip_source import read_production_source
+
 import re
 
 from test_refer_dialog_runtime import SOURCE, block
 
 
 def audio_tx_fixture(code):
-    source = (SOURCE / "sip_transport.cpp").read_text()
+    source = read_production_source(SOURCE / "sip_transport.cpp")
     legacy = block(source, "void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes)")
     implementation = "\n".join((
         block(source, "TransportAudioTxContext SipTransport::audio_tx_frame_context("),

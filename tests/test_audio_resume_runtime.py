@@ -1,4 +1,6 @@
 """Real hold/reINVITE/ACK owners feed the RTP worker and jitter after resume."""
+
+from production_sip_source import read_production_source
 import json
 import subprocess
 
@@ -11,7 +13,7 @@ from test_rtp_offer_reservation_runtime import reservation_binary as reservation
 
 def resume_source():
     component = ROOT / 'esphome/components/voip_stack'
-    transport = (component / 'sip_transport.cpp').read_text()
+    transport = read_production_source(component / 'sip_transport.cpp')
     header = (component / 'sip_transport.h').read_text()
     parser = (component / 'sip_message.cpp').read_text()
     code = hold_source().split('\nint main(', 1)[0]
@@ -327,7 +329,7 @@ def test_dialog_cleanup_and_new_media_preparation_clear_stale_resume_notificatio
  std::atomic<uint16_t>latched_rtp_port_{0};std::atomic<bool>rtp_ssrc_latched_{false};
  std::atomic<bool>rtp_source_reacquire_pending_{false};
 ''', 1)
-    code += "\n" + block((SOURCE / "sip_transport.cpp").read_text(), "void SipTransport::reset_rtp_latch_(")
+    code += "\n" + block(read_production_source(SOURCE / "sip_transport.cpp"), "void SipTransport::reset_rtp_latch_(")
     code += r'''
 int main(){
  SipTransport s;s.call_id_="completed";s.rtp_port_=0;s.audio_receive_reset_pending_=true;s.rtp_source_reacquire_pending_=true;

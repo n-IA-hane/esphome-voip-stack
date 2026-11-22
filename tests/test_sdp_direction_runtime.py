@@ -1,4 +1,6 @@
 """Unidirectional hardware must advertise and negotiate only real audio paths."""
+
+from production_sip_source import read_production_source
 from pathlib import Path
 import subprocess
 
@@ -135,7 +137,7 @@ def directional_wire_binary(tmp_path_factory):
     base = ROOT / 'esphome/components/voip_stack'
     parser = (base / 'sip_message.cpp').read_text()
     sdp = (base / 'sip_sdp.cpp').read_text()
-    transport = (base / 'sip_transport.cpp').read_text()
+    transport = read_production_source(base / 'sip_transport.cpp')
     code = wire_source()
     extra = ''
     for marker in ['bool parse_decimal_u32(', 'bool parse_rtpmap_format(', 'bool parse_audio_media_line(']:
