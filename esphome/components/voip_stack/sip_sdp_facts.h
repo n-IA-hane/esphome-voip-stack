@@ -43,7 +43,9 @@ struct AudioSdpFacts {
 struct SdpAudioMedia {
   AudioFormat tx{DEFAULT_AUDIO_FORMAT}, rx{DEFAULT_AUDIO_FORMAT};
   uint8_t tx_pt{96}, rx_pt{96};
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
   OpusReceiveConstraints opus_tx;
+#endif
   RtpAudioPayloads rx_payloads;
   bool send{true}, receive{true}, zero_connection{false};
   uint32_t audio_ip{0};

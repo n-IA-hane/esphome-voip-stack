@@ -20,7 +20,7 @@ exceeds the 1200-byte budget and is refused. A declared mono/11 at 10 ms uses
 882 bytes and keeps the configured duration.
 
 Opus receiver parameters belong to the selected transmitter. The bounded
-`opus_tx` value follows `SdpAudioMedia` through proposals, commit, rollback and
+`opus_tx` value is compiled only with Opus and follows `SdpAudioMedia` through proposals, commit, rollback and
 REFER exchange. Only the selected remote payload's `maxaveragebitrate`,
 `maxplaybackrate` and `stereo` are read; missing parameters restore defaults.
 Invalid bitrate values outside 6000..510000 are ignored per RFC 7587. Playback

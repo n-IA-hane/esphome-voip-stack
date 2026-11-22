@@ -86,6 +86,7 @@ bool negotiate_audio_contract(const std::string &sdp, uint32_t default_ip, bool 
       trace.incompatible(trace.context, sdp.size(), attributes.port, media_ip, selection.selected_tx, selection.selected_rx);
   }
   if (result != AudioSelectionResult::ACCEPTED) return false;
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
   media.opus_tx = {};
   if (media.tx.codec == AudioCodec::OPUS) {
     // Parameters can precede their rtpmap. Read only the selected transmit PT
@@ -102,6 +103,7 @@ bool negotiate_audio_contract(const std::string &sdp, uint32_t default_ip, bool 
     }
   }
 
+#endif
 #ifdef USE_ESPHOME_VOIP_DTMF
   const auto next_media = sdp.find("\r\nm=", attributes.section);
   const std::string_view audio_section(
