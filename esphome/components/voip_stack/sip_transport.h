@@ -418,6 +418,7 @@ class SipTransport : public SipPhoneTransport {
   VideoCapability local_video_direction_capability_(
       const VideoCapability &negotiated, bool send) const;
   bool prepare_video_session_locked_();
+  bool prepare_video_session_locked_(const NegotiatedMedia &media);
   void reset_video_negotiation_();
   bool send_video_direction_reinvite_unlocked_(bool enabled,
                                                 bool retry = false, bool imageattr_fallback = false);

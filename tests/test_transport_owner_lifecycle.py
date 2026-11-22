@@ -11,8 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = Path(os.environ.get("TRANSPORT_LIFECYCLE_SOURCE", ROOT / "esphome/components/voip_stack"))
 
 
-@pytest.fixture(scope="module")
-def transport_lifecycle_binary(tmp_path_factory):
+def build_transport_owner(tmp_path_factory, fixture="transport_owner_lifecycle.cpp", video=False, registration=False):
     tmp_path = tmp_path_factory.mktemp("transport-lifecycle")
     sdk = (ROOT / "tests/fixtures/video_host_sdk.h").read_text()
     sdk = sdk.replace("struct HostTask { std::thread thread; };", """
@@ -28,7 +27,11 @@ inline void reap_host_tasks(){for(auto *task:host_tasks){task->thread.join();del
   auto *task=*out;host_tasks.push_back(task);
   task->thread=std::thread([fn,context,task]{current_task=task;try{fn(context);}catch(const HostTaskFinished&){};});
 """)
-    sdk = sdk.replace("assert(task);task->thread.join();delete task;--video_probe::tasks;", "if(!task)throw HostTaskFinished{};std::abort();")
+    sdk = sdk.replace(
+        "assert(task);task->thread.join();delete task;--video_probe::tasks;",
+        "if(!task)throw HostTaskFinished{};task->thread.join();host_tasks.erase(std::find(host_tasks.begin(),host_tasks.end(),task));delete task;--video_probe::tasks;"
+        if video else "if(!task)throw HostTaskFinished{};std::abort();",
+    )
     sdk = sdk.replace("inline void xTaskNotifyGive(TaskHandle_t) { std::abort(); }", """
 inline void xTaskNotifyGive(TaskHandle_t task) {
  {std::lock_guard<std::mutex> lock(task->mutex);++task->notifications;}task->cv.notify_one();
@@ -53,28 +56,46 @@ using portMUX_TYPE=std::mutex;
 #define portENTER_CRITICAL(p) (p)->lock()
 #define portEXIT_CRITICAL(p) (p)->unlock()
 """
+    if registration:
+        sdk += (ROOT / "tests/fixtures/transport_registration_host_sdk.h").read_text()
     (tmp_path / "transport_host_sdk.h").write_text(sdk)
     for name in (
         "esphome/core/defines.h", "esphome/core/helpers.h", "esphome/core/log.h", "esphome/core/hal.h",
-        "esphome/components/network/util.h", "esp_system.h", "esp_heap_caps.h", "lwip/sockets.h",
+        "esphome/components/network/util.h", "esp_system.h", "esp_heap_caps.h", "esp_timer.h", "lwip/sockets.h",
         "freertos/FreeRTOS.h", "freertos/task.h", "freertos/portmacro.h", "freertos/semphr.h",
     ):
         header = tmp_path / name
         header.parent.mkdir(parents=True, exist_ok=True)
         header.write_text('#include "transport_host_sdk.h"\n')
+    if registration:
+        for name in ("lwip/dns.h", "lwip/tcpip.h", "mbedtls/md.h"):
+            header = tmp_path / name
+            header.parent.mkdir(parents=True, exist_ok=True)
+            header.write_text('#include "transport_host_sdk.h"\n')
     units = transport_units(SOURCE)
     units.extend(SOURCE / name for name in ("sip_message.cpp", "sip_request_response.cpp", "sip_sdp.cpp", "sip_refer.cpp", "media_negotiator.cpp"))
     units.extend(unit for unit in sorted(SOURCE.glob("sip_dialog_*.cpp")) if unit not in units)
+    if video:
+        units.extend(SOURCE / name for name in ("video_rtp.cpp", "rtp_jpeg.cpp"))
+    if registration:
+        units.extend(SOURCE / name for name in ("sip_registration.cpp", "sip_registration_transport.cpp"))
     binary = tmp_path / "transport-owner"
     built = subprocess.run([
-        "g++", "-std=c++17", "-O1", "-g", "-pthread", "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
+        "g++", "-std=c++17", "-O0" if video else "-O1", "-g1" if video else "-g", "-pthread", "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
         "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie", "-DUSE_ESP32",
         "-DUSE_ESPHOME_VOIP_SIP_TRANSPORT", "-DUSE_ESPHOME_VOIP_STACK_PCM",
+        *(["-DUSE_ESPHOME_VOIP_REGISTRATION"] if registration else []),
+        *(["-DUSE_ESPHOME_VOIP_STACK_VIDEO", "-DUSE_ESPHOME_VOIP_STACK_VIDEO_JPEG"] if video else []),
         "-I", str(tmp_path), "-I", str(ROOT), "-I", str(SOURCE),
-        str(ROOT / "tests/fixtures/transport_owner_lifecycle.cpp"), *map(str, units), "-o", str(binary),
-    ], capture_output=True, text=True, timeout=90)
+        str(ROOT / "tests/fixtures" / fixture), *map(str, units), *(["-lcrypto"] if registration else []), "-o", str(binary),
+    ], capture_output=True, text=True, timeout=150 if video else 90)
     assert built.returncode == 0, built.stderr
     return binary
+
+
+@pytest.fixture(scope="module")
+def transport_lifecycle_binary(tmp_path_factory):
+    return build_transport_owner(tmp_path_factory)
 
 
 @pytest.mark.parametrize("mode", ["normal", "early-sip-exit", "startup-failure"])

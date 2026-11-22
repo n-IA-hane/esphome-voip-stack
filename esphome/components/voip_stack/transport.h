@@ -201,8 +201,8 @@ class SipPhoneTransport {
     (void) offer_payload_type;
     (void) max_rtp_payload;
   }
-  /// Request a direction-only in-dialog SDP update. The SIP transport remains
-  /// the single owner of the INVITE transaction and media commit.
+  /// Request an in-dialog video activation or direction update. The SIP
+  /// transport remains the single owner of the INVITE transaction and media commit.
   virtual bool request_video_send(bool enabled) {
     (void) enabled;
     return false;

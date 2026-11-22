@@ -557,8 +557,9 @@ def test_video_rtp_keeps_directional_endpoint_capabilities() -> None:
         transport.index("bool SipTransport::prepare_video_session_locked_") :
         transport.index("void SipTransport::reset_video_negotiation_")
     ]
-    assert "this->negotiated_video_capability_, true" in initial
-    assert "this->negotiated_video_capability_, false" in initial
+    assert "this->prepare_video_session_locked_(this->negotiated_media_())" in initial
+    assert "media.video, true" in initial
+    assert "media.video, false" in initial
 
     reinvite = transport[
         transport.index("bool SipTransport::handle_reinvite_(") :

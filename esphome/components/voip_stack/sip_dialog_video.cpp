@@ -25,6 +25,24 @@ std::string SipTransport::build_video_direction_offer_(
                     offer.substr(network, origin_end - network));
 
   const size_t video = offer.find("m=video ");
+  if (!this->video_negotiated_) {
+    if (!enabled || !this->local_video_send_capability_().valid()) return "";
+    std::string local_ip;
+    if (!this->local_ip_for_peer_(
+            this->remote_ip_v4_.load(std::memory_order_acquire), &local_ip)) return "";
+    const auto section = this->append_video_sdp_("", local_ip, false);
+    if (section.empty()) return "";
+    // RFC 3264 section 8.1: reuse a rejected video slot in its original
+    // position. Append a new section only when video has never been offered.
+    if (video == std::string::npos) {
+      offer.append(section);
+    } else {
+      const auto end = offer.find("\r\nm=", video);
+      offer.replace(video, end == std::string::npos ? offer.size() - video
+                                                   : end + 2 - video, section);
+    }
+    return offer;
+  }
   if (video == std::string::npos) return "";
   const size_t video_line_end = offer.find("\r\n", video);
   if (video_line_end == std::string::npos ||
@@ -84,7 +102,7 @@ bool SipTransport::send_video_direction_reinvite_unlocked_(bool enabled,
   (void) imageattr_fallback;
 #endif
   if (!this->media_active_.load(std::memory_order_acquire) ||
-      !this->video_negotiated_ || (this->video_source_ == nullptr && !attribute_update) ||
+      (this->video_source_ == nullptr && !attribute_update) ||
       this->remote_tag_.empty()) {
     return false;
   }
@@ -96,10 +114,14 @@ bool SipTransport::send_video_direction_reinvite_unlocked_(bool enabled,
   const uint32_t session_version =
       retry ? this->pending_video_direction_invite_.session_version
             : this->sdp_session_version_ + 1;
+  this->video_send_requested_.store(enabled, std::memory_order_release);
   const std::string offer =
       retry ? this->pending_video_direction_invite_.offered_sdp
             : this->build_video_direction_offer_(enabled, session_version);
-  if (offer.empty()) return false;
+  if (offer.empty()) {
+    this->video_send_requested_.store(previous_send, std::memory_order_release);
+    return false;
+  }
 
   // The first locally originated offer may be a video update to an incoming
   // dialog. Preserve its existing audio contract for answer validation too.
@@ -115,13 +137,16 @@ bool SipTransport::send_video_direction_reinvite_unlocked_(bool enabled,
   const uint32_t cseq = this->cseq_++;
   const std::string branch = "z9hG4bK" + make_token("");
   std::string request;
+  uint32_t target_ip = 0;
+  uint16_t target_port = 0;
   SipRequestOptions options;
   options.cseq_number = cseq;
   options.branch_override = branch;
   options.remember_transaction = false;
   options.remember_invite_ack = false;
   options.formatted_request = &request;
-  this->video_send_requested_.store(enabled, std::memory_order_release);
+  options.destination_ip = &target_ip;
+  options.destination_port = &target_port;
   if (!this->send_request_("INVITE", offer, options)) {
     this->video_send_requested_.store(previous_send,
                                       std::memory_order_release);
@@ -129,19 +154,6 @@ bool SipTransport::send_video_direction_reinvite_unlocked_(bool enabled,
     return false;
   }
 
-  uint32_t target_ip =
-      this->remote_ip_v4_.load(std::memory_order_acquire);
-  uint16_t target_port =
-      this->remote_sip_port_.load(std::memory_order_acquire);
-  if (!this->remote_sip_tcp_.load(std::memory_order_acquire)) {
-    uint32_t contact_ip = 0;
-    uint16_t contact_port = 0;
-    if (sip_uri_ipv4_target(this->remote_target_uri_, &contact_ip,
-                            &contact_port)) {
-      target_ip = contact_ip;
-      target_port = contact_port;
-    }
-  }
   const uint32_t now = millis();
   auto &pending = this->pending_video_direction_invite_;
   pending.clear();
@@ -194,9 +206,9 @@ bool SipTransport::request_video_send(bool enabled) {
   if (!this->running_.load(std::memory_order_acquire) ||
       this->transport_stopping_.load(std::memory_order_acquire) ||
       !this->media_active_.load(std::memory_order_acquire) ||
-      !this->video_negotiated_ || this->video_source_ == nullptr) {
+      this->video_source_ == nullptr) {
     ESP_LOGW(TAG,
-             "Video send direction rejected: no active negotiated video dialog");
+             "Video send direction rejected: no active dialog or video source");
     return false;
   }
   if (this->pending_video_direction_invite_.pending() ||
@@ -239,16 +251,27 @@ bool SipTransport::apply_video_direction_answer_(const std::string &sdp,
       proposed.video_ip == retained.video_ip && proposed.video_port == retained.video_port &&
       proposed.video_rtcp_ip == retained.video_rtcp_ip && proposed.video_rtcp_port == retained.video_rtcp_port &&
       proposed.video_receive == retained.video_receive;
-  if (!same_audio || !same_video) return false;
+  if (!same_audio || (retained.video_negotiated && !same_video)) return false;
 #ifdef USE_ESPHOME_VOIP_DTMF
   if (!(retained.dtmf == proposed.dtmf)) return false;
 #endif
-  if (proposed.video_send != retained.video_send &&
+  if (!retained.video_negotiated && proposed.video_negotiated) {
+    // Admit the same media child used by initial and remote offers. Audio
+    // and its RTP worker retain their committed contract throughout.
+    if (!this->prepare_video_session_locked_(proposed) ||
+        !this->video_session_->request_media_direction(
+            proposed.video_send, proposed.video_receive)) {
+      if (this->video_session_ != nullptr) this->video_session_->request_stop();
+      return false;
+    }
+  } else if (proposed.video_send != retained.video_send &&
       (this->video_session_ == nullptr ||
        !this->video_session_->request_send_direction(proposed.video_send))) return false;
   if (this->video_session_ != nullptr)
     this->video_session_->set_rtcp_send_enabled(!proposed.video_zero_connection);
   this->commit_negotiated_media_(proposed);
+  if (!retained.video_negotiated && proposed.video_negotiated)
+    this->emit_video_active_state_(proposed.video_send || proposed.video_receive);
   this->video_send_requested_.store(proposed.video_send, std::memory_order_release);
   *accepted_send = proposed.video_send;
   return true;

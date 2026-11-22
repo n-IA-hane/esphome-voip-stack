@@ -329,6 +329,7 @@ def video_hold_binary(tmp_path_factory):
     source = source.replace("struct Child {", "struct Child {\n bool request_send_direction(bool value){send=value;return true;}")
     source = source.replace("struct SipTransport {", r'''struct SipTransport {
  bool apply_video_direction_answer_(const std::string&,uint32_t,bool*);
+ template<class Media>bool prepare_video_session_locked_(const Media&){assert(false);return false;}
  int signaling_socket=-1;sockaddr_in response_peer{};
  bool publish_response(unsigned status,const std::string&body){
   const auto response="SIP/2.0 "+std::to_string(status)+" Test\r\nContent-Type: application/sdp\r\nContent-Length: "+std::to_string(body.size())+"\r\n\r\n"+body;

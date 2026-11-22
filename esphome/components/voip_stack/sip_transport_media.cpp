@@ -355,32 +355,36 @@ VideoCapability SipTransport::local_video_direction_capability_(
 }
 
 bool SipTransport::prepare_video_session_locked_() {
-  if (!this->video_negotiated_) return true;
+  return this->prepare_video_session_locked_(this->negotiated_media_());
+}
+
+bool SipTransport::prepare_video_session_locked_(const NegotiatedMedia &media) {
+  if (!media.video_negotiated) return true;
   VOIP_STARTUP_EVENT(VIDEO_PREPARE);
   if (this->video_session_ == nullptr) return false;
   if (this->video_session_->is_running()) {
     return this->video_session_->negotiation_matches(
-               this->negotiated_video_capability_,
+               media.video,
                this->local_video_direction_capability_(
-                   this->negotiated_video_capability_, true),
+                   media.video, true),
                this->local_video_direction_capability_(
-                   this->negotiated_video_capability_, false),
-               this->remote_video_ip_v4_, this->remote_video_rtp_port_,
-               this->remote_video_rtcp_ip_v4_,
-               this->remote_video_rtcp_port_) &&
+                   media.video, false),
+               media.video_ip, media.video_port,
+               media.video_rtcp_ip,
+               media.video_rtcp_port) &&
            this->video_session_->can_request_media_direction(
-               this->video_send_enabled_, this->video_receive_enabled_);
+               media.video_send, media.video_receive);
   }
   const bool prepared = this->video_session_->set_negotiated(
-             this->negotiated_video_capability_,
+             media.video,
              this->local_video_direction_capability_(
-                 this->negotiated_video_capability_, true),
+                 media.video, true),
              this->local_video_direction_capability_(
-                 this->negotiated_video_capability_, false),
-             this->remote_video_ip_v4_, this->remote_video_rtp_port_,
-             this->remote_video_rtcp_ip_v4_,
-             this->remote_video_rtcp_port_, this->video_send_enabled_,
-             this->video_receive_enabled_) &&
+                 media.video, false),
+             media.video_ip, media.video_port,
+             media.video_rtcp_ip,
+             media.video_rtcp_port, media.video_send,
+             media.video_receive) &&
          this->video_session_->start(false);
   VOIP_STARTUP_EVENT(VIDEO_PREPARED);
   return prepared;
