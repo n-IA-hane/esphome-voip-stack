@@ -64,7 +64,8 @@ int main(){
     binary = tmp_path / "identity"
     compile = subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pthread",
                               "-fsanitize=address,undefined", "-fno-pie", "-no-pie",
-                              "-DUSE_VOIP_HA_AUTO_REGISTER", str(source), "-o", str(binary)],
+                              "-DUSE_VOIP_HA_AUTO_REGISTER", "-DUSE_ESPHOME_VOIP_REGISTRATION",
+                              str(source), "-o", str(binary)],
                              capture_output=True, text=True)
     assert compile.returncode == 0, compile.stderr
     run = subprocess.run([binary], capture_output=True, text=True)
