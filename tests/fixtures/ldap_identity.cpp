@@ -25,7 +25,7 @@ int main() {
   assert(contact.id == std::string(64, 'x') && contact.kind == "sip_account");
   entry.attributes[0].values[0] += 'x';
   assert(!map_contact(entry, "pbx.test", 5060, false, &contact, true));
-  for (const std::string username : {std::string("bad\xc0\xaf"), std::string("bad\xed\xa0\x80"), std::string("bad\nname")}) {
+  for (const std::string &username : {std::string("bad\xc0\xaf"), std::string("bad\xed\xa0\x80"), std::string("bad\nname")}) {
     entry.attributes[0].values[0] = username;
     assert(!map_contact(entry, "pbx.test", 5060, false, &contact, true));
   }
