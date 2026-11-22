@@ -583,8 +583,10 @@ voip_stack:
 
 `name` is required; everything else is optional. Static contacts serve offline installs, diagnostics and direct SIP peers. Normal installs receive the HA-managed roster through the native `set_roster_json` action.
 
-Inbound INVITEs carry caller and destination identity. Direct SIP remains enabled
-by default. Optional [registration](esphome/components/voip_stack/REGISTRATION.md)
+Inbound INVITEs carry caller and destination identity. Incoming calls require a
+recognized PBX line by default. To accept calls sent directly to the ESP, enable
+`registration.accept_direct_calls: true`.
+Optional [registration](esphome/components/voip_stack/REGISTRATION.md)
 adds independent PBX accounts and a selected outgoing line; it does not replace
 Home Assistant's trunk settings. In calls routed through HA, trunk numbers and
 inbound DTMF routes are mapped by HA to local phonebook targets.
@@ -919,8 +921,10 @@ answer. The final answer determines packet duration, receive conversion and
 microphone ownership. A missing or invalid answer ends the confirmed dialog
 through its normal BYE transaction.
 
-SIP registration is not required for direct calls. A compatible SIP peer can
-call or be called without Home Assistant. HA conversion is a fallback when
+SIP registration is not required for direct calls. With
+`registration.accept_direct_calls: true`, a compatible SIP peer can call the ESP
+without Home Assistant. Outgoing direct calls remain available through static
+contacts or SIP URIs. HA conversion is a fallback when
 the two legs cannot negotiate compatible media; an attempted fallback alone
 does not prove that conversion is active.
 
