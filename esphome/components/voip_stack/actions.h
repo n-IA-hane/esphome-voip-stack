@@ -35,7 +35,17 @@ class StartCallOnLineAction : public Action<Ts...>, public Parented<VoipStack> {
  public:
   TEMPLATABLE_VALUE(std::string, target)
   TEMPLATABLE_VALUE(std::string, line)
-  void play(const Ts &...x) override { this->parent_->start_call_on_line(this->target_.value(x...), this->line_.value(x...)); }
+  TEMPLATABLE_VALUE(bool, send_video)
+  TEMPLATABLE_VALUE(bool, receive_video)
+  void play(const Ts &...x) override {
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+    const bool send = this->send_video_.has_value() ? this->send_video_.value(x...) : this->parent_->get_video_send();
+    const bool receive = this->receive_video_.has_value() ? this->receive_video_.value(x...) : this->parent_->get_video_receive();
+#else
+    const bool send = false, receive = false;
+#endif
+    this->parent_->start_call_on_line(this->target_.value(x...), this->line_.value(x...), send, receive);
+  }
 };
 template<typename... Ts>
 class IsRegisteredCondition : public Condition<Ts...>, public Parented<VoipStack> {
@@ -210,12 +220,6 @@ class FlushContactsAction : public Action<Ts...>, public Parented<VoipStack> {
 };
 
 template<typename... Ts>
-class UpdateContactsAction : public Action<Ts...>, public Parented<VoipStack> {
- public:
-  void play(const Ts &...x) override { this->parent_->update_contacts(); }
-};
-
-template<typename... Ts>
 class AddContactAction : public Action<Ts...>, public Parented<VoipStack> {
  public:
   TEMPLATABLE_VALUE(std::string, entry)
@@ -267,16 +271,6 @@ class SetHaPeerNameAction : public Action<Ts...>, public Parented<VoipStack> {
   TEMPLATABLE_VALUE(std::string, name)
   void play(const Ts &...x) override {
     this->parent_->set_ha_peer_name(this->name_.value(x...));
-  }
-};
-
-template<typename... Ts>
-class SetMediaRouteAction : public Action<Ts...>, public Parented<VoipStack> {
- public:
-  TEMPLATABLE_VALUE(std::string, call_id)
-  TEMPLATABLE_VALUE(std::string, route)
-  void play(const Ts &...x) override {
-    this->parent_->set_media_route(this->call_id_.value(x...), this->route_.value(x...));
   }
 };
 

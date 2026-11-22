@@ -56,37 +56,37 @@ uint32_t millis(){return 100;}
 int main(int argc,char**argv){
  assert(argc==2);const std::string mode=argv[1];
  SipTransport t;AudioFormat pcm;pcm.sample_rate=16000;pcm.frame_ms=10;
- if(mode.rfind("d1-",0)==0){
+ if(mode.rfind("asym-",0)==0){
   auto receive=pcm;receive.sample_rate=48000;
-  t.offer_tx_formats_.count=1;t.offer_tx_formats_.formats[0]=pcm;
+  t.offer_tx_formats_.count=2;t.offer_tx_formats_.formats[0]=pcm;t.offer_tx_formats_.formats[1]=receive;
   t.offer_rx_formats_.count=2;t.offer_rx_formats_.formats[0]=receive;t.offer_rx_formats_.formats[1]=pcm;
   t.remote_ip_v4_=0xc0000202;
   const std::string initial="v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 50000 RTP/AVP 96 97\r\n"
-   "a=rtpmap:96 L16/48000/1\r\na=x-voip-stack-flow:96 send\r\n"
-   "a=rtpmap:97 L16/16000/1\r\na=x-voip-stack-flow:97 recv\r\n"
-   "a=x-voip-stack-independent-ptime:1\r\na=ptime:10\r\na=sendrecv\r\n";
+   "a=rtpmap:96 L16/48000/1\r\n"
+   "a=rtpmap:97 L16/16000/1\r\n"
+   "a=ptime:10\r\na=sendrecv\r\n";
   assert(t.learn_remote_rtp_from_sdp_(initial,0xc0000202)&&t.tx==pcm&&t.rx==receive);
   const auto old_payloads=t.accepted;auto proposal=initial;
-  const bool single=mode.rfind("d1-single-",0)==0;
-  const std::string direction=mode.substr(single?10:3);proposal.replace(proposal.find("a=sendrecv"),10,"a="+direction);
+  const bool single=mode.rfind("asym-single-",0)==0;
+  const std::string direction=mode.substr(single?12:5);proposal.replace(proposal.find("a=sendrecv"),10,"a="+direction);
   if(single){
    proposal.replace(proposal.find("RTP/AVP 96 97"),13,direction=="sendonly"?"RTP/AVP 96":"RTP/AVP 97");
    const std::string omitted=direction=="sendonly"
-    ?"a=rtpmap:97 L16/16000/1\r\na=x-voip-stack-flow:97 recv\r\n"
-    :"a=rtpmap:96 L16/48000/1\r\na=x-voip-stack-flow:96 send\r\n";
+    ?"a=rtpmap:97 L16/16000/1\r\n"
+    :"a=rtpmap:96 L16/48000/1\r\n";
    const auto position=proposal.find(omitted);assert(position!=std::string::npos);proposal.erase(position,omitted.size());
   }
   const auto request="INVITE sip:esp@192.0.2.1 SIP/2.0\r\nFrom: <sip:peer@192.0.2.2>;tag=remote\r\n"
-   "To: <sip:esp@192.0.2.1>;tag=local\r\nCSeq: 2 INVITE\r\nVia: SIP/2.0/UDP 192.0.2.2;branch=z9hG4bK-d1hold\r\n"
+   "To: <sip:esp@192.0.2.1>;tag=local\r\nCSeq: 2 INVITE\r\nVia: SIP/2.0/UDP 192.0.2.2;branch=z9hG4bK-asymhold\r\n"
    "Content-Type: application/sdp\r\nContent-Length: "+std::to_string(proposal.size())+"\r\n\r\n"+proposal;
   sockaddr_in peer{};peer.sin_addr.s_addr=htonl(0xc0000202);peer.sin_port=htons(5060);
   const bool accepted=t.handle_reinvite_(request,peer);
-  std::cerr<<"D1 reoffer single="<<single<<" direction="<<direction<<" status="<<t.status<<" reason="<<t.reason<<"\n";
+  std::cerr<<"Asymmetric reoffer single="<<single<<" direction="<<direction<<" status="<<t.status<<" reason="<<t.reason<<"\n";
   assert(accepted&&t.status==200&&"A one-way reoffer needs only the active direction mapping");
   assert(t.tx==pcm&&t.rx==receive&&t.accepted==old_payloads);
   const auto start=t.answer.find("m=audio ");const auto end=t.answer.find("\r\n",start);
   uint16_t port=0;bool payloads[128]{};assert(parse_audio_media_line(t.answer.substr(start,end-start),&port,payloads));
-  std::cerr<<"D1 "<<direction<<" answer="<<t.answer.substr(start,end-start)<<"\n";
+  std::cerr<<"Asymmetric "<<direction<<" answer="<<t.answer.substr(start,end-start)<<"\n";
   if(direction=="sendonly"){
    assert(payloads[96]&&!payloads[97]&&"recvonly answer must advertise receive mappings only");
    assert(t.answer.find("a=recvonly\r\n")!=std::string::npos);
@@ -212,13 +212,13 @@ def test_established_audio_hold_keeps_mapping_and_gates_actual_udp(hold_binary, 
 
 @pytest.mark.parametrize("direction", ["sendonly", "recvonly", "inactive"])
 def test_asymmetric_hold_answer_advertises_only_its_active_mapping(hold_binary, direction):
-    result = subprocess.run([str(hold_binary), "d1-" + direction], capture_output=True, text=True, timeout=5)
+    result = subprocess.run([str(hold_binary), "asym-" + direction], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("direction", ["sendonly", "recvonly"])
 def test_one_way_reoffer_needs_only_active_direction_mapping(hold_binary, direction):
-    result = subprocess.run([str(hold_binary), "d1-single-" + direction], capture_output=True, text=True, timeout=5)
+    result = subprocess.run([str(hold_binary), "asym-single-" + direction], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stdout + result.stderr
 
 

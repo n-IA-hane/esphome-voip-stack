@@ -336,10 +336,6 @@ bool VoipStack::select_line(const std::string& id) {
   this->default_line_ = id;
   return true;
 }
-void VoipStack::start_call_on_line(const std::string &target, const std::string &line) {
-  this->start_call_on_line_(target, line, {});
-}
-
 void VoipStack::start_call_on_line_(const std::string &target, const std::string &line,
                                    const std::string &call_id) {
   if (!this->can_start_call_()) return;

@@ -1,4 +1,5 @@
 #include "sip_blf.h"
+#include "sip_uri_user.h"
 #ifdef USE_ESPHOME_VOIP_BLF
 #include <algorithm>
 #include <cstring>
@@ -257,7 +258,7 @@ bool parse_presence(std::string_view xml, PresenceState *result) {
     if (collecting && type == XmlToken::OPEN) return false;
     if (type == XmlToken::OPEN && token.depth == 1) {
       if (root || name != "presence" || token.ns != PIDF_NS || token.attr("entity").empty() ||
-          token.attr("entity").size() > 512) return false;
+          token.attr("entity").size() > SIP_URI_BYTES) return false;
       root = true;
     } else if (type == XmlToken::CLOSE && token.depth == 1) {
       if (name != "presence" || token.ns != PIDF_NS) return false;
@@ -336,7 +337,7 @@ BlfDocumentResult BlfDialogCache::apply(std::string_view xml) {
       if (state != "full" && state != "partial") return BlfDocumentResult::INVALID;
       full = state == "full";
       const auto entity = token.attr("entity");
-      if (entity.empty() || entity.size() > 512) return BlfDocumentResult::INVALID;
+      if (entity.empty() || entity.size() > SIP_URI_BYTES) return BlfDocumentResult::INVALID;
       const auto number = trim(token.attr("version"));
       if (number.empty()) return BlfDocumentResult::INVALID;
       for (char c : number) {

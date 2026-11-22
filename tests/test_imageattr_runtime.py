@@ -99,12 +99,13 @@ using namespace esphome::voip_stack;
     code += block(header, 'struct RemoteMediaShape {') + ';\n'
     code += r'''
 struct SipTransport {
+ CallVideoIntent video_call_intent_{},next_video_call_intent_{};
  AudioFormat selected_tx_format_,selected_rx_format_;
  uint8_t rtp_tx_payload_type_=96,rtp_rx_payload_type_=96;
  RtpAudioPayloads negotiated_rx_payloads_;
  std::atomic<bool>audio_send_enabled_{true},audio_receive_enabled_{true};
  std::atomic<uint32_t>remote_rtp_ip_v4_{0};std::atomic<uint16_t>remote_rtp_port_{0};
- bool remote_directional_audio_v1_=false;RemoteMediaShape remote_media_shape_;
+ RemoteMediaShape remote_media_shape_;
  bool refer_context_active_=false,video_offered_=false,video_negotiated_=false,video_send_enabled_=false,video_receive_enabled_=false;
  void *video_source_=nullptr,*video_sink_=this;VideoCapability tx,rx,negotiated_video_capability_;
  std::atomic<bool>video_send_requested_{false};
@@ -221,6 +222,7 @@ struct Transaction{bool udp=false,completed=false;uint32_t next_ms=1,ip_v4=0;uin
 struct Pending{bool used=false,waiting_retry=false,target_send=false,previous_send=false;uint32_t retry_at_ms=1,response_deadline_ms=1000;Transaction transaction;
  bool pending()const{return used;}void clear(){used=false;}};
 struct SipTransport {
+ CallVideoIntent video_call_intent_{},next_video_call_intent_{};
  enum:uint8_t{IMAGEATTR_DISABLED=4,IMAGEATTR_FALLBACK=8,IMAGEATTR_ACTIVE=16};
  uint8_t video_imageattr_state_=IMAGEATTR_DISABLED|IMAGEATTR_FALLBACK;
  Pending pending_video_direction_invite_;

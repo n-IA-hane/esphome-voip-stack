@@ -187,11 +187,10 @@ struct VoipStack {
   std::atomic<bool> endpoint_publish_requested_{false};
   std::string last_sip_snapshot_, last_reason_;
   uint32_t last_sip_snapshot_refresh_ms_{0}, cycle_started_at_{0}, packets{0};
-  static constexpr uint32_t CYCLE_TIMEOUT_MS=3000, calling_timeout_ms_=3000, ringing_timeout_ms_=3000;
+  static constexpr uint32_t calling_timeout_ms_=3000, ringing_timeout_ms_=3000;
   bool audio_debug_{false}, cycle_active_{false};
   void pump_application_media_start_() {}
   void publish_endpoint_() {}
-  void commit_cycle_() {}
   void handle_call_timeouts_(uint32_t, uint32_t) {}
   void publish_media_route_() {}
   void disable_loop() {}

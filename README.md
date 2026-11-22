@@ -245,7 +245,7 @@ already supply the declarations. Follow the
   geometry. Packet times may differ. This Opus restriction does not apply to
   mixed PCM/G.722 receive-rate conversion without Opus.
 - With native HA integration enabled, remove manually declared API actions
-  named `start_call_via_ha` or `hangup_call_if_id`; the component provides them.
+  named `start_call_on_line` or `hangup_call_if_id`; the component provides them.
   Existing `start_call`, answer and hangup action names remain valid.
 
 Microphone-only and speaker-only configurations now advertise their actual SDP
@@ -357,21 +357,20 @@ not override a matched PBX account whose paging permission is disabled.
 permission. Answer mode controls acceptance only; the negotiated SDP direction
 still determines whether the microphone transmits.
 
-For an HA action that selects an outgoing trunk for one call, the native API also
-provides `start_call_via_ha(dest, call_id)` and `hangup_call_if_id(call_id)`.
-The HA integration supplies a fresh SIP Call-ID, binds its selected line to that
-call and routes the request through the configured HA peer. Scoped cancellation
-cannot hang up a later call with another identity. Ordinary `start_call(dest)`
-keeps its existing phonebook/direct-call behavior when managed registration is
-disabled. With `auto_register: true`, HA-correlated calls use the managed `ha`
-account while retaining the supplied Call-ID.
+For an HA action that selects an outgoing line, the native API provides
+`start_call_on_line(dest, line, send_video, receive_video)`. The ESP originates the SIP INVITE and creates
+its Call-ID. Home Assistant creates the PBX session when that INVITE arrives.
+`hangup_call_if_id(call_id)` cancels only the actual call whose identity matches,
+so a delayed command cannot hang up a later call. `start_call(dest)` retains its
+ordinary phonebook behavior and configured native video intent. For an audio call,
+pass both video arguments as `false`; receive-only video uses `false, true` and
+requires a configured sink. Sending also respects the camera privacy setting.
+The managed Home Assistant line is `ha`; `direct`
+selects a direct peer. Other line names identify configured registered accounts.
 
-These additional actions are compiled with the HA API adapter. They add no audio
-task, audio buffer or per-frame processing. The requested identity is passed
-through the existing call setup; there is no stored override for a future call.
-Call-IDs supplied through this API must be globally unique and case-sensitive,
-with at most 128 ASCII letters, digits, dots, underscores, hyphens and one optional
-`@` separator between non-empty parts. Incoming SIP parsing is unchanged.
+Upgrading requires rebuilding and uploading the firmware together with the
+maintained HA packages. Remove the old `start_call_via_ha` custom action; its
+controller-supplied Call-ID contract has been retired.
 
 See the [entity and migration guide](https://github.com/n-IA-hane/esphome-intercom/blob/main/docs/ESP_ENTITY_SURFACE.md)
 for the retired packages and entity customization. Old package/action
@@ -379,7 +378,8 @@ declarations are rejected rather than silently creating duplicate controls.
 
 The standard [LDAP directory](docs/LDAP_DIRECTORY.md) refreshes the existing
 phonebook atomically, preserves manual contacts and shares contact metadata with
-BLF. It is optional for static or legacy roster installations.
+BLF. LDAP is the only dynamic directory provider; static contacts remain
+available for offline installations.
 
 ## Audio wiring
 
@@ -527,6 +527,20 @@ The maintained FULL packages prefer PCM TX at 16 kHz/20 ms and RX at 48 kHz/10 m
 with explicit compatible alternatives. RX at 16 kHz must not displace the
 preferred 48 kHz HA-to-ESP stream when it is supported.
 
+Standard SDP lists every accepted mapping without private per-payload direction
+attributes. Sendrecv mappings must be usable in both directions. A native
+16 kHz microphone can transmit a declared 48 kHz fallback through the shared
+streaming PCM converter, prepared at setup and run in the existing TX task.
+Only profiles declaring rate conversion compile that transmit adapter.
+
+The default outgoing payload budget remains 1200 bytes. Receive storage is
+independent: a 2048-byte RTP datagram buffer and 2048-byte decoded PCM buffer
+admit mono L16 48 kHz/20 ms packets (1920 payload bytes). The maintained PCM
+receiver prefers 48 kHz/10 ms and advertises a truthful shared `maxptime:20`.
+The RTP task uses 448 additional stack bytes for the larger datagram buffer;
+configured receive/jitter storage follows the largest declared frame. CPU and
+combined internal/PSRAM budgets require representative firmware qualification.
+
 See the [codec and migration guide](https://github.com/n-IA-hane/esphome-intercom/blob/dev/docs/ESP_AUDIO_CODECS.md)
 for complete PCM, G.722 and Opus examples and the distinction between local
 PCM rate and RTP clock rate.
@@ -581,7 +595,7 @@ voip_stack:
     - name: Front Gate
 ```
 
-`name` is required; everything else is optional. Static contacts serve offline installs, diagnostics and direct SIP peers. Normal installs receive the HA-managed roster through the native `set_roster_json` action.
+`name` is required; everything else is optional. Static contacts serve offline installs, diagnostics and direct SIP peers. Normal installs receive the PBX directory through LDAP. Phone records use the literal SIP username in `uid` and the percent-encoded SIP address in `labeledURI`. HA device IDs are provisioning associations.
 
 Inbound INVITEs carry caller and destination identity. Incoming calls require a
 recognized PBX line by default. To accept calls sent directly to the ESP, enable
@@ -720,8 +734,7 @@ Call control:
 Phonebook actions: `voip_stack.next_contact`, `voip_stack.prev_contact`,
 `voip_stack.add_contact`, `voip_stack.remove_contact`,
 `voip_stack.set_contact`, `voip_stack.set_contacts`,
-`voip_stack.flush_contacts`, `voip_stack.update_contacts`,
-`voip_stack.set_roster_json`, and `voip_stack.set_ha_peer_name`.
+`voip_stack.flush_contacts` and `voip_stack.set_ha_peer_name`.
 
 Audio and diagnostic actions: `voip_stack.set_volume`,
 `voip_stack.set_mic_gain_db`, and `voip_stack.publish_entity_states`.
@@ -830,8 +843,6 @@ button:
 | `paging_auto_answer_peers` | `[]` | Trusted source IPv4 addresses for per-call direct paging; at most 16 retained. |
 | `registration.accounts[].allow_paging_auto_answer` | `false` | Allow per-call paging from that matched manual PBX account. |
 | `use_ha_as_first_contact` | `false` | Pin the HA peer at the top of the dial plan. |
-| `ha_phonebook_text_sensor_id` | none | Bind the HA phonebook sensor. |
-| `delete_contact_missing_from` | none | Drop absent roster contact after N updates. |
 | `ringing_timeout` / `calling_timeout` | none | Guard timers. |
 | `dc_offset_removal` | `false` | Remove DC bias on TX. |
 | `audio_debug` | `false` | Verbose audio-path diagnostics. |
@@ -928,34 +939,9 @@ contacts or SIP URIs. HA conversion is a fallback when
 the two legs cannot negotiate compatible media; an attempted fallback alone
 does not prove that conversion is active.
 
-The optional text sensor projects the existing call lifecycle:
-
-```yaml
-text_sensor:
-  - platform: voip_stack
-    type: media_route
-    name: VoIP Media Route
-    on_value:
-      then:
-        - lambda: |-
-            const char *label = x == "ha_transcoding" ? "HA transcoding" :
-                                x == "direct" ? "Direct" : "";
-            ESP_LOGI("call", "Media route: %s", label);
-```
-
-Values are `direct`, `ha_transcoding`, or empty outside a confirmed call or
-while waiting for HA's media owner. `direct` means compatible media without
-HA conversion; an HA packet relay can preserve media unchanged. The sensor
-is a presentation hook, not a second call state machine. For a display, use
-`x` in its `on_value` action. The shared HA package already creates
-`voip_media_route`, so extend that id instead of adding a second sensor.
-
-The companion integration reports actual committed audio/video conversion
-through the existing authenticated ESPHome API action `set_media_route`.
-It supplies the SIP Call-ID of that physical leg. Firmware rejects unknown
-values, updates outside a call and updates for an earlier Call-ID, then clears
-the route at termination. This notification never negotiates codecs or starts
-a separate media path.
+The SIP snapshot and requested diagnostic dump report the actual negotiated TX
+and RX formats. The former `media_route` sensor and `set_media_route` command
+are retired. Media compatibility and conversion follow the SIP/SDP contract.
 
 ## Run the native regressions
 

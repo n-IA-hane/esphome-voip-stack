@@ -144,7 +144,7 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
   }
   if (status >= 300) {
     this->outgoing_invite_pending_.store(false, std::memory_order_release);
-    std::string reason = sip_header_token(header_value(message, "X-Voip-Stack-Decline-Reason"));
+    std::string reason;
     if (reason.empty()) reason = reason_text_from_header(header_value(message, "Reason"));
     if (reason.empty()) reason = sip_failure_reason_(status);
     const auto type = status == 401 ? SipSignalType::AUTH_REQUIRED

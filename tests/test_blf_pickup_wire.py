@@ -29,7 +29,8 @@ struct VoipStack {
  bool can_start_call_()const{return ready;}
  bool is_registered(const std::string&id){return transport_->is_registered(id);}
  bool pickup_contact(const std::string&);BlfStateInfo get_contact_blf_info_(std::string_view);
- void start_call_on_line(const std::string&target,const std::string&line){
+ void start_call_on_line(const std::string&target,const std::string&line,bool send_video,bool receive_video){
+  assert(!send_video&&!receive_video);
   std::string host;uint16_t port;bool tcp;assert(transport_->prepare_account_line(line,&host,&port,&tcp));
   transport_->remote_ip_v4_=INADDR_LOOPBACK;transport_->remote_sip_port_=port;transport_->remote_sip_tcp_=tcp;
   assert(transport_->send_invite_unlocked_("picked", "picker", "Picker", target, "Recipient"));

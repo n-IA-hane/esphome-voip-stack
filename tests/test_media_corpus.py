@@ -33,8 +33,8 @@ int main(int argc, char **argv) {
   SipTransport s;
   auto &tx = s.offer_tx_formats_; auto &rx = s.offer_rx_formats_;
   if (std::string(argv[2]) == "esp-p4") {
-    tx.count = 2; tx.formats[0] = make(AudioCodec::PCM, 16000, 20); tx.formats[1] = make(AudioCodec::PCM, 16000, 10);
-    rx.count = 2; rx.formats[0] = make(AudioCodec::PCM, 48000, 10); rx.formats[1] = make(AudioCodec::PCM, 16000, 10);
+    tx.count = 3; tx.formats[0] = make(AudioCodec::PCM, 16000, 20); tx.formats[1] = make(AudioCodec::PCM, 16000, 10); tx.formats[2] = make(AudioCodec::PCM, 48000, 10);
+    rx.count = 4; rx.formats[0] = make(AudioCodec::PCM, 48000, 10); rx.formats[1] = make(AudioCodec::PCM, 48000, 20); rx.formats[2] = make(AudioCodec::PCM, 16000, 20); rx.formats[3] = make(AudioCodec::PCM, 16000, 10);
   } else {
     tx.count = 1; tx.formats[0] = make(AudioCodec::OPUS, 16000, 20);
     rx.count = 1; rx.formats[0] = make(AudioCodec::OPUS, 48000, 20);

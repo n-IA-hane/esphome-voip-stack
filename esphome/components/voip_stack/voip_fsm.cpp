@@ -54,6 +54,9 @@ void VoipStack::set_call_identity_(const std::string &call_id,
 }
 
 void VoipStack::clear_call_identity_() {
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  if (this->transport_ != nullptr) this->transport_->set_outgoing_video_intent({});
+#endif
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   this->pending_media_start_ = ApplicationMediaStart::NONE;
 #endif
@@ -185,6 +188,7 @@ bool VoipStack::ignore_if_idle_or_stale_(const char *message_name,
 // === Lifecycle / user actions ===
 
 bool VoipStack::can_start_call_() const {
+  if (this->runtime_shutting_down_.load(std::memory_order_acquire)) return false;
   if (this->call_state_.load(std::memory_order_acquire) != CallState::IDLE) {
     ESP_LOGW(TAG, "Cannot start call: already %s", this->get_call_state_str());
     return false;
@@ -222,8 +226,6 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
   uint16_t dial_port = this->get_current_contact_port();
   uint16_t dial_rtp_port = this->get_current_contact_rtp_port();
   bool dial_sip_tcp = this->get_current_contact_sip_transport_tcp();
-  bool dial_directional_audio_v1 =
-      this->get_current_contact_directional_audio_v1();
 
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   const std::string outgoing_line = via_ha || this->force_direct_call_ ? "direct" :
@@ -232,8 +234,7 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
   auto *sip = static_cast<SipTransport *>(this->transport_.get());
   if (sip != nullptr) sip->clear_account_line();
   if (outgoing_line != "direct") {
-    if (sip == nullptr || !sip->prepare_account_line(outgoing_line, &dial_ip, &dial_port, &dial_sip_tcp,
-                                                       &dial_directional_audio_v1)) {
+    if (sip == nullptr || !sip->prepare_account_line(outgoing_line, &dial_ip, &dial_port, &dial_sip_tcp)) {
       this->pending_dialplan_target_.clear();
       this->defer([this]() { this->call_failed_trigger_.trigger("", "PBX account unavailable"); }); return;
     }
@@ -247,7 +248,6 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
     dial_port = ha != nullptr ? ha->port : 0;
     dial_rtp_port = ha != nullptr ? ha->rtp_port : 0;
     dial_sip_tcp = ha != nullptr && ha->sip_transport_tcp;
-    dial_directional_audio_v1 = ha != nullptr && ha->directional_audio_v1;
   }
   const std::string selected_dest = this->get_current_destination();
   const bool route_via_ha = via_ha || (
@@ -260,16 +260,21 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
       : selected_dest.empty()
       ? (this->ha_peer_name_.empty() ? std::string("(unknown)") : this->ha_peer_name_)
       : selected_dest;
-  const std::string caller_route =
-      this->device_route_id_.empty() ? this->device_name_ : this->device_route_id_;
+  std::string caller_route = this->device_route_id_.empty() ? this->device_name_ : this->device_route_id_;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (sip != nullptr && outgoing_line != "direct") {
+    caller_route = sip->registration_account_username(outgoing_line);
+  }
+#endif
   const std::string dest_route = via_ha ? previous.dest_route : !this->pending_dialplan_target_.empty()
       ? this->pending_dialplan_target_
       : (this->get_current_destination_route().empty()
              ? dest_name
              : this->get_current_destination_route());
-  const std::string call_id = !requested_call_id.empty() ? requested_call_id : caller_route + "-" + std::to_string(millis()) + "-" +
-                              std::to_string(static_cast<unsigned>(esp_random())) +
-                              "@" + (this->device_route_id_.empty() ? std::string("esp") : this->device_route_id_);
+  const std::string call_id = !requested_call_id.empty() ? requested_call_id
+      : "esp-" + std::to_string(static_cast<unsigned>(esp_random())) + "-" + std::to_string(millis()) +
+        "-" + std::to_string(static_cast<unsigned>(esp_random())) + "@esphome";
+
   if (dial_ip.empty() || dial_port == 0) {
     this->ha_media_fallback_pending_ = false;
     ESP_LOGE(TAG, "%s: SIP outgoing needs a SIP contact with host+port for '%s'", this->device_name_.c_str(),
@@ -292,7 +297,6 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
   this->clear_terminal_call_snapshot_();
   this->set_remote_sip_transport_tcp(dial_sip_tcp);
   if (this->transport_ != nullptr)
-    this->transport_->set_peer_directional_audio_v1(dial_directional_audio_v1);
   this->set_remote_endpoint(dial_ip, dial_port, dial_rtp_port);
   this->set_call_identity_(call_id, caller_route, caller_name,
                             dest_route, dest_name, true);
@@ -455,39 +459,6 @@ const char *VoipStack::get_state_str() const {
   return call_state_to_str(this->call_state_.load(std::memory_order_acquire));
 }
 
-const char *VoipStack::get_media_route_str() const {
-  if (this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL) return "";
-  switch (this->media_route_.load(std::memory_order_acquire)) {
-    case MediaRoute::DIRECT: return "direct";
-    case MediaRoute::HA_TRANSCODING: return "ha_transcoding";
-    default: return "";
-  }
-}
-
-bool VoipStack::set_media_route(const std::string &call_id, const std::string &route) {
-  if (call_id.empty() || this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL ||
-      call_id != this->get_current_call_id_()) return false;
-  MediaRoute selected;
-  if (route == "direct") selected = MediaRoute::DIRECT;
-  else if (route == "ha_transcoding") selected = MediaRoute::HA_TRANSCODING;
-  else return false;
-  if (this->media_route_.exchange(selected, std::memory_order_acq_rel) != selected) {
-    this->publish_media_route_();
-  }
-  return true;
-}
-
-void VoipStack::publish_media_route_() {
-#ifdef USE_TEXT_SENSOR
-  if (this->media_route_sensor_ != nullptr) {
-    const char *route = this->get_media_route_str();
-    if (!this->media_route_sensor_->has_state() || this->media_route_sensor_->state != route) {
-      this->media_route_sensor_->publish_state(route);
-    }
-  }
-#endif
-}
-
 void VoipStack::publish_state_() {
 #ifdef USE_TEXT_SENSOR
   if (this->state_sensor_ != nullptr) {
@@ -495,7 +466,6 @@ void VoipStack::publish_state_() {
   }
 #endif
   this->publish_sip_snapshot_();
-  this->defer([this]() { this->publish_media_route_(); });
 }
 
 void VoipStack::clear_terminal_call_snapshot_() {
@@ -842,7 +812,6 @@ void VoipStack::set_call_state_(CallState new_state) {
                                   this->rx_audio_revision_.load(std::memory_order_acquire));
   }
 #endif
-  this->media_route_.store(MediaRoute::UNKNOWN, std::memory_order_release);
   if ((old_state == CallState::IN_CALL) != (new_state == CallState::IN_CALL)) {
     this->notify_audio_tasks_();
   }
@@ -887,18 +856,6 @@ void VoipStack::set_call_state_(CallState new_state) {
       break;
     case CallState::IN_CALL:
       this->publish_last_reason_("");
-      this->defer([this, call_id = trigger_call.call_id]() {
-        // A call with HA needs confirmation from its committed media owner.
-        // Compatibility or a fallback attempt alone does not prove conversion.
-        const auto *ha = this->ha_peer_name_.empty() ? nullptr : this->phonebook_.find(this->ha_peer_name_);
-        in_addr address{};
-        const uint32_t peer_ip = this->transport_ != nullptr ? this->transport_->snapshot().remote_ip_v4 : 0;
-        const bool ha_peer = ha != nullptr && inet_aton(ha->ip.c_str(), &address) != 0 &&
-                             ntohl(address.s_addr) == peer_ip;
-        if (peer_ip != 0 && !ha_peer && this->media_route_.load(std::memory_order_acquire) == MediaRoute::UNKNOWN) {
-          this->set_media_route(call_id, "direct");
-        }
-      });
       this->defer([this, trigger_peer]() { this->in_call_trigger_.trigger(trigger_peer); });
       break;
     case CallState::TERMINATING:

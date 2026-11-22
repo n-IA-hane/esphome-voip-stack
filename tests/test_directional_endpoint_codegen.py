@@ -30,7 +30,7 @@ def test_absent_audio_direction_is_not_generated(tmp_path, role, legacy_absent_f
     assert f'add_supported_{absent}_audio_format(' not in code
 
 
-def test_endpoint_serializer_always_publishes_independent_ptime_support(tmp_path):
+def test_endpoint_serializer_retires_private_media_capability_shortcuts(tmp_path):
     from test_refer_dialog_runtime import block
 
     source = (ROOT / 'esphome/components/voip_stack/voip_stack.cpp').read_text()
@@ -38,7 +38,6 @@ def test_endpoint_serializer_always_publishes_independent_ptime_support(tmp_path
     transport_enum = block(header, 'enum class TransportType') + ';\n'
     methods = '\n'.join(block(source, marker) for marker in (
         'std::string VoipStack::audio_format_token_(',
-        'std::string VoipStack::audio_rtp_format_token_(',
         'std::string VoipStack::build_endpoint_string_(',
     ))
     cpp = tmp_path / 'endpoint.cpp'
@@ -61,7 +60,6 @@ struct VoipStack {
  const char *audio_capability_() const {return "both";}
  std::string local_ip_string_() const {return "192.0.2.10";}
  static std::string audio_format_token_(const AudioFormat&);
- static std::string audio_rtp_format_token_(const AudioFormat&);
  std::string build_endpoint_string_() const;
 };
 ''' + methods + r'''
@@ -74,9 +72,11 @@ int main(){
  for(bool g722:{false,true}){
   s.tx_audio_formats_.formats[0].codec=g722?AudioCodec::G722:AudioCodec::PCM;
   auto endpoint=s.build_endpoint_string_();assert(!endpoint.empty());
-  assert(endpoint.find(" | sf=d1 | ip=1")!=std::string::npos);
-  if(g722)assert(endpoint.find(" | at=g/8/1/20")!=std::string::npos);
-  else assert(endpoint.find("16000:s16le:1:20")!=std::string::npos);
+  assert(endpoint.find(" | sf=")==std::string::npos);
+  assert(endpoint.find(" | ip=")==std::string::npos);
+  assert(endpoint.find(" | at=")==std::string::npos);
+  assert(endpoint.find(" | ar=")==std::string::npos);
+  if(!g722)assert(endpoint.find("16000:s16le:1:20")!=std::string::npos);
  }
 }
 ''')

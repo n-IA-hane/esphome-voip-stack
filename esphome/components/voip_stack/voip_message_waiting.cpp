@@ -76,7 +76,7 @@ bool VoipStack::can_call_mailbox(const std::string &account_id, const std::strin
 bool VoipStack::call_mailbox(const std::string &account_id, const std::string &target) {
   std::string resolved, line;
   if (!this->can_start_call_() || !this->mailbox_target_(account_id, target, &resolved, &line)) return false;
-  this->start_call_on_line(resolved, line);
+  this->start_call_on_line(resolved, line, false, false);
   return true;
 }
 

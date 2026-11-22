@@ -106,9 +106,10 @@ void SipTransport::reset_dialog_media_locked_() {
   this->connected_identity_sent_ = false;
   this->dialog_originated_ = false;
   this->delayed_offer_pending_ = false;
-  this->remote_directional_audio_v1_ = false;
   this->remote_media_shape_.clear();
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  this->video_call_intent_ = {};
+  this->next_video_call_intent_ = {};
   this->video_payloads_ = {};
 #endif
   this->audio_zero_connection_ = false;

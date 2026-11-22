@@ -61,17 +61,17 @@ def correlated_fixture_source(*, snapshot=False):
 #define ESP_LOGI(...)
 #define ESP_LOGE(...)
 uint32_t millis(){return 100;}
-uint32_t esp_random(){return 42;}
+uint32_t esp_random(){static uint32_t value=41;return ++value;}
 const char*inet_ntoa_r(in_addr a,char*out,size_t n){return inet_ntop(AF_INET,&a,out,n);}
 namespace esphome::voip_stack {
 ''' + uri_methods + '\n' + transport_snapshot + r'''
 struct Transport {
+  CallVideoIntent video_intent;void set_outgoing_video_intent(CallVideoIntent value){video_intent=value;}
   bool terminating=false,originate_ok=true;
   mutable int snapshots=0;unsigned originations=0;
   std::string ip;
   SipTransportSnapshot value;
   SipTransportSnapshot snapshot() const {++snapshots;auto out=value;out.terminal_transaction_pending=terminating;return out;}
-  void set_peer_directional_audio_v1(bool){}
   void set_sip_signaling_transport(bool){}
   bool prepare_media_path(){return true;}bool commit_media_path(){return true;}void abort_media_path(){}
   bool originate(const std::string &value,uint16_t){++originations;ip=value;return originate_ok;}
@@ -79,6 +79,7 @@ struct Transport {
 struct Trigger {unsigned calls=0;template<typename... Args> void trigger(Args...) {++calls;}};
 class VoipStack {
 public:
+  std::atomic<bool> runtime_shutting_down_{false};
   std::atomic<CallState> call_state_{CallState::IDLE};
   Transport transport, *transport_=&transport;
   Phonebook phonebook_;
@@ -110,7 +111,7 @@ public:
   void set_in_call_(bool on){if(on)call_state_=CallState::IN_CALL;}void reset_peer_audio_watchdog_(bool){}
 
   void call(const std::string &);void call_(const std::string &,const std::string &);
-  void call_via_ha(const std::string &,const std::string &);void hangup_call_if_id(const std::string &);
+  void start_call_on_line(const std::string &,const std::string &,bool,bool);void hangup_call_if_id(const std::string &);
   const char *get_call_state_str() const{return call_state_to_str(call_state_.load());}
   CallSnapshot snapshot_call_identity_() const{return identity;}
   std::string get_current_call_id_() const{return identity.call_id;}
@@ -122,7 +123,7 @@ public:
   const std::string &get_current_destination_route() const;
 #endif
   uint16_t get_current_contact_port() const;uint16_t get_current_contact_rtp_port() const;
-  bool get_current_contact_sip_transport_tcp() const;bool get_current_contact_directional_audio_v1() const;
+  bool get_current_contact_sip_transport_tcp() const;
   std::string build_sip_snapshot_string_() const;
   enum class TransportType{UDP,TCP};TransportType protocol_=TransportType::UDP;
   struct CurrentMediaFormats{AudioFormat tx,rx;};
@@ -146,31 +147,32 @@ using namespace esphome::voip_stack;
 '''
 
 
-def test_correlated_call_uses_ha_and_scoped_hangup_without_retained_override(tmp_path):
+def test_native_line_command_owns_call_id_and_scoped_hangup(tmp_path):
     source = tmp_path / 'correlated_call.cpp'
     source.write_text(correlated_fixture_source() + r'''
 int main(){
  VoipStack phone;
- phone.call_via_ha("Desk","ha-ABC123@controller");
- assert(phone.invites==1 && phone.identity.call_id=="ha-ABC123@controller");
- assert(phone.transport.ip=="192.0.2.10" && phone.identity.dest_route=="Desk");
+ phone.start_call_on_line("Desk","direct",false,false);
+ assert(phone.invites==1 && phone.identity.call_id.find("esp-")==0);
+ const auto first_id=phone.identity.call_id;
+ assert(phone.transport.ip=="192.0.2.20" && phone.identity.dest_route=="Desk");
  assert(phone.pending_dialplan_target_.empty());
- phone.hangup_call_if_id("ha-abc123@controller");assert(phone.stops==0);
- phone.call_via_ha("Other","different-id");assert(phone.invites==1 && phone.identity.dest_name=="Desk");
- phone.hangup_call_if_id("ha-ABC123@controller");assert(phone.stops==1);
+ phone.hangup_call_if_id("stale@controller");assert(phone.stops==0);
+ phone.start_call_on_line("Other","direct",false,false);assert(phone.invites==1 && phone.identity.dest_name=="Desk");
+ phone.hangup_call_if_id(first_id);assert(phone.stops==1);
  phone.call("Desk");assert(phone.invites==2 && phone.transport.ip=="192.0.2.20");
- assert(phone.identity.call_id=="phone-100-42@phone");
- phone.hangup_call_if_id("ha-ABC123@controller");assert(phone.stops==1);
+ assert(phone.identity.call_id!=first_id);
+ phone.hangup_call_if_id(first_id);assert(phone.stops==1);
  phone.stop();
- for(const std::string bad:{"", "bad\r\nHeader", "bad value", "@ha", "value@", "a@@b"})phone.call_via_ha("Desk",bad);
- phone.call_via_ha("Desk",std::string(129,'x'));assert(phone.invites==2);
- phone.transport.terminating=true;phone.call_via_ha("999","unique");assert(phone.invites==2 && phone.pending_dialplan_target_.empty());
- phone.transport.terminating=false;phone.transport.originate_ok=false;phone.call_via_ha("999","fail-id");
+ for(const std::string bad:{"bad\r\nHeader", "bad value", "@ha", "value@", "a@@b", "ha"})phone.start_call_on_line("Desk",bad,false,false);
+ phone.start_call_on_line("Desk",std::string(129,'x'),false,false);assert(phone.invites==2);
+ phone.transport.terminating=true;phone.start_call_on_line("999","direct",false,false);assert(phone.invites==2 && phone.pending_dialplan_target_.empty());
+ phone.transport.terminating=false;phone.transport.originate_ok=false;phone.start_call_on_line("999","direct",false,false);
  assert(phone.call_state_==CallState::IDLE && phone.pending_dialplan_target_.empty());
- phone.transport.originate_ok=true;phone.call("Desk");assert(phone.invites==3 && phone.identity.call_id!="fail-id");
+ phone.transport.originate_ok=true;phone.call("Desk");assert(phone.invites==3 && phone.identity.call_id!=first_id);
  phone.stop();
  phone.on_publish=[&phone](){phone.call_state_=CallState::RINGING;phone.identity.call_id="incoming-dialog";};
- phone.call_via_ha("Desk","outgoing-action");
+ phone.start_call_on_line("Desk","direct",false,false);
  assert(phone.invites==3 && phone.identity.call_id=="incoming-dialog");
  assert(phone.pending_dialplan_target_.empty());
 }

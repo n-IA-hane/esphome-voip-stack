@@ -183,6 +183,9 @@ bool SipTransport::handle_refer_(const std::string &message, const sockaddr_in &
     return false;
   }
   std::unique_ptr<ReferDialog, ReferDeleter> candidate(::new (memory) ReferDialog());
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  candidate->video_call_intent_ = this->video_call_intent_;
+#endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   candidate->active_account_ = candidate_account;
 #endif
@@ -245,7 +248,10 @@ void SipTransport::swap_dialog_(ReferDialog &other) {
   SWAP_FIELD(cseq_); SWAP_FIELD(invite_cseq_); SWAP_FIELD(sdp_session_id_); SWAP_FIELD(sdp_session_version_);
   SWAP_FIELD(completed_invite_); SWAP_FIELD(completed_control_); SWAP_FIELD(completed_invite_client_);
   SWAP_FIELD(pending_invite_); SWAP_FIELD(pending_cancel_); SWAP_FIELD(pending_bye_); SWAP_FIELD(pending_update_);
-  SWAP_FIELD(delayed_offer_pending_); SWAP_FIELD(terminate_after_invite_ack_); SWAP_FIELD(peer_directional_audio_v1_);
+  SWAP_FIELD(delayed_offer_pending_); SWAP_FIELD(terminate_after_invite_ack_);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  SWAP_FIELD(video_call_intent_);
+#endif
 #undef SWAP_FIELD
   other.remote_sip_tcp_ = this->remote_sip_tcp_.exchange(other.remote_sip_tcp_);
   {
@@ -269,7 +275,6 @@ void SipTransport::swap_negotiation_(ReferDialog &other) {
 #endif
   swap(this->local_offered_rx_payloads_, other.local_offered_rx_payloads_);
   swap(this->local_offered_tx_formats_, other.local_offered_tx_formats_);
-  swap(this->local_offered_directional_audio_v1_, other.local_offered_directional_audio_v1_);
 }
 
 bool SipTransport::prepare_refer_media_(ReferDialog &other) {
@@ -285,7 +290,7 @@ bool SipTransport::prepare_refer_media_(ReferDialog &other) {
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   if (!rx.is_valid()) return !other.media.rx.is_valid();
   if (!this->pcm_receive_converter_.prepare_additional(
-          configured_decoded_receive_formats(other.media.rx_payloads, this->offer_rx_formats_, this->udp_max_payload_),
+          configured_decoded_receive_formats(other.media.rx_payloads, this->offer_rx_formats_, RTP_AUDIO_RECEIVE_PAYLOAD_BYTES),
                                                        decoded_pcm_format(pcm_playout_format(rx, this->offer_rx_formats_)))) return false;
   other.media.rx = rx;
   return true;

@@ -109,7 +109,8 @@ void VoipStack::tx_task(void *param) {
 }
 
 bool VoipStack::is_tx_stream_ready_() const {
-  return this->audio_devices_active_.load(std::memory_order_acquire) &&
+  return !this->runtime_shutting_down_.load(std::memory_order_acquire) &&
+         this->audio_devices_active_.load(std::memory_order_acquire) &&
          this->call_state_.load(std::memory_order_acquire) == CallState::IN_CALL &&
          this->get_current_tx_audio_format_().is_valid() &&
          this->transport_ != nullptr && this->transport_->is_connected();
@@ -151,7 +152,8 @@ bool VoipStack::write_mic_buffer_(const uint8_t *data, size_t len) {
   }
   const size_t frame_bytes = this->tx_audio_chunk_bytes_();
   const size_t capacity = this->mic_buffer_->capacity();
-  const AudioFormat format = this->get_current_tx_audio_format_();
+  AudioFormat format = this->tx_audio_format_;
+  format.frame_ms = this->get_current_tx_audio_format_().frame_ms;
   const size_t stride = format.channels * format.container_bytes_per_sample();
   if (stride == 0 || stride > TxPcmFragment::MAX_STRIDE || capacity % stride != 0) return false;
   auto &fragment = this->tx_pcm_fragment_;
@@ -214,6 +216,10 @@ void VoipStack::tx_task_() {
   uint8_t *const audio_chunk = this->tx_audio_chunk_;
   int64_t next_send_at_us = 0;
   uint8_t paced_frame_ms = 0;
+#ifdef USE_ESPHOME_VOIP_PCM_TX_CONVERSION
+  uint32_t converter_epoch = UINT32_MAX;
+  AudioFormat converter_target = disabled_audio_format();
+#endif
 
   while (true) {
     if (!this->is_tx_stream_ready_()) {
@@ -262,7 +268,37 @@ void VoipStack::tx_task_() {
     const auto consumed_context = this->transport_->audio_tx_frame_context(tx_format);
     if (!this->read_tx_chunk_(audio_chunk))
       continue;
+#ifdef USE_ESPHOME_VOIP_PCM_TX_CONVERSION
+    const uint32_t epoch = this->tx_pcm_epoch_.load(std::memory_order_acquire);
+    if (converter_epoch != epoch || !audio_formats_share_rtp_mapping(converter_target, tx_format)) {
+      this->tx_pcm_converter_.reset();
+      converter_epoch = epoch;
+      converter_target = tx_format;
+    }
+    AudioFormat native = decoded_pcm_format(this->tx_audio_format_);
+    native.frame_ms = tx_format.frame_ms;
+    const AudioFormat target = decoded_pcm_format(tx_format);
+    if (native == target) {
+      this->send_chunk_(audio_chunk, frame_bytes, consumed_context);
+    } else {
+      const size_t converted = this->tx_pcm_converter_.convert_to(
+          native, target, audio_chunk, frame_bytes, this->tx_converted_chunk_, this->tx_converted_chunk_alloc_bytes_);
+      // The DSP's initial filter delay can produce a shorter first packet.
+      // Leading silence preserves the negotiated packet duration and clock.
+      const size_t expected = target.nominal_frame_bytes();
+      if (converted != 0 && converted <= expected) {
+        if (converted < expected) {
+          std::memmove(this->tx_converted_chunk_ + expected - converted, this->tx_converted_chunk_, converted);
+          std::memset(this->tx_converted_chunk_, 0, expected - converted);
+        }
+        this->send_chunk_(this->tx_converted_chunk_, expected, consumed_context);
+      } else
+        this->media_tx_queue_drops_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+#else
     this->send_chunk_(audio_chunk, frame_bytes, consumed_context);
+#endif
 
     const int64_t frame_interval_us = static_cast<int64_t>(tx_format.frame_ms) * 1000;
     // Preserve capture-clock debt after a late wakeup. The bounded microphone
@@ -342,7 +378,7 @@ void VoipStack::on_microphone_data_(const uint8_t *data, size_t len) {
     while (off < total_samples) {
       const size_t chunk = std::min(total_samples - off, this->mic_processing_samples_());
       if (this->dc_offset_removal_) {
-        const uint8_t channels = this->get_current_tx_audio_format_().channels;
+        const uint8_t channels = this->tx_audio_format_.channels;
         for (size_t i = 0; i < chunk; i++) {
           mic_converted[i] = scale_sample(this->dc_blockers_[this->dc_channel_phase_].process(src[off + i]),
                                           effective_gain);

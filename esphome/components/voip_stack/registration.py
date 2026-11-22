@@ -34,8 +34,8 @@ def bounded(value, limit=128):
 
 def user(value):
     value = bounded(value, 64)
-    if not value or re.search(r'[\s<>"\\;,@/?#:]', value):
-        raise cv.Invalid("Use a SIP username without URI delimiters")
+    if not value or value != value.strip(" "):
+        raise cv.Invalid("Use a literal SIP username without leading or trailing spaces")
     return value
 
 
@@ -219,11 +219,17 @@ def register_automations(parent_type):
         cv.GenerateID(): cv.use_id(parent_type),
         cv.Required("target"): cv.templatable(cv.string),
         cv.Required("line"): cv.templatable(cv.Any("direct", account_id)),
+        cv.Optional("send_video"): cv.templatable(cv.boolean),
+        cv.Optional("receive_video"): cv.templatable(cv.boolean),
     }), synchronous=True)
     async def call_to_code(conf, action_id, template_arg, args):
         action = await parented(conf, action_id, template_arg)
         cg.add(action.set_target(await cg.templatable(conf["target"], args, cg.std_string)))
         cg.add(action.set_line(await cg.templatable(conf["line"], args, cg.std_string)))
+        for key in ("send_video", "receive_video"):
+            if key in conf:
+                setter = action.set_send_video if key == "send_video" else action.set_receive_video
+                cg.add(setter(await cg.templatable(conf[key], args, cg.bool_)))
         return action
 
     condition = NS.class_("IsRegisteredCondition", automation.Condition)

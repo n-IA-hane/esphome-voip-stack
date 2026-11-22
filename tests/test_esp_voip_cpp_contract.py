@@ -2139,8 +2139,8 @@ def test_phonebook_capacity_and_transport_updates_are_centralized() -> None:
     ]
     assert "processed < MAX_CONTACTS" in add_batch
     assert "this->entries_.size() < MAX_CONTACTS" not in add_batch
-    assert "MAX_ROSTER_JSON_BYTES = 32768" in settings
-    assert "roster_json.size() > MAX_ROSTER_JSON_BYTES" in settings
+    assert "MAX_ROSTER_JSON_BYTES" not in settings
+    assert "apply_roster_json_contacts_" not in settings
 
 
 def test_sip_tcp_originate_is_async() -> None:
@@ -2284,13 +2284,9 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
 
     endpoint = stack_cpp[stack_cpp.index("std::string VoipStack::build_endpoint_string_"):]
     assert "char buf[640]" in endpoint
-    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s%s%s"' in endpoint
-    assert 'audio_extra += " | at=" + rtp_tx' in endpoint
-    assert 'audio_extra += " | ar=" + rtp_rx' in endpoint
-    assert 'audio_extra += " | sf=d1 | ip=1"' in endpoint
-    assert "if (has_non_pcm)" in endpoint
-    assert "tx.clear()" in endpoint
-    assert "rx.clear()" in endpoint
+    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s%s"' in endpoint
+    for field in (" | at=", " | ar=", " | sf=", " | ip="):
+        assert field not in endpoint
     assert 'video_extra = " | video=jpeg"' in endpoint
     assert 'video_extra = " | video=h264"' in endpoint
     assert 'video_extra = ""' in endpoint
@@ -2308,11 +2304,8 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
     assert "this->request_endpoint_publish_()" in set_extension
 
     settings = read("voip_settings.cpp")
-    roster_parser = settings[
-        settings.index("bool parse_json_roster_slot") : settings.index("\n}  // namespace")
-    ]
-    assert "resolve_roster_contact(" in roster_parser
-    assert "slot->route = std::move(identity.route);" in roster_parser
+    assert "parse_json_roster_slot" not in settings
+    assert "cJSON" not in settings
 
 
 def test_voip_media_tasks_are_not_idle_polling() -> None:
@@ -3562,19 +3555,13 @@ def test_sdp_media_shape_uses_one_bounded_signaling_allocation() -> None:
     assert "media.shape.line(index)" in sdp
 
 
-def test_roster_json_uses_address_direct_or_ha_route_without_kind_semantics() -> None:
+def test_dynamic_directory_has_one_ldap_provider_boundary() -> None:
     settings = read("voip_settings.cpp")
+    native = read("ha_integration.h")
+    assert "JsonRosterSlot" not in settings
+    assert "set_roster_json" not in native
+    assert "commit_contact_directory" in settings
 
-    assert 'json_metadata_bool(obj, "local_ha")' in settings
-    assert 'slot->local_ha = json_metadata_bool(obj, "local_ha");' in settings
-    assert 'std::string kind' not in settings
-    assert 'softphone' not in settings
-    assert 'registered' not in settings
-    assert 'slot.address.empty()' in settings
-    assert 'const bool direct_candidate = !slot.address.empty() && !slot.local_ha && !slot.ha_bridge' in settings
-    assert "contact_transport_tcp == local_sip_transport_tcp" not in settings
-    assert "entry.sip_transport_tcp = contact_transport_tcp;" in settings
-    assert '} else if (has_ha) {' in settings
 
 
 def test_yaml_calling_conditions_cover_remote_ringing() -> None:

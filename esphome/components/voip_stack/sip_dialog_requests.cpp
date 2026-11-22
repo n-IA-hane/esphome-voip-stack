@@ -43,7 +43,14 @@ bool SipTransport::send_invite_unlocked_(const std::string &call_id,
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   const int prepared_account = this->refer_context_active_ ? this->active_account_ : this->next_account_;
 #endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  const CallVideoIntent prepared_video = this->refer_context_active_ ? this->video_call_intent_
+                                                                   : this->next_video_call_intent_;
+#endif
   this->reset_dialog_();
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  this->video_call_intent_ = prepared_video;
+#endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   this->active_account_ = prepared_account;
   if (!this->refer_context_active_) this->next_account_ = -1;

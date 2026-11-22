@@ -20,7 +20,6 @@ void LdapDirectory::set_credentials(const std::string &username, const std::stri
 
 void LdapDirectory::setup() {
   if (this->parent_ == nullptr) { this->mark_failed(); return; }
-  if (this->managed_by_ha_) this->parent_->set_ha_roster_enabled(false);
   this->receive_buffer_ = static_cast<char *>(allocate_(this->receive_size_, this->buffers_psram_));
   if (this->receive_buffer_ == nullptr) { this->mark_failed(); return; }
   this->stage_capacity_ = this->max_entries_;
@@ -193,7 +192,7 @@ void LdapDirectory::worker_run_() {
           (entry.dn == cfg.base_dn || (entry.first("uid").empty() && entry.first("cn").empty() &&
                                        entry.first("displayName").empty()))) return true;
       DirectoryContact mapped;
-      if (!map_contact(entry, cfg.sip_host, cfg.sip_port, cfg.sip_tcp, &mapped)) {
+      if (!map_contact(entry, cfg.sip_host, cfg.sip_port, cfg.sip_tcp, &mapped, this->managed_by_ha_)) {
         ++discarded;
         return true;
       }

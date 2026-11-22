@@ -173,10 +173,6 @@ class SipPhoneTransport {
   /// Other transports ignore this because their protocol is fixed by type.
   virtual void set_sip_signaling_transport(bool tcp) { (void) tcp; }
 
-  /// Enable the optional directional-payload SDP extension only for a peer
-  /// that advertised support for it in the authoritative roster.
-  virtual void set_peer_directional_audio_v1(bool enabled) { (void) enabled; }
-
   /// Open an outbound leg for an originating call. TCP connects to the
   /// peer; UDP no-op (control_socket_ is already bound, set_remote
   /// retargets sendto).
@@ -203,6 +199,7 @@ class SipPhoneTransport {
   }
   /// Request an in-dialog video activation or direction update. The SIP
   /// transport remains the single owner of the INVITE transaction and media commit.
+  virtual void set_outgoing_video_intent(CallVideoIntent intent) = 0;
   virtual bool request_video_send(bool enabled) {
     (void) enabled;
     return false;

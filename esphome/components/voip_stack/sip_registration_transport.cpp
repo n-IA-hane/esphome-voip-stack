@@ -11,7 +11,6 @@
 #include "esphome/core/hal.h"
 #include "sip_message.h"
 #include "sip_record.h"
-#include "sip_sdp_features.h"
 
 namespace esphome::voip_stack {
 namespace {
@@ -93,7 +92,6 @@ void SipTransport::initialize_registration() {
   hooks.random = esp_random;
   hooks.hash = registration_hash_;
   hooks.local_port = this->sip_port_;
-  hooks.directional_audio_supported = registration_directional_audio_supported_;
   this->registration_.set_hooks(hooks);
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
   SipMwi::Hooks events;
@@ -197,9 +195,9 @@ bool SipTransport::set_blf_watches(const std::vector<BlfWatchConfig> &watches) {
   for (size_t i = 0; i < watches.size(); ++i) {
     const auto &watch = watches[i];
     const int owner_index = this->registration_.find(watch.account_id);
-    if (watch.contact_id.empty() || !sip_valid_text(watch.contact_id, CONTACT_ID_BYTES)) return false;
+    if (watch.contact_id.empty() || !sip_valid_contact_identity(watch.contact_id)) return false;
     for (size_t j = 0; j < i; ++j)
-      if (watches[j].contact_id == watch.contact_id) return false;
+      if (watches[j].contact_id == watch.contact_id && watches[j].account_id == watch.account_id) return false;
     const auto normalized = sip_normalize_dial_target(watch.target, SIP_URI_BYTES);
     if (normalized.empty()) return false;
     if (owner_index < 0) {
@@ -213,16 +211,22 @@ bool SipTransport::set_blf_watches(const std::vector<BlfWatchConfig> &watches) {
   for (size_t slot = 0; slot < this->mwi_.blf_capacity(); ++slot) {
     if (!this->mwi_.blf_watch_requested(slot)) continue;
     bool retained = false;
+    const auto *state = this->mwi_.blf_state(slot);
     for (const auto &watch : watches)
-      retained |= watch.contact_id == this->mwi_.blf_watch_id(slot) && this->registration_.find(watch.account_id) >= 0;
+      retained |= state != nullptr && watch.contact_id == state->contact_id && watch.account_id == state->account_id &&
+                  this->registration_.find(watch.account_id) >= 0;
     if (!retained) this->mwi_.clear_blf_watch(slot, now);
   }
   for (const auto &watch : watches) {
     const int owner_index = this->registration_.find(watch.account_id);
     if (owner_index < 0) continue;
     size_t slot = 0;
-    while (slot < this->mwi_.blf_capacity() &&
-           (!this->mwi_.blf_watch_requested(slot) || this->mwi_.blf_watch_id(slot) != watch.contact_id)) ++slot;
+    while (slot < this->mwi_.blf_capacity()) {
+      const auto *state = this->mwi_.blf_state(slot);
+      if (this->mwi_.blf_watch_requested(slot) && state != nullptr &&
+          state->contact_id == watch.contact_id && state->account_id == watch.account_id) break;
+      ++slot;
+    }
     if (slot == this->mwi_.blf_capacity()) {
       slot = 0;
       while (slot < this->mwi_.blf_capacity() && this->mwi_.blf_watch_requested(slot)) ++slot;
@@ -241,11 +245,22 @@ bool SipTransport::set_blf_watches(const std::vector<BlfWatchConfig> &watches) {
 template<typename Result> bool SipTransport::copy_blf_state_(std::string_view id, Result *out) {
   if (out == nullptr) return false;
   LockGuard lock(this->dialog_mutex_);
+  const BlfStateInfo *found = nullptr;
+  bool requested = false;
   for (size_t slot = 0; slot < this->mwi_.blf_capacity(); ++slot) {
     const auto *state = this->mwi_.blf_state(slot);
-    if (state != nullptr && state->contact_id == id) { *out = *state; return true; }
+    if (state != nullptr && state->contact_id == id) {
+      const bool current_requested = this->mwi_.blf_watch_requested(slot);
+      if (found != nullptr && requested && current_requested) return false;
+      if (found != nullptr && requested && !current_requested) continue;
+      if (found != nullptr && !requested && !current_requested && found->account_id != state->account_id) return false;
+      found = state;
+      requested = current_requested;
+    }
   }
-  return false;
+  if (found == nullptr) return false;
+  *out = *found;
+  return true;
 }
 bool SipTransport::get_blf_state(std::string_view id, BlfStatus *out) {
   return this->copy_blf_state_(id, out);
@@ -265,7 +280,7 @@ void SipTransport::registration_blf_notify_(void *context, const BlfStateInfo &s
   if (self->blf_callback_ == nullptr) return;
   for (size_t slot = 0; slot < self->mwi_.blf_capacity(); ++slot) {
     const auto *current = self->mwi_.blf_state(slot);
-    if (current != nullptr && current->contact_id == state.contact_id) {
+    if (current == &state) {
       self->blf_callback_(self->registration_context_, self, slot); return;
     }
   }
@@ -643,11 +658,7 @@ bool SipTransport::is_registered(const std::string& id) {
   LockGuard lock(this->dialog_mutex_);
   return this->registration_.is_registered(id);
 }
-bool SipTransport::registration_directional_audio_supported_(std::string_view body) {
-  return sip_sdp_supports_directional_audio_v1(body);
-}
-
-bool SipTransport::prepare_account_line(const std::string& id, std::string* host, uint16_t* port, bool* tcp, bool* directional_audio_v1) {
+bool SipTransport::prepare_account_line(const std::string& id, std::string* host, uint16_t* port, bool* tcp) {
   LockGuard lock(this->dialog_mutex_);
   const int i = this->registration_.find(id);
   if (i < 0 || !this->call_id_.empty() || this->terminal_transaction_pending_locked_() ||
@@ -663,7 +674,6 @@ bool SipTransport::prepare_account_line(const std::string& id, std::string* host
   *host = text;
   *port = a.target_port;
   *tcp = a.config.tcp;
-  if (directional_audio_v1 != nullptr) *directional_audio_v1 = a.peer_directional_audio_v1;
   return true;
 }
 void SipTransport::clear_account_line() {

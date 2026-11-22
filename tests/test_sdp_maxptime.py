@@ -18,8 +18,8 @@ def maxptime_binary(tmp_path_factory):
 #include <iostream>
 AudioFormat pcm(unsigned rate,unsigned ms){AudioFormat f;f.sample_rate=rate;f.frame_ms=ms;return f;}
 void defaults(SipTransport&s){
- s.offer_tx_formats_.count=2;s.offer_tx_formats_.formats[0]=pcm(16000,20);s.offer_tx_formats_.formats[1]=pcm(16000,10);
- s.offer_rx_formats_.count=3;s.offer_rx_formats_.formats[0]=pcm(48000,10);s.offer_rx_formats_.formats[1]=pcm(16000,20);s.offer_rx_formats_.formats[2]=pcm(16000,10);
+ s.offer_tx_formats_.count=3;s.offer_tx_formats_.formats[0]=pcm(16000,20);s.offer_tx_formats_.formats[1]=pcm(16000,10);s.offer_tx_formats_.formats[2]=pcm(48000,10);
+ s.offer_rx_formats_.count=4;s.offer_rx_formats_.formats[0]=pcm(48000,10);s.offer_rx_formats_.formats[1]=pcm(48000,20);s.offer_rx_formats_.formats[2]=pcm(16000,20);s.offer_rx_formats_.formats[3]=pcm(16000,10);
 }
 int main(int argc,char**argv){
  assert(argc>=3);SipTransport s;defaults(s);const std::string mode=argv[1];
@@ -33,35 +33,32 @@ int main(int argc,char**argv){
     s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[1]=pcm(48000,10);
    }
    std::cout<<s.build_sdp_offer_();
-  }else if(which=="historical32-impossible"){
-   s.peer_directional_audio_v1_=true;
-   s.offer_rx_formats_.formats[2]=pcm(32000,16);
+  }else if(which=="mixed32-impossible"){
+   s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[0]=pcm(16000,20);s.offer_rx_formats_.formats[1]=pcm(32000,16);
+   s.offer_tx_formats_.formats[2]=pcm(32000,16);
    std::cout<<s.build_sdp_offer_();
   }else if(which=="packed24"){
    s.offer_tx_formats_.count=s.offer_rx_formats_.count=1;
    auto format=pcm(16000,20);format.pcm_format=PcmFormat::S24LE_IN_S32;
    s.offer_tx_formats_.formats[0]=s.offer_rx_formats_.formats[0]=format;
    std::cout<<s.build_sdp_offer_();
-  }else if(which=="d1-limited-hint"||which=="d1-impossible"||which=="standard-without48"||which=="options-impossible"||which=="answer-impossible"){
+  }else if(which=="wide-limited-hint"||which=="wide-impossible"||which=="standard-without48"||which=="options-impossible"||which=="answer-impossible"){
    s.offer_rx_formats_.formats[0]=pcm(16000,20);s.offer_rx_formats_.formats[1]=pcm(16000,10);s.offer_rx_formats_.formats[2]=pcm(48000,10);
-   if(which!="d1-limited-hint"){s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[1]=pcm(48000,10);}
-   s.peer_directional_audio_v1_=which!="standard-without48";
+   if(which!="wide-limited-hint"){s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[1]=pcm(48000,10);}
+   if(which=="standard-without48")s.offer_tx_formats_.count=2;
    if(which=="options-impossible")std::cout<<s.build_sdp_capabilities_(0);
    else if(which=="answer-impossible"){
-    s.tx=s.rx=pcm(16000,20);s.tx_pt=s.rx_pt=96;s.accepted.add(96,s.rx);s.accepted.add(97,pcm(48000,10));s.remote_directional_audio_v1_=true;
+    s.tx=s.rx=pcm(16000,20);s.tx_pt=s.rx_pt=96;s.accepted.add(96,s.rx);s.accepted.add(97,pcm(48000,10));
     std::cout<<s.build_sdp_answer_();
    }else std::cout<<s.build_sdp_offer_();
   }else if(which=="standard")std::cout<<s.build_sdp_offer_();
-  else if(which=="d1"){s.peer_directional_audio_v1_=true;std::cout<<s.build_sdp_offer_();}
-  else if(which=="options"||which=="options-no-hint"){
-   if(which=="options-no-hint"){s.offer_rx_formats_.formats[2]=pcm(16000,20);}
-   if(which=="options-no-hint")s.offer_rx_formats_.count=2;
+  else if(which=="options"){
    std::cout<<s.build_sdp_capabilities_(0);
   }else if(which=="sendonly"){
    s.offer_rx_formats_.count=0;std::cout<<s.build_sdp_offer_();
   }else{
    s.tx=pcm(16000,20);s.rx=pcm(which=="answer-mixed"?48000:16000,which=="answer-mixed"?10:20);
-   s.tx_pt=97;s.rx_pt=96;s.accepted.add(96,s.rx);s.remote_directional_audio_v1_=true;
+   s.tx_pt=97;s.rx_pt=96;s.accepted.add(96,s.rx);
    std::cout<<s.build_sdp_answer_();
   }
   assert(pcm(48000,20).nominal_rtp_payload_bytes()==1920);
@@ -94,20 +91,15 @@ int main(int argc,char**argv){
 
 
 @pytest.mark.parametrize("mode,expected", [
-    ("standard", 20), ("d1", 10), ("answer-mixed", 10), ("answer-only16", 20),
-    ("options", 10), ("options-no-hint", None), ("sendonly", None),
+    ("standard", 20), ("answer-mixed", 20), ("answer-only16", 20),
+    ("options", 20), ("sendonly", None),
 ])
 def test_maxptime_bounds_only_published_receive_mappings(maxptime_binary, mode, expected):
     result = subprocess.run([maxptime_binary, "emit", mode], capture_output=True, text=True, check=True)
     bounds = [line for line in result.stdout.splitlines() if line.startswith("a=maxptime:")]
     assert bounds == ([] if expected is None else [f"a=maxptime:{expected}"])
-    if mode == "d1":
-        assert "L16/48000/1" in result.stdout and "a=ptime:10" in result.stdout
     if mode == "standard":
-        assert "L16/48000/1" not in result.stdout and "a=ptime:20" in result.stdout
-    if mode == "options-no-hint":
-        # Without16k10 this union has no valid16k packet time under max10.
-        assert not result.stdout
+        assert "L16/48000/1" in result.stdout and "a=ptime:10" in result.stdout
 
 
 @pytest.mark.parametrize("role", ["offer", "answer"])
@@ -125,8 +117,8 @@ def test_remote_receive_bound_filters_only_configured_tx(maxptime_binary, role, 
 
 
 @pytest.mark.parametrize("mode", [
-    "packed24", "d1-limited-hint", "d1-impossible", "standard-without48", "options-impossible", "answer-impossible",
-    "historical32-impossible", "pcm32-only", "pcm32-ordinary",
+    "packed24", "wide-limited-hint", "wide-impossible", "standard-without48", "options-impossible", "answer-impossible",
+    "mixed32-impossible", "pcm32-only", "pcm32-ordinary",
 ])
 def test_receive_bounds_use_wire_mapping_and_declared_durations(maxptime_binary, mode):
     result = subprocess.run([maxptime_binary, "emit", mode], capture_output=True, text=True, check=True)
@@ -137,7 +129,7 @@ def test_receive_bounds_use_wire_mapping_and_declared_durations(maxptime_binary,
         assert "L16/32000/1\n" in body
         assert "a=ptime:16\n" in body and "a=maxptime:16\n" in body
         assert "L16/48000/1" not in body
-    elif mode == "d1-limited-hint":
+    elif mode == "wide-limited-hint":
         assert "a=maxptime:10\n" in body
         assert "a=ptime:20\n" not in body
     else:

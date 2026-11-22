@@ -17,30 +17,19 @@ bool negotiate_audio_contract(const std::string &sdp, uint32_t default_ip, bool 
                               DtmfConfig &dtmf_result,
 #endif
                               const MediaNegotiationTrace &trace) {
-  media.directional_audio = false;
   AudioOfferAttributes attributes;
   if (!read_audio_offer_attributes(sdp, attributes)) return false;
   uint32_t media_ip = default_ip;
   bool zero_connection = false;
   AudioPayloadSelection selection;
-  for (uint8_t pt = 0; pt < 128; ++pt)
-    if (attributes.offered(pt) && attributes.payload_flow[pt] != 0 && (!remote_is_answer || local.offered_directional))
-      media.directional_audio = true;
-  // Only the earlier private D1 contract coupled both directions. Ordinary
-  // SIP and peers explicitly declaring this version use RFC 3264 semantics.
-  const bool legacy_directional_ptime = media.directional_audio && !attributes.independent_ptime;
-  const uint16_t transmit_ptime = legacy_directional_ptime && attributes.ptime == 0
-                                      ? choose_common_audio_ptime(local.tx, local.rx, local.max_payload)
-                                      : attributes.ptime;
-  if (legacy_directional_ptime && transmit_ptime == 0) return false;
+  // RFC 3264: stream direction gates activity; ptime is a receive preference.
+  const uint16_t transmit_ptime = attributes.ptime;
   AudioFormat retained_tx_format = disabled_audio_format();
   if (retained_call && !remote_is_answer && attributes.ptime == 0) retained_tx_format = retained.tx;
   const AudioMappingPolicy policy{local,
                                   attributes,
                                   retained_tx_format,
                                   transmit_ptime,
-                                  media.directional_audio,
-                                  legacy_directional_ptime,
                                   remote_is_answer,
                                   retained_call};
   auto consider_mapping = [&](AudioFormat fmt, uint8_t pt) {

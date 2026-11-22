@@ -100,7 +100,6 @@ def refer_fixture_source():
     uint8_t rtp_tx_payload_type_{96},rtp_rx_payload_type_{96};
     RtpAudioPayloads negotiated_rx_payloads_;
     bool audio_send_enabled_{true}, audio_receive_enabled_{true};
-    bool remote_directional_audio_v1_{false};
     uint32_t remote_rtp_ip_v4_{0};uint16_t remote_rtp_port_{0};
     RemoteMediaShape remote_media_shape_;
 ''')
@@ -165,6 +164,7 @@ struct SipPhoneTransport {
  void emit_sip_signal_(SipSignal s){delivered.push_back(std::move(s));}
 };
 struct SipTransport: SipPhoneTransport {
+ CallVideoIntent next_video_call_intent_{};
 ''' + context + ';\n' + block(header, 'struct CompletedRefer {') + ';\n' + block(header, 'class ReferScope {') + ';\n' + fields + r'''
  struct ReferDeleter {template<class T>void operator()(T*p)const{if(p){p->~T();RAMAllocator<T>().deallocate(p,1);}}};
  std::array<std::unique_ptr<CompletedRefer,ReferDeleter>,4> completed_refers_;

@@ -50,7 +50,6 @@ struct SdpAudioMedia {
   bool send{true}, receive{true}, zero_connection{false};
   uint32_t audio_ip{0};
   uint16_t audio_port{0};
-  bool directional_audio{false};
 };
 
 struct AudioSdpEnvelope {

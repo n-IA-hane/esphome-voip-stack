@@ -2,8 +2,9 @@
 
 #include "rtp_audio_payloads.h"
 
-#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+#if defined(USE_ESPHOME_VOIP_STACK_SPEAKER) || defined(USE_ESPHOME_VOIP_PCM_TX_CONVERSION)
 #include <atomic>
+#include <cstring>
 #include <memory>
 #include <new>
 #include <resampler.h>
@@ -13,8 +14,8 @@
 
 namespace esphome::voip_stack {
 
-// Conversion runs in the existing playout task after RTP reordering. Resources
-// are prepared before media admission, never allocated for individual packets.
+// Streaming PCM conversion runs in the existing receive or transmit task.
+// Resources are prepared before media admission, never allocated per packet.
 class PcmReceiveConverter {
  public:
   bool prepare(const RtpAudioPayloads &payloads, const AudioFormat &target) {
@@ -76,6 +77,7 @@ class PcmReceiveConverter {
       if (count == VOIP_STACK_MAX_AUDIO_FORMATS) return rollback();
       auto &entry = this->entries_[count];
       entry.format = source;
+      entry.target = target;
       // One DSP history per PCM geometry. Use the descriptor's duration only
       // as its prepared maximum capacity, not as part of the stream identity.
       for (uint8_t j = 0; j < payloads.count; ++j)
@@ -101,6 +103,62 @@ class PcmReceiveConverter {
     return true;
   }
 
+
+  bool prepare_transmit(const AudioFormat &native, const AudioFormatList &alternatives) {
+    this->clear_();
+    for (uint8_t i = 0; i < alternatives.count; ++i) {
+      AudioFormat source = decoded_pcm_format(native);
+      AudioFormat target = decoded_pcm_format(alternatives.formats[i]);
+      source.frame_ms = target.frame_ms;
+      if (source == target) continue;
+      if (!pcm_receive_conversion_supported(source, target)) return false;
+      uint8_t count = this->count_.load(std::memory_order_relaxed);
+      uint8_t slot = 0;
+      while (slot < count && !audio_formats_share_rtp_mapping(this->entries_[slot].target, target)) ++slot;
+      if (slot != count) {
+        // Prepare the largest declared packet once for each target geometry.
+        if (this->entries_[slot].format.frame_ms >= source.frame_ms) continue;
+        this->entries_[slot].converter.reset();
+      } else {
+        if (count == VOIP_STACK_MAX_AUDIO_FORMATS) return false;
+        this->count_.store(++count, std::memory_order_relaxed);
+      }
+      auto &entry = this->entries_[slot];
+      entry.format = source;
+      entry.target = target;
+      entry.converter.reset(new (std::nothrow) Converter(source.nominal_frame_samples() * source.channels,
+                                                        target.nominal_frame_samples() * target.channels));
+      if (entry.converter == nullptr) return false;
+      esp_audio_libs::resampler::ResamplerConfiguration config{
+          static_cast<float>(source.sample_rate), static_cast<float>(target.sample_rate),
+          16, 16, source.channels, false, false, 16, 16};
+      if (!entry.converter->initialize(config)) return false;
+    }
+    return true;
+  }
+
+  size_t convert_to(const AudioFormat &source, const AudioFormat &target,
+                    const uint8_t *pcm, size_t bytes, uint8_t *output, size_t capacity) {
+    if (pcm == nullptr || output == nullptr || bytes != source.nominal_frame_bytes() ||
+        capacity < target.nominal_frame_bytes()) return 0;
+    if (source == target) {
+      std::memcpy(output, pcm, bytes);
+      return bytes;
+    }
+    for (uint8_t i = 0, count = this->count_.load(std::memory_order_acquire); i < count; ++i) {
+      auto &entry = this->entries_[i];
+      if (!audio_formats_share_rtp_mapping(source, entry.format) ||
+          !audio_formats_share_rtp_mapping(target, entry.target) || source.frame_ms > entry.format.frame_ms) continue;
+      const auto result = entry.converter->resample(
+          pcm, output, source.nominal_frame_samples(), target.nominal_frame_samples(), 0.0f);
+      if (result.frames_used != source.nominal_frame_samples()) return 0;
+      return result.frames_generated * target.channels * sizeof(int16_t);
+    }
+    return 0;
+  }
+
+
+  void release() { this->clear_(); this->target_ = disabled_audio_format(); }
 
   void reset() {
     for (uint8_t i = 0, count = this->count_.load(std::memory_order_acquire); i < count; ++i) this->entries_[i].converter->reset();
@@ -148,6 +206,7 @@ class PcmReceiveConverter {
   };
   struct Entry {
     AudioFormat format;
+    AudioFormat target;
     std::unique_ptr<Converter> converter;
   };
   Entry entries_[VOIP_STACK_MAX_AUDIO_FORMATS]{};

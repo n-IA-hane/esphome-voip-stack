@@ -23,7 +23,6 @@ const char*TAG="peer-test";
 struct LockGuard {std::lock_guard<std::mutex> lock;explicit LockGuard(std::mutex&m):lock(m){}};
 enum class SipSignalType {CONNECTED_IDENTITY};
 struct SipSignal{SipSignalType type=SipSignalType::CONNECTED_IDENTITY;bool media_source_changed=false;std::string connected_name,connected_route,call_id;};
-enum class MediaRoute{UNKNOWN};
 struct Trigger{
  std::vector<std::string>events;std::thread::id expected=std::this_thread::get_id();unsigned calls=0;
  void trigger(const std::string&v){assert(std::this_thread::get_id()==expected);++calls;events.push_back(v);}
@@ -32,7 +31,7 @@ struct Trigger{
 };
 struct VoipStack{
  mutable std::mutex call_state_mutex_;std::atomic<CallState>call_state_{CallState::IDLE};
- std::atomic<MediaRoute>media_route_{MediaRoute::UNKNOWN};std::string ha_peer_name_;
+ std::string ha_peer_name_;
  struct Contact{std::string ip;};struct Book{const Contact*find(const std::string&)const{return nullptr;}}phonebook_;
  struct Transport{struct Snapshot{uint32_t remote_ip_v4=0;};Snapshot snapshot()const{return {};}}transport;Transport*transport_=&transport;
  std::string device_name_="Device",device_route_id_="esp",selected="Selected other";
@@ -51,7 +50,6 @@ struct VoipStack{
  std::string get_active_peer_name()const;std::string get_current_destination()const{return selected;}
  void publish_destination_();void publish_sip_snapshot_(){++snapshots;}void publish_state_(){++published;}
  void publish_last_reason_(const std::string&){}void notify_audio_tasks_(){++audio_notifications;}
- void set_media_route(const std::string&,const char*){assert(false);}
  void publish_caller_(const std::string&name){caller_published=name;}
  bool ignore_if_idle_or_stale_(const char*,const std::string&)const;
  void reset_peer_audio_watchdog_(bool){++media_actions;}

@@ -116,7 +116,6 @@ void VoipStack::dump_diagnostics() {
   }
 #endif
   dump->audio_active = this->audio_devices_active_.load(std::memory_order_acquire);
-  dump->route = this->get_media_route_str();
   std::snprintf(dump->last_reason, sizeof(dump->last_reason), "%.47s",
                 this->last_reason_.empty() ? "none" : this->last_reason_.c_str());
   this->diagnostic_dump_ = std::move(dump);
@@ -196,9 +195,9 @@ void VoipStack::emit_diagnostic_section_() {
 #endif
       break;
     case 9: {
-      ESP_LOGI(TAG, "audio: active=%s buffers_psram=%s task_stacks_psram=%s audio_stacks_psram=%s route=%s rx_volume=%.3f tx_gain=%.3f",
+      ESP_LOGI(TAG, "audio: active=%s buffers_psram=%s task_stacks_psram=%s audio_stacks_psram=%s rx_volume=%.3f tx_gain=%.3f",
                YESNO(dump.audio_active), YESNO(this->buffers_in_psram_), YESNO(this->task_stacks_in_psram_),
-               YESNO(this->audio_task_stacks_in_psram_), dump.route, dump.receive_volume, dump.transmit_gain);
+               YESNO(this->audio_task_stacks_in_psram_), dump.receive_volume, dump.transmit_gain);
       unsigned rx_bytes = 0, rx_free = 0, tx_bytes = 0, tx_free = 0;
       bool rx_present = false, tx_present = false;
       // ESP-IDF reports bytes, unlike upstream FreeRTOS stack words. Scan only

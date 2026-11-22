@@ -7,9 +7,7 @@
 #include <cmath>
 #include <cstring>
 
-#include "cJSON.h"
 #include "sip_message.h"
-#include "roster_contact.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
@@ -32,27 +30,6 @@ namespace {
 struct ParsedPhonebookSlot {
   ContactEntry entry;
 };
-
-struct JsonRosterSlot {
-#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
-  std::string stable_id, account_id;
-  ContactKind kind{ContactKind::UNKNOWN};
-  bool auto_blf{false};
-#endif
-  std::string name;
-  std::string route;
-  std::string number;
-  std::string address;
-  std::string endpoint_type;
-  std::string sip_transport;
-  bool ha_bridge{false};
-  bool local_ha{false};
-  bool directional_audio_v1{false};
-  uint16_t sip_port{0};
-  uint16_t rtp_port{0};
-};
-
-static constexpr size_t MAX_ROSTER_JSON_BYTES = 32768;
 
 float db_to_linear(float db) {
   return std::pow(10.0f, db / 20.0f);
@@ -96,134 +73,6 @@ std::string serialize_endpoint(std::string_view name, std::string_view route,
     return result;
   }
   return std::string(name);
-}
-
-const char *json_string(const cJSON *obj, const char *key) {
-  const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
-  return cJSON_IsString(item) && item->valuestring != nullptr ? item->valuestring : "";
-}
-
-bool json_bool(const cJSON *obj, const char *key) {
-  const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
-  return cJSON_IsTrue(item);
-}
-
-uint16_t json_u16(const cJSON *obj, const char *key, uint16_t default_value = 0) {
-  const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
-  if (cJSON_IsNumber(item) && std::isfinite(item->valuedouble) &&
-      item->valuedouble >= 0 && item->valuedouble <= 65535 &&
-      std::floor(item->valuedouble) == item->valuedouble) {
-    return static_cast<uint16_t>(item->valuedouble);
-  }
-  if (cJSON_IsString(item) && item->valuestring != nullptr) {
-    uint16_t parsed = 0;
-    if (Phonebook::parse_u16(Phonebook::trim(item->valuestring), &parsed)) return parsed;
-  }
-  return default_value;
-}
-
-const cJSON *json_metadata(const cJSON *obj) {
-  const cJSON *meta = cJSON_GetObjectItemCaseSensitive(obj, "metadata");
-  return cJSON_IsObject(meta) ? meta : nullptr;
-}
-
-std::string json_metadata_string(const cJSON *obj, const char *key) {
-  const cJSON *meta = json_metadata(obj);
-  if (meta == nullptr) return "";
-  return json_string(meta, key);
-}
-
-uint16_t json_metadata_u16(const cJSON *obj, const char *key, uint16_t default_value = 0) {
-  const cJSON *meta = json_metadata(obj);
-  if (meta == nullptr) return default_value;
-  return json_u16(meta, key, default_value);
-}
-
-bool json_metadata_bool(const cJSON *obj, const char *key) {
-  const cJSON *meta = json_metadata(obj);
-  if (meta == nullptr) return false;
-  return json_bool(meta, key);
-}
-
-bool json_metadata_string_array_contains(const cJSON *obj, const char *key,
-                                         const char *expected) {
-  const cJSON *meta = json_metadata(obj);
-  const cJSON *values = meta == nullptr
-                            ? nullptr
-                            : cJSON_GetObjectItemCaseSensitive(meta, key);
-  if (!cJSON_IsArray(values)) return false;
-  const cJSON *item = nullptr;
-  cJSON_ArrayForEach(item, values) {
-    if (cJSON_IsString(item) && item->valuestring != nullptr &&
-        std::strcmp(item->valuestring, expected) == 0)
-      return true;
-  }
-  return false;
-}
-
-bool parse_json_roster_slot(const cJSON *obj, JsonRosterSlot *slot) {
-  if (!cJSON_IsObject(obj)) return false;
-  const std::string endpoint_id = json_metadata_string(obj, "endpoint_id");
-  RosterContactIdentity identity;
-  if (!resolve_roster_contact({json_string(obj, "id"), endpoint_id, json_string(obj, "name"),
-                               json_string(obj, "extension"), json_string(obj, "number"),
-                               json_string(obj, "sip_uri")}, &identity)) return false;
-
-#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
-  slot->stable_id = std::move(identity.stable_id);
-  slot->account_id = json_metadata_string(obj, "account_id");
-  slot->kind = contact_kind_from_string(json_metadata_string(obj, "endpoint_kind"));
-  if (slot->kind == ContactKind::UNKNOWN) slot->kind = contact_kind_from_string(json_metadata_string(obj, "kind"));
-  if (json_metadata_string(obj, "virtual_endpoint") == "automation") slot->kind = ContactKind::AUTOMATION;
-  const auto *meta = json_metadata(obj);
-  const auto *automatic = meta == nullptr ? nullptr : cJSON_GetObjectItemCaseSensitive(meta, "auto_blf");
-  const bool phone_kind = slot->kind == ContactKind::ESP || slot->kind == ContactKind::SIP_ACCOUNT || slot->kind == ContactKind::BROWSER;
-  slot->auto_blf = cJSON_IsBool(automatic) ? cJSON_IsTrue(automatic) : phone_kind;
-#endif
-  slot->name = std::move(identity.name);
-  slot->route = std::move(identity.route);
-  slot->number = std::move(identity.number);
-  slot->address = Phonebook::trim(json_string(obj, "address"));
-  if (slot->address.empty()) slot->address = Phonebook::trim(json_string(obj, "host"));
-  if (!slot->address.empty() && !sip_valid_host(slot->address)) {
-    return false;
-  }
-  slot->local_ha = json_metadata_bool(obj, "local_ha");
-  slot->ha_bridge = json_bool(obj, "ha_bridge");
-  slot->directional_audio_v1 =
-      json_metadata_string_array_contains(obj, "sdp_features", "directional_audio_v1");
-  if (!slot->address.empty()) {
-    slot->endpoint_type = "sip";
-  }
-  std::transform(slot->endpoint_type.begin(), slot->endpoint_type.end(), slot->endpoint_type.begin(),
-                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-  slot->sip_transport = Phonebook::trim(json_metadata_string(obj, "sip_transport"));
-  if (slot->sip_transport.empty()) {
-    slot->sip_transport = Phonebook::trim(json_metadata_string(obj, "transport"));
-  }
-  if (slot->sip_transport.empty()) {
-    slot->sip_transport = Phonebook::trim(json_string(obj, "sip_transport"));
-  }
-  if (slot->sip_transport.empty()) {
-    slot->sip_transport = Phonebook::trim(json_string(obj, "transport"));
-  }
-  if (slot->sip_transport.empty()) {
-    const std::string sip_uri = Phonebook::trim(json_string(obj, "sip_uri"));
-    const std::string marker = "transport=";
-    const size_t pos = sip_uri.find(marker);
-    if (pos != std::string::npos) {
-      size_t start = pos + marker.size();
-      size_t end = sip_uri.find(';', start);
-      slot->sip_transport = sip_uri.substr(start, end == std::string::npos ? std::string::npos : end - start);
-    }
-  }
-  std::transform(slot->sip_transport.begin(), slot->sip_transport.end(), slot->sip_transport.begin(),
-                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-  if (slot->sip_transport != "tcp" && slot->sip_transport != "udp") slot->sip_transport.clear();
-  slot->sip_port = json_metadata_u16(obj, "sip_port", json_u16(obj, "sip_port", 0));
-  if (slot->sip_port == 0) slot->sip_port = json_metadata_u16(obj, "port", json_u16(obj, "port", 5060));
-  slot->rtp_port = json_metadata_u16(obj, "rtp_port", json_u16(obj, "rtp_port", 40000));
-  return true;
 }
 
 }  // namespace
@@ -471,28 +320,13 @@ void VoipStack::remove_contact(const std::string &name) {
 void VoipStack::set_contacts(const std::string &contacts_csv) {
   this->phonebook_.set_self_name(this->device_name_);
   const std::string trimmed = Phonebook::trim(contacts_csv);
-  if (!trimmed.empty() && (trimmed[0] == '{' || trimmed[0] == '[')) {
-    const bool changed = this->apply_roster_json_contacts_(trimmed);
-    const bool selected = this->maybe_auto_select_ha_first_();
-    if (changed || selected) {
-      ESP_LOGI(TAG, "JSON contacts applied: %zu total", this->phonebook_.size());
-      this->publish_phonebook_changed_();
-    }
+  if (!trimmed.empty() && (trimmed.front() == '{' || trimmed.front() == '[')) {
+    ESP_LOGW(TAG, "Static contacts require CSV; dynamic PBX contacts use LDAP");
     return;
   }
   const std::string normalized_csv = this->normalize_phonebook_for_transport_(contacts_csv);
   if (normalized_csv.empty()) return;
-  // Inside an open update cycle (started by update_contacts()), record names
-  // so commit_cycle_() can reset their counters. Outside a cycle this is a
-  // no-op - pruning only applies to the official update_contacts() flow.
-  if (this->cycle_active_) this->track_csv_(normalized_csv);
-  // Just add_one per entry; for a clean slate call flush_contacts() first.
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
-  if (!this->ha_roster_enabled_) return;
-  const bool changed = this->phonebook_.add_batch(normalized_csv, ContactOrigin::HA, this);
-#else
   const bool changed = this->phonebook_.add_batch(normalized_csv);
-#endif
   const bool selected = this->maybe_auto_select_ha_first_();
   if (changed || selected) {
     ESP_LOGI(TAG, "Contacts batch applied: %zu total", this->phonebook_.size());
@@ -531,200 +365,6 @@ std::string VoipStack::normalize_phonebook_for_transport_(const std::string &con
   }
 
   return out;
-}
-
-bool VoipStack::apply_roster_json_contacts_(const std::string &roster_json) {
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
-  if (!this->ha_roster_enabled_) return false;
-#endif
-  if (roster_json.empty()) return false;
-  if (roster_json.size() > MAX_ROSTER_JSON_BYTES) {
-    ESP_LOGW(TAG, "Ignoring HA roster_json: payload exceeds %u bytes",
-             (unsigned) MAX_ROSTER_JSON_BYTES);
-    return false;
-  }
-
-  cJSON *root = cJSON_ParseWithLength(roster_json.data(), roster_json.size());
-  if (root == nullptr) {
-    ESP_LOGW(TAG, "Ignoring HA roster_json: invalid JSON");
-    return false;
-  }
-
-  const cJSON *contacts = nullptr;
-  if (cJSON_IsArray(root)) {
-    contacts = root;
-  } else if (cJSON_IsObject(root)) {
-    contacts = cJSON_GetObjectItemCaseSensitive(root, "contacts");
-    if (!cJSON_IsArray(contacts)) contacts = cJSON_GetObjectItemCaseSensitive(root, "entries");
-  }
-  if (!cJSON_IsArray(contacts)) {
-    ESP_LOGW(TAG, "Ignoring HA roster_json: missing contacts array");
-    cJSON_Delete(root);
-    return false;
-  }
-
-  std::vector<JsonRosterSlot> slots;
-  const size_t roster_size = static_cast<size_t>(cJSON_GetArraySize(contacts));
-  slots.reserve(std::min(roster_size, Phonebook::MAX_CONTACTS));
-  JsonRosterSlot ha_slot;
-  bool has_ha = false;
-  bool saw_valid_slot = false;
-
-  SipTargetParts own;
-#ifdef USE_VOIP_HA_AUTO_REGISTER
-  SipAccountSnapshot account;
-  std::string own_uri;
-  if (this->get_account_snapshot("ha", &account)) {
-    own_uri = account.config.address_of_record();
-    if (sip_parse_target_uri(own_uri, own)) own.port = account.config.port;
-  }
-#endif
-  const cJSON *item = nullptr;
-  cJSON_ArrayForEach(item, contacts) {
-    if (slots.size() >= Phonebook::MAX_CONTACTS) break;
-    JsonRosterSlot slot;
-    if (!parse_json_roster_slot(item, &slot)) continue;
-    saw_valid_slot = true;
-    if (!this->device_route_id_.empty() && (slot.route == this->device_route_id_ ||
-        Phonebook::trim(json_string(item, "id")) == this->device_route_id_
-#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
-        || slot.stable_id == this->device_route_id_
-#endif
-        )) continue;
-    if (sip_matches_aor(own, json_string(item, "sip_uri")) || sip_matches_aor(own, slot.route)) continue;
-    slots.push_back(slot);
-    if (slot.local_ha && !slot.address.empty()) {
-      ha_slot = slot;
-      has_ha = true;
-    }
-  }
-  cJSON_Delete(root);
-  if (slots.empty()) {
-    // An authoritative empty roster (or one containing only this device)
-    // clears stale contacts. A non-empty but wholly malformed payload leaves
-    // the last known-good phonebook untouched.
-    if (roster_size == 0 || saw_valid_slot) {
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
-      return this->phonebook_.replace_provider(ContactOrigin::HA, this, {}) == DirectoryCommitResult::APPLIED;
-#else
-      return this->phonebook_.replace_all({});
-#endif
-    }
-    return false;
-  }
-
-  if (has_ha && this->ha_peer_name_ != ha_slot.name) {
-    this->ha_peer_name_ = ha_slot.name;
-    ESP_LOGI(TAG, "HA peer name learned from roster JSON: %s", this->ha_peer_name_.c_str());
-  }
-
-  const ContactEndpointType local_endpoint_type = ContactEndpointType::SIP;
-  const uint16_t ha_local_port = ha_slot.sip_port;
-  const uint16_t ha_local_rtp_port = ha_slot.rtp_port;
-  const bool local_sip_transport_tcp = this->protocol_ == TransportType::TCP;
-
-  std::vector<ContactEntry> entries;
-  entries.reserve(std::min(Phonebook::MAX_CONTACTS, slots.size()));
-  for (const auto &slot : slots) {
-    if (entries.size() >= Phonebook::MAX_CONTACTS) break;
-    ContactEndpointType endpoint_type = ContactEndpointType::UNKNOWN;
-    Phonebook::parse_endpoint_type(slot.endpoint_type, &endpoint_type);
-    const bool contact_transport_tcp = slot.sip_transport.empty() ? local_sip_transport_tcp : slot.sip_transport == "tcp";
-    const bool direct_candidate = !slot.address.empty() && !slot.local_ha && !slot.ha_bridge &&
-                                  endpoint_type == ContactEndpointType::SIP;
-
-    ContactEntry entry;
-    entry.name = slot.name;
-    entry.route = slot.route;
-    entry.number = slot.number;
-#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
-    entry.id = slot.stable_id; entry.kind = slot.kind;
-    entry.account_id = slot.account_id; entry.auto_blf = slot.auto_blf;
-#endif
-
-    if (slot.local_ha) {
-      entry.endpoint_type = local_endpoint_type;
-      entry.ip = slot.address;
-      entry.port = slot.sip_port;
-      entry.rtp_port = slot.rtp_port;
-      entry.sip_transport_tcp = local_sip_transport_tcp;
-    } else if (direct_candidate) {
-      entry.endpoint_type = endpoint_type;
-      entry.ip = slot.address;
-      entry.port = slot.sip_port;
-      entry.rtp_port = slot.rtp_port;
-      entry.sip_transport_tcp = contact_transport_tcp;
-    } else if (has_ha) {
-      entry.endpoint_type = local_endpoint_type;
-      entry.ip = ha_slot.address;
-      entry.port = ha_local_port;
-      entry.rtp_port = ha_local_rtp_port;
-      entry.sip_transport_tcp = local_sip_transport_tcp;
-    } else {
-      continue;
-    }
-
-    entry.directional_audio_v1 = slot.directional_audio_v1;
-
-    if (this->cycle_active_) this->seen_in_cycle_.insert(entry.name);
-    entries.push_back(std::move(entry));
-  }
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
-  return this->phonebook_.replace_provider(ContactOrigin::HA, this, std::move(entries)) == DirectoryCommitResult::APPLIED;
-#else
-  return this->phonebook_.replace_all(std::move(entries));
-#endif
-}
-
-void VoipStack::update_contacts() {
-  // Re-entry: commit any cycle still open (e.g. previous trigger chain didn't
-  // wake the timeout). Counter advance + prune happen here, never inside the
-  // cycle itself.
-  if (this->cycle_active_) this->commit_cycle_();
-
-  this->phonebook_.set_self_name(this->device_name_);
-  this->cycle_active_ = true;
-  this->cycle_started_at_ = millis();
-  this->seen_in_cycle_.clear();
-  this->enable_loop_soon_any_context();
-
-#ifdef USE_TEXT_SENSOR
-  if (this->ha_phonebook_sensor_ != nullptr) {
-    const std::string &raw_phonebook = this->ha_phonebook_sensor_->state;
-    if (!raw_phonebook.empty()) {
-      const std::string trimmed = Phonebook::trim(raw_phonebook);
-      if (!trimmed.empty() && (trimmed[0] == '{' || trimmed[0] == '[')) {
-        this->set_contacts(trimmed);
-      } else {
-        this->set_contacts(raw_phonebook);
-      }
-    }
-  }
-#endif
-
-  // If set_contacts() changed the phonebook it already emitted
-  // on_phonebook_update. Otherwise the cycle closes later without UI churn.
-}
-
-void VoipStack::track_csv_(const std::string &csv) {
-  // Parse names only - endpoints are merged via Phonebook::add_batch already.
-  const auto entries = Phonebook::split(csv, ',');
-  for (const auto &entry : entries) {
-    const size_t bar = entry.find('|');
-    std::string name = Phonebook::trim((bar == std::string::npos) ? entry : entry.substr(0, bar));
-    if (!name.empty()) this->seen_in_cycle_.insert(std::move(name));
-  }
-}
-
-void VoipStack::commit_cycle_() {
-  const bool pruned = this->phonebook_.commit_cycle(this->seen_in_cycle_, this->prune_threshold_);
-  this->seen_in_cycle_.clear();
-  this->cycle_active_ = false;
-  if (pruned) {
-    ESP_LOGI(TAG, "Phonebook cycle: pruned stale contacts, %zu remain", this->phonebook_.size());
-    this->maybe_auto_select_ha_first_();
-    this->publish_phonebook_changed_();
-  }
 }
 
 bool VoipStack::maybe_auto_select_ha_first_() {
@@ -817,12 +457,6 @@ std::string VoipStack::get_contact_account(std::string_view id) const {
 }
 
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
-void VoipStack::set_ha_roster_enabled(bool enabled) {
-  this->ha_roster_enabled_ = enabled;
-  if (!enabled && this->phonebook_.replace_provider(ContactOrigin::HA, this, {}) == DirectoryCommitResult::APPLIED)
-    this->publish_phonebook_changed_();
-}
-
 DirectoryCommitResult VoipStack::commit_contact_directory(const void *provider, std::vector<ContactEntry> entries,
                                                           const std::string &account_id) {
   return this->commit_contact_directory(provider, entries.data(), entries.size(), account_id);
@@ -877,23 +511,23 @@ DirectoryCommitResult VoipStack::commit_contact_directory(const void *provider, 
 
 void VoipStack::call(const std::string &value) { this->call_(value, {}); }
 
-void VoipStack::call_via_ha(const std::string &value, const std::string &call_id) {
-  // HA supplies a globally unique, case-sensitive Call-ID for this action.
-  // Bound the native API argument without changing incoming SIP parsing.
-  if (call_id.empty() || call_id.size() > 128) return;
-  const size_t at = call_id.find('@');
-  if (at != std::string::npos && (at == 0 || at + 1 == call_id.size() ||
-      call_id.find('@', at + 1) != std::string::npos)) return;
-  for (const unsigned char ch : call_id) {
-    if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-          (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' || ch == '@')) return;
-  }
-#ifdef USE_VOIP_HA_AUTO_REGISTER
-  this->start_call_on_line_(value, "ha", call_id);
-#elif defined(USE_ESPHOME_VOIP_REGISTRATION)
-  this->start_call_on_line_(value, "direct", call_id);
+void VoipStack::start_call_on_line(const std::string &target, const std::string &line,
+                                  bool send_video, bool receive_video) {
+  if (!this->can_start_call_()) return;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  if (this->transport_ != nullptr) this->transport_->set_outgoing_video_intent({true, send_video, receive_video});
 #else
-  this->call_(value, call_id);
+  (void) send_video;
+  (void) receive_video;
+#endif
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  this->start_call_on_line_(target, line, {});
+#else
+  if (line.empty() || line == "direct") this->call(target);
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  if (this->call_state_.load(std::memory_order_acquire) == CallState::IDLE && this->transport_ != nullptr)
+    this->transport_->set_outgoing_video_intent({});
 #endif
 }
 
@@ -911,7 +545,7 @@ void VoipStack::call_(const std::string &value, const std::string &call_id) {
   }
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   if (call_id.empty() && !this->force_direct_call_ && this->default_line_ != "direct") {
-    this->start_call_on_line(target, this->default_line_); return;
+    this->start_call_on_line_(target, this->default_line_, {}); return;
   }
 #endif
   if (sip_normalize_dial_target(value, Phonebook::MAX_ROUTE_BYTES).empty()) {
@@ -1004,11 +638,6 @@ uint16_t VoipStack::get_current_contact_rtp_port() const {
 bool VoipStack::get_current_contact_sip_transport_tcp() const {
   const auto *c = this->phonebook_.current();
   return c != nullptr && c->endpoint_type == ContactEndpointType::SIP && c->sip_transport_tcp;
-}
-
-bool VoipStack::get_current_contact_directional_audio_v1() const {
-  const auto *c = this->phonebook_.current();
-  return c != nullptr && c->directional_audio_v1;
 }
 
 void VoipStack::publish_destination_() {

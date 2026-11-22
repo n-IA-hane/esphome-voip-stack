@@ -160,7 +160,6 @@ def pcm_transport_binary(mixed_playout_binary, tmp_path_factory):
 int main(int argc,char**argv){
  assert(argc==3);const unsigned local_rate=std::stoul(argv[1]);
  SipTransport s;const auto wire=fmt(16000,10,AudioCodec::PCM),local=fmt(local_rate,10,AudioCodec::PCM);
- s.peer_directional_audio_v1_=std::string(argv[2])=="directional";
  s.offer_tx_formats_.count=1;s.offer_tx_formats_.formats[0]=wire;
  s.offer_rx_formats_.count=local_rate==16000?1:2;s.offer_rx_formats_.formats[0]=local;
  if(s.offer_rx_formats_.count==2)s.offer_rx_formats_.formats[1]=wire;
@@ -172,8 +171,7 @@ int main(int argc,char**argv){
  const auto line=offer.rfind("a=rtpmap:",mapping);assert(line!=std::string::npos);
  const unsigned pt=std::stoul(offer.substr(line+9,mapping-line-9));assert(pt>=96&&pt<120);
  const std::string answer="v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio 40002 RTP/AVP "+std::to_string(pt)+
-   "\r\na=rtpmap:"+std::to_string(pt)+" L16/16000/1\r\na=ptime:10\r\na=sendrecv\r\n"+
-   (s.peer_directional_audio_v1_?"a=x-voip-stack-flow:"+std::to_string(pt)+" sendrecv\r\n":"");
+   "\r\na=rtpmap:"+std::to_string(pt)+" L16/16000/1\r\na=ptime:10\r\na=sendrecv\r\n";
  assert(s.learn_remote_rtp_from_sdp_(answer,0,true)&&s.accepted.count==1&&s.rx==wire);
  AudioFormat mapped;assert(s.accepted.find(pt,&mapped)&&mapped==wire);
  s.rtp_port_=0;assert(s.prepare_media_path_locked_()&&s.rx==wire);
@@ -244,7 +242,7 @@ int main(int argc,char**argv){
 
 
 @pytest.mark.parametrize("local_rate", [16000, 48000])
-@pytest.mark.parametrize("peer", ["standard", "directional"])
+@pytest.mark.parametrize("peer", ["standard"])
 def test_real_sdp_rtp_pcm_conversion_preserves_wire_and_first_frames(pcm_transport_binary, local_rate, peer):
     run = subprocess.run([str(pcm_transport_binary), str(local_rate), peer], capture_output=True, text=True, timeout=5,
                          env={**os.environ, "UBSAN_OPTIONS": "halt_on_error=1"})

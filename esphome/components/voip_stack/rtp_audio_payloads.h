@@ -26,13 +26,12 @@ inline size_t pcm_receive_buffer_capacity(const AudioFormatList &configured) {
 }
 
 inline bool pcm_receive_conversion_supported(const AudioFormat &source, const AudioFormat &target) {
-    // Alternate S16 PCM rates are normalized upwards to the selected sink.
-    // Other encodings keep their existing single-format negotiation.
+    // The shared streaming resampler handles both receive normalization and
+    // transmit alternatives with identical sample/channel accounting.
     return source == target ||
            (source.codec == AudioCodec::PCM && target.codec == AudioCodec::PCM &&
             source.pcm_format == PcmFormat::S16LE && target.pcm_format == PcmFormat::S16LE &&
-            source.channels == target.channels && source.frame_ms == target.frame_ms &&
-            source.sample_rate <= target.sample_rate);
+            source.channels == target.channels && source.frame_ms == target.frame_ms);
   }
 
 // Keep the configured PCM sink clock independent of an accepted wire rate.

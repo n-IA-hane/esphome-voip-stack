@@ -9,9 +9,9 @@
 namespace esphome::voip_stack {
 
 inline constexpr size_t SIP_NAME_BYTES = 64;
-inline constexpr size_t CONTACT_ID_BYTES = 96;
+inline constexpr size_t CONTACT_ID_BYTES = 1024;
 inline constexpr size_t SIP_HOST_BYTES = 253;
-inline constexpr size_t SIP_URI_BYTES = 512;
+inline constexpr size_t SIP_URI_BYTES = 2048;
 
 inline bool sip_valid_text(std::string_view name, size_t max_bytes) {
   if (name.size() > max_bytes) return false;
@@ -30,6 +30,10 @@ inline bool sip_valid_text(std::string_view name, size_t max_bytes) {
       if ((static_cast<unsigned char>(name[i]) & 0xC0) != 0x80) return false;
   }
   return true;
+}
+
+inline bool sip_valid_username(std::string_view value) {
+  return !value.empty() && value.front() != ' ' && value.back() != ' ' && sip_valid_text(value, SIP_NAME_BYTES);
 }
 
 inline uint8_t sip_hex_value(char ch) {
@@ -97,7 +101,7 @@ inline bool sip_parse_target_uri(std::string_view value, SipTargetParts &parts) 
   const auto user = value.substr(4, at - 4);
   if (user.find(':') != std::string::npos) return false;
   parts.user = sip_decode_user(user);
-  if (parts.user.empty()) return false;
+  if (parts.user.empty() || !sip_valid_text(parts.user, CONTACT_ID_BYTES)) return false;
   if (value.find('@', at + 1) != value.npos) return false;
   const auto authority_end = value.find_first_of(";?", at + 1);
   const auto authority = value.substr(at + 1, authority_end - at - 1);
@@ -158,6 +162,10 @@ inline bool sip_matches_aor(const SipTargetParts &own, std::string_view route) {
          std::equal(own.host.begin(), own.host.end(), candidate.host.begin(), [](unsigned char a, unsigned char b) {
            return std::tolower(a) == std::tolower(b);
          });
+}
+
+inline bool sip_valid_contact_identity(std::string_view value) {
+  return sip_valid_text(value, CONTACT_ID_BYTES);
 }
 
 // Append directly to an existing SIP transaction buffer, including PSRAM storage.

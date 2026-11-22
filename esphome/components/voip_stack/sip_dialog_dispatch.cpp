@@ -71,16 +71,6 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   std::string incoming_dest_name =
       sip_display_name_from_header(incoming_to, VOIP_STACK_MAX_NAME_LEN);
   if (incoming_caller_name.empty()) {
-    incoming_caller_name = sip_route_id(
-        header_value(message, "X-Voip-Stack-Caller-Name"),
-        VOIP_STACK_MAX_NAME_LEN);
-  }
-  if (incoming_dest_name.empty()) {
-    incoming_dest_name = sip_route_id(
-        header_value(message, "X-Voip-Stack-Dest-Name"),
-        VOIP_STACK_MAX_NAME_LEN);
-  }
-  if (incoming_caller_name.empty()) {
     incoming_caller_name = sip_route_id(sip_user_from_header(incoming_from), VOIP_STACK_MAX_NAME_LEN);
   }
   if (incoming_dest_name.empty()) {
@@ -295,16 +285,6 @@ bool SipTransport::handle_invite_(const std::string &message, const sockaddr_in 
   this->destination_.route = sip_route_id(
       sip_user_from_header(sip_request_uri(message)),
       VOIP_STACK_MAX_ROUTE_ID_LEN);
-  if (this->caller_.route.empty()) {
-    this->caller_.route = sip_route_id(
-        header_value(message, "X-Voip-Stack-Caller-Route"),
-        VOIP_STACK_MAX_ROUTE_ID_LEN);
-  }
-  if (this->destination_.route.empty()) {
-    this->destination_.route = sip_route_id(
-        header_value(message, "X-Voip-Stack-Dest-Route"),
-        VOIP_STACK_MAX_ROUTE_ID_LEN);
-  }
   if (this->caller_.route.empty()) this->caller_.route = this->caller_.name;
   if (this->destination_.route.empty())
     this->destination_.route = this->destination_.name;

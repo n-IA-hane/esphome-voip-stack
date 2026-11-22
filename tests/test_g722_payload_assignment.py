@@ -37,11 +37,10 @@ int main(int argc,char **argv){
  s.offer_tx_formats_.formats[1]=s.offer_rx_formats_.formats[1]=format(16000,10);
  s.offer_tx_formats_.formats[2]=s.offer_rx_formats_.formats[2]=g20;
  s.offer_tx_formats_.formats[3]=s.offer_rx_formats_.formats[3]=g10;
- if(mode=="d1")s.peer_directional_audio_v1_=true;
  if(mode=="sendonly")s.offer_rx_formats_.count=0;
  if(mode=="recvonly")s.offer_tx_formats_.count=0;
  if(mode=="capabilities"){std::cout<<s.build_sdp_capabilities_(0);return 0;}
- if(mode=="standard"||mode=="d1"||mode=="sendonly"||mode=="recvonly"){
+ if(mode=="standard"||mode=="sendonly"||mode=="recvonly"){
   const auto offer=s.build_sdp_offer_();assert(!offer.empty());std::cout<<offer;return 0;
  }
  assert(argc==3);
@@ -71,7 +70,7 @@ int main(int argc,char **argv){
     return binary
 
 
-@pytest.mark.parametrize("mode", ["standard", "d1", "sendonly", "recvonly", "capabilities"])
+@pytest.mark.parametrize("mode", ["standard", "sendonly", "recvonly", "capabilities"])
 def test_g722_uses_one_static_payload_across_duration_aliases(static_g722_binary, mode):
     result = subprocess.run([static_g722_binary, mode], capture_output=True, text=True, check=True)
     mappings = re.findall(r"^a=rtpmap:(\d+) ([^\r\n]+)", result.stdout, re.MULTILINE)
@@ -80,10 +79,7 @@ def test_g722_uses_one_static_payload_across_duration_aliases(static_g722_binary
     audio = next(line.split()[3:] for line in result.stdout.splitlines() if line.startswith("m=audio "))
     assert len(audio) == len(set(audio)) == 2 and "9" in audio
     assert sum(value == "G722/8000/1" for _, value in mappings) == 1
-    assert ("a=x-voip-stack-flow:9 sendrecv" in result.stdout) == (mode in {"d1", "capabilities"})
-    if mode == "capabilities":
-        for direction in ("tx", "rx"):
-            assert f"a=x-voip-stack-audio-{direction}:L16/16000/1/20,L16/16000/1/10,G722/8000/1/20,G722/8000/1/10" in result.stdout
+    assert "a=x-voip-stack-" not in result.stdout
 
 
 @pytest.mark.parametrize("mode", ["incoming-static", "incoming-dynamic", "answer-static", "answer-dynamic", "stock-answer"])

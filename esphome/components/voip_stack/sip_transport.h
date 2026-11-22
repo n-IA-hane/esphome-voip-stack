@@ -127,11 +127,16 @@ class SipTransport : public SipPhoneTransport {
 #if defined(USE_ESPHOME_VOIP_DIRECTORY) || defined(USE_VOIP_HA_AUTO_REGISTER)
   bool get_account_snapshot(const std::string &id, SipAccountSnapshot *out);
 #endif
-  bool prepare_account_line(const std::string &id, std::string *host, uint16_t *port, bool *tcp, bool *directional_audio_v1 = nullptr);
+  bool prepare_account_line(const std::string &id, std::string *host, uint16_t *port, bool *tcp);
   std::string registration_account_domain(const std::string &id) {
     LockGuard lock(this->dialog_mutex_);
     const int index = this->registration_.find(id);
     return index >= 0 ? this->registration_.account(index).config.domain : std::string();
+  }
+  std::string registration_account_username(const std::string &id) {
+    LockGuard lock(this->dialog_mutex_);
+    const int index = this->registration_.find(id);
+    return index >= 0 ? this->registration_.account(index).config.username : std::string();
   }
   void clear_account_line();
   using RegistrationCallback = void (*)(void *, const std::string &, RegistrationState, uint16_t);
@@ -200,9 +205,6 @@ class SipTransport : public SipPhoneTransport {
   bool originate(const std::string &host, uint16_t port) override;
   void set_remote(const std::string &ip, uint16_t port, uint16_t rtp_port = 0) override;
   void set_sip_signaling_transport(bool tcp) override;
-  void set_peer_directional_audio_v1(bool enabled) override {
-    this->peer_directional_audio_v1_ = enabled;
-  }
   void set_audio_formats(const AudioFormatList &tx, const AudioFormatList &rx) override;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   void set_video_endpoints(EncodedVideoSource *source,
@@ -210,6 +212,7 @@ class SipTransport : public SipPhoneTransport {
   void set_video_config(VideoCodec codec, uint16_t rtp_port,
                         uint8_t offer_payload_type,
                         size_t max_rtp_payload) override;
+  void set_outgoing_video_intent(CallVideoIntent intent) override;
   bool request_video_send(bool enabled) override;
 #endif
   SipTransportSnapshot snapshot() const override;
@@ -379,11 +382,11 @@ class SipTransport : public SipPhoneTransport {
       const AudioSdpDirection *audio_direction = nullptr) const;
   std::string build_negotiated_sdp_answer_(const NegotiatedMedia &media, uint32_t version) const;
   std::string wrap_sdp_envelope_version_(const std::string &local_ip, const std::string &payloads,
-                                        const std::string &maps, const std::string &flows,
+                                        const std::string &maps,
                                         const AudioSdpFacts &facts, uint8_t ptime, const char *direction,
                                         const AudioSdpEnvelope &envelope) const;
   std::string wrap_sdp_envelope_(const std::string &local_ip, const std::string &payloads,
-                                 const std::string &maps, const std::string &flows,
+                                 const std::string &maps,
                                  const AudioSdpFacts &facts, uint8_t ptime,
                                  const char *direction = "sendrecv") const;
   bool learn_remote_rtp_from_sdp_(const std::string &sdp,
@@ -719,8 +722,6 @@ class SipTransport : public SipPhoneTransport {
   bool peer_supports_from_change_{false};
   bool connected_identity_sent_{false};
   bool dialog_originated_{false};
-  bool peer_directional_audio_v1_{false};
-  bool remote_directional_audio_v1_{false};
   bool delayed_offer_pending_{false};
   CompletedServerTransaction completed_invite_;
   CompletedServerTransaction completed_control_;
@@ -749,7 +750,6 @@ class SipTransport : public SipPhoneTransport {
   RtpAudioPayloads negotiated_rx_payloads_{};
   RtpAudioPayloads local_offered_rx_payloads_{};
   AudioFormatList local_offered_tx_formats_{};
-  bool local_offered_directional_audio_v1_{false};
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   PcmReceiveConverter pcm_receive_converter_;
 #endif
@@ -906,7 +906,6 @@ class SipTransport : public SipPhoneTransport {
   SipTcpFlow tcp_flow_;
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   SipTcpFlow inbound_tcp_flow_;
-  static bool registration_directional_audio_supported_(std::string_view body);
   SipRegistration registration_;
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
   SipMwi mwi_;
@@ -1007,7 +1006,7 @@ class SipTransport : public SipPhoneTransport {
     SipIdentity caller_, destination_;
     bool dialog_originated_{false}, peer_supports_from_change_{false}, connected_identity_sent_{false};
     bool outgoing_invite_pending_{false}, cancel_requested_{false};
-    bool delayed_offer_pending_{false}, terminate_after_invite_ack_{false}, peer_directional_audio_v1_{false};
+    bool delayed_offer_pending_{false}, terminate_after_invite_ack_{false};
     uint32_t cseq_{1}, invite_cseq_{1}, sdp_session_id_{0}, sdp_session_version_{0};
     uint32_t remote_ip_v4_{0};
     uint16_t remote_sip_port_{5060};
@@ -1016,13 +1015,15 @@ class SipTransport : public SipPhoneTransport {
     UdpTransaction pending_invite_, pending_cancel_, pending_bye_, pending_update_;
     UdpTransaction pending_notify_, pending_notify_final_;
     NegotiatedMedia media;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+    CallVideoIntent video_call_intent_{};
+#endif
 #ifdef USE_ESPHOME_VOIP_DTMF
     uint8_t dtmf_offered_clocks_{0};
 #endif
     RtpAudioPayloads local_offered_rx_payloads_;
     AudioFormatList local_offered_tx_formats_;
-    bool local_offered_directional_audio_v1_{false};
-  };
+    };
 
   struct CompletedRefer {
     CompletedServerTransaction accepted, control;
@@ -1059,6 +1060,7 @@ class SipTransport : public SipPhoneTransport {
                    IMAGEATTR_DISABLED = 4, IMAGEATTR_FALLBACK = 8, IMAGEATTR_ACTIVE = 16 };
   uint8_t video_imageattr_state_{0};
 #endif
+  CallVideoIntent video_call_intent_{}, next_video_call_intent_{};
   std::atomic<bool> video_send_requested_{true};
   uint32_t remote_video_ip_v4_{0};
   uint16_t remote_video_rtp_port_{0};

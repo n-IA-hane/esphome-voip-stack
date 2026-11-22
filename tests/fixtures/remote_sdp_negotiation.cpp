@@ -45,7 +45,7 @@ static void audio_section(const char *fixture_path) {
   formats.formats[0] = g722;
   RtpAudioPayloads previously_offered;
   assert(previously_offered.add(9, g722));
-  const LocalAudioOffer local{formats, formats, formats, previously_offered, 1200, false, 1};
+  const LocalAudioOffer local{formats, formats, formats, previously_offered, 1200, 1};
   const SdpAudioMedia retained;
   SdpAudioMedia negotiated;
   DtmfConfig dtmf;

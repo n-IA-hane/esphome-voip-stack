@@ -17,8 +17,7 @@ def options_source():
     code = code.replace("struct SipPhoneTransport {",
                         block(_parser, "bool parse_rtpmap_format(") + "\nstruct SipPhoneTransport {", 1)
     code = code.replace('void local_ip_for_peer_(uint32_t,std::string*out)', 'void local_ip_for_peer_(uint32_t,std::string*out) const')
-    # Compose newly available production helpers; the unchanged base still
-    # compiles and exposes its original empty OPTIONS reply for the RED witness.
+    # Compose complete production capability serialization and OPTIONS ownership.
     for marker, owner in [("std::string SipTransport::build_sdp_capabilities_(", sdp),
                           ("std::string SipTransport::wrap_sdp_envelope_(", sdp),
                           ("std::string SipTransport::wrap_sdp_envelope_version_(", sdp),
@@ -42,7 +41,7 @@ AudioFormat pcm(unsigned rate,unsigned frame=10){AudioFormat f;f.sample_rate=rat
 int main(int argc,char **argv){
  assert(argc==4);const std::string state=argv[2],accept=argv[3];
  Peer peer(std::string(argv[1])=="tcp");SipTransport s;setup(s,peer);
- s.offer_tx_formats_.count=2;s.offer_tx_formats_.formats[0]=pcm(16000,20);s.offer_tx_formats_.formats[1]=pcm(16000,10);
+ s.offer_tx_formats_.count=3;s.offer_tx_formats_.formats[0]=pcm(16000,20);s.offer_tx_formats_.formats[1]=pcm(16000,10);s.offer_tx_formats_.formats[2]=pcm(48000,10);
  s.offer_rx_formats_.count=accept=="known"||accept=="unrepresentable"?2:3;s.offer_rx_formats_.formats[0]=pcm(48000);
  s.offer_rx_formats_.formats[1]=pcm(16000,accept=="known"?10:20);
  if(s.offer_rx_formats_.count==3)s.offer_rx_formats_.formats[2]=pcm(16000,10);
@@ -108,10 +107,6 @@ def test_options_body_and_admission_preserve_owner(options_binary, transport, st
     assert audio[1] == "0"
     maps = {line.split()[1] for line in fields if line.startswith("a=rtpmap:")}
     assert maps == {"L16/16000/1", "L16/48000/1"}
-    assert sum(line.startswith("a=x-voip-stack-flow:") for line in fields) == 2
-    assert "a=x-voip-stack-independent-ptime:1" in fields
-    assert "a=x-voip-stack-audio-tx:L16/16000/1/20,L16/16000/1/10" in fields
-    assert ("a=x-voip-stack-audio-rx:L16/48000/1/10,L16/16000/1/" +
-            ("10" if accept == "known" else "20,L16/16000/1/10")) in fields
+    assert not any(line.startswith("a=x-voip-stack-") for line in fields)
     hints = [line for line in fields if line.startswith(("a=ptime:", "a=maxptime:"))]
     assert hints == ["a=ptime:10", "a=maxptime:10"]

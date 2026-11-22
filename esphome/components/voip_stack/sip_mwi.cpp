@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "sip_record.h"
+#include "sip_uri_user.h"
 
 namespace esphome::voip_stack {
 namespace {
@@ -74,7 +75,7 @@ std::string tag(const std::string &field) {
                    "tag");
 }
 bool safe_uri(const std::string &value) {
-  if (value.size() < 5 || value.size() > 512 ||
+  if (value.size() < 5 || value.size() > SIP_URI_BYTES ||
       lower(value.substr(0, 4)) != "sip:")
     return false;
   for (unsigned char c : value)
@@ -152,7 +153,7 @@ bool SipMwi::parse_summary(const std::string &body,
       status = true;
       parsed.waiting = waiting == "yes";
     } else if (name == "message-account") {
-      if (account || value.empty() || value.size() > 512 || value.find(':') == std::string::npos) return false;
+      if (account || value.empty() || value.size() > SIP_URI_BYTES || value.find(':') == std::string::npos) return false;
       for (unsigned char ch : value)
         if (ch <= 32 || ch == 127 || ch == '<' || ch == '>' || ch == '"') return false;
       account = true;
@@ -293,7 +294,7 @@ void SipMwi::retire_blf_watch_(size_t slot, uint32_t now) {
 bool SipMwi::set_blf_watch(size_t index, size_t account_index, const SipRegistration::Account &account,
                            const std::string &id, const std::string &target, uint32_t now) {
   if (index >= this->blf_capacity_ || account_index >= CAPACITY || !account.occupied ||
-      id.empty() || id.size() > 96 || !safe_uri(target)) return false;
+      id.empty() || !sip_valid_contact_identity(id) || !safe_uri(target)) return false;
   auto &watch = this->blf_accounts_[index];
   if (watch.package == Account::Package::DIALOG && watch.desired && watch.blf.account_id == account.config.id &&
       watch.blf.contact_id == id && watch.watch_target == target) {
@@ -1172,6 +1173,14 @@ bool SipMwi::handle_notify(const std::string &message, uint32_t ip,
   a.notify_seen = true;
   a.notify_cseq = seq;
   a.waiting_notify = false;
+#ifdef USE_ESPHOME_VOIP_BLF
+  if (is_dialog && state != "terminated") {
+    const auto &watch = this->blf_accounts_[this->watch_slot_(index)];
+    // A partial document does not satisfy the full-state refresh. Keep Timer N
+    // armed so a notifier which never supplies full state gets a fresh usage.
+    a.waiting_notify = watch.full_refresh_requested && !watch.needs_full;
+  }
+#endif
   if (state == "terminated") {
     this->unavailable_(index);
     const std::string reason = lower(parameter(subscription, "reason"));

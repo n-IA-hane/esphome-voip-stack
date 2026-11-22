@@ -9,5 +9,5 @@ struct DirectoryContact {
   bool tcp{false};
 };
 bool map_contact(const Entry &entry, const std::string &default_host, uint16_t default_port,
-                 bool default_tcp, DirectoryContact *contact);
+                 bool default_tcp, DirectoryContact *contact, bool managed_by_ha = false);
 }

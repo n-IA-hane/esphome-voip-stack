@@ -60,13 +60,13 @@ def test_actual_ha_call_selection_fallback_and_missing_peer(tmp_path, mode):
     run_consumer(tmp_path, mode, r'''
 int main(){
  VoipStack phone;
- // Execute the public correlated HA route, retaining its exact target and ID.
- phone.call_via_ha("Desk","ha-case-sensitive@controller");
+ // The native command selects a line and the endpoint creates Call-ID.
+ phone.start_call_on_line("Desk","direct",false,false);
  assert(phone.transport.originations==1&&phone.invites==1);
- assert(phone.transport.ip=="192.0.2.10");
- assert(phone.identity.call_id=="ha-case-sensitive@controller");
+ assert(phone.transport.ip=="192.0.2.20");
+ assert(phone.identity.call_id.find("esp-")==0);
  assert(phone.identity.caller_route=="phone"&&phone.identity.dest_route=="Desk");
- assert(phone.phonebook_.current_name()=="HA"&&phone.pending_dialplan_target_.empty());
+ assert(phone.phonebook_.current_name()=="Desk"&&phone.pending_dialplan_target_.empty());
  phone.stop();
  // The existing direct attempt can retry through HA without losing its peer.
  phone.call("Desk");const auto direct=phone.identity;
@@ -83,7 +83,7 @@ int main(){
  assert(phone.terminated_identity.call_id==direct.call_id);
  assert(phone.terminated_identity.dest_name=="Desk"&&phone.call_state_==CallState::IDLE);
  const unsigned failed=phone.call_failed_trigger_.calls;
- phone.call_via_ha("Desk","missing-ha@controller");
+ phone.call("999");
  assert(phone.call_failed_trigger_.calls==failed+1&&phone.transport.originations==3);
  assert(phone.pending_dialplan_target_.empty());
  // A later manual direct call still uses the actual retained contact.

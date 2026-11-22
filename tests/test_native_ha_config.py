@@ -26,11 +26,12 @@ def test_native_ha_minimal_codegen(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     generated = next(tmp_path.rglob('main.cpp')).read_text()
     assert 'VoipHAIntegration' in generated
-    for role in ['state', 'contacts', 'media_route', 'extension']:
+    for role in ['state', 'contacts', 'extension']:
         assert 'voip_' + role in generated
     assert '->set_state_sensor(' in generated
     assert '->set_endpoint_sensor(' not in generated
     assert 'voip_endpoint' not in generated
+    assert 'voip_media_route' not in generated
 
 
 def test_standalone_has_no_ha_adapter(tmp_path):

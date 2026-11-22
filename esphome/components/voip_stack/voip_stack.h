@@ -4,6 +4,7 @@
 
 #include "audio_core_audio_utils.h"
 #include "audio_core_ring_buffer_caps.h"
+#include "pcm_receive_converter.h"
 #include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
@@ -74,7 +75,6 @@
 #include <atomic>
 #include <memory>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 namespace esphome {
@@ -122,6 +122,7 @@ class VoipStack : public Component {
   };
 
   void setup() override;
+  void on_shutdown() override;
   void loop() override;
   void dump_config() override;
   void dump_diagnostics();
@@ -166,7 +167,6 @@ class VoipStack : public Component {
   template<typename F> void add_on_message_waiting_callback(F &&callback) { this->message_waiting_callbacks_.add(std::forward<F>(callback)); }
 #endif
   bool select_line(const std::string &id);
-  void start_call_on_line(const std::string &target, const std::string &line);
   Trigger<std::string, std::string, int> *get_registration_state_trigger() { return &this->registration_state_trigger_; }
 #endif
   // AFTER_CONNECTION: bind sockets and publish initial state only after
@@ -388,6 +388,7 @@ class VoipStack : public Component {
     return this->transport_ != nullptr &&
            this->transport_->snapshot().video_send_requested;
   }
+  bool get_video_receive() const { return this->video_sink_ != nullptr; }
   bool is_video_send_change_pending() const {
     return this->transport_ != nullptr &&
            this->transport_->snapshot().video_send_change_pending;
@@ -418,13 +419,10 @@ class VoipStack : public Component {
                : ConnectionState::CONNECTED;
   }
   const char *get_state_str() const;
-  const char *get_media_route_str() const;
-  bool set_media_route(const std::string &call_id, const std::string &route);
 
 #ifdef USE_TEXT_SENSOR
   // Optional text-sensor platform registration.
   void set_state_sensor(text_sensor::TextSensor *sensor) { this->state_sensor_ = sensor; }
-  void set_media_route_sensor(text_sensor::TextSensor *sensor) { this->media_route_sensor_ = sensor; }
   void set_destination_sensor(text_sensor::TextSensor *sensor) { this->destination_sensor_ = sensor; }
   void set_caller_sensor(text_sensor::TextSensor *sensor) { this->caller_sensor_ = sensor; }
   void set_contacts_sensor(text_sensor::TextSensor *sensor) { this->contacts_sensor_ = sensor; }
@@ -432,10 +430,6 @@ class VoipStack : public Component {
   void set_endpoint_sensor(text_sensor::TextSensor *sensor) { this->endpoint_sensor_ = sensor; }
   void set_last_reason_sensor(text_sensor::TextSensor *sensor) { this->last_reason_sensor_ = sensor; }
   void set_sip_snapshot_sensor(text_sensor::TextSensor *sensor) { this->sip_snapshot_sensor_ = sensor; }
-  // Phonebook source from HA: shipped YAMLs wire a homeassistant text_sensor
-  // through ha_phonebook_text_sensor_id. Current firmware consumes the unified
-  // SIP roster sensor.voip_phonebook and normalizes it locally.
-  void set_ha_phonebook_sensor(text_sensor::TextSensor *sensor) { this->ha_phonebook_sensor_ = sensor; }
 #endif
 #ifdef USE_TEXT
   void set_ring_groups_text(text::Text *entity) { this->ring_groups_text_ = entity; }
@@ -445,9 +439,6 @@ class VoipStack : public Component {
   void set_conference_groups_text(text::Text *entity) { this->conference_groups_text_ = entity; }
   void set_extension_text(text::Text *entity) { this->extension_text_ = entity; }
 #endif
-  // Prune threshold (1..10). 0 disables pruning entirely.
-  void set_prune_threshold(uint8_t t) { this->prune_threshold_ = t; }
-
 #ifdef USE_SWITCH
   // Optional switch-platform registration.
   void register_auto_answer_switch(switch_::Switch *sw) { this->auto_answer_switch_ = sw; }
@@ -472,7 +463,7 @@ class VoipStack : public Component {
 #endif
   // SIP dial-plan contact management. Public YAML should prefer the
   // structured add_contact action. add_contact(std::string) remains the compact
-  // internal transport-row path used by HA roster sync and generated helpers.
+  // compact transport-row path used by generated contact helpers.
   // add_contact and set_contacts run the same idempotent merge: same shape
   // = no-op, missing endpoint upgraded in place, mismatched endpoint
   // replaced. Slot order is stable; only flush_contacts() trims.
@@ -498,15 +489,9 @@ class VoipStack : public Component {
   void set_contacts(const std::string &contacts_csv);  // batch wrapper, same
                                                        // merge rules per entry
   void flush_contacts();
-  // Open a phonebook update cycle: commit any previously-open cycle (counter
-  // advance + prune), then read the HA sensor (if configured + non-empty).
-  // on_phonebook_update fires only after a real phonebook mutation.
-  // The cycle remains open until the next update_contacts() call or
-  // CYCLE_TIMEOUT_MS elapses (loop() safety net).
-  void update_contacts();
   bool set_contact(const std::string &name);
   void call(const std::string &target);
-  void call_via_ha(const std::string &target, const std::string &call_id);
+  void start_call_on_line(const std::string &target, const std::string &line, bool send_video, bool receive_video);
   void hangup_call_if_id(const std::string &call_id);
   void next_contact();
   void prev_contact();
@@ -530,7 +515,6 @@ class VoipStack : public Component {
   uint16_t get_current_contact_port() const;
   uint16_t get_current_contact_rtp_port() const;
   bool get_current_contact_sip_transport_tcp() const;
-  bool get_current_contact_directional_audio_v1() const;
   std::string get_caller() const { return this->current_caller_name_; }
   // Remote party of the owned dialog, independent of contact selection.
   std::string get_active_peer_name() const;
@@ -539,7 +523,6 @@ class VoipStack : public Component {
   std::string get_contact_account(std::string_view id) const;
   bool call_contact(const std::string &id);
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
-  void set_ha_roster_enabled(bool enabled);
   DirectoryCommitResult commit_contact_directory(const void *provider, std::vector<ContactEntry> entries, const std::string &account_id = {});
   DirectoryCommitResult commit_contact_directory(const void *provider, ContactEntry *entries, size_t count, const std::string &account_id = {});
 #endif
@@ -573,8 +556,8 @@ class VoipStack : public Component {
 #ifdef USE_ESPHOME_VOIP_PEER_EVENTS
   Trigger<std::string> *get_peer_changed_trigger() { return &this->peer_changed_trigger_; }
 #endif
-  // Fires after every real phonebook mutation: HA roster push, manual
-  // add/remove/set/flush, or stale-contact pruning.
+  // Fires after every real phonebook mutation: LDAP commit or manual
+  // add/remove/set/flush.
   Trigger<std::string> *get_phonebook_update_trigger() { return &this->phonebook_update_trigger_; }
 
   // Call state getter
@@ -583,10 +566,7 @@ class VoipStack : public Component {
 
  protected:
   // Phonebook cycle helpers (see voip_settings.cpp).
-  void track_csv_(const std::string &csv);  // populate seen_in_cycle_ with CSV names
-  void commit_cycle_();                      // advance counters + prune via Phonebook::commit_cycle
   std::string normalize_phonebook_for_transport_(const std::string &contacts_csv);
-  bool apply_roster_json_contacts_(const std::string &roster_json);
   bool maybe_auto_select_ha_first_();
   void publish_phonebook_changed_();
 
@@ -632,7 +612,6 @@ class VoipStack : public Component {
 #endif
     bool has_transport{false}, has_jitter{false}, changed{false}, audio_active{false};
     char last_reason[48]{};
-    const char *route{""};
   };
   std::unique_ptr<DiagnosticDump> diagnostic_dump_;
   void emit_diagnostic_section_();
@@ -759,7 +738,6 @@ class VoipStack : public Component {
   void notify_audio_tasks_();
 
   void publish_state_();
-  void publish_media_route_();
   void publish_last_reason_(const std::string &reason);
   void publish_destination_();
   void publish_caller_(const std::string &caller_name);
@@ -775,7 +753,6 @@ class VoipStack : public Component {
   std::string build_endpoint_string_() const;
   std::string build_sip_snapshot_string_() const;
   static std::string audio_format_token_(const AudioFormat &fmt);
-  static std::string audio_rtp_format_token_(const AudioFormat &fmt);
 
   void set_call_state_(CallState new_state);
   void request_call_termination_(const TerminationIntent &intent);
@@ -847,12 +824,11 @@ class VoipStack : public Component {
 #ifdef USE_TEXT_SENSOR
   // Optional text-sensor entities.
   text_sensor::TextSensor *state_sensor_{nullptr};
-  text_sensor::TextSensor *media_route_sensor_{nullptr};
   text_sensor::TextSensor *destination_sensor_{nullptr};  // full: selected contact
   text_sensor::TextSensor *caller_sensor_{nullptr};       // full: who is calling
   text_sensor::TextSensor *contacts_sensor_{nullptr};     // full: contact count (e.g. "3 contacts")
   text_sensor::TextSensor *transport_sensor_{nullptr};    // SIP signaling transport: "udp" or "tcp"
-  text_sensor::TextSensor *endpoint_sensor_{nullptr};     // HA roster row with SIP route and audio capabilities.
+  text_sensor::TextSensor *endpoint_sensor_{nullptr};     // Optional configured endpoint description.
   text_sensor::TextSensor *last_reason_sensor_{nullptr};  // terminal reason for HA/card mirroring
   text_sensor::TextSensor *sip_snapshot_sensor_{nullptr};
   std::string last_sip_snapshot_;
@@ -891,34 +867,16 @@ class VoipStack : public Component {
 #endif
   text::Text *conference_groups_text_{nullptr};
 #endif
-  // Contacts management. Empty at boot; fed by the optional HA text_sensor
-  // subscription plus any YAML sources wired on the on_phonebook_update
-  // trigger. Slot order is stable: re-add keeps the slot, only the endpoint may
-  // upgrade or replace. The cycle counter on each ContactEntry advances/resets
-  // in commit_cycle() and prunes once
-  // delete_contact_missing_from.updates_number is hit.
+  // Static contacts and atomic LDAP snapshots share one indexed phonebook.
   Phonebook phonebook_;
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
   struct DirectoryProvider { const void *owner{nullptr}; std::string account_id; };
   std::array<DirectoryProvider, 4> directory_providers_{};
-  bool ha_roster_enabled_{true};
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   LazyCallbackManager<void(const std::string &)> account_changed_callbacks_{};
   void publish_account_changed_(const std::string &id);
 #endif
 #endif
-  // Phonebook update cycle state. update_contacts() opens a cycle,
-  // set_contacts() calls within the open cycle add their CSV names to
-  // seen_in_cycle_, and the next update_contacts() (or the loop() timeout
-  // safeguard) commits the cycle.
-#ifdef USE_TEXT_SENSOR
-  text_sensor::TextSensor *ha_phonebook_sensor_{nullptr};
-#endif
-  std::unordered_set<std::string> seen_in_cycle_;
-  uint32_t cycle_started_at_{0};
-  bool cycle_active_{false};
-  uint8_t prune_threshold_{0};  // 0 = pruning disabled (default)
-  static constexpr uint32_t CYCLE_TIMEOUT_MS = 10000;  // safety net for stuck cycles
   // Empty by default. HA-facing YAML should set this to
   // hass.config.location_name through voip_stack.set_ha_peer_name for default
   // dial-plan selection. phonebook entry. Direct P2P usage can leave it empty.
@@ -945,9 +903,7 @@ class VoipStack : public Component {
   std::string pending_dialplan_target_;
   bool ha_media_fallback_pending_{false};
   bool ha_media_fallback_attempted_{false};
-  // This is a projection of the current call, not another call lifecycle.
-  enum class MediaRoute : uint8_t { UNKNOWN, DIRECT, HA_TRANSCODING };
-  std::atomic<MediaRoute> media_route_{MediaRoute::UNKNOWN};
+  std::atomic<bool> runtime_shutting_down_{false};
   std::string device_route_id_;  // routing key (effective ESPHome node name)
 
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
@@ -957,12 +913,16 @@ class VoipStack : public Component {
   // Per-iteration drain buffers, heap-allocated at setup() so the audio
   // tasks don't carry 4 KB VLAs on top of an 8 KB stack.
   size_t tx_audio_chunk_bytes_() const {
-    return this->current_tx_audio_frame_bytes_.load(std::memory_order_acquire);
+    AudioFormat native = this->tx_audio_format_;
+    native.frame_ms = this->get_current_tx_audio_format_().frame_ms;
+    return native.nominal_frame_bytes();
   }
   size_t tx_audio_max_chunk_bytes_() const {
     size_t bytes = this->tx_audio_format_.nominal_frame_bytes();
     for (uint8_t i = 0; i < this->tx_audio_formats_.count; i++) {
-      bytes = std::max(bytes, this->tx_audio_formats_.formats[i].nominal_frame_bytes());
+      AudioFormat native = this->tx_audio_format_;
+      native.frame_ms = this->tx_audio_formats_.formats[i].frame_ms;
+      bytes = std::max(bytes, native.nominal_frame_bytes());
     }
     return bytes;
   }
@@ -970,6 +930,11 @@ class VoipStack : public Component {
   size_t mic_processing_samples_() const { return this->tx_audio_max_chunk_bytes_() / sizeof(int16_t); }
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
+#ifdef USE_ESPHOME_VOIP_PCM_TX_CONVERSION
+  PcmReceiveConverter tx_pcm_converter_;
+  uint8_t *tx_converted_chunk_{nullptr};
+  size_t tx_converted_chunk_alloc_bytes_{0};
+#endif
   uint8_t *tx_audio_chunk_{nullptr};
   size_t tx_audio_chunk_alloc_bytes_{0};
   struct TxPcmFragment {
@@ -1116,20 +1081,17 @@ class VoipStack : public Component {
     this->current_media_formats_ = CurrentMediaFormats{caller_to_dest, dest_to_caller, tx, rx};
     this->current_tx_audio_format_packed_.store(pack_audio_format(tx), std::memory_order_release);
     this->current_rx_audio_format_packed_.store(pack_audio_format(pcm_playout_format(rx, this->rx_audio_formats_)), std::memory_order_release);
-    this->current_tx_audio_frame_bytes_.store(tx.nominal_frame_bytes(), std::memory_order_release);
   }
   void set_current_tx_audio_format_(const AudioFormat &format) {
     LockGuard lock(this->media_format_mutex_);
     this->current_media_formats_.tx = format;
     this->current_tx_audio_format_packed_.store(pack_audio_format(format), std::memory_order_release);
-    this->current_tx_audio_frame_bytes_.store(format.nominal_frame_bytes(), std::memory_order_release);
   }
   void set_current_rx_audio_format_(const AudioFormat &format) {
     LockGuard lock(this->media_format_mutex_);
     this->current_media_formats_.rx = format;
     this->current_rx_audio_format_packed_.store(pack_audio_format(pcm_playout_format(format, this->rx_audio_formats_)), std::memory_order_release);
   }
-  std::atomic<size_t> current_tx_audio_frame_bytes_{DEFAULT_AUDIO_FORMAT.nominal_frame_bytes()};
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
   uint32_t audio_debug_last_tx_log_ms_{0};
   uint32_t audio_debug_last_rx_log_ms_{0};

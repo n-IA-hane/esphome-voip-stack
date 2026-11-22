@@ -7,9 +7,7 @@
 #include <limits>
 
 #include "sip_record.h"
-#ifdef USE_VOIP_HA_AUTO_REGISTER
 #include "sip_uri_user.h"
-#endif
 
 namespace esphome::voip_stack {
 namespace {
@@ -31,11 +29,6 @@ bool safe(const std::string& s, size_t max, bool empty = false) {
 bool token_safe(const std::string& s, size_t max, bool empty = false) {
   return safe(s, max, empty) && s.find_first_of(" \t<>\"\\;,@/?#:") == std::string::npos;
 }
-#ifdef USE_VOIP_HA_AUTO_REGISTER
-bool managed_username_valid(const std::string &name) {
-  return !name.empty() && name.front() != ' ' && name.back() != ' ' && sip_valid_text(name, SIP_NAME_BYTES);
-}
-#endif
 std::string quote(const std::string& s) {
   std::string out = "\"";
   for (char c : s) {
@@ -108,13 +101,15 @@ bool observe_mapping(SipRegistration::Account& a, std::string_view message) {
   return changed;
 }
 // Quoted commas and escaped quotes occur in Digest qop/opaque values.
-std::string parameter(const std::string& source, const std::string& wanted) {
+std::string parameter(const std::string& source, const std::string& wanted, bool *present = nullptr) {
+  if (present != nullptr) *present = false;
   size_t pos = 0;
   while (pos < source.size()) {
     while (pos < source.size() && (source[pos] == ',' || source[pos] == ';' || source[pos] == ' ')) ++pos;
     const size_t eq = source.find('=', pos);
     if (eq == std::string::npos) break;
     const std::string key = lower(trim(source.substr(pos, eq - pos)));
+    if (key == wanted && present != nullptr) *present = true;
     pos = eq + 1;
     while (pos < source.size() && source[pos] == ' ') ++pos;
     std::string value;
@@ -136,22 +131,17 @@ std::string parameter(const std::string& source, const std::string& wanted) {
       value = trim(source.substr(pos, end == std::string::npos ? end : end - pos));
       pos = end == std::string::npos ? source.size() : end;
     }
-    if (key == wanted) return value;
+    if (key == wanted) {
+      if (present != nullptr) *present = true;
+      return value;
+    }
     while (pos < source.size() && source[pos] != ',' && source[pos] != ';') ++pos;
   }
   return "";
 }
 template<typename Buffer> void append_address_of_record(Buffer &out, const SipAccountConfig &c) {
   out.append("sip:", 4);
-#ifdef USE_VOIP_HA_AUTO_REGISTER
-  if (c.id == "ha") {
-    sip_append_uri_user(out, c.username);
-  } else
-#endif
-  {
-    // Manual PBX configurations already supply the SIP URI user component.
-    out.append(c.username.data(), c.username.size());
-  }
+  sip_append_uri_user(out, c.username);
   out.append("@", 1);
   out.append(c.domain.data(), c.domain.size());
 }
@@ -259,11 +249,7 @@ std::string SipAccountConfig::address_of_record() const {
 }
 
 bool SipAccountConfig::valid() const {
-#ifdef USE_VOIP_HA_AUTO_REGISTER
-  const bool valid_user = this->id == "ha" ? managed_username_valid(this->username) : token_safe(this->username, 64);
-#else
-  const bool valid_user = token_safe(this->username, 64);
-#endif
+  const bool valid_user = sip_valid_username(this->username);
   for (unsigned char c : this->id)
     if (!std::isalnum(c) && c != '_' && c != '-' && c != '.') return false;
   return this->id != "direct" && token_safe(this->id, 32) && token_safe(this->registrar, 253) &&
@@ -309,8 +295,9 @@ bool SipDigest::parse(const std::string& value, bool proxy_auth) {
     next.algorithm = "SHA-256-sess";
   else
     return false;
-  const std::string qops = lower(parameter(fields, "qop"));
-  if (!qops.empty()) {
+  bool qop_present = false;
+  const std::string qops = lower(parameter(fields, "qop", &qop_present));
+  if (qop_present) {
     size_t pos = 0;
     bool auth = false;
     while (pos <= qops.size()) {
@@ -351,7 +338,7 @@ bool SipDigest::parse_response(const std::string& message, bool proxy_auth) {
 
 std::string SipDigest::authorization(const SipAccountConfig& c, const std::string& method,
                                      const std::string& target, const std::string& cnonce, Hash hash) {
-  if (this->empty() || hash == nullptr || !safe(target, 1024)) return "";
+  if (this->empty() || hash == nullptr || !safe(target, SIP_URI_BYTES)) return "";
   const std::string user = c.auth_username.empty() ? c.username : c.auth_username;
   const bool sess = this->algorithm.find("-sess") != std::string::npos;
   const std::string algorithm = this->algorithm.substr(0, this->algorithm.find("-sess"));
@@ -424,7 +411,6 @@ bool SipRegistration::request_registration(const std::string& id, bool on, uint3
   // Do not abandon an in-flight non-INVITE transaction. Apply the intent when
   // its final response arrives, maintaining monotonic CSeq on this Call-ID.
   a.desired = on;
-  if (!on) a.peer_directional_audio_v1 = a.capabilities_due = false;
   if (a.pending && a.request_kind != RequestKind::REGISTRATION) {
     a.pending = false;
     a.request_kind = RequestKind::REGISTRATION;
@@ -454,8 +440,6 @@ void SipRegistration::retry_(size_t i, uint16_t status, uint32_t now, uint32_t d
   auto& a = this->accounts_[i];
   a.pending = false;
   a.request_kind = RequestKind::REGISTRATION;
-  if (!a.bound || reached(now, a.binding_expires_ms))
-    a.peer_directional_audio_v1 = a.capabilities_due = false;
   a.request.clear();
   a.auth_attempts = 0;
   a.proxy_auth_attempts = 0;
@@ -491,10 +475,6 @@ bool SipRegistration::begin_(size_t i, uint32_t now) {
   }
   const std::string contact = "sip:esphome-" + c.id + "@" + local_ip + ":" + std::to_string(this->hooks_.local_port) +
               ";transport=" + (c.tcp ? "tcp" : "udp");
-  if (a.bound && (a.binding_ip != a.target_ip || a.contact != contact)) {
-    a.peer_directional_audio_v1 = false;
-    a.capabilities_due = this->hooks_.directional_audio_supported != nullptr;
-  }
   a.contact = contact;
   a.branch = "z9hG4bK" + this->token_();
   ++a.cseq;
@@ -535,7 +515,7 @@ bool SipRegistration::begin_(size_t i, uint32_t now) {
   }
   return true;
 }
-bool SipRegistration::begin_keepalive_(size_t i, uint32_t now, bool capabilities) {
+bool SipRegistration::begin_keepalive_(size_t i, uint32_t now) {
   auto& a = this->accounts_[i];
   const auto& c = a.config;
   const auto at = a.contact.find('@');
@@ -563,11 +543,9 @@ bool SipRegistration::begin_keepalive_(size_t i, uint32_t now, bool capabilities
   append(">\r\nCall-ID: "); append(a.call_id); append("\r\nCSeq: ");
   std::snprintf(number, sizeof(number), "%u", a.cseq); append(number);
   append(" OPTIONS\r\n");
-  if (capabilities) append("Accept: application/sdp\r\n");
   append("Content-Length: 0\r\n\r\n");
   a.pending = true;
-  a.request_kind = capabilities ? RequestKind::CAPABILITIES : RequestKind::KEEPALIVE;
-  a.capabilities_due = false;
+  a.request_kind = RequestKind::KEEPALIVE;
   a.interval_ms = 500;
   a.next_ms = now + 500;
   a.deadline_ms = now + 32000;
@@ -575,7 +553,6 @@ bool SipRegistration::begin_keepalive_(size_t i, uint32_t now, bool capabilities
   a.pending = false;
   a.request_kind = RequestKind::REGISTRATION;
   a.request.clear();
-  if (capabilities) { a.next_ms = a.registration_next_ms; return false; }
   return this->begin_(i, now);
 }
 void SipRegistration::tick(uint32_t now) {
@@ -585,7 +562,6 @@ void SipRegistration::tick(uint32_t now) {
     if (!a.occupied) continue;
     if (a.bound && reached(now, a.binding_expires_ms)) {
       a.bound = false;
-      a.peer_directional_audio_v1 = a.capabilities_due = false;
       if (a.desired && a.pending) this->state_(i, RegistrationState::REGISTERING, 0);
     }
     if (a.pending && a.request_kind != RequestKind::REGISTRATION &&
@@ -626,8 +602,6 @@ void SipRegistration::tick(uint32_t now) {
         a.next_ms = now + a.interval_ms;
       }
     } else if (a.scheduled && reached(now, a.next_ms)) this->begin_(i, now);
-    else if (a.bound && a.desired && a.state == RegistrationState::REGISTERED && a.capabilities_due)
-      this->begin_keepalive_(i, now, true);
     else if (a.bound && a.desired && a.state == RegistrationState::REGISTERED && this->keepalive_interval_ms_ &&
              reached(now, a.keepalive_next_ms)) this->begin_keepalive_(i, now);
   }
@@ -643,7 +617,6 @@ bool SipRegistration::next_deadline(uint32_t now, uint32_t* remaining) const {
       const uint32_t expiry = reached(now, a.binding_expires_ms) ? 0 : a.binding_expires_ms - now;
       if (!found || expiry < best) best = expiry;
       found = true;
-      if (a.desired && !a.pending && a.state == RegistrationState::REGISTERED && a.capabilities_due) best = 0;
       if (a.desired && !a.pending && a.state == RegistrationState::REGISTERED && this->keepalive_interval_ms_) {
         const uint32_t keepalive = reached(now, a.keepalive_next_ms) ? 0 : a.keepalive_next_ms - now;
         best = std::min(best, keepalive);
@@ -696,21 +669,10 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
     if (completed_kind != RequestKind::REGISTRATION) {
       a.request.erase(0, a.request.size());
       a.next_ms = a.registration_next_ms;
-      if (completed_kind == RequestKind::CAPABILITIES) {
-        const auto split = message.find("\r\n\r\n");
-        auto type = header(message, "Content-Type");
-        type = type.substr(0, type.find(';'));
-        uint32_t length = 0;
-        a.peer_directional_audio_v1 = status < 300 && split != std::string::npos &&
-            decimal(header(message, "Content-Length"), &length) && length == message.size() - split - 4 &&
-            lower(trim(std::string(type))) == "application/sdp" && this->hooks_.directional_audio_supported != nullptr &&
-            this->hooks_.directional_audio_supported(std::string_view(message).substr(split + 4));
-      } else a.keepalive_next_ms = now + this->keepalive_interval_ms_;
+      a.keepalive_next_ms = now + this->keepalive_interval_ms_;
       // A final keepalive response proves reachability, not capabilities or
       // REGISTER renewal. Only a correlated observed mapping can require rebind.
       if (observe_mapping(a, message)) {
-        a.peer_directional_audio_v1 = false;
-        a.capabilities_due = this->hooks_.directional_audio_supported != nullptr;
         this->begin_(i, now);
       }
       return true;
@@ -767,12 +729,8 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
       a.failures = 0;
       a.auth_attempts = 0;
       a.proxy_auth_attempts = 0;
-      const bool mapping_changed = observe_mapping(a, message);
-      const bool changed_binding = !a.bound || a.binding_ip != a.target_ip || mapping_changed;
+      observe_mapping(a, message);
       a.bound = expires > 0;
-      if (!a.bound || !a.desired || changed_binding) a.peer_directional_audio_v1 = false;
-      if (!a.bound || !a.desired) a.capabilities_due = false;
-      else if (changed_binding && this->hooks_.directional_audio_supported != nullptr) a.capabilities_due = true;
       a.keepalive_next_ms = now + this->keepalive_interval_ms_;
       a.binding_expires_ms = now + expires * 1000;
       a.binding_ip = a.target_ip;
@@ -811,8 +769,6 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
 void SipRegistration::connection_lost(size_t i, uint32_t now) {
   if (!this->initialized() || i >= CAPACITY || !this->accounts_[i].occupied) return;
   const bool healthy = this->accounts_[i].state == RegistrationState::REGISTERED;
-  this->accounts_[i].peer_directional_audio_v1 = false;
-  this->accounts_[i].capabilities_due = this->hooks_.directional_audio_supported != nullptr;
   this->accounts_[i].target_ip = 0;
   this->retry_(i, 503, now);
   if (healthy && this->accounts_[i].desired) this->accounts_[i].next_ms = now;

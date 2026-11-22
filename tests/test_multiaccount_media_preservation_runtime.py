@@ -55,18 +55,17 @@ def preservation_source():
  uint16_t get_current_contact_port()const{return 5060;}
  uint16_t get_current_contact_rtp_port()const{return 30000;}
  bool get_current_contact_sip_transport_tcp()const{return false;}
- bool get_current_contact_directional_audio_v1()const{return false;}
  std::string get_current_destination_route()const{return "101";}
  void set_remote_sip_transport_tcp(bool value){t.set_sip_signaling_transport(value);}
  void set_remote_endpoint(const std::string&host,uint16_t port,uint16_t rtp){wire_transport->set_remote(host,port,rtp);}
 ''')
     code = code.replace("void*find(const std::string&){return nullptr;}",
-        "struct Entry{std::string ip;uint16_t port=5060,rtp_port=30000;bool sip_transport_tcp=false,directional_audio_v1=false;};Entry*find(const std::string&){return nullptr;}")
+        "struct Entry{std::string ip;uint16_t port=5060,rtp_port=30000;bool sip_transport_tcp=false;};Entry*find(const std::string&){return nullptr;}")
     code = code.replace("const std::string&e){identity={a,b,c,d,e,\"\"};}",
                         "const std::string&e,bool=false){identity={a,b,c,d,e,\"\"};}")
     code = code.replace("void publish_state_(){}", "void publish_state_(){}void publish_sip_snapshot_(){}")
     code = code.replace("void set_sip_signaling_transport(bool){}",
-        "void set_sip_signaling_transport(bool tcp){wire_transport->set_sip_signaling_transport(tcp);}void set_peer_directional_audio_v1(bool enabled){wire_transport->peer_directional_audio_v1_=enabled;}")
+        "void set_sip_signaling_transport(bool tcp){wire_transport->set_sip_signaling_transport(tcp);}")
     code = code.replace("struct Snapshot {bool terminal_transaction_pending=false;unsigned media_lifecycle_phase=0;};",
         "struct Snapshot {bool terminal_transaction_pending=false;unsigned media_lifecycle_phase=0;uint32_t remote_ip_v4=0;uint16_t remote_sip_port=0;bool sip_tcp=false;};")
     code = code.replace("return {wire_transport->terminal_transaction_pending_locked_(),0};",

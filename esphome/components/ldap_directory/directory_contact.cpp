@@ -3,30 +3,22 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdio>
 
 namespace esphome::ldap_directory {
 bool map_contact(const Entry &entry, const std::string &default_host, uint16_t default_port,
-                 bool default_tcp, DirectoryContact *contact) {
+                 bool default_tcp, DirectoryContact *contact, bool managed_by_ha) {
   if (contact == nullptr) return false;
   DirectoryContact result;
   result.id = entry.first("uid");
   result.name = entry.first("displayName");
   if (result.name.empty()) result.name = entry.first("cn");
-  if (result.id.empty()) result.id = entry.first("entryUUID");
-  if (result.id.empty()) {
-    // An opaque stable key for ordinary LDAP contacts without uid. It is not
-    // an authentication identifier; the core detects duplicate-key conflicts.
-    uint64_t hash = UINT64_C(14695981039346656037);
-    for (const unsigned char c : entry.dn) { hash ^= c; hash *= UINT64_C(1099511628211); }
-    char key[24]; snprintf(key, sizeof(key), "ldap:%016llx", static_cast<unsigned long long>(hash));
-    result.id = key;
-  }
+  result.kind = entry.first("ou");
+  std::transform(result.kind.begin(), result.kind.end(), result.kind.begin(), [](unsigned char c) { return std::tolower(c); });
+  const bool phone = result.kind == "phone" || result.kind == "sip_account" ||
+                     result.kind == "esphome" || result.kind == "browser";
   result.number = entry.first("telephoneNumber");
   // Optional display metadata must not invalidate an otherwise valid SIP URI.
   if (!result.number.empty() && !voip_stack::sip_valid_text(result.number, voip_stack::CONTACT_ID_BYTES)) result.number.clear();
-  result.kind = entry.first("ou");
-  std::transform(result.kind.begin(), result.kind.end(), result.kind.begin(), [](unsigned char c) { return std::tolower(c); });
   result.host = default_host; result.port = default_port; result.tcp = default_tcp;
   std::string uri;
   for (const auto &attribute : entry.attributes) {
@@ -53,8 +45,27 @@ bool map_contact(const Entry &entry, const std::string &default_host, uint16_t d
     result.host.assign(parsed.host);
     result.port = parsed.port;
     if (parsed.has_transport) result.tcp = parsed.tcp;
-  } else result.user = entry.first("telephoneNumber");
-  if (result.name.empty()) result.name = result.uri.empty() ? result.user : result.uri;
+  } else {
+    result.user = entry.first(phone ? "uid" : "telephoneNumber");
+    if (result.user.empty()) result.user = entry.first(phone ? "telephoneNumber" : "uid");
+  }
+  if (phone) {
+    const std::string username = entry.first("uid");
+    if (!voip_stack::sip_valid_username(result.user) ||
+        (managed_by_ha && (!voip_stack::sip_valid_username(username) || username != result.user))) return false;
+    if (result.uri.empty()) {
+      if (result.user.empty() || !voip_stack::sip_valid_username(result.user) ||
+          !voip_stack::sip_valid_host(result.host) || result.port == 0) return false;
+      result.uri = "sip:" + voip_stack::sip_uri_user_encode(result.user) + "@" + result.host;
+      if (result.port != 5060) result.uri += ":" + std::to_string(result.port);
+      if (result.tcp) result.uri += ";transport=tcp";
+    }
+    if (result.uri.size() > voip_stack::SIP_URI_BYTES) return false;
+    result.id = result.user;
+    result.kind = "sip_account";
+  }
+  if (result.id.empty()) result.id = result.user;
+  if (result.name.empty()) result.name = result.user;
   if (!voip_stack::sip_valid_text(result.name, result.name.size())) return false;
   if (result.name.size() > voip_stack::SIP_NAME_BYTES) {
     size_t end = voip_stack::SIP_NAME_BYTES;
@@ -63,7 +74,7 @@ bool map_contact(const Entry &entry, const std::string &default_host, uint16_t d
   }
   // An escaped SIP user may contain %20. Keep the original URI for
   // routing; a bare telephone number must still contain no spaces.
-  if (result.id.empty() || !voip_stack::sip_valid_text(result.id, voip_stack::CONTACT_ID_BYTES) ||
+  if (result.id.empty() || !voip_stack::sip_valid_contact_identity(result.id) ||
       result.name.empty() || !voip_stack::sip_valid_text(result.name, voip_stack::SIP_NAME_BYTES) ||
       result.user.empty() || !voip_stack::sip_valid_host(result.host) || result.port == 0) return false;
   if (result.uri.empty() && (!voip_stack::sip_valid_text(result.user, voip_stack::CONTACT_ID_BYTES) ||

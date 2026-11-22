@@ -125,6 +125,22 @@ bool VoipStack::ensure_mic_processing_buffer_() {
 #endif
 }
 
+void VoipStack::on_shutdown() {
+  if (this->runtime_shutting_down_.exchange(true, std::memory_order_acq_rel)) return;
+#ifdef USE_ESPHOME_VOIP_BLF
+  this->blf_notifications_requested_.store(false, std::memory_order_release);
+#endif
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+  this->pending_media_start_ = ApplicationMediaStart::NONE;
+#endif
+  this->set_audio_devices_active_(false);
+#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
+  if (this->speaker_ != nullptr) this->speaker_->stop();
+#endif
+  if (this->transport_ != nullptr) this->transport_->stop();
+  this->notify_audio_tasks_();
+}
+
 void VoipStack::cleanup_partial_setup_() {
   // Transactional setup cleanup. force_delete is safe here only because tasks
   // were just spawned and have not entered a blocking upstream call yet.
@@ -143,6 +159,14 @@ void VoipStack::cleanup_partial_setup_() {
     this->tx_audio_chunk_ = nullptr;
   }
   this->tx_audio_chunk_alloc_bytes_ = 0;
+#ifdef USE_ESPHOME_VOIP_PCM_TX_CONVERSION
+  if (this->tx_converted_chunk_ != nullptr) {
+    u8_alloc.deallocate(this->tx_converted_chunk_, this->tx_converted_chunk_alloc_bytes_);
+    this->tx_converted_chunk_ = nullptr;
+  }
+  this->tx_converted_chunk_alloc_bytes_ = 0;
+  this->tx_pcm_converter_.release();
+#endif
 
   this->mic_buffer_.reset();
 #endif
@@ -199,6 +223,23 @@ bool VoipStack::allocate_setup_buffers_() {
       ? RAMAllocator<uint8_t>()
       : RAMAllocator<uint8_t>(RAMAllocator<uint8_t>::ALLOC_INTERNAL);
   if (this->has_microphone_()) {
+#ifdef USE_ESPHOME_VOIP_PCM_TX_CONVERSION
+    if (!this->tx_pcm_converter_.prepare_transmit(this->tx_audio_format_, this->tx_audio_formats_)) {
+      ESP_LOGE(TAG, "Failed to prepare PCM transmit alternatives");
+      return false;
+    }
+    for (uint8_t i = 0; i < this->tx_audio_formats_.count; ++i) {
+      auto native = decoded_pcm_format(this->tx_audio_format_);
+      const auto target = decoded_pcm_format(this->tx_audio_formats_.formats[i]);
+      native.frame_ms = target.frame_ms;
+      if (!(native == target))
+        this->tx_converted_chunk_alloc_bytes_ = std::max(this->tx_converted_chunk_alloc_bytes_, target.nominal_frame_bytes());
+    }
+    if (this->tx_converted_chunk_alloc_bytes_ != 0) {
+      this->tx_converted_chunk_ = psram_u8.allocate(this->tx_converted_chunk_alloc_bytes_);
+      if (this->tx_converted_chunk_ == nullptr) return false;
+    }
+#endif
     this->tx_audio_chunk_alloc_bytes_ = this->tx_audio_max_chunk_bytes_();
     this->tx_audio_chunk_ = psram_u8.allocate(this->tx_audio_chunk_alloc_bytes_);
     if (!this->tx_audio_chunk_) {
@@ -662,17 +703,6 @@ void VoipStack::loop() {
     this->publish_endpoint_();
   }
 
-  // Phonebook cycle timeout safeguard: a stuck on_phonebook_update chain (e.g.
-  // an external update source never completes) would otherwise leave the cycle
-  // open forever and block subsequent counter advances. CYCLE_TIMEOUT_MS
-  // commits forcibly.
-  if (this->cycle_active_ &&
-      (millis() - this->cycle_started_at_) > CYCLE_TIMEOUT_MS) {
-    ESP_LOGD("voip_stack", "Phonebook update cycle auto-commit after %u ms",
-             (unsigned) CYCLE_TIMEOUT_MS);
-    this->commit_cycle_();
-  }
-
   // Auto-decline timeouts (0 = disabled). CALLING falls back to
   // ringing_timeout when calling_timeout is unset.
   const uint32_t calling_to = this->calling_timeout_ms_ > 0
@@ -688,7 +718,7 @@ void VoipStack::loop() {
     this->publish_sip_snapshot_();
   }
 #endif
-  bool keep_loop = this->cycle_active_ || state != CallState::IDLE;
+  bool keep_loop = state != CallState::IDLE;
 #if defined(USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG) && defined(USE_ESPHOME_VOIP_STACK_MIC)
   keep_loop = keep_loop || (this->audio_debug_ &&
       (this->audio_debug_pcm_.pending.load(std::memory_order_acquire) ||
@@ -831,25 +861,6 @@ std::string VoipStack::audio_format_token_(const AudioFormat &fmt) {
   return token;
 }
 
-std::string VoipStack::audio_rtp_format_token_(const AudioFormat &fmt) {
-  const char *encoding = audio_format_rtp_encoding(fmt, UDP_SAFE_AUDIO_PAYLOAD_BYTES);
-  if (encoding == nullptr) return "";
-  const char *compact = nullptr;
-  if (strcmp(encoding, "opus") == 0) compact = "o";
-  else if (strcmp(encoding, "L16") == 0) compact = "l";
-  else if (strcmp(encoding, "L24") == 0) compact = "h";
-  else if (strcmp(encoding, "PCMA") == 0) compact = "a";
-  else if (strcmp(encoding, "PCMU") == 0) compact = "u";
-  else if (strcmp(encoding, "G722") == 0) compact = "g";
-  if (compact == nullptr) return "";
-  char token[48];
-  snprintf(token, sizeof(token), "%s/%u/%u/%u", compact,
-           (unsigned) (audio_format_rtp_clock_rate(fmt) / 1000),
-           (unsigned) audio_format_rtp_channels(fmt),
-           (unsigned) fmt.frame_ms);
-  return token;
-}
-
 std::string VoipStack::local_ip_string_() const {
   char ip[network::IP_ADDRESS_BUFFER_SIZE];
   for (auto &address : network::get_ip_addresses()) {
@@ -880,40 +891,8 @@ std::string VoipStack::build_endpoint_string_() const {
     }
     return out;
   };
-  auto rtp_format_list_token = [&](const AudioFormatList &list) -> std::string {
-    std::string out;
-    for (uint8_t i = 0; i < list.count; i++) {
-      const std::string token = VoipStack::audio_rtp_format_token_(list.formats[i]);
-      if (token.empty()) continue;
-      if (!out.empty()) out += ",";
-      out += token;
-    }
-    return out;
-  };
   std::string tx = pcm_format_list_token(this->tx_audio_formats_);
   std::string rx = pcm_format_list_token(this->rx_audio_formats_);
-  const std::string rtp_tx = rtp_format_list_token(this->tx_audio_formats_);
-  const std::string rtp_rx = rtp_format_list_token(this->rx_audio_formats_);
-  const bool has_non_pcm = [&]() {
-    for (uint8_t i = 0; i < this->tx_audio_formats_.count; i++)
-      if (this->tx_audio_formats_.formats[i].codec != AudioCodec::PCM) return true;
-    for (uint8_t i = 0; i < this->rx_audio_formats_.count; i++)
-      if (this->rx_audio_formats_.formats[i].codec != AudioCodec::PCM) return true;
-    return false;
-  }();
-  std::string audio_extra;
-  if (has_non_pcm) {
-    // Home Assistant limits entity state strings to 255 characters. The RTP
-    // list is authoritative for codec-aware phones, so do not duplicate its
-    // PCM subset in the two legacy fields.
-    tx.clear();
-    rx.clear();
-    if (!rtp_tx.empty()) audio_extra += " | at=" + rtp_tx;
-    if (!rtp_rx.empty()) audio_extra += " | ar=" + rtp_rx;
-  }
-  // Capability negotiation is independent of codec selection. PCM-only P4
-  // also supports the explicitly negotiated asymmetric SDP extension.
-  audio_extra += " | sf=d1 | ip=1";
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   constexpr const char *video_extra = " | video=jpeg";
 #elif defined(USE_ESPHOME_VOIP_STACK_VIDEO_H264)
@@ -923,11 +902,11 @@ std::string VoipStack::build_endpoint_string_() const {
 #endif
   char buf[640];
   const int written = snprintf(
-      buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s%s%s",
+      buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s%s",
       name.c_str(), ip.c_str(), (unsigned) this->sip_port_, (unsigned) this->rtp_port_,
       this->audio_capability_(), tx.c_str(), rx.c_str(),
       this->protocol_ == TransportType::TCP ? "sip_tcp" : "sip_udp",
-      this->extension_.c_str(), audio_extra.c_str(), video_extra);
+      this->extension_.c_str(), video_extra);
   if (written < 0 || written >= (int) sizeof(buf)) {
     ESP_LOGW(TAG, "VoIP endpoint string truncated; endpoint will not be published");
     return "";

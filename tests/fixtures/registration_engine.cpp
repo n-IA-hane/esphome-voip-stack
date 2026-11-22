@@ -181,14 +181,18 @@ int main(int argc, char** argv) {
   assert(c.valid());
   if (scenario == "managed-literal") {
     c.username = "Caffè 20%@Casa";
-    assert(!c.valid());  // Preserve the manual PBX contract, including pre-escaped users.
+    assert(c.valid() && c.address_of_record() == "sip:Caff%C3%A8%2020%25%40Casa@example.org");
+    // Manual and managed accounts both contain literal, unescaped usernames.
     c.username = "+123%2A";
-    assert(c.valid() && c.address_of_record() == "sip:+123%2A@example.org");
+    assert(c.valid() && c.address_of_record() == "sip:%2B123%252A@example.org");
     c.id = "ha";
     for (const char *invalid : {"", " bad", "bad ", "bad\r\nname", "\xC0\xAF", "\xED\xA0\x80", "\xF4\x90\x80\x80"}) {
       c.username = invalid;
       assert(!c.valid());
     }
+    c.username = std::string(64, 'a'); assert(c.valid());
+    c.username += 'a'; assert(!c.valid());
+    c.username = std::string(32, '\xc3'); assert(!c.valid());
     c.username = "Caffè 20%@Casa";
     const std::string aor = "<sip:Caff%C3%A8%2020%25%40Casa@example.org>";
     h.manager.set_keepalive_interval(2000);
@@ -633,6 +637,8 @@ int main(int argc, char** argv) {
     assert(!c.valid());
     SipDigest digest;
     assert(!digest.parse("Digest nonce=\"x\",qop=\"auth-int\"", false));
+    assert(!digest.parse("Digest nonce=\"x\",qop=\"\"", false));
+    assert(!digest.parse("Digest nonce=\"x\",qop=\"auth", false));
   } else
     assert(false);
   std::cout << "PASS " << scenario << " " << (tcp ? "tcp" : "udp") << "\n";

@@ -66,7 +66,7 @@ struct VoipStack {
  bool is_registered(const std::string&id){return owner.registration_.is_registered(id);}
  void call_(const std::string&t,const std::string&){++calls;dialed=t;line="direct";}
  void start_with_id_(const std::string&,const std::string& = {}){++calls;dialed=pending_dialplan_target_;line=pending_line_;}
- void start_call_on_line(const std::string&,const std::string&);
+ void start_call_on_line(const std::string&,const std::string&,bool,bool);
  void start_call_on_line_(const std::string&,const std::string&,const std::string&);
  struct Failure{void trigger(const std::string&,const std::string&){}}call_failed_trigger_;
  template<class F>void defer(F f){f();}
@@ -77,7 +77,7 @@ struct VoipStack {
 };
 '''.replace('std::string&=""', 'std::string & = ""')
     code += block(transport, "bool SipTransport::get_message_waiting(") + "\n"
-    code += block(registration, "void VoipStack::start_call_on_line(") + "\n"
+    code += block((SOURCE / "voip_settings.cpp").read_text(), "void VoipStack::start_call_on_line(") + "\n"
     code += block(registration, "void VoipStack::start_call_on_line_(") + "\n"
     for signature in ["MessageWaitingState VoipStack::get_message_waiting(", "bool VoipStack::mailbox_target_(",
                       "bool VoipStack::can_call_mailbox(", "bool VoipStack::call_mailbox("]:

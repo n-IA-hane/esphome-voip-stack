@@ -47,7 +47,7 @@ std::string sip_prefix_target_user(std::string_view target, std::string_view pre
     result.reserve(prefix.size() + value.size());
     result.append(prefix.data(), prefix.size());
     result += value;
-    return result;
+    return sip_valid_text(result, CONTACT_ID_BYTES) ? result : "";
   }
   SipTargetParts parts;
   if (!sip_parse_target_uri(value, parts)) return "";
@@ -55,6 +55,7 @@ std::string sip_prefix_target_user(std::string_view target, std::string_view pre
   prefixed_user.reserve(prefix.size() + parts.user.size());
   prefixed_user.append(prefix.data(), prefix.size());
   prefixed_user += parts.user;
+  if (!sip_valid_text(prefixed_user, CONTACT_ID_BYTES)) return "";
   const auto prefixed = sip_uri_user_encode(prefixed_user);
   const std::string result = "sip:" + prefixed + std::string(parts.authority_and_parameters);
   return result.size() <= SIP_URI_BYTES ? result : "";

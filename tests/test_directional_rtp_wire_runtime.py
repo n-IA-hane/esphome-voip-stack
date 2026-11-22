@@ -51,36 +51,39 @@ std::vector<uint8_t> samples(unsigned count,bool network){
 }
 int main(int argc,char**argv){
  assert(argc==2);const std::string profile=argv[1];SipTransport s;unsigned tx=16000,rx=16000,frame=10;
- if(profile=="ha"||profile=="ha-asymmetric"||profile=="ha-legacy"){rx=48000;s.peer_directional_audio_v1_=true;}
- else if(profile=="ha-reverse"){tx=48000;s.peer_directional_audio_v1_=true;}
+ if(profile=="ha"||profile=="ha-asymmetric"||profile=="ha-packet10"){rx=48000;}
+ else if(profile=="ha-reverse"){tx=48000;}
  else if(profile=="standard")frame=20;
- else if(profile=="legacy"||profile=="legacy-no-tx"){}
+ else if(profile=="common16"||profile=="no-common-tx"){}
  else {assert(profile=="s3");AudioFormat baseline;assert(baseline.frame_ms==16);frame=baseline.frame_ms;}
  s.offer_tx_formats_.count=s.offer_rx_formats_.count=1;
  s.offer_tx_formats_.formats[0]=fmt(tx,frame);s.offer_rx_formats_.formats[0]=fmt(rx,frame);
- if(profile=="legacy"||profile=="legacy-no-tx"){s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[0]=fmt(48000,10);s.offer_rx_formats_.formats[1]=fmt(16000,10);}
+ if(profile=="common16"||profile=="no-common-tx"){s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[0]=fmt(48000,10);s.offer_rx_formats_.formats[1]=fmt(16000,10);}
  if(profile=="standard"){s.offer_tx_formats_.count=2;s.offer_tx_formats_.formats[0]=fmt(tx,10);s.offer_tx_formats_.formats[1]=fmt(tx,20);}
  const unsigned tx_frame=profile=="ha-asymmetric"?20:frame,rx_frame=frame;
- if(profile=="ha-asymmetric"||profile=="ha-legacy"){
+ if(profile=="ha-asymmetric"||profile=="ha-packet10"){
   s.offer_tx_formats_.count=2;s.offer_tx_formats_.formats[0]=fmt(16000,20);s.offer_tx_formats_.formats[1]=fmt(16000,10);
   s.offer_rx_formats_.count=3;s.offer_rx_formats_.formats[0]=fmt(48000,10);
   s.offer_rx_formats_.formats[1]=fmt(16000,20);s.offer_rx_formats_.formats[2]=fmt(16000,10);
  }
+ if(tx!=rx){
+  if(profile=="ha-reverse"){s.offer_tx_formats_.count=2;s.offer_tx_formats_.formats[1]=fmt(16000,10);s.offer_rx_formats_.count=2;s.offer_rx_formats_.formats[1]=fmt(48000,10);}
+  else {s.offer_tx_formats_.formats[s.offer_tx_formats_.count++]=fmt(48000,10);s.offer_rx_formats_.formats[s.offer_rx_formats_.count++]=fmt(16000,10);}
+ }
  uint16_t local=0,remote=0;s.rtp_socket_=endpoint(&local);int peer=endpoint(&remote);s.rtp_port_=local;
  auto offer=s.build_sdp_offer_();assert(!offer.empty());
- assert(offer.find("a=x-voip-stack-independent-ptime:1\r\n")!=std::string::npos);
+ assert(offer.find("a=x-voip-stack-")==std::string::npos);
  const std::string base="v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio "+std::to_string(remote)+" RTP/AVP 96";
  std::string answer=base+(tx!=rx?" 97":"")+"\r\na=rtpmap:96 L16/"+std::to_string(rx)+"/1\r\n";
- if(tx!=rx)answer+="a=rtpmap:97 L16/"+std::to_string(tx)+"/1\r\na=x-voip-stack-flow:96 send\r\na=x-voip-stack-flow:97 recv\r\n";
+ if(tx!=rx)answer+="a=rtpmap:97 L16/"+std::to_string(tx)+"/1\r\n";
  answer+="a=ptime:"+std::to_string(tx_frame)+"\r\na=sendrecv\r\n";
- if(profile=="ha-asymmetric")answer+="a=x-voip-stack-independent-ptime:1\r\n";
  std::cout<<"PROFILE "<<profile<<"\nOFFER\n"<<offer<<"ANSWER\n"<<answer;
- if(profile=="legacy"||profile=="legacy-no-tx"){
+ if(profile=="common16"||profile=="no-common-tx"){
   assert(offer.find("a=x-voip-stack-flow:")==std::string::npos);
   assert(offer.find("L16/48000/1")==std::string::npos&&offer.find("L16/16000/1")!=std::string::npos);
   assert(answer.find("L16/48000/1")==std::string::npos);
  }
- if(profile=="legacy-no-tx"){
+ if(profile=="no-common-tx"){
   auto incompatible=answer;auto map=incompatible.find("L16/16000/1");incompatible.replace(map,11,"L16/48000/1");
   const auto before_tx=s.tx,before_rx=s.rx;const auto before_pt=s.tx_pt;const auto before_maps=s.accepted;
   assert(!s.learn_remote_rtp_from_sdp_(incompatible,INADDR_LOOPBACK,true));
@@ -120,7 +123,7 @@ int main(int argc,char**argv){
     return exe
 
 
-@pytest.mark.parametrize("profile", ["ha", "ha-asymmetric", "ha-legacy", "ha-reverse", "standard", "s3", "legacy", "legacy-no-tx"])
+@pytest.mark.parametrize("profile", ["ha", "ha-asymmetric", "ha-packet10", "ha-reverse", "standard", "s3", "common16", "no-common-tx"])
 def test_selected_native_media_bytes_and_clock(media_binary, profile):
     result = subprocess.run([media_binary, profile], capture_output=True, text=True, timeout=6)
     assert result.returncode == 0, result.stderr

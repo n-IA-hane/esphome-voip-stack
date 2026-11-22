@@ -11,7 +11,7 @@ from esphome.const import KEY_CORE, KEY_TARGET_FRAMEWORK
 from esphome.core import CORE
 
 
-def test_codegen_keeps_cjson_available_with_idf_exclusions(monkeypatch):
+def test_codegen_does_not_force_retired_json_roster_dependency(monkeypatch):
     path = Path(__file__).resolve().parents[1] / "esphome/components/voip_stack/__init__.py"
     spec = importlib.util.spec_from_file_location("voip_dependency_test", path)
     module = importlib.util.module_from_spec(spec)
@@ -39,7 +39,6 @@ def test_codegen_keeps_cjson_available_with_idf_exclusions(monkeypatch):
         "_add_core_settings",
         "_add_device_and_audio_settings",
         "_build_voip_automations",
-        "_bind_ha_phonebook_sensor",
     ):
         monkeypatch.setattr(module, name, AsyncMock())
     for name in ("_add_transport_settings", "_add_static_contacts"):
@@ -47,5 +46,5 @@ def test_codegen_keeps_cjson_available_with_idf_exclusions(monkeypatch):
 
     asyncio.run(module.to_code({module.CONF_ID: "phone"}))
 
-    assert excluded == {"console"}
+    assert excluded == {"json", "console"}
     assert sdkconfig["CONFIG_LWIP_IP4_REASSEMBLY"] is True

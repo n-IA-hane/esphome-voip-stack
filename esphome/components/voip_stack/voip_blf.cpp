@@ -78,7 +78,8 @@ void VoipStack::sync_blf_contacts_() {
   for (size_t i = 0; i < this->phonebook_.size() && watches.size() < this->blf_capacity_; ++i) {
     const auto *entry = this->phonebook_.at(i);
     if (entry == nullptr || !contact_can_auto_blf(*entry)) continue;
-    std::string account = this->get_contact_account(entry->stable_id());
+    std::string account = entry->account_id.empty() ? this->get_contact_account(entry->stable_id())
+                                                     : entry->account_id;
     if (account == "direct") account = this->blf_account_id_;
     if (!this->is_registered(account)) {
       ESP_LOGW("voip_stack.blf", "Skipping '%s': Account SIP is not registered", entry->name.c_str());
@@ -100,7 +101,11 @@ bool VoipStack::pickup_contact(const std::string &id) {
   const std::string target = sip_prefix_target_user(entry->route, this->blf_pickup_prefix_);
   if (target.empty() || target.size() > Phonebook::MAX_ROUTE_BYTES) return false;
   if (!this->is_registered(state.account_id)) return false;
-  this->start_call_on_line(target, state.account_id);
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+  this->start_call_on_line(target, state.account_id, this->get_video_send(), this->get_video_receive());
+#else
+  this->start_call_on_line(target, state.account_id, false, false);
+#endif
   return true;
 }
 

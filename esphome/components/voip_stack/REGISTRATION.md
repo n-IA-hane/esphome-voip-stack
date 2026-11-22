@@ -51,7 +51,7 @@ Each account has these fields:
 | `registrar` | Required IPv4 address or DNS hostname, with port configured separately |
 | `port` | 5060 |
 | `domain` | Registrar hostname |
-| `username` | Required SIP username, at most 64 UTF-8 bytes, without URI delimiters |
+| `username` | Required literal SIP username, at most 64 UTF-8 bytes, without control characters or surrounding spaces |
 | `password` | Required, at most 128 UTF-8 bytes |
 | `auth_username` | SIP username |
 | `proxy`, `proxy_port` | No explicit outbound proxy, 5060 |
@@ -65,8 +65,8 @@ reserved slot in the same pool. Leave capacity for that account alongside
 manual PBX accounts. HA delivers its configuration privately over the existing
 ESPHome API connection. With a compatible HA integration, the username is the
 ESPHome friendly name, including spaces and UTF-8, or the node name if no
-friendly name is set. When `esphome.name_add_mac_suffix` is enabled, the username
-is the node name with its MAC suffix. SIP addresses encode the username on the
+friendly name is set. Use the effective name published by ESPHome, including
+its native MAC suffix when enabled. SIP addresses encode the username on the
 wire, while Digest and LDAP use its original value.
 
 The engine handles renewal, UDP retransmission, response deadlines, bounded retry, 401/407 Digest
@@ -85,7 +85,7 @@ YAML actions and conditions:
 | `voip_stack.register_account` | `id`, templatable `account_id` |
 | `voip_stack.unregister_account` | `id`, templatable `account_id` |
 | `voip_stack.select_line` | `id`, templatable `line` |
-| `voip_stack.start_call_on_line` | `id`, templatable `target` and `line` |
+| `voip_stack.start_call_on_line` | `id`, templatable `target` and `line`; optional `send_video` and `receive_video` |
 | `voip_stack.is_registered` | Condition with `id` and templatable `account_id` |
 
 `on_registration_state` supplies `account_id`, `state` and integer `status_code`.
@@ -95,17 +95,25 @@ States are `disabled`, `registering`, `registered`, `unregistering`, `retry` and
 When the existing native HA integration is enabled, it also exposes
 `set_account`, `remove_account`, `reset_account`, `register_account`,
 `unregister_account`, `select_line` and `start_call_on_line`. Native
-`start_call_on_line` takes `dest` and `line`. Native `set_account` takes
+`start_call_on_line` takes `dest`, `line`, `send_video` and `receive_video`.
+The YAML action defaults omitted video arguments to configured native intent.
+An explicit audio-only native command uses both booleans as `false`; receive-only
+video uses `false, true` and requires a real sink. Camera privacy still gates
+sending. Auto-enrollment also exposes the zero-argument `register_ha_account()`
+action. Native `set_account` takes
 `account_id`, `registrar`, `port`, `domain`, `username`, `password`,
 `auth_username`, `proxy`, `proxy_port`, `transport`, `expires`, `persist`.
 Empty `domain` uses `registrar`; empty `auth_username` uses `username`.
 Native account provisioning enables the account. `unregister_account` changes
 its current registration intent; this intent and runtime line selection are
-not written to flash. Existing `start_call_via_ha(dest, call_id)` retains the
-explicit HA path and the supplied case-sensitive Call-ID.
+not written to flash. The ESP creates Call-ID and originates the INVITE for
+`start_call_on_line(dest, line, send_video, receive_video)`. Home Assistant observes the actual INVITE; it
+does not supply SIP identity through a native command. Rebuild firmware and
+update maintained HA packages together when retiring `start_call_via_ha`.
 
 Registered targets accept a label/extension or a validated `sip:user@host:port`
-URI, up to 512 bytes after normalization, preserving its authority and URI
+URI, with a decoded public user up to 1024 UTF-8 bytes and up to 2048 encoded
+bytes after normalization, preserving its authority and URI
 parameters. `sips:`, control characters,
 URI headers and unsupported transports are rejected. Selecting `direct` keeps
 the existing phonebook/HA routing behavior. A new account call requires a current

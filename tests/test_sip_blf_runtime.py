@@ -102,6 +102,15 @@ int main(int argc,char **argv) {
   assert(h.notification(dialog_notify(sub,1,early),5).rfind("SIP/2.0 200",0)==0);
  }
  assert(h.client.blf_state(0)->available&&h.client.blf_state(0)->state==BlfState::RINGING);
+ if(scenario=="recover-flow"){
+  h.client.connection_lost(0,6);assert(!h.client.blf_state(0)->available);
+  h.client.tick(6);assert(h.first.quiet());
+  h.client.update_blf_account(0,account,7);h.client.tick(7);auto fresh=h.first.receive();
+  assert(field(fresh,"Event")=="dialog"&&field(fresh,"Call-ID")!=field(sub,"Call-ID"));
+  h.answer(response(fresh,200,"Expires: 60\r\n"),8);
+  assert(h.notification(dialog_notify(fresh,1,xml(0,"full","")),9).rfind("SIP/2.0 200",0)==0);
+  assert(h.client.blf_state(0)->available&&h.client.blf_state(0)->state==BlfState::IDLE);return 0;
+ }
  const auto mwi_updates=h.updates.size();
  if(scenario=="shared") {
   assert(h.notification(dialog_notify(sub,2,xml(1,"partial","<dialog id='one'><state>confirmed</state></dialog>")),6).rfind("SIP/2.0 200",0)==0);
@@ -115,12 +124,20 @@ int main(int argc,char **argv) {
   h.answer(response(stop,200,"Expires: 0\r\n"),21);
   assert(h.notification(dialog_notify(stop,3,"","terminated;reason=timeout"),22).rfind("SIP/2.0 200",0)==0);
   assert(!h.client.blf_state(0)->available);
- } else if(scenario=="early-gap") {
+ } else if(scenario=="early-gap"||scenario=="full-timeout") {
   assert(h.notification(dialog_notify(sub,2,xml(3,"partial","<dialog id='one'><state>terminated</state></dialog>")),6).rfind("SIP/2.0 200",0)==0);
   assert(!h.client.blf_state(0)->available);h.client.tick(7);auto refresh=h.first.receive();
   assert(field(refresh,"Call-ID")==field(sub,"Call-ID"));h.answer(response(refresh,200,"Expires: 60\r\n"),8);
   assert(h.notification(dialog_notify(refresh,3,xml(4,"partial","<dialog id='one'><state>confirmed</state></dialog>")),9).rfind("SIP/2.0 200",0)==0);
   h.client.tick(10);assert(h.first.quiet()&&!h.client.blf_state(0)->available);
+  if(scenario=="full-timeout"){
+   h.client.tick(32008);assert(!h.client.blf_state(0)->available);
+   h.client.tick(34008);auto fresh=h.first.receive();
+   assert(field(fresh,"Call-ID")!=field(sub,"Call-ID"));
+   h.answer(response(fresh,200,"Expires: 60\r\n"),34009);
+   assert(h.notification(dialog_notify(fresh,1,xml(0,"full","")),34010).rfind("SIP/2.0 200",0)==0);
+   assert(h.client.blf_state(0)->available);return 0;
+  }
   assert(h.notification(dialog_notify(refresh,4,xml(5,"full","")),11).rfind("SIP/2.0 200",0)==0);
   assert(h.client.blf_state(0)->available&&h.client.blf_state(0)->state==BlfState::IDLE);
  } else if(scenario=="replace") {
@@ -156,7 +173,7 @@ int main(int argc,char **argv) {
     return binary
 
 
-@pytest.mark.parametrize("scenario", ["shared", "early-gap", "replace", "flow", "auth", "calling"])
+@pytest.mark.parametrize("scenario", ["shared", "early-gap", "replace", "flow", "auth", "calling", "full-timeout", "recover-flow"])
 @pytest.mark.parametrize("transport", ["udp", "tcp"])
 def test_shared_subscriptions_preserve_wire_and_lifecycle_ownership(blf_binary, scenario, transport):
     result = subprocess.run([blf_binary, scenario, transport], capture_output=True, text=True, timeout=8)

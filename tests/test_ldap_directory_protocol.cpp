@@ -92,7 +92,7 @@ int main(int argc, char **argv) {
   Entry entry{"cn=No uid,ou=phonebook,dc=voip", {{"cn", {"Reception"}}, {"telephoneNumber", {"101"}}, {"ou", {"sip_account"}}}};
   DirectoryContact contact;
   assert(map_contact(entry, "pbx.example.test", 5070, true, &contact));
-  assert(contact.id.rfind("ldap:", 0) == 0 && contact.name == "Reception" && contact.user == "101" && contact.tcp && contact.port == 5070);
+  assert(contact.id == "101" && contact.name == "Reception" && contact.user == "101" && contact.tcp && contact.port == 5070);
   entry.attributes.push_back({"labeledURI", {"sip:front%2Ddesk@192.0.2.4:5062;transport=tcp Front desk"}});
   assert(map_contact(entry, "ignored", 1, false, &contact));
   assert(contact.user == "front-desk" && contact.host == "192.0.2.4" && contact.port == 5062 && contact.tcp);
@@ -109,7 +109,7 @@ int main(int argc, char **argv) {
   assert(contact.number.empty() && contact.user == "front-desk");
   entry.attributes[1].values = {"123\nInjected"};
   assert(map_contact(entry, "ignored", 1, false, &contact) && contact.number.empty());
-  entry.attributes[1].values = {std::string(97, '1')};
+  entry.attributes[1].values = {std::string(1025, '1')};
   assert(map_contact(entry, "ignored", 1, false, &contact) && contact.number.empty());
   entry.attributes[1].values = {"101"};
   entry.attributes.back().values[0] = "SIP:front@192.0.2.4:5062;transport=tcp";
@@ -141,7 +141,7 @@ int main(int argc, char **argv) {
   assert(contact.id == "opaque-stable-key" && contact.name == "101");
   no_name.attributes.push_back({"labeledURI", {"sip:front-desk@pbx.example.test"}});
   assert(map_contact(no_name, "pbx.example.test", 5060, false, &contact));
-  assert(contact.name == "sip:front-desk@pbx.example.test");
+  assert(contact.name == "front-desk");
   no_name.attributes.push_back({"displayName", {std::string(63, 'a') + "è room"}});
   assert(map_contact(no_name, "pbx.example.test", 5060, false, &contact) && contact.name == std::string(63, 'a'));
   no_name.attributes.back().values[0] += '\n';

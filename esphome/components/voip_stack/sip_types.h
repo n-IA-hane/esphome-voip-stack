@@ -29,6 +29,12 @@ enum class AudioCodec : uint8_t {
   G722 = 2,
 };
 
+struct CallVideoIntent {
+  bool specified{false}, send{false}, receive{false};
+  bool allows_send() const { return !this->specified || this->send; }
+  bool allows_receive() const { return !this->specified || this->receive; }
+};
+
 struct AudioFormat {
   uint32_t sample_rate{16000};
   PcmFormat pcm_format{PcmFormat::S16LE};
@@ -74,8 +80,9 @@ struct AudioFormat {
                             this->sample_rate == 32000 || this->sample_rate == 44100 ||
                             this->sample_rate == 48000;
     const bool valid_channels = this->channels == 1 || this->channels == 2;
-    const bool valid_frame = this->frame_ms == 10 || this->frame_ms == 16 ||
-                             this->frame_ms == 20 || this->frame_ms == 32;
+    const bool valid_frame = this->codec == AudioCodec::PCM
+        ? this->frame_ms >= 1 && this->frame_ms <= 32
+        : this->frame_ms == 10 || this->frame_ms == 20;
     const bool whole_frames = (static_cast<uint64_t>(this->sample_rate) * this->frame_ms) % 1000u == 0;
     const bool valid_opus_rate = this->sample_rate == 8000 || this->sample_rate == 12000 ||
                                  this->sample_rate == 16000 || this->sample_rate == 24000 ||
@@ -127,19 +134,11 @@ inline bool same_decoded_audio_geometry(const AudioFormat &left, const AudioForm
 
 static constexpr size_t VOIP_STACK_MAX_AUDIO_FORMATS = 8;
 
-inline constexpr uint8_t pack_audio_frame_ms(uint16_t frame_ms) {
-  return frame_ms == 10 ? 0 : frame_ms == 16 ? 1 : frame_ms == 20 ? 2 : 3;
-}
-
-inline constexpr uint16_t unpack_audio_frame_ms(uint8_t packed) {
-  return packed == 0 ? 10 : packed == 1 ? 16 : packed == 2 ? 20 : 32;
-}
-
 inline constexpr uint32_t pack_audio_format(const AudioFormat &format) {
   return (format.sample_rate & 0xFFFFU) | ((static_cast<uint32_t>(format.pcm_format) & 0x07U) << 16) |
          (static_cast<uint32_t>(format.channels & 0x03U) << 19) |
-         (static_cast<uint32_t>(pack_audio_frame_ms(format.frame_ms)) << 21) |
-         (static_cast<uint32_t>(format.codec) << 23);
+         (static_cast<uint32_t>(format.frame_ms & 0xFFU) << 21) |
+         (static_cast<uint32_t>(format.codec) << 29);
 }
 
 inline constexpr AudioFormat unpack_audio_format(uint32_t packed) {
@@ -147,8 +146,8 @@ inline constexpr AudioFormat unpack_audio_format(uint32_t packed) {
       packed & 0xFFFFU,
       static_cast<PcmFormat>((packed >> 16) & 0x07U),
       static_cast<uint8_t>((packed >> 19) & 0x03U),
-      unpack_audio_frame_ms((packed >> 21) & 0x03U),
-      static_cast<AudioCodec>((packed >> 23) & 0x03U),
+      static_cast<uint16_t>((packed >> 21) & 0xFFU),
+      static_cast<AudioCodec>((packed >> 29) & 0x03U),
   };
 }
 
@@ -231,6 +230,11 @@ static constexpr uint32_t SAMPLE_RATE = DEFAULT_AUDIO_FORMAT.sample_rate;
 static constexpr size_t AUDIO_CHUNK_BYTES = 1024;
 static constexpr size_t MAX_AUDIO_CHUNK = 16 * 1024;
 static constexpr size_t UDP_SAFE_AUDIO_PAYLOAD_BYTES = 1200;
+// Receive capacity is independent of the preferred outgoing MTU. A 48 kHz
+// mono L16 20 ms packet is 1920 bytes and fits the bounded 2 KiB receiver.
+static constexpr size_t RTP_AUDIO_RECEIVE_BUFFER_BYTES = 2048;
+static constexpr size_t RTP_AUDIO_RECEIVE_PAYLOAD_BYTES = RTP_AUDIO_RECEIVE_BUFFER_BYTES - 12;
+static constexpr size_t RTP_AUDIO_DECODE_BUFFER_BYTES = 2048;
 
 inline uint8_t audio_format_bits_per_sample(const AudioFormat &format) {
   switch (format.pcm_format) {

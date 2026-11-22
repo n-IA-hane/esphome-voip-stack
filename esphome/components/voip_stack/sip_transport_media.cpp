@@ -42,7 +42,6 @@ SipTransport::NegotiatedMedia SipTransport::negotiated_media_() const {
   media.zero_connection = this->audio_zero_connection_;
   media.audio_ip = this->remote_rtp_ip_v4_.load(std::memory_order_acquire);
   media.audio_port = this->remote_rtp_port_.load(std::memory_order_acquire);
-  media.directional_audio = this->remote_directional_audio_v1_;
   media.shape = this->remote_media_shape_;
 #ifdef USE_ESPHOME_VOIP_DTMF
   this->get_dtmf_config_(&media.dtmf.tx, &media.dtmf.rx);
@@ -75,7 +74,6 @@ void SipTransport::commit_negotiated_media_(const NegotiatedMedia &media) {
   this->audio_zero_connection_ = media.zero_connection;
   this->remote_rtp_ip_v4_.store(media.audio_ip, std::memory_order_release);
   this->remote_rtp_port_.store(media.audio_port, std::memory_order_release);
-  this->remote_directional_audio_v1_ = media.directional_audio;
   this->remote_media_shape_ = media.shape;
 #ifdef USE_ESPHOME_VOIP_DTMF
   this->set_dtmf_config_(media.dtmf.tx, media.dtmf.rx);
@@ -118,7 +116,6 @@ void SipTransport::exchange_negotiated_media_(NegotiatedMedia &media) {
   media.audio_port = this->remote_rtp_port_.exchange(media.audio_port);
   using std::swap;
   swap(this->audio_zero_connection_, media.zero_connection);
-  swap(this->remote_directional_audio_v1_, media.directional_audio);
   swap(this->remote_media_shape_, media.shape);
 #ifdef USE_ESPHOME_VOIP_DTMF
   DtmfConfig dtmf;
@@ -183,7 +180,28 @@ bool SipTransport::received_audio_format_(uint8_t pt, AudioFormat *format,
     if (format != nullptr) *format = mapping;
     return true;
   }
-  if (payload_bytes == 0 || payload_bytes > this->udp_max_payload_) return false;
+  if (payload_bytes == 0 || payload_bytes > RTP_AUDIO_RECEIVE_PAYLOAD_BYTES) return false;
+  if (mapping.codec == AudioCodec::PCM) {
+    const size_t sample_bytes = mapping.rtp_bytes_per_sample() * mapping.channels;
+    if (sample_bytes == 0 || mapping.sample_rate == 0 || payload_bytes % sample_bytes != 0) return false;
+    const uint64_t scaled_frames = (payload_bytes / sample_bytes) * 1000ULL;
+    if (scaled_frames % mapping.sample_rate != 0) return false;
+    const uint64_t duration = scaled_frames / mapping.sample_rate;
+    uint16_t maximum = 0;
+    for (uint8_t i = 0; i < this->offer_rx_formats_.count; ++i) {
+      const auto &candidate = this->offer_rx_formats_.formats[i];
+      if (candidate.is_valid() && audio_formats_share_rtp_mapping(candidate, mapping) &&
+          audio_format_rtp_encoding(candidate, RTP_AUDIO_RECEIVE_PAYLOAD_BYTES) != nullptr)
+        maximum = std::max(maximum, candidate.frame_ms);
+    }
+    // ptime is a preference. Admit smaller integral PCM quanta within the
+    // declared receive envelope; DSP storage is prepared at its maximum.
+    if (duration == 0 || duration > maximum) return false;
+    mapping.frame_ms = static_cast<uint16_t>(duration);
+    if (!mapping.is_valid()) return false;
+    if (format != nullptr) *format = mapping;
+    return true;
+  }
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   const int opus_samples = mapping.codec == AudioCodec::OPUS
       ? opus_packet_get_nb_samples(payload, static_cast<opus_int32>(payload_bytes), 48000) : 0;
@@ -193,9 +211,9 @@ bool SipTransport::received_audio_format_(uint8_t pt, AudioFormat *format,
   for (uint8_t i = 0; i < this->offer_rx_formats_.count; ++i) {
     const auto &candidate = this->offer_rx_formats_.formats[i];
     if (!candidate.is_valid() || !audio_formats_share_rtp_mapping(candidate, mapping) ||
-        audio_format_rtp_encoding(candidate, this->udp_max_payload_) == nullptr) continue;
+        audio_format_rtp_encoding(candidate, RTP_AUDIO_RECEIVE_PAYLOAD_BYTES) == nullptr) continue;
     bool matches = false;
-    if (candidate.codec == AudioCodec::PCM || candidate.codec == AudioCodec::G722)
+    if (candidate.codec == AudioCodec::G722)
       matches = candidate.nominal_rtp_payload_bytes() == payload_bytes;
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
     else if (candidate.codec == AudioCodec::OPUS)
@@ -488,7 +506,7 @@ bool SipTransport::prepare_media_path_locked_() {
   this->get_media_config_(nullptr, &sink_format, nullptr, nullptr, &rx_payloads);
   if (sink_format.is_valid() &&
       !this->pcm_receive_converter_.prepare(
-          configured_decoded_receive_formats(rx_payloads, this->offer_rx_formats_, this->udp_max_payload_),
+          configured_decoded_receive_formats(rx_payloads, this->offer_rx_formats_, RTP_AUDIO_RECEIVE_PAYLOAD_BYTES),
           decoded_pcm_format(pcm_playout_format(sink_format, this->offer_rx_formats_)))) {
     ESP_LOGE(TAG, "Unable to prepare negotiated PCM receive formats");
     return false;

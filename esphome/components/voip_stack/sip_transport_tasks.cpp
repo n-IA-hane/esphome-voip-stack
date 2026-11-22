@@ -360,10 +360,9 @@ void SipTransport::sip_task_() {
 }
 
 void SipTransport::rtp_task_() {
-  uint8_t buf[1600];
-  // The wire payload is capped at 1488 bytes. L24-in-S32 expands by 4/3
-  // while decoding, so 2 KiB covers every format accepted by the schema.
-  uint8_t pcm[2048];
+  uint8_t buf[RTP_AUDIO_RECEIVE_BUFFER_BYTES];
+  // Wire and decoded capacities are validated independently by the schema.
+  uint8_t pcm[RTP_AUDIO_DECODE_BUFFER_BYTES];
 #ifdef USE_ESPHOME_VOIP_DTMF
   DtmfSender dtmf_sender;
   uint32_t dtmf_session_epoch = 0, dtmf_ssrc = 0, dtmf_clock_ms = 0, dtmf_clock_ts = 0;

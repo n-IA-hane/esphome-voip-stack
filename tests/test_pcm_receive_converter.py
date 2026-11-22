@@ -147,8 +147,9 @@ int main(){
  esp_audio_libs::resampler::ResamplerConfiguration configuration{16000,48000,16,16,1,false,false,16,16};
  assert(reference.initialize(configuration));
  std::vector<int16_t> observed,expected;unsigned position=0;
+ const unsigned durations[]={10,5,16,20,1,10};
  for(unsigned packet=0;packet<48;++packet){
-  const auto source_format=packet%3==1?twenty:ten;
+  auto source_format=ten;source_format.frame_ms=durations[packet%6];
   std::vector<int16_t> source(source_format.nominal_frame_samples()),actual(960),golden(960);
   for(unsigned i=0;i<source.size();++i)source[i]=int16_t(10000*std::sin(2*3.141592653589793*660*(position+i)/16000));
   position+=source.size();
@@ -161,7 +162,7 @@ int main(){
   expected.insert(expected.end(),golden.begin(),golden.begin()+result.frames_generated);
  }
  fprintf(stderr,"contexts=%u actual_samples=%zu reference_samples=%zu\n",contexts,observed.size(),expected.size());
- assert(observed==expected&&"10/20/10 packet boundaries must preserve one continuous DSP history");
+ assert(observed==expected&&"Variable PCM packet boundaries must preserve one continuous DSP history");
  assert(contexts==1&&"Packet duration must not duplicate the resampler for one PCM geometry");
  assert(allocations==contexts&&"No context allocation is permitted while consuming packets");
 }
@@ -174,4 +175,70 @@ int main(){
                             "-o", str(binary)], capture_output=True, text=True)
     assert built.returncode == 0, built.stderr
     result = subprocess.run([binary], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_transmit_alternatives_use_native_capture_without_packet_allocations(tmp_path):
+    """Exercise the same production DSP adapter used by the TX task."""
+    library = Path(os.environ["ESP_AUDIO_LIBS_SOURCE"])
+    cpp = tmp_path / "transmit.cpp"
+    cpp.write_text(r'''
+#include <cassert>
+#include <cmath>
+#include <complex>
+#include <vector>
+#include "esphome/components/voip_stack/pcm_receive_converter.h"
+using namespace esphome::voip_stack;
+unsigned allocations=0;
+void *operator new(std::size_t size,const std::nothrow_t&) noexcept {
+ ++allocations;try{return ::operator new(size);}catch(...){return nullptr;}
+}
+int main(){
+ for(unsigned native_rate : {16000U,48000U}){
+  const unsigned target_rate=native_rate==16000?48000:16000;
+  AudioFormat native{native_rate,PcmFormat::S16LE,1,20,AudioCodec::PCM};
+  AudioFormat alternative{target_rate,PcmFormat::S16LE,1,10,AudioCodec::PCM};
+  AudioFormatList declared;declared.count=2;declared.formats[0]=native;declared.formats[1]=alternative;
+  PcmReceiveConverter converter;assert(converter.prepare_transmit(native,declared));
+  const auto prepared=allocations;
+  AudioFormat capture=native;capture.frame_ms=alternative.frame_ms;
+  std::vector<int16_t>source(capture.nominal_frame_samples()),output(alternative.nominal_frame_samples()),observed;
+  for(unsigned packet=0;packet<100;++packet){
+   for(unsigned i=0;i<source.size();++i)
+    source[i]=int16_t(8000*std::sin(2*3.141592653589793*660*(packet*source.size()+i)/native_rate));
+   const auto bytes=converter.convert_to(capture,alternative,reinterpret_cast<const uint8_t*>(source.data()),source.size()*2,
+                                        reinterpret_cast<uint8_t*>(output.data()),output.size()*2);
+   assert(bytes>0&&bytes<=output.size()*2&&bytes%2==0);
+   observed.insert(observed.end(),output.begin(),output.begin()+bytes/2);
+  }
+  assert(allocations==prepared);
+  assert(observed.size()>=target_rate-128&&observed.size()<=target_rate);
+  std::complex<double>tone{};double power=0;const unsigned skip=target_rate/100;
+  for(size_t i=skip;i<observed.size();++i){
+   const double phase=2*3.141592653589793*660*i/target_rate;
+   tone+=double(observed[i])*std::complex<double>(std::cos(phase),std::sin(phase));
+   power+=double(observed[i])*observed[i];
+  }
+  const double samples=observed.size()-skip;
+  assert(2*std::abs(tone)/samples>7800&&2*std::abs(tone)/samples<8200);
+  assert(2*std::norm(tone)/(samples*power)>.98);
+  converter.reset();std::fill(source.begin(),source.end(),0);
+  const auto bytes=converter.convert_to(capture,alternative,reinterpret_cast<const uint8_t*>(source.data()),source.size()*2,
+                                       reinterpret_cast<uint8_t*>(output.data()),output.size()*2);
+  for(size_t i=0;i<bytes/2;++i)assert(output[i]==0);
+  assert(!converter.convert_to(capture,alternative,reinterpret_cast<const uint8_t*>(source.data()),source.size()*2-1,
+                               reinterpret_cast<uint8_t*>(output.data()),output.size()*2));
+  converter.release();
+ }
+}
+''')
+    sources = ["src/resample/resampler.cpp", "src/resample/art_resampler.cpp", "src/resample/art_biquad.cpp",
+               "src/quantization_utils.cpp", "src/memory_utils.cpp", "src/dsp/dsps_dotprod_f32_ansi.c"]
+    binary = tmp_path / "transmit"
+    built = subprocess.run(["g++", "-std=c++20", "-DUSE_ESPHOME_VOIP_PCM_TX_CONVERSION",
+        "-fsanitize=address,undefined", "-fno-pie", "-no-pie", "-I", str(ROOT), "-I", str(library / "include"),
+        str(cpp), *(str(library / name) for name in sources), "-o", str(binary)], capture_output=True, text=True)
+    assert built.returncode == 0, built.stderr
+    result = subprocess.run([binary], capture_output=True, text=True,
+                            env={**os.environ, "UBSAN_OPTIONS": "halt_on_error=1"})
     assert result.returncode == 0, result.stderr

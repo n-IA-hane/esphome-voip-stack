@@ -2,7 +2,7 @@
 
 `ldap_directory` is the standard directory provider for the existing VoIP
 phonebook. Static contacts remain available alongside it. Omit the component
-for a static or legacy HA roster installation; no directory worker, connection,
+for a static-only installation; no directory worker, connection,
 stage buffer or provider table is then included.
 
 ```yaml
@@ -40,8 +40,8 @@ The real native actions are:
 - `configure_directory(server, port, base_dn, bind_dn, account_id, tls, enabled)`
 - `refresh_ldap_directory()`
 
-Managed mode starts disabled until HA supplies configuration and replaces the
-legacy HA roster source. Identical configuration is idempotent. For a directory
+Managed mode starts disabled until HA supplies configuration. LDAP is the sole
+dynamic provider. Identical configuration is idempotent. For a directory
 change with identical configuration, call `refresh_ldap_directory`; periodic
 refresh defaults to five minutes. Standalone API configuration is optional and
 uses `configure_ldap_directory` plus `configure_ldap_credentials` only with
@@ -58,11 +58,14 @@ Manual contacts take precedence. Conflicts with another provider or the shared
 64-contact capacity reject the whole replacement. Selection follows stable ID
 when a contact is renamed.
 
-Standard attributes are `uid` or `entryUUID` for identity, `displayName` or `cn`,
-`telephoneNumber`, `labeledURI` and `ou`. A missing identity gets a bounded key
-derived from the entry DN. SIP URI authority and transport remain independent of
-the display number. Display names use up to 64 UTF-8 bytes, contact IDs up to
-96 bytes, DNS hosts up to 253 bytes and complete SIP routes up to 512 bytes.
+Standard attributes are `uid` for identity, `displayName` or `cn`,
+`telephoneNumber`, `labeledURI` and `ou`. Phone records use the literal SIP
+username as `uid`, at most 64 UTF-8 bytes. Other records retain their public
+route identity, at most 1024 UTF-8 bytes; a missing `uid` uses the actual URI
+user or number. No UUID or DN hash is generated. SIP URI authority and transport
+remain independent of the display number. Captions use up to 64 UTF-8 bytes
+with safe shortening, DNS hosts up to 253 bytes, and complete encoded SIP routes
+up to 2048 bytes. Identity and routing text are never silently shortened.
 An escaped username such as `Caff%C3%A8%20%40Casa` represents the literal
 user `Caffè @Casa`. Two contacts can share a display name and still have
 different IDs and SIP addresses.
@@ -89,7 +92,7 @@ Resource limits are explicit:
 - The canonical phonebook shares its 64 slots across all sources. With signaling
   PSRAM enabled its records and retained text use that placement and slots are
   reserved at setup. Staged records are moved into the canonical owner.
-- Host ABI measurements: ContactEntry 216 bytes with ordinary strings, 264 bytes
+- Historical host ABI measurements before this consolidation: ContactEntry 216 bytes with ordinary strings, 264 bytes
   with the signaling wrapper. At 64 rows the stage is 13824 or 16896 host bytes;
   these are not ESP ABI or physical RAM measurements. Warm identical and changed
   nine-row provider commits make zero additional allocations in the host gate.

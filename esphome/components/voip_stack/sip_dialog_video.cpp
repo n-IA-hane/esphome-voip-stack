@@ -131,8 +131,6 @@ bool SipTransport::send_video_direction_reinvite_unlocked_(bool enabled,
   this->local_offered_tx_formats_.count = 0;
   this->local_offered_tx_formats_.formats[0] = offered_tx;
   this->local_offered_tx_formats_.count = 1;
-  this->local_offered_directional_audio_v1_ =
-      offer.find("a=x-voip-stack-flow:") != std::string::npos;
 
   const uint32_t cseq = this->cseq_++;
   const std::string branch = "z9hG4bK" + make_token("");
@@ -190,6 +188,11 @@ bool SipTransport::send_video_direction_reinvite_unlocked_(bool enabled,
   return true;
 }
 
+void SipTransport::set_outgoing_video_intent(CallVideoIntent intent) {
+  LockGuard lock(this->dialog_mutex_);
+  if (!intent.specified || this->call_id_.empty()) this->next_video_call_intent_ = intent;
+}
+
 bool SipTransport::request_video_send(bool enabled) {
   LockGuard lock(this->dialog_mutex_);
   // Before a dialog exists this is the preference used by the initial SDP.
@@ -222,7 +225,11 @@ bool SipTransport::request_video_send(bool enabled) {
     this->emit_video_send_state_(enabled, false);
     return true;
   }
-  return this->send_video_direction_reinvite_unlocked_(enabled);
+  const bool previous_intent = this->video_call_intent_.send;
+  if (this->video_call_intent_.specified) this->video_call_intent_.send = enabled;
+  if (this->send_video_direction_reinvite_unlocked_(enabled)) return true;
+  this->video_call_intent_.send = previous_intent;
+  return false;
 }
 
 bool SipTransport::apply_video_direction_answer_(const std::string &sdp,

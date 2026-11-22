@@ -33,11 +33,13 @@ int main(){
  assert(book.replace_directory(&other,{renamed})==DirectoryCommitResult::CONFLICT);
  assert(book.size()==2&&book.current_name()=="Renamed");
  auto shadow=row("different-id","Manual","103");
- assert(book.replace_directory(&ldap,{renamed,shadow})==DirectoryCommitResult::UNCHANGED);
- assert(book.find("Manual")->route=="100"&&book.find("Manual")->origin==ContactOrigin::MANUAL);
+ assert(book.replace_directory(&ldap,{renamed,shadow})==DirectoryCommitResult::APPLIED);
+ assert(!book.find("Manual")&&!book.select("Manual"));
+ assert(book.find_id("manual-id")->route=="100"&&book.find_id("manual-id")->origin==ContactOrigin::MANUAL);
+ assert(book.replace_directory(&ldap,{renamed})==DirectoryCommitResult::APPLIED);
  auto managed=row("ha-id","Managed","104");
- assert(book.replace_provider(ContactOrigin::HA,&ha,{managed})==DirectoryCommitResult::APPLIED);
- assert(book.replace_provider(ContactOrigin::HA,&ha,{})==DirectoryCommitResult::APPLIED);
+ assert(book.replace_directory(&ha,{managed})==DirectoryCommitResult::APPLIED);
+ assert(book.replace_directory(&ha,{})==DirectoryCommitResult::APPLIED);
  assert(book.size()==2&&book.find("Manual")&&book.find_id("old-id"));
  std::vector<ContactEntry> too_many;
  for(unsigned i=0;i<64;++i){auto n=std::to_string(i);ContactEntry e;e.id="capacity-"+n;e.name="Capacity"+n;e.route="route-"+n;too_many.push_back(e);}

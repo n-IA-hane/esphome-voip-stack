@@ -19,11 +19,14 @@ def test_video_preference_uses_existing_dialog_transaction(tmp_path):
 #include <atomic>
 #include <cassert>
 #include <string>
+#include "esphome/components/voip_stack/sip_types.h"
+using esphome::voip_stack::CallVideoIntent;
 #define ESP_LOGW(...) ((void)0)
 struct LockGuard { explicit LockGuard(int&) {} };
 struct Pending { bool value=false; bool pending() const {return value;} };
 class SipTransport {
 public:
+ CallVideoIntent video_call_intent_{};
  int dialog_mutex_=0;
  std::string call_id_;
  void *video_source_=this;

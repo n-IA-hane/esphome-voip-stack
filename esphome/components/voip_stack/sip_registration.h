@@ -77,7 +77,7 @@ class SipRegistration {
  public:
   static constexpr size_t CAPACITY = VOIP_REGISTRATION_CAPACITY;
   static_assert(CAPACITY >= 1 && CAPACITY <= 4, "Registration capacity must be between one and four");
-  enum class RequestKind : uint8_t { REGISTRATION, CAPABILITIES, KEEPALIVE };
+  enum class RequestKind : uint8_t { REGISTRATION, KEEPALIVE };
   struct Hooks {
     void* context{nullptr};
     bool (*send)(void*, size_t, std::string_view, uint32_t, uint16_t, bool){nullptr};
@@ -89,8 +89,6 @@ class SipRegistration {
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
     void (*binding_accepted)(void *, size_t, uint32_t){nullptr};
 #endif
-    // Advisory discovery is scoped to this account binding, never a call gate.
-    bool (*directional_audio_supported)(std::string_view){nullptr};
     uint16_t local_port{5060};
   };
   struct Account {
@@ -118,7 +116,6 @@ class SipRegistration {
     uint8_t auth_attempts{0}, proxy_auth_attempts{0}, failures{0};
     bool occupied{false}, desired{false}, pending{false}, scheduled{false}, resolving{false}, bound{false};
     RequestKind request_kind{RequestKind::REGISTRATION};
-    bool capabilities_due{false}, peer_directional_audio_v1{false};
   };
 
   bool initialized() const {
@@ -157,7 +154,7 @@ class SipRegistration {
   uint32_t next_config_revision_{0};
   uint32_t keepalive_interval_ms_{15000};
   bool begin_(size_t index, uint32_t now);
-  bool begin_keepalive_(size_t index, uint32_t now, bool capabilities = false);
+  bool begin_keepalive_(size_t index, uint32_t now);
   void retry_(size_t index, uint16_t status, uint32_t now, uint32_t delay_ms = 0);
   void state_(size_t index, RegistrationState state, uint16_t status);
   std::string token_();

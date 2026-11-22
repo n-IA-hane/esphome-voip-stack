@@ -26,7 +26,7 @@ def app_source():
   void end_call_(CallEndReason why,const std::string&){++terminations;termination_reason=why;terminated_identity=identity;call_state_=CallState::IDLE;identity={};}
   bool is_registered(const std::string&id){return transport_->is_registered(id);}
   bool select_line(const std::string&);
-  void start_call_on_line(const std::string&,const std::string&);
+  void start_call_on_line(const std::string&,const std::string&,bool,bool);
   void start_call_on_line_(const std::string&,const std::string&,const std::string&);
 ''')
     for marker, replacement in [
@@ -51,7 +51,7 @@ def app_source():
                    'void VoipStack::finish_application_media_start_(', 'void VoipStack::request_call_termination_(',
                    'void VoipStack::stop()']:
         methods += '\n' + block(fsm,marker)
-    for marker in ['bool VoipStack::select_line(', 'void VoipStack::start_call_on_line(',
+    for marker in ['bool VoipStack::select_line(',
                    'void VoipStack::start_call_on_line_(']:
         methods += '\n' + block(registration,marker)
     _parser=(SOURCE/'sip_message.cpp').read_text()
@@ -91,7 +91,6 @@ struct SipTransportSnapshot {uint32_t remote_ip_v4;uint16_t remote_sip_port;bool
 struct AppTransport: SipTransport {
  bool originate(const std::string&host,uint16_t port){in_addr addr{};assert(inet_aton(host.c_str(),&addr));remote_ip_v4_=ntohl(addr.s_addr);remote_sip_port_=port;return true;}
  void set_sip_signaling_transport(bool value){remote_sip_tcp_=value;}
- void set_peer_directional_audio_v1(bool value){peer_directional_audio_v1_=value;}
  SipTransportSnapshot snapshot()const{return {remote_ip_v4_.load(),remote_sip_port_.load(),remote_sip_tcp_.load(),false};}
  bool is_connected()const{return !call_id_.empty();}
  void disconnect(){reset_dialog_();}

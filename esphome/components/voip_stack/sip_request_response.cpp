@@ -113,20 +113,6 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
   msg += "User-Agent: ESPHome-VoIP-Stack-SIP\r\n";
   msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS, UPDATE, REFER\r\n";
   msg += "Supported: from-change\r\n";
-  if (method == "INVITE") {
-    msg += "X-Voip-Stack-Caller-Route: " +
-           sip_route_id(this->caller_.route, VOIP_STACK_MAX_ROUTE_ID_LEN) +
-           "\r\n";
-    msg += "X-Voip-Stack-Caller-Name: " +
-           sip_route_id(this->caller_.name, VOIP_STACK_MAX_NAME_LEN) +
-           "\r\n";
-    msg += "X-Voip-Stack-Dest-Route: " +
-           sip_route_id(this->destination_.route, VOIP_STACK_MAX_ROUTE_ID_LEN) +
-           "\r\n";
-    msg += "X-Voip-Stack-Dest-Name: " +
-           sip_route_id(this->destination_.name, VOIP_STACK_MAX_NAME_LEN) +
-           "\r\n";
-  }
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   msg += routes;
   if (this->active_account_ >= 0 && (!this->dialog_digest_.empty() || !this->dialog_proxy_digest_.empty())) {
@@ -291,9 +277,8 @@ std::string SipTransport::format_response_(
   }
   const std::string clean_reason = sip_header_token(app_reason);
   if (!clean_reason.empty() && (!stateless || status >= 300)) {
-    msg += "Reason: X-Voip-Stack;cause=" + std::to_string(status) +
+    msg += "Reason: SIP;cause=" + std::to_string(status) +
            ";text=" + sip_quoted(clean_reason) + "\r\n";
-    msg += "X-Voip-Stack-Decline-Reason: " + clean_reason + "\r\n";
   }
   if (status == 405 || (status == 200 && cseq_method(cseq) == "OPTIONS")) {
     msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS, UPDATE, REFER\r\n";

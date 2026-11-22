@@ -38,17 +38,16 @@ struct VoipStack {
  bool is_registered(const std::string&account){return account=="ha";}
  void call_(const std::string&target,const std::string&id){dialed=target;line=force_direct_call_?"direct":"wrong";correlation=id;}
  void start_with_id_(const std::string&id){dialed=pending_dialplan_target_;line=pending_line_;correlation=id;}
- void start_call_on_line(const std::string&,const std::string&);
- void call_via_ha(const std::string&,const std::string&);
+ void start_call_on_line(const std::string&,const std::string&,bool,bool);
  void start_call_on_line_(const std::string&,const std::string&,const std::string&);
  struct Failure{void trigger(const std::string&,const std::string&){}}call_failed_trigger_;
  template<class F>void defer(F f){f();}
 };
 '''
     registration = (SOURCE / "voip_registration.cpp").read_text()
-    code += block(registration, "void VoipStack::start_call_on_line(") + "\n"
+    code += block((SOURCE / "voip_settings.cpp").read_text(), "void VoipStack::start_call_on_line(") + "\n"
     code += block(registration, "void VoipStack::start_call_on_line_(") + "\n"
-    code += block((SOURCE / "voip_settings.cpp").read_text(), "void VoipStack::call_via_ha(") + r'''
+    code += r'''
 int main(){
  const std::string angle_label=R"(Desk <A> "Sales")";
  const std::string angle_uri="sip:"+sip_uri_user_encode(angle_label)+"@pbx.example";
@@ -68,29 +67,37 @@ int main(){
  const auto pbx=sip_prefix_target_user("sip:101@pbx.example.test;transport=udp","**");
  assert(pbx=="sip:%2A%2A101@pbx.example.test;transport=udp");
  assert(sip_target_uri(pbx,"ignored.example.test")==pbx);
+ const auto pickup=sip_prefix_target_user(std::string(64,'u'),"**");
+ assert(pickup.size()==66 && !sip_target_uri(pickup,"pbx.example.test").empty());
+ const auto long_route=std::string(CONTACT_ID_BYTES,'r');
+ assert(sip_target_uri(long_route,"pbx.example.test")=="sip:"+long_route+"@pbx.example.test");
+ assert(sip_target_uri(long_route+'r',"pbx.example.test").empty());
+ assert(sip_prefix_target_user("sip:"+long_route+"@pbx.example.test","**").empty());
+ assert(sip_target_uri(std::string(700,'*'),"pbx.example.test").empty());
  assert(sip_prefix_target_user("sip:bad%0D%0AHeader@host","pickup.").empty());
  assert(sip_prefix_target_user("sip:bad%xx@host","pickup.").empty());
  assert(sip_prefix_target_user("sip:camera@","pickup.").empty());
  VoipStack phone;
- phone.start_call_on_line("101","direct");assert(phone.dialed=="101"&&phone.line=="direct");
- phone.start_call_on_line("101","ha");assert(phone.dialed=="101"&&phone.line=="ha");
- phone.start_call_on_line("SIP:Home%20Assistant@pbx.example.test:5070;transport=TCP","ha");
+ phone.start_call_on_line("101","direct",false,false);assert(phone.dialed=="101"&&phone.line=="direct");
+ phone.start_call_on_line("101","ha",false,false);assert(phone.dialed=="101"&&phone.line=="ha");
+ phone.start_call_on_line("SIP:Home%20Assistant@pbx.example.test:5070;transport=TCP","ha",false,false);
  assert(phone.dialed=="sip:Home%20Assistant@pbx.example.test:5070;transport=TCP"&&phone.line=="ha");
  for(const std::string name:{"Desk|Other", "Desk,Other", "Bad;Label","Caffè 20%@Casa"}){
-  phone.start_call_on_line(name,"ha");assert(phone.dialed==name);
+  phone.start_call_on_line(name,"ha",false,false);assert(phone.dialed==name);
  }
  for(const std::string bad:{"sips:101@host", "SIPS:101@host", "http://host/101", "sip:101@host;transport=tls",
      "sip:101@host;transport=udp;transport=tcp", "sip:101@host:0", "sip:101@host:65536", "sip:101@host:bad",
      "sip:101@.bad", "sip:101@host;=bad", "sip:101@[::1]", "sip:101@host?Subject=bad", "sip:bad%00@host",
      "sip:101@host\r\nHeader", "\r\n101", "101\r\n"}) {
-  phone.dialed="unchanged";phone.start_call_on_line(bad,"ha");assert(phone.dialed=="unchanged");
+  phone.dialed="unchanged";phone.start_call_on_line(bad,"ha",false,false);assert(phone.dialed=="unchanged");
  }
- phone.dialed="unchanged";phone.start_call_on_line(std::string("sip:bad\0@host",13),"ha");assert(phone.dialed=="unchanged");
- phone.start_call_on_line("101","unknown");assert(phone.dialed=="unchanged");
+ phone.dialed="unchanged";phone.start_call_on_line(std::string("sip:bad\0@host",13),"ha",false,false);assert(phone.dialed=="unchanged");
+ phone.start_call_on_line("101","unknown",false,false);assert(phone.dialed=="unchanged");
  assert(phone.pending_line_.empty());
- phone.call_via_ha("101","case-sensitive-ID@ha");
- assert(phone.line=="direct" && phone.correlation=="case-sensitive-ID@ha");
- phone.dialed="unchanged";phone.call_via_ha("101","invalid\r\nID");assert(phone.dialed=="unchanged");
+ phone.start_call_on_line("101","ha",false,false);
+ assert(phone.line=="ha" && phone.correlation.empty());
+ phone.start_call_on_line("101","direct",false,false);assert(phone.line=="direct" && phone.correlation.empty());
+ phone.dialed="unchanged";phone.start_call_on_line("101","invalid\r\nID",false,false);assert(phone.dialed=="unchanged");
 }
 '''
     source = tmp_path / "target.cpp"

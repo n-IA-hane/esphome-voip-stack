@@ -16,10 +16,10 @@ struct LocalAudioOffer {
   const AudioFormatList &offered_tx;
   const RtpAudioPayloads &offered_rx;
   size_t max_payload;
-  bool offered_directional;
 #ifdef USE_ESPHOME_VOIP_DTMF
   uint8_t offered_dtmf_clocks;
 #endif
+  size_t max_receive_payload{RTP_AUDIO_RECEIVE_PAYLOAD_BYTES};
 };
 
 struct AudioOfferAttributes {
@@ -27,8 +27,6 @@ struct AudioOfferAttributes {
   uint32_t maxptime{0};
   bool has_maxptime{false};
   uint8_t flow{3};
-  bool independent_ptime{false};
-  uint8_t payload_flow[128]{};
   uint8_t payload_rank[128];
   uint16_t port{0};
   size_t section{std::string::npos};
@@ -46,7 +44,7 @@ struct AudioMappingPolicy {
   const AudioOfferAttributes &attributes;
   const AudioFormat &retained_tx_format;
   uint16_t transmit_ptime;
-  bool directional_audio, legacy_directional_ptime, remote_is_answer, retained_call;
+  bool remote_is_answer, retained_call;
 };
 
 enum class AudioSelectionResult { ACCEPTED, INCOMPATIBLE, INVALID };
@@ -69,11 +67,8 @@ struct AudioPayloadSelection {
     seen_mapping[pt] = packed_mapping;
     AudioFormat local_rx;
     AudioFormat local_tx;
-    // Preserve the prepared codec geometry during a direction-only proposal.
-    // D1 payload capabilities remain directional; the m-line gates activity.
-    const uint8_t flow = !policy.directional_audio || attributes.payload_flow[pt] == 0
-                             ? (policy.retained_call ? 0x03 : attributes.flow)
-                             : attributes.payload_flow[pt];
+    // An inactive reoffer retains the admitted mappings.
+    const uint8_t flow = policy.retained_call ? 0x03 : attributes.flow;
     const bool peer_can_send = (flow & 0x01) != 0;
     const bool peer_can_recv = (flow & 0x02) != 0;
     uint16_t preferred_tx_ptime = policy.transmit_ptime;
@@ -85,17 +80,15 @@ struct AudioPayloadSelection {
       preferred_tx_ptime = policy.retained_tx_format.frame_ms;
     bool tx_ok =
         peer_can_recv && (match_tx(local.tx, fmt, preferred_tx_ptime, attributes, local.max_payload, &local_tx) ||
-                          (!policy.legacy_directional_ptime && preferred_tx_ptime != 0 &&
+                          (preferred_tx_ptime != 0 &&
                            match_tx(local.tx, fmt, 0, attributes, local.max_payload, &local_tx)));
     // The peer's ptime is its receive preference, hence our TX duration.
     // Our receive duration belongs to our own offer/answer, not that hint.
-    const uint16_t offered_rx_ptime = policy.legacy_directional_ptime ? policy.transmit_ptime
-                                      : policy.remote_is_answer ? preferred_audio_ptime(local.rx, local.max_payload)
-                                                                : 0;
+    const uint16_t offered_rx_ptime = policy.remote_is_answer
+        ? preferred_audio_ptime(local.rx, local.max_receive_payload) : 0;
     bool rx_ok = peer_can_send &&
-                 (audio_format_list_match_rtp_mapping(local.rx, fmt, offered_rx_ptime, &local_rx, local.max_payload) ||
-                  (!policy.legacy_directional_ptime &&
-                   audio_format_list_match_rtp_mapping(local.rx, fmt, 0, &local_rx, local.max_payload)));
+                 (audio_format_list_match_rtp_mapping(local.rx, fmt, offered_rx_ptime, &local_rx, local.max_receive_payload) ||
+                  (audio_format_list_match_rtp_mapping(local.rx, fmt, 0, &local_rx, local.max_receive_payload)));
     uint8_t receive_pt = pt;
     if (policy.remote_is_answer) {
       // Configured duration and UDP budget were checked above. The answer
@@ -120,16 +113,11 @@ struct AudioPayloadSelection {
       rx_ok = rx_ok && offered_rx;
     }
     shared_format |= tx_ok && rx_ok;
-    bool alternate_pcm = false;
-#ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
-    alternate_pcm = local_rx.codec == AudioCodec::PCM && local_rx.pcm_format == PcmFormat::S16LE;
-#endif
     const bool unidirectional = local.tx.count == 0 || local.rx.count == 0;
-    const bool eligible =
-        unidirectional || policy.directional_audio || attributes.flow != 0x03 || (tx_ok && rx_ok) || alternate_pcm;
+    const bool eligible = unidirectional || attributes.flow != 0x03 || (tx_ok && rx_ok);
     // RFC 3264 allows independent send preferences. Keep every accepted
     // receive mapping; select the first compatible local preference.
-    // Accepted lower S16 rates use the existing audio-library resampler.
+    // Accepted S16 rate alternatives use the existing audio-library resampler.
     if (rx_ok && eligible && !received_payloads.add(receive_pt, local_rx)) return false;
     if (rx_ok && eligible &&
         (!selected_rx || local_rank(local.rx, local_rx) < local_rank(local.rx, selected_rx_format))) {
@@ -138,7 +126,7 @@ struct AudioPayloadSelection {
       selected_rx = true;
       changes.rx = true;
     }
-    if (tx_ok && eligible && (unidirectional || policy.directional_audio || attributes.flow != 0x03 || rx_ok) &&
+    if (tx_ok && eligible && (unidirectional || attributes.flow != 0x03 || rx_ok) &&
         (!selected_tx || local_rank(local.tx, local_tx) < local_rank(local.tx, selected_tx_format) ||
          (local_rank(local.tx, local_tx) == local_rank(local.tx, selected_tx_format) &&
           attributes.payload_rank[pt] < selected_tx_rank))) {
@@ -182,7 +170,7 @@ struct AudioPayloadSelection {
     }
     if (attributes.port == 0 || media_ip == 0 || (!want_tx && !want_rx && !retained_call) ||
         (!selected_tx && !selected_rx) || (want_tx && !selected_tx) || (want_rx && !selected_rx) ||
-        (want_tx && want_rx && !media.directional_audio && attributes.flow == 0x03 && !shared_format)) {
+        (want_tx && want_rx && attributes.flow == 0x03 && !shared_format)) {
       return AudioSelectionResult::INCOMPATIBLE;
     }
     // Initial setup has no retained media owner to pause. Reject the legacy
@@ -198,13 +186,10 @@ struct AudioPayloadSelection {
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
       AudioFormat target_pcm = decoded_pcm_format(selected_rx_format);
       target_pcm.frame_ms = entry.format.frame_ms;
-      // D1 keeps configured PCM alternatives supported by the existing receive
-      // converter, while other codecs retain their directional geometry rule.
-      usable |= (!media.directional_audio || entry.format.codec == AudioCodec::PCM) &&
-                pcm_receive_conversion_supported(decoded_pcm_format(entry.format), target_pcm);
+      usable |= pcm_receive_conversion_supported(decoded_pcm_format(entry.format), target_pcm);
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
-      usable |= !media.directional_audio && same_decoded_audio_geometry(entry.format, selected_rx_format);
+      usable |= same_decoded_audio_geometry(entry.format, selected_rx_format);
 #endif
       if (usable && !accepted_rx.add(entry.payload_type, entry.format)) return AudioSelectionResult::INVALID;
     }

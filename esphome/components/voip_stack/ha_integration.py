@@ -11,13 +11,13 @@ from .registration import engine_enabled
 CONF_HA_INTEGRATION = "ha_integration"
 LEGACY_PACKAGE = "legacy_ha_package"
 ACTIONS = {
-    "start_call", "start_call_via_ha", "hangup_call_if_id", "answer_call", "decline_call", "hangup_call", "set_media_route",
-    "set_ha_peer_name", "set_roster_json", "set_contacts", "add_contact",
-    "remove_contact", "flush_contacts", "update_contacts", "send_dtmf", "call_mailbox", "pickup_contact",
+    "start_call", "start_call_on_line", "hangup_call_if_id", "answer_call", "decline_call", "hangup_call",
+    "set_ha_peer_name", "set_contacts", "add_contact",
+    "remove_contact", "flush_contacts", "send_dtmf", "call_mailbox", "pickup_contact",
 }
 # ESPHome device discovery uses the short state entity. SIP Contact and SDP
 # describe routing/media; the legacy endpoint string is no longer automatic.
-ROLES = ("state", "media_route", "caller", "destination", "last_reason", "contacts")
+ROLES = ("state", "caller", "destination", "last_reason", "contacts")
 TEXT_ROLES = ("extension", "ring_groups", "conference_groups", "queues")
 
 
@@ -73,7 +73,7 @@ def validate(config, full):
     for action in full["api"].get("actions", []):
         name = action.get("action", action.get("service", ""))
         registration_actions = {"set_account", "remove_account", "reset_account", "register_account", "unregister_account", "select_line", "start_call_on_line"} if engine_enabled(config) else set()
-        managed_actions = {"set_ha_display_name", "register_ha_account_by_node_name", "register_ha_account_by_friendly_name"} if config[CONF_HA_INTEGRATION]["auto_register"] else set()
+        managed_actions = {"set_ha_display_name", "register_ha_account"} if config[CONF_HA_INTEGRATION]["auto_register"] else set()
         if name in ACTIONS | registration_actions | managed_actions:
             raise cv.Invalid(f"API action '{name}' is now provided by voip_stack. Remove the old VoIP HA package or copied action.")
     for item in full.get("text_sensor", []):

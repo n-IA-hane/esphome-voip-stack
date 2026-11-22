@@ -10,7 +10,7 @@ def test_managed_name_and_correlated_line_keep_routing_and_callback_owner(tmp_pa
     registration = (SOURCE / "voip_registration.cpp").read_text()
     methods = block(header, "const std::string &get_caller_display_name()")
     methods += "\n" + block(settings, "void VoipStack::set_ha_display_name(")
-    methods += "\n" + block(settings, "void VoipStack::call_via_ha(")
+    methods += "\n" + block(settings, "void VoipStack::start_call_on_line(")
     methods += "\n" + block(registration, "void VoipStack::registration_dns_ready_callback_(")
     methods += "\n" + block(registration, "void VoipStack::pump_registration_wake_()")
     methods = methods.replace("const std::string &get_caller_display_name()", "const std::string &VoipStack::get_caller_display_name()")
@@ -30,9 +30,10 @@ struct VoipStack {
  std::atomic<SipTransport*> registration_dns_owner_{nullptr};unsigned loop_wakes=0;
  const std::string&get_caller_display_name()const;
  void set_ha_display_name(const std::string&);
- void call_via_ha(const std::string&,const std::string&);
+ void start_call_on_line(const std::string&,const std::string&,bool,bool);
  static void registration_dns_ready_callback_(void*,SipTransport*);
  void pump_registration_wake_();
+ bool can_start_call_()const{return true;}
  void enable_loop_soon_any_context(){++loop_wakes;}
  void start_call_on_line_(const std::string&t,const std::string&l,const std::string&id){target=t;line=l;call_id=id;}
  void call_(const std::string&t,const std::string&id){target=t;line="legacy";call_id=id;}
@@ -46,9 +47,8 @@ int main(){
  }
  phone.set_ha_display_name(std::string(64,'x'));assert(phone.get_caller_display_name().size()==64);
  assert(phone.device_name_=="Physical name"&&phone.device_route_id_=="stable-route");
- phone.call_via_ha("qa-target","Ha-Correlated@controller");
- assert(phone.line=="ha"&&phone.target=="qa-target"&&phone.call_id=="Ha-Correlated@controller");
- phone.call_via_ha("other","bad\nCallId");assert(phone.target=="qa-target");
+ phone.start_call_on_line("qa-target","ha",false,false);
+ assert(phone.line=="ha"&&phone.target=="qa-target"&&phone.call_id.empty());
  auto*old=phone.transport_.get();
  std::thread worker([&]{VoipStack::registration_dns_ready_callback_(&phone,old);});worker.join();
  assert(phone.loop_wakes==1&&old->wakes==0);phone.pump_registration_wake_();assert(old->wakes==1);

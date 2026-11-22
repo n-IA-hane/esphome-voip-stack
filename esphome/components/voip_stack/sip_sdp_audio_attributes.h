@@ -25,8 +25,7 @@ inline bool read_audio_offer_attributes(const std::string &sdp, AudioOfferAttrib
           in_audio = true;
         }
       }
-    } else if (in_audio && line == "a=x-voip-stack-independent-ptime:1") {
-      attributes.independent_ptime = true;
+
     } else if (in_audio && line.rfind("a=rtpmap:", 0) == 0) {
       uint32_t declared = 0;
       const auto separator = line.find_first_of(" \t", 9);
@@ -60,19 +59,6 @@ inline bool read_audio_offer_attributes(const std::string &sdp, AudioOfferAttrib
       if (whole == 0 && !fraction_nonzero) return false;
       attributes.maxptime = attributes.has_maxptime ? std::min(attributes.maxptime, whole) : whole;
       attributes.has_maxptime = true;
-    } else if (in_audio && line.rfind("a=x-voip-stack-flow:", 0) == 0) {
-      const size_t value_start = sizeof("a=x-voip-stack-flow:") - 1;
-      const size_t space = line.find(' ', value_start);
-      if (space != std::string::npos) {
-        uint32_t parsed_pt = 0;
-        const std::string flow = trim_copy(line.substr(space + 1));
-        if (parse_decimal_u32(line.substr(value_start, space - value_start), 127, &parsed_pt)) {
-          uint8_t flags = 0;
-          if (flow == "send" || flow == "sendrecv") flags |= 0x01;
-          if (flow == "recv" || flow == "sendrecv") flags |= 0x02;
-          attributes.payload_flow[parsed_pt] = flags;
-        }
-      }
     } else if (!seen_any_media || in_audio) {
       const int direction = sdp_direction(line);
       if (direction >= 0) {

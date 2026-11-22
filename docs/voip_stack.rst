@@ -94,9 +94,6 @@ Configuration variables
   ``conference_groups``. Defaults to ``false``.
 - **use_ha_as_first_contact** (*Optional*, boolean): Put the Home Assistant peer
   first in the dial plan. Defaults to ``false``.
-- **ha_phonebook_text_sensor_id** (*Optional*, :ref:`config-id`): Text sensor
-  containing the HA-managed roster JSON.
-- **delete_contact_missing_from** (*Optional*): Roster cleanup policy.
 - **ringing_timeout** / **calling_timeout** (*Optional*, time): Guard timers.
 - **dc_offset_removal** (*Optional*, boolean): Remove DC bias on TX.
 - **audio_debug** (*Optional*, boolean): Verbose audio diagnostics.
@@ -137,8 +134,7 @@ Call control: ``voip_stack.start``, ``voip_stack.stop``,
 Phonebook: ``voip_stack.next_contact``, ``voip_stack.prev_contact``,
 ``voip_stack.add_contact``, ``voip_stack.remove_contact``,
 ``voip_stack.set_contact``, ``voip_stack.set_contacts``,
-``voip_stack.flush_contacts``, ``voip_stack.update_contacts``,
-``voip_stack.set_roster_json`` and ``voip_stack.set_ha_peer_name``.
+``voip_stack.flush_contacts`` and ``voip_stack.set_ha_peer_name``.
 
 Audio and diagnostics: ``voip_stack.set_volume``,
 ``voip_stack.set_mic_gain_db``, ``voip_stack.publish_entity_states`` and
@@ -175,11 +171,9 @@ omitted when the capability union has no single supported value. Outside a
 dialog, admission follows the endpoint's call readiness; a matching in-dialog
 OPTIONS preserves that dialog and returns 200.
 
-After a new account binding, an advisory OPTIONS query can learn explicit
-directional-audio support from peer SDP. Ordinary calls work before discovery,
-after rejection, and after discovery timeout. Cached support belongs to the
-binding and is invalidated on replacement, expiry or flow/mapping changes.
-The INVITE answer selects the actual media format.
+OPTIONS is advisory. Standard SDP encodings, accepted alternatives, packet-time
+preferences and receive bounds determine media in every account mode. No
+private SDP attribute or endpoint capability string is required.
 
 Periodic OPTIONS uses the registered signaling flow without renewing the
 registration or authenticating a probe challenge. Any matching final response
@@ -195,18 +189,27 @@ before the negotiated format is known.
 Correlated Home Assistant calls
 -------------------------------
 
-With the native HA API adapter enabled, ``start_call_via_ha`` accepts ``dest``
-and ``call_id``. It routes that destination through the configured HA peer and
-uses the supplied globally unique SIP Call-ID. Home Assistant uses the identity
-to bind an explicit trunk choice to one actual call. ``hangup_call_if_id`` ends
-only a call whose current identity matches exactly. Empty, stale and differently
+With the native HA API adapter enabled, ``start_call_on_line`` accepts ``dest``,
+``line``, ``send_video`` and ``receive_video``. Both booleans are false for an
+audio-only command; receive-only video uses false and true, requires a real
+sink, and does not enable the camera. Camera privacy still gates sending. The
+ESP creates Call-ID and originates SIP. Home Assistant creates
+the PBX session only on the actual INVITE. ``hangup_call_if_id`` ends only the
+actual call whose current identity matches exactly. Empty, stale and differently
 cased identifiers cannot hang up another call.
 
 The existing ``start_call`` action remains available for ordinary phonebook
-calls. Neither action changes the audio pipeline. The correlated identity is
-passed as a call-setup argument, without a persistent next-call override.
-With native HA integration enabled, remove custom API actions that duplicate
-these two component-provided names when upgrading from 2026.10.1.
+calls. Rebuild firmware and update maintained HA packages together: the old
+controller-generated Call-ID command and JSON roster push are retired. LDAP is
+the dynamic directory owner; its phone ``uid`` is the literal SIP username.
+Account usernames contain at most 64 UTF-8 bytes. Public directory identities
+and decoded URI users allow at most 1024 bytes, and encoded SIP URIs at most
+2048 bytes. Automatic enrollment exposes ``register_ha_account()`` without
+arguments. LDAP is the sole dynamic provider; manual static contacts remain
+available.
+Standard From, To and Request-URI fields carry call identity and addressing.
+Actual negotiated TX/RX formats remain available in SIP diagnostics; the old
+``set_media_route`` action and ``media_route`` sensor are removed.
 
 Video scope
 -----------

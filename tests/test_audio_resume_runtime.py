@@ -108,7 +108,7 @@ def resume_source():
      t.offer_tx_formats_.formats[0]=pcm;if(ptime_case){t.offer_tx_formats_.formats[0].frame_ms=20;t.offer_tx_formats_.formats[1]=pcm;}
      auto receive=pcm;if(wide_rx)receive.sample_rate=48000;
      t.offer_rx_formats_.count=wide_rx?2:1;t.offer_rx_formats_.formats[0]=receive;
-     if(wide_rx)t.offer_rx_formats_.formats[1]=pcm;t.remote_ip_v4_=INADDR_LOOPBACK;
+     if(wide_rx){t.offer_rx_formats_.formats[1]=pcm;t.offer_tx_formats_.formats[t.offer_tx_formats_.count++]=receive;}t.remote_ip_v4_=INADDR_LOOPBACK;
      t.rtp_socket_=socket(AF_INET,SOCK_DGRAM,0);int peer=socket(AF_INET,SOCK_DGRAM,0);assert(t.rtp_socket_>=0&&peer>=0);
      bool wrong_ip=false;
      auto bind_port=[&](int fd){sockaddr_in p{};p.sin_family=AF_INET;p.sin_addr.s_addr=htonl(wrong_ip?0x7f000002:INADDR_LOOPBACK);
@@ -124,8 +124,8 @@ def resume_source():
      };
      auto close_sip=[&](){close(sip_peer);close(t.sip_server_);};
      std::string initial="v=0\r\no=peer 7 1 IN IP4 127.0.0.1\r\nc=IN IP4 127.0.0.1\r\nm=audio "+std::to_string(ntohs(source.sin_port))+
-      (wide_rx?" RTP/AVP 96 97\r\na=rtpmap:96 L16/48000/1\r\na=x-voip-stack-flow:96 send\r\n"
-       "a=rtpmap:97 L16/16000/1\r\na=x-voip-stack-flow:97 recv\r\na=x-voip-stack-independent-ptime:1\r\n":
+      (wide_rx?" RTP/AVP 96 97\r\na=rtpmap:96 L16/48000/1\r\n"
+       "a=rtpmap:97 L16/16000/1\r\n":
        " RTP/AVP 96\r\na=rtpmap:96 L16/16000/1\r\n")+
       std::string(initial_preference?"":"a=ptime:10\r\n")+"a=sendrecv\r\n";
      assert(t.learn_remote_rtp_from_sdp_(initial,INADDR_LOOPBACK)&&t.rx==receive);
