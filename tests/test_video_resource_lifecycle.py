@@ -147,6 +147,7 @@ void *heap_caps_malloc(size_t bytes,unsigned flags){
 }
 void heap_caps_free(void *p){assert(allocations.erase(p)==1);std::free(p);}
 namespace esphome::voip_stack {
+void delay(unsigned){assert(false && "pool fixture must release leases before destruction");}
 METHODS
 void VideoRtpSession::stop(){}
 void VideoRtpSession::quiesce_tasks_(){}

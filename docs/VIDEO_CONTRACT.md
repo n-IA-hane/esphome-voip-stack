@@ -34,6 +34,16 @@ are checked rather than assuming a successful ioctl applied the requested rate.
 `EncodedVideoSink::max_encoded_access_unit_bytes()` defaults to zero, preserving
 the codec's existing envelope. A bounded sink may lower the receive pool size.
 Resizing is refused while workers or outstanding receiver leases own storage.
+
+Ordinary stop invalidates the active session and retains the encoded pool; it
+does not join a persistent renderer decoder. Producer destruction first joins
+its workers and then waits for every accepted receive lease to finish. No
+socket or stop mutex is held during that final wait. The release callback
+publishes its free slot only after its last producer access, so destruction
+and resize cannot overtake a callback still waking the receive task. A sink
+must return every accepted lease even after stop or stale-generation discard.
+The complete `video_rtp.cpp` host witness retains leases through stop, redial,
+resize and destruction, including a deliberately suspended callback tail.
 The optional software JPEG renderer defaults to 131072 bytes per encoded frame,
 320x240 RGB565 and 2 FPS admission, independently of camera TX capabilities.
 

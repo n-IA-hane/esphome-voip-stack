@@ -311,6 +311,12 @@ VideoRtpSession::~VideoRtpSession() {
       this->sink_ != nullptr) {
     this->sink_->stop_video();
   }
+  // A sink's ordinary stop gates its persistent decoder, but an accepted
+  // encoded lease can still be in flight. Destruction must join those
+  // borrowers too. Do not hold socket/stop mutexes needed by their callbacks.
+  // No worker can create a new lease after quiesce_tasks_().
+  for (auto &slot : this->receive_access_units_)
+    while (slot.state.load(std::memory_order_acquire) == 2) delay(1);
   this->close_sockets_();
   for (auto &slot : this->receive_access_units_) {
     if (slot.data != nullptr) heap_caps_free(slot.data);
@@ -2169,8 +2175,10 @@ bool VideoRtpSession::acquire_reassembly_slot_() {
 void VideoRtpSession::release_reassembly_slot_(void *ctx) {
   auto *slot = static_cast<ReceiveAccessUnitSlot *>(ctx);
   if (slot == nullptr) return;
-  slot->state.store(0, std::memory_order_release);
   if (slot->owner != nullptr) slot->owner->wake_task_();
+  // Publish completion only after the callback's last owner access. Resize
+  // and destruction may reclaim both this slot and its owner after this store.
+  slot->state.store(0, std::memory_order_release);
 }
 
 bool VideoRtpSession::handle_rtcp_packet_(const uint8_t *packet, size_t size,
