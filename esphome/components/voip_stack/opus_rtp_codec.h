@@ -2,6 +2,7 @@
 
 #include "esphome/core/defines.h"
 #include "sip_types.h"
+#include "opus_receive_constraints.h"
 
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
 
@@ -21,7 +22,8 @@ class OpusRtpCodec {
                  size_t max_payload_bytes);
   bool ready_for(const AudioFormat &tx, const AudioFormat &rx) const;
   size_t encode(const uint8_t *pcm, size_t pcm_bytes, const AudioFormat &format,
-                uint8_t *payload, size_t payload_capacity);
+                uint8_t *payload, size_t payload_capacity,
+                const OpusReceiveConstraints &constraints = {});
   size_t decode(const uint8_t *payload, size_t payload_bytes,
                 const AudioFormat &format, uint8_t *pcm,
                 size_t pcm_capacity);
@@ -30,12 +32,15 @@ class OpusRtpCodec {
 
  private:
   void clear_();
+  bool apply_receive_constraints_(const OpusReceiveConstraints &constraints);
 
   OpusEncoder *encoder_{nullptr};
   OpusDecoder *decoder_{nullptr};
   AudioFormat tx_format_{};
   AudioFormat rx_format_{};
   size_t max_payload_bytes_{0};
+  OpusReceiveConstraints applied_constraints_{};
+  bool constraints_applied_{false};
 };
 
 }  // namespace voip_stack

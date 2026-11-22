@@ -86,6 +86,22 @@ bool negotiate_audio_contract(const std::string &sdp, uint32_t default_ip, bool 
       trace.incompatible(trace.context, sdp.size(), attributes.port, media_ip, selection.selected_tx, selection.selected_rx);
   }
   if (result != AudioSelectionResult::ACCEPTED) return false;
+  media.opus_tx = {};
+  if (media.tx.codec == AudioCodec::OPUS) {
+    // Parameters can precede their rtpmap. Read only the selected transmit PT
+    // after selection, without an additional per-payload table or allocation.
+    SdpLines parameters(sdp);
+    bool selected_section = false;
+    while (parameters.next(line)) {
+      if (line.rfind("m=", 0) == 0) selected_section = parameters.offset() == attributes.section;
+      if (!selected_section || line.rfind("a=fmtp:", 0) != 0) continue;
+      const auto space = line.find_first_of(" \t", 7);
+      uint32_t pt = 0;
+      if (space != std::string::npos && parse_decimal_u32(line.substr(7, space - 7), 127, &pt) && pt == media.tx_pt)
+        read_opus_receive_constraints(std::string_view(line).substr(space + 1), media.opus_tx);
+    }
+  }
+
 #ifdef USE_ESPHOME_VOIP_DTMF
   const auto next_media = sdp.find("\r\nm=", attributes.section);
   const std::string_view audio_section(

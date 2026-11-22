@@ -183,6 +183,9 @@ void SipTransport::set_media_config_(const AudioFormat &tx, const AudioFormat &r
   this->commit_audio_config_(tx, rx, tx_payload_type, rx_payload_type, rx_payloads,
                               tx.is_valid(), rx.is_valid());
   this->audio_zero_connection_ = false;
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  this->set_opus_tx_constraints_({});
+#endif
 }
 
 void SipTransport::commit_audio_config_(const AudioFormat &tx, const AudioFormat &rx,
@@ -203,6 +206,9 @@ void SipTransport::commit_audio_config_(const AudioFormat &tx, const AudioFormat
 SipTransport::NegotiatedMedia SipTransport::negotiated_media_() const {
   NegotiatedMedia media;
   this->get_media_config_(&media.tx, &media.rx, &media.tx_pt, &media.rx_pt, &media.rx_payloads);
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  media.opus_tx = this->get_opus_tx_constraints_();
+#endif
   media.send = this->audio_send_enabled_.load(std::memory_order_acquire);
   media.receive = this->audio_receive_enabled_.load(std::memory_order_acquire);
   media.zero_connection = this->audio_zero_connection_;
@@ -235,6 +241,9 @@ SipTransport::NegotiatedMedia SipTransport::negotiated_media_() const {
 void SipTransport::commit_negotiated_media_(const NegotiatedMedia &media) {
   this->commit_audio_config_(media.tx, media.rx, media.tx_pt, media.rx_pt, &media.rx_payloads,
                               media.send, media.receive);
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  this->set_opus_tx_constraints_(media.opus_tx);
+#endif
   this->audio_zero_connection_ = media.zero_connection;
   this->remote_rtp_ip_v4_.store(media.audio_ip, std::memory_order_release);
   this->remote_rtp_port_.store(media.audio_port, std::memory_order_release);
@@ -270,6 +279,11 @@ void SipTransport::exchange_negotiated_media_(NegotiatedMedia &media) {
   const bool receive = this->audio_receive_enabled_.load(std::memory_order_acquire);
   this->commit_audio_config_(media.tx, media.rx, media.tx_pt, media.rx_pt, &media.rx_payloads,
                               media.send, media.receive);
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  const auto opus = this->get_opus_tx_constraints_();
+  this->set_opus_tx_constraints_(media.opus_tx);
+  media.opus_tx = opus;
+#endif
   media.tx = tx; media.rx = rx; media.tx_pt = tx_pt; media.rx_pt = rx_pt;
   media.rx_payloads = payloads; media.send = send; media.receive = receive;
   media.audio_ip = this->remote_rtp_ip_v4_.exchange(media.audio_ip);
@@ -313,6 +327,21 @@ void SipTransport::get_media_config_(AudioFormat *tx, AudioFormat *rx,
   if (rx_payloads != nullptr) *rx_payloads = this->negotiated_rx_payloads_;
   portEXIT_CRITICAL(&this->media_config_lock_);
 }
+
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+OpusReceiveConstraints SipTransport::get_opus_tx_constraints_() const {
+  portENTER_CRITICAL(&this->media_config_lock_);
+  const auto result = this->opus_tx_constraints_;
+  portEXIT_CRITICAL(&this->media_config_lock_);
+  return result;
+}
+
+void SipTransport::set_opus_tx_constraints_(const OpusReceiveConstraints &constraints) {
+  portENTER_CRITICAL(&this->media_config_lock_);
+  this->opus_tx_constraints_ = constraints;
+  portEXIT_CRITICAL(&this->media_config_lock_);
+}
+#endif
 
 bool SipTransport::received_audio_format_(uint8_t pt, AudioFormat *format,
                                           const uint8_t *payload, size_t payload_bytes) const {
@@ -2512,6 +2541,9 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes, const Tran
   if (timestamp_samples == 0) return;
   const uint32_t proposal_epoch =
       this->media_proposal_epoch_.load(std::memory_order_acquire);
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  const auto opus_constraints = this->get_opus_tx_constraints_();
+#endif
   bool stable = (proposal_epoch & 1U) == 0;
   AudioFormat committed;
   uint8_t tx_payload_type = 96;
@@ -2544,7 +2576,7 @@ void SipTransport::send_audio_frame(const uint8_t *pcm, size_t bytes, const Tran
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
   if (tx_format.codec == AudioCodec::OPUS) {
     bytes = this->opus_codec_.encode(pcm, bytes, tx_format, packet + 12,
-                                     sizeof(packet) - 12);
+                                     sizeof(packet) - 12, opus_constraints);
   } else
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_G722

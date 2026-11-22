@@ -787,6 +787,9 @@ class SipTransport : public SipPhoneTransport {
 #endif
   mutable portMUX_TYPE media_config_lock_ = portMUX_INITIALIZER_UNLOCKED;
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
+  OpusReceiveConstraints opus_tx_constraints_{};
+  OpusReceiveConstraints get_opus_tx_constraints_() const;
+  void set_opus_tx_constraints_(const OpusReceiveConstraints &constraints);
   OpusRtpCodec opus_codec_{};
   bool opus_codec_ready_{false};
 #endif

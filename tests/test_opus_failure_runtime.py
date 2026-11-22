@@ -20,9 +20,13 @@ def test_opus_allocation_configuration_and_processing_retry(tmp_path):
 using opus_int32=int32_t;using opus_int16=int16_t;
 struct OpusEncoder{};struct OpusDecoder{};
 constexpr int OPUS_OK=0,OPUS_APPLICATION_VOIP=1,OPUS_SIGNAL_VOICE=2,OPUS_RESET_STATE=3;
-#define OPUS_SET_BITRATE(x) 4
+#define OPUS_SET_BITRATE(x) (4+(x)*0)
 #define OPUS_SET_COMPLEXITY(x) 5
 #define OPUS_SET_SIGNAL(x) 6
+#define OPUS_SET_MAX_BANDWIDTH(x) (7+(x)*0)
+#define OPUS_SET_FORCE_CHANNELS(x) (8+(x)*0)
+#define OPUS_SET_VBR(x) (9+(x)*0)
+constexpr int OPUS_BANDWIDTH_NARROWBAND=1,OPUS_BANDWIDTH_MEDIUMBAND=2,OPUS_BANDWIDTH_WIDEBAND=3,OPUS_BANDWIDTH_SUPERWIDEBAND=4,OPUS_BANDWIDTH_FULLBAND=5;
 OpusEncoder* opus_encoder_create(opus_int32,int,int,int*);
 OpusDecoder* opus_decoder_create(opus_int32,int,int*);
 void opus_encoder_destroy(OpusEncoder*);void opus_decoder_destroy(OpusDecoder*);
@@ -60,6 +64,11 @@ int main(){
    decode_fail=false;assert(codec.decode(payload,20,rx,pcm,sizeof(pcm))==sizeof(pcm));
    assert(codec.decode(nullptr,20,rx,pcm,sizeof(pcm))==0);assert(codec.decode(payload,1276,rx,pcm,sizeof(pcm))==0);
    assert(codec.decode(payload,20,rx,pcm,1)==0);assert(codec.decode(nullptr,0,rx,pcm,sizeof(pcm))==sizeof(pcm));
+   // A failed ctl may have partially changed the encoder. Retrying the
+   // previous contract must reapply every ctl, without destroying codecs.
+   at=0;fail=2;OpusReceiveConstraints limited{12000,8000,false};
+   assert(codec.encode(pcm,sizeof(pcm),tx,payload,sizeof(payload),limited)==0);
+   at=0;fail=0;assert(codec.encode(pcm,sizeof(pcm),tx,payload,sizeof(payload))==20);assert(at==4&&live.size()==2);
    codec.reset();codec.reset_decoder();assert(codec.ready_for(tx,rx));
   }
   assert(live.empty());

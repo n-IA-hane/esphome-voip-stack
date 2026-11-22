@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rtp_audio_payloads.h"
+#include "opus_receive_constraints.h"
 
 #include <algorithm>
 #include <cstring>
@@ -42,6 +43,7 @@ struct AudioSdpFacts {
 struct SdpAudioMedia {
   AudioFormat tx{DEFAULT_AUDIO_FORMAT}, rx{DEFAULT_AUDIO_FORMAT};
   uint8_t tx_pt{96}, rx_pt{96};
+  OpusReceiveConstraints opus_tx;
   RtpAudioPayloads rx_payloads;
   bool send{true}, receive{true}, zero_connection{false};
   uint32_t audio_ip{0};

@@ -24,6 +24,7 @@ OpusRtpCodec::~OpusRtpCodec() { this->clear_(); }
 void OpusRtpCodec::clear_() {
   if (this->encoder_ != nullptr) opus_encoder_destroy(this->encoder_);
   if (this->decoder_ != nullptr) opus_decoder_destroy(this->decoder_);
+  this->constraints_applied_ = false;
   this->encoder_ = nullptr;
   this->decoder_ = nullptr;
 }
@@ -79,12 +80,38 @@ bool OpusRtpCodec::ready_for(const AudioFormat &tx,
            codec_state_matches_format(this->rx_format_, rx)));
 }
 
+bool OpusRtpCodec::apply_receive_constraints_(const OpusReceiveConstraints &constraints) {
+  if (this->constraints_applied_ && this->applied_constraints_ == constraints) return true;
+  this->constraints_applied_ = false;
+  const int bitrate = constraints.max_average_bitrate == 0 ? 24000 :
+      static_cast<int>(std::min<uint32_t>(24000, constraints.max_average_bitrate));
+  // maxplaybackrate is a playback bandwidth hint, not an RTP or PCM rate.
+  const auto rate = constraints.max_playback_rate;
+  const int bandwidth = rate >= 48000 ? OPUS_BANDWIDTH_FULLBAND :
+      rate >= 24000 ? OPUS_BANDWIDTH_SUPERWIDEBAND : rate >= 16000 ? OPUS_BANDWIDTH_WIDEBAND :
+      rate >= 12000 ? OPUS_BANDWIDTH_MEDIUMBAND : OPUS_BANDWIDTH_NARROWBAND;
+  const int channels = constraints.stereo ? this->tx_format_.channels : 1;
+  // Called only by the existing encoder owner, immediately before encoding.
+  // ctl changes preserve codec allocations and decoder state during reoffers.
+  if (opus_encoder_ctl(this->encoder_, OPUS_SET_BITRATE(bitrate)) != OPUS_OK ||
+      // A VBR target can exceed the peer's average ceiling in speech mode.
+      // Use CBR only for an explicit ceiling; absent limits retain local VBR.
+      opus_encoder_ctl(this->encoder_, OPUS_SET_VBR(constraints.max_average_bitrate == 0 ? 1 : 0)) != OPUS_OK ||
+      opus_encoder_ctl(this->encoder_, OPUS_SET_MAX_BANDWIDTH(bandwidth)) != OPUS_OK ||
+      opus_encoder_ctl(this->encoder_, OPUS_SET_FORCE_CHANNELS(channels)) != OPUS_OK) return false;
+  this->applied_constraints_ = constraints;
+  this->constraints_applied_ = true;
+  return true;
+}
+
 size_t OpusRtpCodec::encode(const uint8_t *pcm, size_t pcm_bytes,
                             const AudioFormat &format, uint8_t *payload,
-                            size_t payload_capacity) {
+                            size_t payload_capacity,
+                            const OpusReceiveConstraints &constraints) {
   if (this->encoder_ == nullptr ||
       !codec_state_matches_format(this->tx_format_, format) ||
       pcm_bytes != format.nominal_frame_bytes()) return 0;
+  if (!this->apply_receive_constraints_(constraints)) return 0;
   const size_t limit = std::min(payload_capacity, this->max_payload_bytes_);
   const int encoded = opus_encode(
       this->encoder_, reinterpret_cast<const opus_int16 *>(pcm),

@@ -19,6 +19,25 @@ duration: undeclared 44.1 kHz remains unavailable, and stereo/10 at 10 ms
 exceeds the 1200-byte budget and is refused. A declared mono/11 at 10 ms uses
 882 bytes and keeps the configured duration.
 
+Opus receiver parameters belong to the selected transmitter. The bounded
+`opus_tx` value follows `SdpAudioMedia` through proposals, commit, rollback and
+REFER exchange. Only the selected remote payload's `maxaveragebitrate`,
+`maxplaybackrate` and `stereo` are read; missing parameters restore defaults.
+Invalid bitrate values outside 6000..510000 are ignored per RFC 7587. Playback
+rate controls the encoder bandwidth, never the 48 kHz RTP clock or local PCM
+shape. Stereo is a receiver preference and does not grant a local stereo input.
+Our answer keeps our own receive parameters instead of echoing the peer's.
+
+The existing encoder owner applies libopus controls before encoding a stable
+committed frame. It retains codec allocations and decoder state. The local
+24000 bit/s target and VBR remain the defaults without a remote bitrate ceiling.
+An explicit ceiling selects CBR at the smaller of 24000 and that ceiling:
+libopus speech VBR can exceed its nominal average target and ignores the VBR
+constraint control. This is an encoder policy to satisfy an average bound,
+not an interpretation of `maxaveragebitrate` as a per-packet limit. Complete
+production signaling and codec units link to libopus in the host witness;
+actual RTP packets verify clock, payload, bandwidth and rollback behavior.
+
 Telephone events negotiate payload, events and RTP clock separately per
 direction (P5/CC-4). G.722 uses its 8 kHz RTP clock even though decoded PCM is
 16 kHz. An offered 8 kHz event mapping remains the fallback. A running digit
