@@ -77,13 +77,14 @@ struct VoipStack {
  voip_audio_core::RingBufferPtr mic_buffer_;AudioFormat tx_audio_format_,format_;AudioFormatList tx_audio_formats_{};
  std::atomic<unsigned>media_tx_queue_drops_{0},media_tx_queue_drop_bytes_{0};void*tx_task_handle_=nullptr;
  AudioFormat get_current_tx_audio_format_()const{return format_;}
- size_t tx_audio_chunk_bytes_()const{return format_.nominal_frame_bytes();}
+ @CHUNK@
  size_t tx_audio_buffer_bytes_()const;bool write_mic_buffer_(const uint8_t*,size_t);
  @MAX_CHUNK@
  @PARTIAL@
  @RESET@
 };
 """.replace("@MAX_CHUNK@", block(header, "size_t tx_audio_max_chunk_bytes_() const"))
+    code = code.replace("@CHUNK@", block(header, "size_t tx_audio_chunk_bytes_() const"))
     code = code.replace("@PARTIAL@", partial).replace("@RESET@", reset)
     for marker in ("size_t VoipStack::tx_audio_buffer_bytes_(", "bool VoipStack::write_mic_buffer_("):
         code += "\n" + block(audio, marker)
@@ -104,10 +105,15 @@ int main(int argc,char**argv){
  if(mode=="stereo")format.channels=2;
  if(mode=="s16-stereo"){format.channels=2;format.pcm_format=PcmFormat::S16LE;}
  if(mode=="padded24-stereo"){format.channels=2;format.pcm_format=PcmFormat::S24LE_IN_S32;}
+ if(mode=="wire-renegotiated")format={16000,PcmFormat::S16LE,1,10,AudioCodec::PCM};
  phone.tx_audio_format_=phone.format_=format;phone.tx_audio_formats_.formats[0]=format;
  if(mode=="renegotiated"){
   phone.tx_audio_formats_.count=2;
   phone.tx_audio_formats_.formats[1]={8000,PcmFormat::S16LE,2,10,AudioCodec::PCM};
+ }
+ if(mode=="wire-renegotiated"){
+  phone.tx_audio_formats_.count=2;
+  phone.tx_audio_formats_.formats[1]={48000,PcmFormat::S16LE,1,10,AudioCodec::PCM};
  }
  if(mode=="configured-shapes"){
   phone.tx_audio_formats_.count=3;
@@ -124,10 +130,18 @@ int main(int argc,char**argv){
    assert(phone.mic_buffer_->available()%stride==0);
   }
   assert(phone.write_mic_buffer_(pcm.data()+offset,pcm.size()-offset));assert(drain(phone)==pcm);
+ }else if(mode=="wire-renegotiated"){
+  const auto old=pattern(1,2);assert(phone.write_mic_buffer_(old.data(),1));
+  phone.format_={48000,PcmFormat::S16LE,1,10,AudioCodec::PCM};
+  assert(phone.tx_audio_chunk_bytes_()==320&&phone.format_.nominal_frame_bytes()==960);
+  const auto next=pattern(20,2);
+  std::vector<uint8_t> input{old.back()};input.insert(input.end(),next.begin(),next.end());
+  auto expected=old;expected.insert(expected.end(),next.begin(),next.end());
+  assert(phone.write_mic_buffer_(input.data(),input.size()));assert(drain(phone)==expected);
  }else if(mode=="epoch"||mode=="renegotiated"){
   auto old=pattern(1,stride);assert(phone.write_mic_buffer_(old.data(),stride-1));
   if(mode=="epoch")phone.reset_mic_buffer_();
-  else phone.format_={8000,PcmFormat::S16LE,2,10,AudioCodec::PCM};
+  else phone.tx_audio_format_=phone.format_={8000,PcmFormat::S16LE,2,10,AudioCodec::PCM};
   const auto next=pattern(20,phone.format_.channels*phone.format_.container_bytes_per_sample());
   assert(phone.write_mic_buffer_(next.data(),next.size()));assert(drain(phone)==next);
  }else if(mode=="partial-write"){
@@ -176,7 +190,7 @@ int main(int argc,char**argv){
 
 
 @pytest.mark.parametrize("mode", ["mono", "stereo", "s16-stereo", "padded24-stereo", "oversized", "fragmented",
-                                  "epoch", "renegotiated", "partial-write", "configured-shapes"])
+                                  "epoch", "renegotiated", "wire-renegotiated", "partial-write", "configured-shapes"])
 def test_tx_queue_retains_complete_interleaved_pcm_frames(tx_pcm_stride, mode):
     result = subprocess.run([str(tx_pcm_stride), mode], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stdout + result.stderr
