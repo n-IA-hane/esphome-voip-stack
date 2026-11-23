@@ -27,6 +27,13 @@ def negotiated_fixture_source(code, *, sdp=False, video=False):
         return code
     owner = read_production_source(SOURCE / 'sip_transport.cpp')
     parser = (SOURCE / 'sip_sdp.cpp').read_text()
+    if sdp:
+        # Full SDP composition replaces the narrow wire adapter with the real
+        # production parser below. Never declare both in the same host class.
+        code = code.replace(
+            ' bool parse_remote_media_(const std::string&,uint32_t,bool,const NegotiatedMedia&,NegotiatedMedia*,bool=false)const{assert(false);return false;}',
+            '',
+        )
     declarations = 'struct NegotiatedMedia;\n'
     implementations = ''
     if 'struct NegotiatedMedia : SdpAudioMedia {' not in code:

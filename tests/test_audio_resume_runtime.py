@@ -327,7 +327,6 @@ def test_dialog_cleanup_and_new_media_preparation_clear_stale_resume_notificatio
     code = code.replace("struct SipTransport: SipPhoneTransport {", r'''struct SipTransport: SipPhoneTransport {
  std::atomic<uint32_t>latched_rtp_ip_v4_{0},latched_rtp_ssrc_{0};
  std::atomic<uint16_t>latched_rtp_port_{0};std::atomic<bool>rtp_ssrc_latched_{false};
- std::atomic<bool>rtp_source_reacquire_pending_{false};
 ''', 1)
     code += "\n" + block(read_production_source(SOURCE / "sip_transport.cpp"), "void SipTransport::reset_rtp_latch_(")
     code += r'''

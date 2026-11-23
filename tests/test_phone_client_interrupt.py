@@ -29,6 +29,7 @@ def interrupt_binary(tmp_path_factory):
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 using namespace std::chrono_literals;
 std::mutex gate;std::condition_variable condition;
 bool entered=false,released=false,use_gate=true;int observed_fd=-1;
@@ -58,7 +59,13 @@ int main(int argc,char**argv){
  std::atomic<bool> closed=false;int victim[2]{-1,-1};
  std::thread owner([&]{
   stream.close();assert(socketpair(AF_UNIX,SOCK_STREAM,0,victim)==0);
-  if(victim[0]!=observed_fd){assert(dup2(victim[0],observed_fd)==observed_fd);close(victim[0]);victim[0]=observed_fd;}
+  // Both socketpair endpoint orders are valid. Exercise the ordering where
+  // descriptor relocation would otherwise overwrite the independent peer.
+  if(victim[0]==observed_fd)std::swap(victim[0],victim[1]);
+  if(victim[0]!=observed_fd){
+   if(victim[1]==observed_fd){const int peer_copy=dup(victim[1]);assert(peer_copy>=0);victim[1]=peer_copy;}
+   assert(dup2(victim[0],observed_fd)==observed_fd);close(victim[0]);victim[0]=observed_fd;
+  }
   closed=true;
  });
  // The close may complete only when no outstanding interrupt owns the old fd.
