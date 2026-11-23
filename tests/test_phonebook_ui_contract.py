@@ -166,13 +166,13 @@ int main(){
  std::cout<<"sizeof_contact="<<sizeof(ContactEntry)<<" count="<<phone.get_contact_count()<<" route="<<phone.observed_route<<" line="<<phone.observed_line<<"\n";
 }
 '''
-    code = code.replace("DECLARATIONS", declarations)
-    code = code.replace("METHODS", "\n".join(block(settings, name) for name in [
+    code = code.replace("\nDECLARATIONS\n", "\n" + declarations + "\n")
+    code = code.replace("\nMETHODS\n", "\n" + "\n".join(block(settings, name) for name in [
         "bool VoipStack::call_contact(", "std::string_view VoipStack::get_contact_account_view(", "std::string VoipStack::get_contact_account(",
-    ]))
+    ]) + "\n")
     for key, name in [("COUNT", "row_count"), ("KEY", "row_key"), ("GROUP", "row_group"), ("RENDER", "render_row")]:
-        code = code.replace(key, str(view[name]))
-    code = code.replace("SELECT", str(view["on_select"][0]["lambda"]))
+        code = code.replace("{" + key + "}", "{" + str(view[name]) + "}")
+    code = code.replace("{SELECT}", "{" + str(view["on_select"][0]["lambda"]) + "}")
     include = tmp_path / "include"
     core = include / "esphome/core"
     core.mkdir(parents=True)
