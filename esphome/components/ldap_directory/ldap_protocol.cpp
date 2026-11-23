@@ -201,7 +201,7 @@ bool encode_bind(uint32_t id, const std::string &dn, const std::string &password
 bool encode_search(uint32_t id, const Search &search, std::string *packet) {
   std::string filter;
   if (packet == nullptr || id == 0 || id > INT32_MAX || search.base_dn.size() > 1024 ||
-      search.scope > 2 || search.size_limit == 0 || search.size_limit > 64 || search.time_limit > 60 ||
+      search.scope > 2 || search.size_limit == 0 || search.size_limit > MAX_SEARCH_RESULTS || search.time_limit > 60 ||
       search.attributes.size() > 16 || !Filter(search.filter).encode(&filter)) return false;
   std::string attributes;
   for (const auto &attribute : search.attributes) {
@@ -296,7 +296,8 @@ bool Client::search(const Search &search, std::vector<Entry> *entries, uint32_t 
   if (search.size_limit == 0 || search.size_limit > 64) { this->result_code_ = 2; return false; }
   std::vector<Entry> staged;
   staged.reserve(search.size_limit);
-  if (!this->search_each(search, [&](Entry &&entry) { staged.push_back(std::move(entry)); return true; }, timeout_ms))
+  if (!this->search_each(search, [&](Entry &&entry) { staged.push_back(std::move(entry)); return true; }, timeout_ms) ||
+      this->result_code_ != 0)
     return false;
   entries->swap(staged);
   return true;
@@ -318,8 +319,7 @@ bool Client::search_each(const Search &search, const std::function<bool(Entry &&
       if (!consume(std::move(result.entry))) return false;
     } else if (result.operation == 0x65) {
       this->result_code_ = result.code;
-      if (result.code != 0) return false;
-      return true;
+      return result.code == 0 || (result.code == 4 && count != 0);
     } else return false;
   }
 }

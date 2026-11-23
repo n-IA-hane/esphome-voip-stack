@@ -75,7 +75,8 @@ void LdapDirectory::account_changed_() {
     this->interrupt_worker_();
     this->parent_->commit_contact_directory(this, {}, this->account_id_);
     this->account_loaded_ = false;
-    this->contact_count_ = 0;
+    this->contact_count_ = 0; this->omitted_count_ = this->discarded_count_ = 0;
+    this->search_limited_ = false; this->reported_generation_ = 0;
     this->last_success_ = 0;
     this->status_ = "unconfigured";
     return;
@@ -122,7 +123,8 @@ void LdapDirectory::configure_directory(std::string server, int32_t port, std::s
     this->cancel_timeout("refresh");
     this->interrupt_worker_();
     this->parent_->commit_contact_directory(this, {}, this->account_id_);
-    this->contact_count_ = 0; this->status_ = "disabled";
+    this->contact_count_ = 0; this->omitted_count_ = this->discarded_count_ = 0;
+    this->search_limited_ = false; this->reported_generation_ = 0; this->status_ = "disabled";
     return;
   }
   if (server.empty() || server.size() > 253 || base.empty() || base.size() > 1024 || bind.size() > 1024 ||
@@ -168,13 +170,15 @@ void LdapDirectory::worker_run_() {
   if (!this->active_ || !this->enabled_ || !this->config_.credentials_ready) { this->unlock_(); return; }
   this->active_ = false;
   this->reset_stage_();
+  this->result_omitted_ = 0;
+  this->result_limited_ = false;
   Configuration cfg = this->config_;
   const uint32_t generation = this->generation_.load();
   this->unlock_();
   const std::string host = cfg.host.empty() ? cfg.sip_host : cfg.host;
   bool ok = this->stream_.connect(host, cfg.port, this->timeout_ms_, cfg.tls, cfg.ca_pem) &&
       generation == this->generation_.load();
-  uint8_t discarded = 0;
+  uint16_t discarded = 0;
   Client client(this->stream_);
   client.set_receive_buffer(this->receive_buffer_, this->receive_size_);
   if (ok) {
@@ -184,7 +188,7 @@ void LdapDirectory::worker_run_() {
     if (position != std::string::npos) dn.replace(position, token.size(), escape_dn_value(cfg.username));
     ok = client.bind(dn, cfg.password, this->timeout_ms_) && generation == this->generation_.load();
     Search search;
-    search.base_dn = cfg.base_dn; search.filter = cfg.filter; search.size_limit = this->max_entries_;
+    search.base_dn = cfg.base_dn; search.filter = cfg.filter; search.size_limit = MAX_SEARCH_RESULTS;
     ok = ok && client.search_each(search, [this, &cfg, &discarded, generation](Entry &&entry) {
       if (generation != this->generation_.load()) return false;
       // Subtree searches may include the organizational-unit container.
@@ -196,8 +200,7 @@ void LdapDirectory::worker_run_() {
         ++discarded;
         return true;
       }
-      if (this->stage_count_ == this->stage_capacity_) return false;
-      auto &contact = this->stage_[this->stage_count_];
+      voip_stack::ContactEntry contact;
       contact.id = std::move(mapped.id); contact.name = std::move(mapped.name);
       contact.number = std::move(mapped.number);
       contact.route = mapped.uri.empty() ? std::move(mapped.user) : std::move(mapped.uri);
@@ -214,9 +217,10 @@ void LdapDirectory::worker_run_() {
       contact.kind = kind == "esphome" ? voip_stack::ContactKind::ESP : kind == "sip_account" ? voip_stack::ContactKind::SIP_ACCOUNT :
           kind == "browser" ? voip_stack::ContactKind::BROWSER : kind == "automation" ? voip_stack::ContactKind::AUTOMATION :
           kind == "group" ? voip_stack::ContactKind::GROUP : kind == "service" ? voip_stack::ContactKind::SERVICE : voip_stack::ContactKind::CONTACT;
-      ++this->stage_count_;
+      this->stage_contact_(std::move(contact));
       return true;
     }, this->timeout_ms_) && generation == this->generation_.load();
+    this->result_limited_ = ok && client.result_code() == 4;
   }
   if (ok) client.unbind(500);
   this->stream_.close();
@@ -230,6 +234,26 @@ void LdapDirectory::worker_run_() {
   } else this->reset_stage_();
   this->unlock_();
   this->notify_main_();
+}
+
+void LdapDirectory::stage_contact_(voip_stack::ContactEntry &&contact) {
+  // Keep a deterministic prefix without retaining the complete wire result.
+  // Moving slots reuses the fixed stage; no second directory is allocated.
+  const auto before = [](const voip_stack::ContactEntry &left, const voip_stack::ContactEntry &right) {
+    if (left.stable_id() != right.stable_id()) return left.stable_id() < right.stable_id();
+    return std::string_view(left.route.data(), left.route.size()) <
+           std::string_view(right.route.data(), right.route.size());
+  };
+  size_t position = 0;
+  while (position < this->stage_count_ && !before(contact, this->stage_[position])) ++position;
+  if (this->stage_count_ == this->stage_capacity_) {
+    ++this->result_omitted_;
+    if (position == this->stage_capacity_) return;
+  } else {
+    ++this->stage_count_;
+  }
+  for (size_t i = this->stage_count_ - 1; i > position; --i) this->stage_[i] = std::move(this->stage_[i - 1]);
+  this->stage_[position] = std::move(contact);
 }
 
 void LdapDirectory::reset_stage_() {
@@ -247,12 +271,15 @@ void LdapDirectory::loop() {
   const auto generation = this->result_generation_, code = this->result_code_;
   const size_t count = this->stage_count_;
   const unsigned discarded = this->result_discarded_;
+  const auto omitted = this->result_omitted_;
+  const bool limited = this->result_limited_;
   this->unlock_();
   uint32_t error = code;
+  voip_stack::DirectoryCommitInfo info;
   if (generation == this->generation_.load() && error == 0) {
     // No LDAP lock across the core callback: consumers may reconfigure or
     // request another refresh. The pending flag keeps the worker off stage.
-    const auto committed = this->parent_->commit_contact_directory(this, this->stage_, count, this->account_id_);
+    const auto committed = this->parent_->commit_contact_directory(this, this->stage_, count, this->account_id_, &info);
     if (committed != voip_stack::DirectoryCommitResult::APPLIED && committed != voip_stack::DirectoryCommitResult::UNCHANGED) error = 80;
   }
   this->lock_();
@@ -266,11 +293,26 @@ void LdapDirectory::loop() {
   // can cancel it rather than inheriting the previous generation's timer.
   this->Component::set_timeout("refresh", error == 0 ? this->refresh_ms_ : std::min<uint32_t>(this->refresh_ms_, 30000),
                                [this]() { this->refresh(); });
-  if (discarded != 0) ESP_LOGW(TAG, "Discarded %u invalid LDAP contact(s)", discarded);
   if (error == 0) {
-    this->status_ = "ready"; this->last_success_ = millis(); this->contact_count_ = count;
-    if (discarded != 0) this->status_set_warning(); else this->status_clear_warning();
-    this->updated_.trigger(static_cast<uint32_t>(count));
+    const size_t total_omitted = omitted + info.omitted;
+    const bool truncated = limited || total_omitted != 0;
+    const bool changed = this->reported_generation_ != generation || this->omitted_count_ != total_omitted ||
+                         this->discarded_count_ != discarded || this->search_limited_ != limited;
+    this->status_ = truncated ? "truncated" : "ready";
+    this->last_success_ = millis(); this->contact_count_ = info.contacts;
+    this->omitted_count_ = total_omitted; this->discarded_count_ = discarded; this->search_limited_ = limited;
+    this->reported_generation_ = generation;
+    if (truncated || discarded != 0) this->status_set_warning(); else this->status_clear_warning();
+    if (changed && truncated) {
+      ESP_LOGW(TAG, "Directory capacity limited: retained=%u omitted=%u server_limited=%s; narrow the LDAP filter or reduce manual contacts",
+               static_cast<unsigned>(info.contacts), static_cast<unsigned>(total_omitted), limited ? "yes" : "no");
+      this->truncated_.trigger(static_cast<uint32_t>(total_omitted));
+    }
+    if (changed && discarded != 0) {
+      ESP_LOGW(TAG, "Discarded %u invalid LDAP contact(s)", discarded);
+      this->invalid_records_.trigger(discarded);
+    }
+    this->updated_.trigger(static_cast<uint32_t>(info.contacts));
   } else {
     this->status_ = "error"; this->status_set_warning(); this->error_.trigger(error);
     ESP_LOGW(TAG, "Directory update failed (code=%u); previous directory retained", static_cast<unsigned>(error));

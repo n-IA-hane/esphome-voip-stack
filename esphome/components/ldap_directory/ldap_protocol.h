@@ -9,6 +9,8 @@
 
 namespace esphome::ldap_directory {
 
+inline constexpr uint32_t MAX_SEARCH_RESULTS = 256;
+
 struct Attribute {
   std::string name;
   std::vector<std::string> values;
@@ -21,7 +23,7 @@ struct Entry {
 struct Search {
   std::string base_dn;
   std::string filter{"(objectClass=*)"};
-  std::vector<std::string> attributes{"uid", "entryUUID", "cn", "displayName", "telephoneNumber", "labeledURI", "ou"};
+  std::vector<std::string> attributes{"uid", "cn", "displayName", "telephoneNumber", "labeledURI", "ou"};
   uint32_t size_limit{64};
   uint32_t time_limit{3};
   uint8_t scope{2};
@@ -51,8 +53,9 @@ class Client {
   bool bind(const std::string &dn, const std::string &password, uint32_t timeout_ms);
   bool search(const Search &search, std::vector<Entry> *entries, uint32_t timeout_ms);
   // Entries arrive one at a time; consumers may move their owned values.
-  // A successful callback does not commit the directory: only a final
-  // SearchResultDone SUCCESS does. No entry reference outlives its callback.
+  // A successful callback does not commit the directory. SUCCESS completes it;
+  // sizeLimitExceeded with received rows completes a bounded partial result.
+  // result_code() distinguishes those outcomes. No row reference escapes.
   bool search_each(const Search &search, const std::function<bool(Entry &&)> &consume, uint32_t timeout_ms);
   void unbind(uint32_t timeout_ms);
   uint32_t result_code() const { return this->result_code_; }

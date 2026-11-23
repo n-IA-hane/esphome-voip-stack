@@ -32,7 +32,7 @@ uint32_t millis() { return 1000; }
 namespace owner_test {
 using namespace esphome::ldap_directory;
 bool locked=false;
-unsigned connects=0,client_creations=0;
+unsigned connects=0,client_creations=0;uint32_t search_code=0;
 bool search_ok=true;
 Entry entry(const std::string&name) {
  Entry out;out.attributes={{"uid",{"entry-"+name}},{"cn",{name}},
@@ -53,12 +53,12 @@ struct Client {
   Entry copy=next_entry;return consume(std::move(copy))&&search_ok;
  }
  void unbind(uint32_t){}
- uint32_t result_code()const{return search_ok?0:4;}
+ uint32_t result_code()const{return search_ok?search_code:4;}
 };
 struct Component {
- unsigned timers=0;
+ unsigned timers=0;uint32_t timer_delay=0;
  bool timer_active=false;
- template<typename F>void set_timeout(const char*,uint32_t,F){++timers;timer_active=true;}
+ template<typename F>void set_timeout(const char*,uint32_t delay,F){++timers;timer_active=true;timer_delay=delay;}
  void cancel_timeout(const char*){timer_active=false;}
  void status_clear_warning(){}
  void status_set_warning(){}
@@ -71,8 +71,8 @@ struct Parent {
  std::vector<voip_stack::ContactEntry> rows;
  unsigned commits=0;
  std::function<void()> callback;
- voip_stack::DirectoryCommitResult commit_contact_directory(const void*,voip_stack::ContactEntry*data,size_t count,const std::string&){
-  assert(!locked);++commits;rows.clear();
+ voip_stack::DirectoryCommitResult commit_contact_directory(const void*,voip_stack::ContactEntry*data,size_t count,const std::string&,voip_stack::DirectoryCommitInfo*info=nullptr){
+  assert(!locked);++commits;rows.clear();if(info)info->contacts=count;
   for(size_t i=0;i<count;++i)rows.push_back(std::move(data[i]));
   auto action=callback;if(action)action();
   return voip_stack::DirectoryCommitResult::APPLIED;
@@ -94,13 +94,15 @@ class LdapDirectory:public Component {
  uint8_t max_entries_=4;
  char receive_buffer_[8192]{};size_t receive_size_=8192;
  voip_stack::ContactEntry *stage_;
- uint8_t result_discarded_=0;
+ uint16_t result_discarded_=0,result_omitted_=0;
+ bool result_limited_=false,search_limited_=false;
+ size_t omitted_count_=0,discarded_count_=0;uint32_t reported_generation_=0;
  size_t stage_count_=0,stage_capacity_=4,contact_count_=0;
  const char*status_="updating";
  std::string account_id_="ha";
  Parent *parent_;
  Stream stream_;
- Trigger<uint32_t> updated_,error_;
+ Trigger<uint32_t> updated_,error_,truncated_,invalid_records_;
  unsigned wakes=0,main_notifications=0;
  explicit LdapDirectory(Parent&parent):parent_(&parent){
   stage_=static_cast<voip_stack::ContactEntry*>(::operator new[](stage_capacity_*sizeof(*stage_)));
@@ -116,7 +118,7 @@ class LdapDirectory:public Component {
  void interrupt_worker_(){++generation_;wake_worker_();}
  void set_server(const std::string&,uint16_t,bool){}
  void set_directory(const std::string&,const std::string&,const std::string&){}
- void worker_run_();void loop();void reset_stage_();void refresh();
+ void worker_run_();void loop();void reset_stage_();void stage_contact_(voip_stack::ContactEntry&&);void refresh();
  void configure_directory(std::string,int32_t,std::string,std::string,std::string,bool,bool);
  void pending(const char*name){
   stage_[0].id=name;stage_[0].name=name;stage_[0].route=name;stage_count_=1;
@@ -150,7 +152,15 @@ int main(int argc,char**argv){
   assert(source.pending_result_&&source.result_code_==4&&source.stage_count_==1);
   source.loop();assert(phone.rows[0].name=="old"&&phone.commits==0&&source.error_.calls==1&&source.updated_.calls==0);
   assert(std::string(source.status_)=="error"&&source.stage_count_==0);
+ }else if(scenario=="bounded-terminal-limit"){
+  search_code=4;source.active_=true;source.worker_run_();source.loop();
+  assert(phone.rows.size()==1&&phone.rows[0].name=="new"&&source.contact_count_==1);
+  assert(std::string(source.status_)=="truncated"&&source.search_limited_&&source.error_.calls==0);
+  assert(source.timer_delay==source.refresh_ms_&&source.truncated_.calls==1);
+  source.active_=true;source.worker_run_();source.loop();
+  assert(source.updated_.calls==2&&source.truncated_.calls==1&&source.timer_delay==source.refresh_ms_);
  }else if(scenario=="trigger-reconfigure"){
+
   source.pending("new");source.updated_.callback=[&]{source.configure_directory("",389,"","","ha",false,false);};
   source.loop();assert(!source.timer_active&&!source.enabled_&&std::string(source.status_)=="disabled"&&phone.rows.empty());
  }else assert(false);
@@ -159,7 +169,7 @@ int main(int argc,char**argv){
 '''
     source = (SOURCE / "ldap_directory.cpp").read_text()
     methods = ["void LdapDirectory::worker_run_()", "void LdapDirectory::loop()",
-               "void LdapDirectory::reset_stage_()", "void LdapDirectory::refresh()",
+               "void LdapDirectory::reset_stage_()", "void LdapDirectory::stage_contact_(", "void LdapDirectory::refresh()",
                "void LdapDirectory::configure_directory("]
     cpp = cpp.replace("METHODS", "\n".join(block(source, marker) for marker in methods))
     path = folder / "lifecycle.cpp"
@@ -175,7 +185,7 @@ int main(int argc,char**argv){
     return binary
 
 
-@pytest.mark.parametrize("scenario", ["pending-refresh", "stale-before", "cancel-callback", "search-error", "trigger-reconfigure"])
+@pytest.mark.parametrize("scenario", ["pending-refresh", "stale-before", "cancel-callback", "search-error", "bounded-terminal-limit", "trigger-reconfigure"])
 def test_actual_stage_owner_cancellation_and_reentrant_callbacks(lifecycle_binary, scenario):
     result = subprocess.run([lifecycle_binary, scenario], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr

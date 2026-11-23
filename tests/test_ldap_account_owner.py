@@ -38,7 +38,7 @@ class LdapDirectory {
  struct Configuration {std::string username,password,sip_host;uint16_t sip_port=0;bool sip_tcp=false,credentials_ready=false;}config_;
  voip_stack::VoipStack*parent_;std::string account_id_="ha";
  uint32_t account_revision_=0,last_success_=1;bool account_loaded_=false,active_=true,ready_=true;
- size_t contact_count_=1;const char*status_="ready";
+ size_t contact_count_=1,omitted_count_=0,discarded_count_=0;bool search_limited_=false;uint32_t reported_generation_=0;const char*status_="ready";
  std::atomic<uint32_t>generation_{1};unsigned refreshes=0;std::mutex mutex;
  explicit LdapDirectory(voip_stack::VoipStack&p):parent_(&p){}
  void lock_(){mutex.lock();}void unlock_(){mutex.unlock();}

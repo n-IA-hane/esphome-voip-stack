@@ -30,7 +30,7 @@ struct VoipStack {
  bool get_account_snapshot(const std::string&,SipAccountSnapshot*);
  bool is_registered(const std::string&id){return transport_->is_registered(id);}
  std::string get_contact_account(std::string_view)const;bool set_blf_watches(const std::vector<BlfWatchConfig>&);void sync_blf_contacts_();
- DirectoryCommitResult commit_contact_directory(const void*,ContactEntry*,size_t,const std::string&);
+ DirectoryCommitResult commit_contact_directory(const void*,ContactEntry*,size_t,const std::string&,DirectoryCommitInfo* = nullptr);
  void publish_phonebook_changed_(){++publications;sync_blf_contacts_();}
 };
 '''

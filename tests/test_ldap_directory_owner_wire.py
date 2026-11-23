@@ -22,6 +22,7 @@ def owner_binary(tmp_path_factory):
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cstdio>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -46,15 +47,15 @@ class VoipStack {
  unsigned publications=0;
  void publish_phonebook_changed_(){++publications;}
  DirectoryCommitResult commit_contact_directory(const void*,std::vector<ContactEntry>,const std::string&);
- DirectoryCommitResult commit_contact_directory(const void*,ContactEntry*,size_t,const std::string&);
+ DirectoryCommitResult commit_contact_directory(const void*,ContactEntry*,size_t,const std::string&,DirectoryCommitInfo* = nullptr);
 };
 COMMIT_METHODS
 }
 namespace esphome::ldap_directory {
 uint32_t millis(){return static_cast<uint32_t>(phone_client::monotonic_ms());}
 struct Component {
- bool warning=false;unsigned timers=0;
- template<class F>void set_timeout(const char*,uint32_t,F){++timers;}
+ bool warning=false;unsigned timers=0;uint32_t timer_delay=0;
+ template<class F>void set_timeout(const char*,uint32_t delay,F){++timers;timer_delay=delay;}
  void cancel_timeout(const char*){}
  void status_clear_warning(){warning=false;}
  void status_set_warning(){warning=true;}
@@ -74,18 +75,20 @@ class LdapDirectory:public Component {
  bool active_=true,enabled_=true,pending_result_=false,ready_=true,managed_by_ha_=false;
  uint8_t max_entries_=4;
  char receive_buffer_[8192]{};size_t receive_size_=sizeof receive_buffer_;
- voip_stack::ContactEntry stage_storage_[4],*stage_=stage_storage_;
- uint8_t result_discarded_=0;
+ voip_stack::ContactEntry stage_storage_[64],*stage_=stage_storage_;
+ uint16_t result_discarded_=0,result_omitted_=0;
+ bool result_limited_=false,search_limited_=false;
+ size_t omitted_count_=0,discarded_count_=0;uint32_t reported_generation_=0;
  size_t stage_count_=0,stage_capacity_=4,contact_count_=0;
  const char*status_="updating";std::string account_id_="ha";
  voip_stack::VoipStack*parent_;phone_client::TcpStream stream_;
- Trigger updated_,error_;unsigned wakes=0;
+ Trigger updated_,error_,truncated_,invalid_records_;unsigned wakes=0;
  explicit LdapDirectory(voip_stack::VoipStack&p):parent_(&p){}
  void lock_(){mutex_.lock();}void unlock_(){mutex_.unlock();}
  void disable_loop(){}bool is_failed()const{return false;}
  void wake_worker_(){++wakes;}void notify_main_(){}
  void interrupt_worker_(){++generation_;stream_.interrupt();}
- void worker_run_();void loop();void reset_stage_();void refresh();
+ void worker_run_();void loop();void reset_stage_();void stage_contact_(voip_stack::ContactEntry&&);void refresh();
 };
 OWNER_METHODS
 }
@@ -98,13 +101,31 @@ int main(int argc,char**argv){
  assert(phone.phonebook_.add_one("Manual|manual|192.0.2.9|5060|40000|sip_udp")==voip_stack::AddResult::Added);
  voip_stack::ContactEntry previous;previous.id="entry-old";previous.name="Old";previous.route="old";
  assert(phone.commit_contact_directory(&directory,&previous,1,"ha")==voip_stack::DirectoryCommitResult::APPLIED);
+ const bool large=mode.rfind("large-",0)==0;
+ if(large){directory.max_entries_=64;directory.stage_capacity_=64;}
  const auto initial_publications=phone.publications;
  directory.worker_run_();assert(directory.pending_result_);
+ if(mode=="all-invalid-256"){
+  assert(directory.result_discarded_==256&&directory.stage_count_==0);
+  assert(directory.result_code_!=0&&"256 invalid rows must not wrap into empty success");
+ }
  // Network completion must not expose a partial snapshot before the main loop.
  assert(phone.phonebook_.size()==2&&phone.phonebook_.find("Old")&&phone.publications==initial_publications);
  if(mode=="stale")++directory.generation_;
  directory.loop();
- if(mode=="success" || mode=="mixed"){
+ if(large){
+  const size_t rows=mode=="large-65"?65:256;
+  assert(directory.updated_.calls==1&&directory.error_.calls==0&&std::string(directory.status_)=="truncated");
+  assert(directory.warning&&directory.timer_delay==directory.refresh_ms_&&directory.truncated_.calls==1);
+  assert(directory.contact_count_==63&&directory.omitted_count_==rows-63);
+  assert(directory.search_limited_==(mode=="large-limited"));
+  assert(phone.phonebook_.size()==64&&phone.phonebook_.find("Manual")&&!phone.phonebook_.find("Old"));
+  for(size_t i=0;i<63;++i){char id[16];std::snprintf(id,sizeof(id),"row-%03u",static_cast<unsigned>(i));assert(phone.phonebook_.find_id(id));}
+  assert(!phone.phonebook_.find_id("row-063")&&phone.publications==initial_publications+1);
+ }else if(mode=="limit"){
+  assert(directory.updated_.calls==1&&directory.error_.calls==0&&std::string(directory.status_)=="truncated");
+  assert(directory.search_limited_&&directory.timer_delay==directory.refresh_ms_&&phone.phonebook_.find_id("entry-new"));
+ }else if(mode=="success" || mode=="mixed"){
   assert(directory.warning==(mode=="mixed"));
   assert(directory.result_discarded_==(mode=="mixed"?1:0));
   assert(directory.updated_.calls==1&&directory.error_.calls==0&&std::string(directory.status_)=="ready");
@@ -121,10 +142,11 @@ int main(int argc,char**argv){
   assert(directory.updated_.calls==0);
   if(mode=="stale")assert(directory.error_.calls==0&&directory.timers==0);
   else assert(directory.error_.calls==1&&std::string(directory.status_)=="error");
+  if(mode=="all-invalid-256")assert(directory.result_discarded_==256&&directory.warning);
  }
  assert(!directory.pending_result_&&directory.stage_count_==0);
  directory.stream_.close();directory.stream_.close();
- std::cout<<"PASS "<<mode<<" publications="<<phone.publications-initial_publications<<" sizeof_contact="<<sizeof(voip_stack::ContactEntry)<<"\n";
+ std::cout<<"PASS "<<mode<<" publications="<<phone.publications-initial_publications<<" invalid="<<directory.result_discarded_<<" sizeof_contact="<<sizeof(voip_stack::ContactEntry)<<"\n";
 }
 '''
     core = ROOT / "esphome/components/voip_stack"
@@ -142,7 +164,7 @@ int main(int argc,char**argv){
     owner = (ldap / "ldap_directory.cpp").read_text()
     source = source.replace("OWNER_METHODS", "\n".join(block(owner, marker) for marker in [
         "void LdapDirectory::worker_run_()", "void LdapDirectory::loop()",
-        "void LdapDirectory::reset_stage_()", "void LdapDirectory::refresh()",
+        "void LdapDirectory::reset_stage_()", "void LdapDirectory::stage_contact_(", "void LdapDirectory::refresh()",
     ]))
     cpp = folder / "owner.cpp"
     cpp.write_text(source)
@@ -186,16 +208,17 @@ def message(stream):
         return decoded
 
 
-def response(mid, operation, code=0, *, bad=False):
+def response(mid, operation, code=0, *, bad=False, row=None):
     from ldap3.protocol.rfc4511 import LDAPMessage
     from pyasn1.codec.ber.encoder import encode
     packet = LDAPMessage()
     packet["messageID"] = mid
     entry = packet["protocolOp"][operation]
     if operation == "searchResEntry":
-        entry["object"] = "uid=entry-new,ou=phonebook,dc=voip"
-        for index, (name, value) in enumerate({"uid": "entry-new", "cn": "New", "telephoneNumber": "102",
-            "labeledURI": "sip:bad%00@pbx" if bad else "sip:Caff%C3%A8%2020%25%40Casa%2C1@pbx.example.test", "ou": "contact"}.items()):
+        identifier = "entry-new" if row is None else f"row-{row:03d}"
+        entry["object"] = f"uid={identifier},ou=phonebook,dc=voip"
+        for index, (name, value) in enumerate({"uid": identifier, "cn": "New" if row is None else f"Phone {row:03d}", "telephoneNumber": "102",
+            "labeledURI": "sip:bad%00@pbx" if bad else "sip:Caff%C3%A8%2020%25%40Casa%2C1@pbx.example.test" if row is None else f"sip:phone-{row:03d}@pbx.example.test", "ou": "contact"}.items()):
             entry["attributes"][index]["type"] = name
             entry["attributes"][index]["vals"][0] = value
     else:
@@ -204,7 +227,7 @@ def response(mid, operation, code=0, *, bad=False):
 
 
 @pytest.mark.parametrize("tls", [False, True], ids=["tcp", "verified-tls"])
-@pytest.mark.parametrize("scenario", ["success", "mixed", "all-invalid", "duplicate", "capacity", "empty", "limit", "truncated", "wrong-id", "stale"])
+@pytest.mark.parametrize("scenario", ["success", "mixed", "all-invalid", "all-invalid-256", "duplicate", "capacity", "empty", "limit", "truncated", "wrong-id", "stale", "large-65", "large-256", "large-limited", "overflow-257", "empty-limit"])
 def test_real_peer_atomic_snapshot_failure_manual_and_generation(owner_binary, tls_certificate, tls, scenario):
     certificate, key = tls_certificate
     with socket.socket() as listener, ThreadPoolExecutor(max_workers=1) as executor:
@@ -228,24 +251,42 @@ def test_real_peer_atomic_snapshot_failure_manual_and_generation(owner_binary, t
                     stream.sendall(response(int(bind["messageID"]), "bindResponse"))
                     search = message(stream)
                     assert search["protocolOp"].getName() == "searchRequest"
-                    assert int(search["protocolOp"]["searchRequest"]["sizeLimit"]) == 4
+                    assert int(search["protocolOp"]["searchRequest"]["sizeLimit"]) == 256
                     mid = int(search["messageID"])
+                    if scenario == "all-invalid-256":
+                        for row in range(256):
+                            stream.sendall(response(mid, "searchResEntry", row=row, bad=True))
+                        stream.sendall(response(mid, "searchResDone"))
+                        assert message(stream)["protocolOp"].getName() == "unbindRequest"
+                        return
+                    if scenario.startswith("large-") or scenario == "overflow-257":
+                        count = 65 if scenario == "large-65" else 257 if scenario == "overflow-257" else 256
+                        # Reverse wire order proves selection does not depend on
+                        # arrival order and still preserves the manual contact.
+                        for row in reversed(range(count)):
+                            stream.sendall(response(mid, "searchResEntry", row=row))
+                        if scenario != "overflow-257":
+                            stream.sendall(response(mid, "searchResDone", 4 if scenario == "large-limited" else 0))
+                            assert message(stream)["protocolOp"].getName() == "unbindRequest"
+                        return
                     if scenario in {"mixed", "all-invalid"}:
                         stream.sendall(response(mid, "searchResEntry", bad=True))
                     if scenario in {"duplicate", "capacity"}:
                         for _ in range(1 if scenario == "duplicate" else 4):
                             stream.sendall(response(mid, "searchResEntry"))
-                    if scenario not in {"empty", "all-invalid"}:
+                    if scenario not in {"empty", "all-invalid", "empty-limit"}:
                         stream.sendall(response(mid + (scenario == "wrong-id"), "searchResEntry"))
                     if scenario != "truncated":
-                        stream.sendall(response(mid, "searchResDone", 4 if scenario == "limit" else 0))
-                    if scenario in {"success", "mixed", "all-invalid", "duplicate", "empty", "stale"}:
+                        stream.sendall(response(mid, "searchResDone", 4 if scenario in {"limit", "empty-limit"} else 0))
+                    if scenario in {"success", "mixed", "all-invalid", "duplicate", "empty", "stale", "limit"}:
                         assert message(stream)["protocolOp"].getName() == "unbindRequest"
 
         pending = executor.submit(peer)
-        mode = scenario if scenario in {"success", "mixed", "empty", "stale"} else "failure"
+        mode = scenario if scenario in {"success", "mixed", "empty", "stale", "limit", "all-invalid-256"} or scenario.startswith("large-") else "failure"
         result = subprocess.run([owner_binary, mode, str(listener.getsockname()[1]), str(int(tls)), certificate],
                                 capture_output=True, text=True, timeout=6)
         pending.result(timeout=5)
         assert result.returncode == 0, result.stdout + result.stderr
         assert result.stdout.startswith("PASS " + mode)
+        if scenario == "all-invalid-256":
+            assert "publications=0 invalid=256 " in result.stdout

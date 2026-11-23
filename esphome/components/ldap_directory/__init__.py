@@ -145,6 +145,8 @@ CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), cv.Schema({
     cv.Optional("managed_by_ha", default=False): cv.boolean,
     cv.Optional("on_update"): automation.validate_automation(),
     cv.Optional("on_error"): automation.validate_automation(),
+    cv.Optional("on_truncated"): automation.validate_automation(),
+    cv.Optional("on_invalid_records"): automation.validate_automation(),
 }).extend(cv.COMPONENT_SCHEMA), validate_config)
 
 
@@ -191,7 +193,7 @@ async def to_code(config):
     cg.add(var.set_refresh_interval(config["refresh_interval"].total_milliseconds))
     for key in ("max_entries", "receive_buffer_size", "task_core", "task_priority", "task_stack_size", "task_stack_in_psram", "buffer_in_psram"):
         cg.add(getattr(var, f"set_{key}")(config[key]))
-    for event in ("update", "error"):
+    for event in ("update", "error", "truncated", "invalid_records"):
         for conf in config.get(f"on_{event}", []):
             await automation.build_automation(getattr(var, f"get_{event}_trigger")(), [(cg.uint32, "value")], conf)
 

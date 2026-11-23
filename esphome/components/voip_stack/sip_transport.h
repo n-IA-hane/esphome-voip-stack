@@ -633,6 +633,9 @@ class SipTransport : public SipPhoneTransport {
     UdpTransaction transaction;
     std::string branch;
     SipSignalingString offered_sdp;
+    AudioFormatList offered_tx;
+    RtpAudioPayloads offered_rx;
+    uint8_t offered_dtmf_clocks{0};
     uint32_t cseq{0};
     uint32_t session_version{0};
     uint32_t response_deadline_ms{0};
@@ -646,6 +649,9 @@ class SipTransport : public SipPhoneTransport {
       this->transaction.clear();
       this->branch.clear();
       this->offered_sdp.clear();
+      this->offered_tx.count = 0;
+      this->offered_rx.count = 0;
+      this->offered_dtmf_clocks = 0;
       this->cseq = 0;
       this->session_version = 0;
       this->response_deadline_ms = 0;

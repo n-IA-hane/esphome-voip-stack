@@ -71,16 +71,17 @@ int main(){
  // The existing direct attempt can retry through HA without losing its peer.
  phone.call("Desk");const auto direct=phone.identity;
  assert(phone.transport.ip=="192.0.2.20"&&direct.dest_name=="Desk");
- phone.start_call_attempt_(true,direct.call_id);
+ phone.start_call_attempt_(true);
  assert(phone.transport.originations==3&&phone.invites==3);
- assert(phone.transport.ip=="192.0.2.10"&&phone.identity.call_id==direct.call_id);
+ assert(phone.transport.ip=="192.0.2.10"&&phone.identity.call_id!=direct.call_id);
+ const auto retry=phone.identity;assert(retry.call_id.find("esp-")==0);
  assert(phone.identity.dest_name=="Desk"&&phone.identity.dest_route=="Desk");
  // Real removal must not silently reuse the previously dialled HA address.
  assert(phone.phonebook_.remove_one("HA"));
- phone.start_call_attempt_(true,direct.call_id);
+ phone.start_call_attempt_(true);
  assert(phone.transport.originations==3&&phone.invites==3&&phone.terminations==1);
  assert(phone.termination_reason==CallEndReason::TRANSPORT_UNREACHABLE);
- assert(phone.terminated_identity.call_id==direct.call_id);
+ assert(phone.terminated_identity.call_id.find("esp-")==0&&phone.terminated_identity.call_id!=retry.call_id);
  assert(phone.terminated_identity.dest_name=="Desk"&&phone.call_state_==CallState::IDLE);
  const unsigned failed=phone.call_failed_trigger_.calls;
  phone.call("999");

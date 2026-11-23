@@ -47,7 +47,7 @@ def preservation_source():
     # Outgoing preparation also enters through the production FSM method. Only
     # the selected contact, hardware and publication boundaries are adapters.
     code = code.replace("void start_call_attempt_(bool){assert(false);}", r'''
- void start_call_attempt_(bool,const std::string& = {});
+ void start_call_attempt_(bool);
  AudioFormat tx_audio_format_{DEFAULT_AUDIO_FORMAT},rx_audio_format_{DEFAULT_AUDIO_FORMAT};
  bool force_direct_call_=false;std::string pending_line_,default_line_="office";
  Trigger outgoing_call_trigger_,bridge_request_trigger_;
@@ -118,7 +118,7 @@ int main(int argc,char**argv){
  const std::string first_account=home_first?"home":"office",second_account=home_first?"office":"home";
  phone.auto_answer_=phase=="ringing"?false:automatic;phone.sink_ready=phase=="active";
  if(preparing){
-  phone.default_line_=first_account;phone.start_call_attempt_(false,"owned-first");phone.drain();
+  phone.default_line_=first_account;phone.start_call_attempt_(false);phone.drain();
   assert(phone.call_state_==CallState::CALLING&&phone.pending_media_start_==VoipStack::ApplicationMediaStart::ORIGINATE);
   assert(s.call_id_.empty()&&!s.media_active_&&!phone.can_accept_session_());assert(first.drain().empty());
  }else{

@@ -336,14 +336,13 @@ bool VoipStack::select_line(const std::string& id) {
   this->default_line_ = id;
   return true;
 }
-void VoipStack::start_call_on_line_(const std::string &target, const std::string &line,
-                                   const std::string &call_id) {
+void VoipStack::start_call_on_line_(const std::string &target, const std::string &line) {
   if (!this->can_start_call_()) return;
   const std::string cleaned = sip_normalize_dial_target(target, Phonebook::MAX_ROUTE_BYTES);
   if (cleaned.empty()) return;
   if (line == "direct") {
     this->force_direct_call_ = true;
-    this->call_(cleaned, call_id);
+    this->call_(cleaned);
     this->force_direct_call_ = false;
     return;
   }
@@ -353,7 +352,7 @@ void VoipStack::start_call_on_line_(const std::string &target, const std::string
   }
   this->pending_line_ = line;
   this->pending_dialplan_target_ = cleaned;
-  this->start_with_id_(call_id);
+  this->start_call_();
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   // The queued originate still owns this selector until its INVITE consumes it.
   if (this->pending_media_start_ != ApplicationMediaStart::ORIGINATE)

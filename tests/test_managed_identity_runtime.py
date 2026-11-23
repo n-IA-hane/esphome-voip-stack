@@ -4,7 +4,7 @@ import subprocess
 from test_refer_dialog_runtime import SOURCE, block
 
 
-def test_managed_name_and_correlated_line_keep_routing_and_callback_owner(tmp_path):
+def test_managed_name_and_native_line_keep_routing_and_callback_owner(tmp_path):
     header = (SOURCE / "voip_stack.h").read_text()
     settings = (SOURCE / "voip_settings.cpp").read_text()
     registration = (SOURCE / "voip_registration.cpp").read_text()
@@ -35,8 +35,8 @@ struct VoipStack {
  void pump_registration_wake_();
  bool can_start_call_()const{return true;}
  void enable_loop_soon_any_context(){++loop_wakes;}
- void start_call_on_line_(const std::string&t,const std::string&l,const std::string&id){target=t;line=l;call_id=id;}
- void call_(const std::string&t,const std::string&id){target=t;line="legacy";call_id=id;}
+ void start_call_on_line_(const std::string&t,const std::string&l){target=t;line=l;}
+ void call_(const std::string&t){target=t;line="direct";}
 };
 ''' + methods + r'''
 int main(){

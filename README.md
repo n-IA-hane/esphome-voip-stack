@@ -43,7 +43,7 @@ ESPHome has excellent building blocks for voice devices, but no native way to ma
                    |  jitter buffer                |
                    |  call finite-state machine    |
                    |  phonebook / dial plan        |
-                   |  endpoint identity publishing |
+                   |  diagnostic snapshots         |
                    +-------------------------------+
                      |            |            |
                  triggers      actions      entities
@@ -75,7 +75,7 @@ Mic-only and speaker-only are not degraded modes. They exist for paging speakers
 
 **A phonebook that is a dial plan, not a gatekeeper.** Contacts define where outbound calls go. Inbound calls are not rejected just because the caller is unknown; the INVITE carries caller and destination identity, and HA-side resolution handles routed/NAT installs.
 
-**Self-describing devices.** The component publishes text sensors for state, transport, endpoint identity, destination, caller, contacts, SIP snapshot and last terminal reason.
+**Self-describing devices.** The component publishes text sensors for state, transport, destination, caller, contacts, SIP snapshot and last terminal reason.
 
 **Honest failure taxonomy.** The FSM distinguishes `BUSY`, `DECLINED`, `CANCELLED`, `MEDIA_INCOMPATIBLE`, `TRANSPORT_UNREACHABLE` and `AUTH_REQUIRED_UNSUPPORTED`.
 
@@ -196,11 +196,11 @@ Other hardware and PBX combinations still need their own runtime tests.
 
 ## Core concepts
 
-**Endpoint.** The published identity of a device: name, optional host/IP, SIP port, RTP port, signaling transport, capability mode, and advertised TX/RX PCM capabilities. The `endpoint` text sensor is the authoritative record Home Assistant consumes.
+**Endpoint.** A SIP phone identified by its account username and standard SIP address. REGISTER and Contact establish its signaling route; SDP describes its media capabilities. Diagnostic entities do not negotiate calls.
 
 **Capability mode.** Derived from wiring. It gates task creation at runtime and code inclusion at compile time.
 
-**Phonebook.** The outbound dial plan: an ordered list of contacts the device can call, navigated by `next_contact`/`prev_contact` or addressed by name. Sources are static YAML contacts, runtime actions, and the HA-managed roster.
+**Phonebook.** The outbound dial plan: an ordered list of contacts the device can call, navigated by `next_contact`/`prev_contact` or addressed by name. Sources are static YAML contacts, runtime actions, and LDAP.
 
 **Audio format contract.** Each codec's `tx` list describes what the device sends, and its `rx` list what it accepts. Packet times are independent. Missing codec declarations are configuration errors.
 
@@ -270,18 +270,10 @@ API is configured; use `voip_stack.ha_integration: false` for standalone SIP.
 Routing through HA remains controlled separately by `use_ha_as_first_contact`.
 
 Automatic discovery exposes the short **VoIP State** entity. SIP Contact and SDP
-provide routing and media capabilities; **VoIP Endpoint** is not generated
-automatically. Older consumers can explicitly retain it alongside native HA:
-
-```yaml
-text_sensor:
-  - platform: voip_stack
-    type: endpoint
-    name: Legacy VoIP Endpoint
-```
-
-Update the HA integration to support state-based discovery before removing an
-existing legacy endpoint entity.
+provide routing and media capabilities. The retired `endpoint` text sensor must
+be removed from custom YAML, followed by an ESP firmware rebuild. Update the HA
+integration and rebuild ESP firmware together; old JSON roster commands and
+private media descriptors have no replacement API.
 
 Managed SIP registration with Home Assistant is optional:
 
@@ -633,7 +625,7 @@ switch:
 The ESP component does not implement a PBX. It only publishes local membership
 metadata through dedicated HA entities and calls the resulting phonebook
 contact by name. Home Assistant materializes the group entries, performs SIP
-forking for ring groups, mixes conference rooms, and pushes the updated roster
+forking for ring groups, mixes conference rooms, and serves the directory over LDAP
 back to the ESP devices.
 
 Queue declarations use the same per-phone ownership as ring groups:
@@ -747,14 +739,13 @@ platform entities you need:
 
 | Platform | Type | Content |
 |---|---|---|
-| `text_sensor` | `endpoint` | Short endpoint identity record used by HA phonebook discovery. |
 | `text_sensor` | `state` | Current FSM state. |
 | `text_sensor` | `caller` | Current/last caller identity. |
 | `text_sensor` | `destination` | Currently selected dial-plan target. |
 | `text_sensor` | `last_reason` | Last terminal outcome. |
 | `text_sensor` | `contacts` | Published local contact list. |
 | `text_sensor` | `transport` | Active signaling transport. |
-| `text_sensor` | `sip_snapshot` | SIP and media details captured on call or endpoint changes. Run `voip_stack.dump_diagnostics` for current counters. With `audio_debug: true`, active calls also sample every 500 ms. |
+| `text_sensor` | `sip_snapshot` | SIP and media details captured on call or configuration changes. Run `voip_stack.dump_diagnostics` for current counters. With `audio_debug: true`, active calls also sample every 500 ms. |
 | `text` | `ring_groups` | Editable comma-separated ring group memberships. |
 | `text` | `queues` | Editable comma-separated queue declarations; HA owns agent login and pause. |
 | `text` | `conference_groups` | Editable comma-separated conference group memberships. |
@@ -762,14 +753,11 @@ platform entities you need:
 
 The following manual surface is for configurations with automatic HA integration
 disabled (`ha_integration: false`). With native HA enabled, its state and routing
-entities already exist; only optional legacy or diagnostic sensors need an
+entities already exist; only optional diagnostic sensors need an
 explicit declaration:
 
 ```yaml
 text_sensor:
-  - platform: voip_stack
-    type: endpoint
-    name: VoIP Endpoint
   - platform: voip_stack
     type: state
     name: VoIP State

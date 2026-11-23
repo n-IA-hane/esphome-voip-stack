@@ -66,7 +66,6 @@
 #include <nvs.h>
 #endif
 
-#include <esp_event.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -261,7 +260,6 @@ class VoipStack : public Component {
     this->video_max_rtp_payload_ = bytes;
   }
 #endif
-  std::string get_endpoint() const { return this->build_endpoint_string_(); }
   const char *get_audio_capability() const { return this->audio_capability_(); }
 
   // Direct SIP URIs are dialed peer-to-peer. Logical names without host/port
@@ -427,7 +425,6 @@ class VoipStack : public Component {
   void set_caller_sensor(text_sensor::TextSensor *sensor) { this->caller_sensor_ = sensor; }
   void set_contacts_sensor(text_sensor::TextSensor *sensor) { this->contacts_sensor_ = sensor; }
   void set_transport_sensor(text_sensor::TextSensor *sensor) { this->transport_sensor_ = sensor; }
-  void set_endpoint_sensor(text_sensor::TextSensor *sensor) { this->endpoint_sensor_ = sensor; }
   void set_last_reason_sensor(text_sensor::TextSensor *sensor) { this->last_reason_sensor_ = sensor; }
   void set_sip_snapshot_sensor(text_sensor::TextSensor *sensor) { this->sip_snapshot_sensor_ = sensor; }
 #endif
@@ -524,7 +521,8 @@ class VoipStack : public Component {
   bool call_contact(const std::string &id);
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
   DirectoryCommitResult commit_contact_directory(const void *provider, std::vector<ContactEntry> entries, const std::string &account_id = {});
-  DirectoryCommitResult commit_contact_directory(const void *provider, ContactEntry *entries, size_t count, const std::string &account_id = {});
+  DirectoryCommitResult commit_contact_directory(const void *provider, ContactEntry *entries, size_t count,
+                                                 const std::string &account_id = {}, DirectoryCommitInfo *info = nullptr);
 #endif
   std::string get_contacts_csv() const;
 
@@ -743,16 +741,9 @@ class VoipStack : public Component {
   void publish_caller_(const std::string &caller_name);
   void publish_contacts_();
   void publish_transport_();
-  void publish_endpoint_();
   void publish_sip_snapshot_();
   void clear_terminal_call_snapshot_();
-  void request_endpoint_publish_();
-  static void ip_event_handler_(void *arg, esp_event_base_t event_base,
-                                int32_t event_id, void *event_data);
-  std::string local_ip_string_() const;
-  std::string build_endpoint_string_() const;
   std::string build_sip_snapshot_string_() const;
-  static std::string audio_format_token_(const AudioFormat &fmt);
 
   void set_call_state_(CallState new_state);
   void request_call_termination_(const TerminationIntent &intent);
@@ -828,7 +819,6 @@ class VoipStack : public Component {
   text_sensor::TextSensor *caller_sensor_{nullptr};       // full: who is calling
   text_sensor::TextSensor *contacts_sensor_{nullptr};     // full: contact count (e.g. "3 contacts")
   text_sensor::TextSensor *transport_sensor_{nullptr};    // SIP signaling transport: "udp" or "tcp"
-  text_sensor::TextSensor *endpoint_sensor_{nullptr};     // Optional configured endpoint description.
   text_sensor::TextSensor *last_reason_sensor_{nullptr};  // terminal reason for HA/card mirroring
   text_sensor::TextSensor *sip_snapshot_sensor_{nullptr};
   std::string last_sip_snapshot_;
@@ -837,8 +827,6 @@ class VoipStack : public Component {
 #endif
 #endif
   std::string last_reason_;
-  std::string last_endpoint_;
-  std::atomic<bool> endpoint_publish_requested_{false};
   std::string last_terminal_call_id_;
   std::string last_terminal_direction_;
   std::string last_terminal_caller_name_;
@@ -1169,9 +1157,9 @@ class VoipStack : public Component {
                           const std::string &dest_route, const std::string &dest_name, bool originated = false);
   void clear_call_identity_();
   bool can_start_call_() const;
-  void start_with_id_(const std::string &call_id);
-  void call_(const std::string &target, const std::string &call_id);
-  void start_call_attempt_(bool via_ha, const std::string &requested_call_id = {});
+  void start_call_();
+  void call_(const std::string &target);
+  void start_call_attempt_(bool via_ha);
   CallSnapshot snapshot_call_identity_() const;
   std::string get_current_call_id_() const;
   void set_terminal_response_(const std::string &call_id, const std::string &reason);
@@ -1292,7 +1280,7 @@ class VoipStack : public Component {
   std::string default_line_{"direct"}, pending_line_;
   Trigger<std::string, std::string, int> registration_state_trigger_;
   std::atomic<SipTransport *> registration_dns_owner_{nullptr};
-  void start_call_on_line_(const std::string &target, const std::string &line, const std::string &call_id);
+  void start_call_on_line_(const std::string &target, const std::string &line);
   void initialize_registration_();
   void dump_registration_memory_();
   bool load_registration_saved_();

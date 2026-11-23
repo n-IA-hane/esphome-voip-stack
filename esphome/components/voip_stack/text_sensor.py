@@ -9,7 +9,6 @@ DEPENDENCIES = ["voip_stack"]
 
 CONF_TYPE = "type"
 
-TYPE_ENDPOINT = "endpoint"
 TYPE_STATE = "state"
 TYPE_TRANSPORT = "transport"
 TYPE_LAST_REASON = "last_reason"
@@ -19,7 +18,6 @@ TYPE_CALLER = "caller"
 TYPE_CONTACTS = "contacts"
 
 TYPES = {
-    TYPE_ENDPOINT: ("VoIP Endpoint", "mdi:lan-connect", "set_endpoint_sensor"),
     TYPE_STATE: ("VoIP State", "mdi:phone-settings", "set_state_sensor"),
     TYPE_TRANSPORT: ("VoIP Transport", "mdi:swap-horizontal", "set_transport_sensor"),
     TYPE_LAST_REASON: ("VoIP Last Reason", "mdi:phone-alert", "set_last_reason_sensor"),

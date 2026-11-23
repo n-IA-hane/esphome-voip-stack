@@ -1,4 +1,5 @@
 #include "sip_transport_internal.h"
+#include "sip_sdp_audio_offer.h"
 
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_SIP_TRANSPORT)
 
@@ -123,14 +124,18 @@ bool SipTransport::send_video_direction_reinvite_unlocked_(bool enabled,
     return false;
   }
 
-  // The first locally originated offer may be a video update to an incoming
-  // dialog. Preserve its existing audio contract for answer validation too.
-  AudioFormat offered_tx;
-  this->get_media_config_(&offered_tx, nullptr, nullptr, nullptr,
-                          &this->local_offered_rx_payloads_);
-  this->local_offered_tx_formats_.count = 0;
-  this->local_offered_tx_formats_.formats[0] = offered_tx;
-  this->local_offered_tx_formats_.count = 1;
+  AudioFormatList offered_tx;
+  RtpAudioPayloads offered_rx;
+  uint8_t offered_clocks = 0;
+  if (retry) {
+    offered_tx = this->pending_video_direction_invite_.offered_tx;
+    offered_rx = this->pending_video_direction_invite_.offered_rx;
+    offered_clocks = this->pending_video_direction_invite_.offered_dtmf_clocks;
+  } else if (!capture_audio_offer(offer, this->offer_tx_formats_, this->offer_rx_formats_,
+                                  this->udp_max_payload_, &offered_tx, &offered_rx, &offered_clocks)) {
+    this->video_send_requested_.store(previous_send, std::memory_order_release);
+    return false;
+  }
 
   const uint32_t cseq = this->cseq_++;
   const std::string branch = "z9hG4bK" + make_token("");
@@ -157,6 +162,14 @@ bool SipTransport::send_video_direction_reinvite_unlocked_(bool enabled,
   pending.clear();
   pending.branch = branch;
   pending.offered_sdp = offer;
+  pending.offered_tx = offered_tx;
+  pending.offered_rx = offered_rx;
+  pending.offered_dtmf_clocks = offered_clocks;
+  this->local_offered_tx_formats_ = offered_tx;
+  this->local_offered_rx_payloads_ = offered_rx;
+#ifdef USE_ESPHOME_VOIP_DTMF
+  this->dtmf_offered_clocks_ = offered_clocks;
+#endif
   pending.cseq = cseq;
   pending.session_version = session_version;
   pending.response_deadline_ms = now + SIP_TRANSACTION_TIMEOUT_MS;

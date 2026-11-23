@@ -40,8 +40,13 @@ class LdapDirectory : public phone_client::WorkerComponent
   void set_managed_by_ha(bool value) { this->managed_by_ha_ = value; this->enabled_ = !value; }
   const char *status() const { return this->status_; }
   size_t contact_count() const { return this->contact_count_; }
+  size_t omitted_count() const { return this->omitted_count_; }
+  size_t discarded_count() const { return this->discarded_count_; }
+  bool search_limited() const { return this->search_limited_; }
   Trigger<uint32_t> *get_update_trigger() { return &this->updated_; }
   Trigger<uint32_t> *get_error_trigger() { return &this->error_; }
+  Trigger<uint32_t> *get_truncated_trigger() { return &this->truncated_; }
+  Trigger<uint32_t> *get_invalid_records_trigger() { return &this->invalid_records_; }
  protected:
   struct Configuration {
     std::string host, base_dn, bind_dn, filter{"(|(telephoneNumber=*)(labeledURI=*))"}, username, password, ca_pem;
@@ -52,6 +57,7 @@ class LdapDirectory : public phone_client::WorkerComponent
   void worker_run_() override;
   void account_changed_();
   void reset_stage_();
+  void stage_contact_(voip_stack::ContactEntry &&contact);
   voip_stack::VoipStack *parent_{nullptr};
   std::string account_id_;
   uint32_t account_revision_{0}, timeout_ms_{5000}, refresh_ms_{300000}, last_success_{0};
@@ -60,13 +66,16 @@ class LdapDirectory : public phone_client::WorkerComponent
   size_t receive_size_{8192};
   bool ready_{false}, active_{false}, pending_result_{false}, account_loaded_{false};
   bool managed_by_ha_{false}, enabled_{true};
-  uint8_t result_discarded_{0};
+  uint16_t result_discarded_{0}, result_omitted_{0};
+  bool result_limited_{false}, search_limited_{false};
+  size_t omitted_count_{0}, discarded_count_{0};
+  uint32_t reported_generation_{0};
   uint32_t result_generation_{0}, result_code_{0};
   voip_stack::ContactEntry *stage_{nullptr};
   size_t stage_count_{0}, stage_capacity_{0};
   size_t contact_count_{0};
   const char *status_{"unconfigured"};
-  Trigger<uint32_t> updated_, error_;
+  Trigger<uint32_t> updated_, error_, truncated_, invalid_records_;
 };
 
 template<typename... Ts> class RefreshAction : public Action<Ts...>, public Parented<LdapDirectory> {

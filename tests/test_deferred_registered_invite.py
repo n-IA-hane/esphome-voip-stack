@@ -26,7 +26,7 @@ def app_source():
   void end_call_(CallEndReason why,const std::string&){++terminations;termination_reason=why;terminated_identity=identity;call_state_=CallState::IDLE;identity={};}
   bool is_registered(const std::string&id){return transport_->is_registered(id);}
   bool select_line(const std::string&);
-  void start_call_on_line_(const std::string&,const std::string&,const std::string&);
+  void start_call_on_line_(const std::string&,const std::string&);
 ''')
     for marker, replacement in [
         ('void request_call_termination_(', 'void request_call_termination_(const TerminationIntent&);'),
@@ -112,7 +112,7 @@ int main(int argc,char**argv){
  bind_account(s,qa,"7101"); // actual REGISTER qa/7101 initializes the existing hooks/owner.
  bind_line(s,ha,1,"ha","home-user");
  app.sink_ready=false;
- app.start_call_on_line_("7102","qa","delayed-qa");
+ app.start_call_on_line("7102","qa",false,false);
  assert(app.call_state_==CallState::CALLING&&qa.drain().empty());
  assert(app.pending_media_start_==VoipStack::ApplicationMediaStart::ORIGINATE);
  if(scenario=="abort"||scenario=="timeout"){
@@ -123,7 +123,7 @@ int main(int argc,char**argv){
   assert(s.active_account_==1&&qa.drain().empty());
  }else{
   assert(app.select_line("ha"));
-  app.start_call_on_line_("not-admitted","ha","collision");
+  app.start_call_on_line("not-admitted","ha",false,false);
   app.sink_ready=true;app.pump_application_media_start_();
   auto first=pick(qa.drain(),"INVITE");
   std::cout<<"initial_from="<<header_value(first,"From")<<std::endl;

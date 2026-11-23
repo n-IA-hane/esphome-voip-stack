@@ -68,6 +68,14 @@ struct Phone : SipTransport {
     dialog_route_count_=1;dialog_routes_[0]="<sip:proxy@127.0.0.2:"+std::to_string(route.port())+";lr>";
     assert(dialog_digest_.parse("Digest realm=\"fixture\", nonce=\"fixture-nonce\", algorithm=MD5, qop=\"auth\"",false));
   }
+  bool offered_rate(uint32_t rate) {
+    esphome::LockGuard lock(dialog_mutex_);
+    for(uint8_t i=0;i<pending_video_direction_invite_.offered_tx.count;++i)
+      if(pending_video_direction_invite_.offered_tx.formats[i].sample_rate==rate)return true;
+    return false;
+  }
+  void clear_validation_catalog(){esphome::LockGuard lock(dialog_mutex_);local_offered_tx_formats_.count=0;local_offered_rx_payloads_.count=0;}
+  uint8_t receive_payload(){uint8_t pt=0;get_media_config_(nullptr,nullptr,nullptr,&pt);return pt;}
   void expire_video(bool retry=false){esphome::LockGuard lock(dialog_mutex_);assert(pending_video_direction_invite_.pending());
     if(retry)pending_video_direction_invite_.retry_at_ms=millis()-1;else pending_video_direction_invite_.response_deadline_ms=millis()-1;
     pump_video_direction_transaction_();}
@@ -105,16 +113,30 @@ static uint32_t picture(const Peer &peer,const Source &source){
 template<class F>static void eventually(F predicate){for(unsigned i=0;i<200;++i){if(predicate())return;delay(5);}assert(predicate());}
 int main(int argc,char **argv){
   assert(argc==3);const std::string mode=argv[1];Peer signaling,audio,video,routed(0,0x7f000002),contact;const auto local_sip=free_port(),local_audio=free_port(),local_video=free_pair();
+  const bool asymmetric=mode.rfind("catalog-",0)==0;
   Source source(argv[2]);Sink sink;
   {
     Phone phone(local_sip,local_audio,1200,"127.0.0.1",false);phone.initialize_registration();phone.set_remote("127.0.0.1",signaling.port(),audio.port());
+    if(asymmetric){
+      AudioFormatList tx,rx;tx.count=3;rx.count=4;
+      tx.formats[0]={16000,PcmFormat::S16LE,1,20,AudioCodec::PCM};tx.formats[1]=tx.formats[0];tx.formats[1].frame_ms=10;
+      tx.formats[2]={48000,PcmFormat::S16LE,1,10,AudioCodec::PCM};
+      rx.formats[0]=tx.formats[2];rx.formats[1]=rx.formats[0];rx.formats[1].frame_ms=20;rx.formats[2]=tx.formats[0];rx.formats[3]=tx.formats[1];
+      phone.set_audio_formats(tx,rx);
+    }
     phone.set_video_endpoints(&source,mode=="absent"?nullptr:&sink);phone.set_video_config(VideoCodec::JPEG,local_video,26,1200);
-    std::atomic<unsigned> media_callbacks{0},active_callbacks{0};
+    std::atomic<unsigned> media_callbacks{0},active_callbacks{0},receive_callbacks{0};
+    if(asymmetric)phone.set_audio_callback([](void*p,const TransportAudioFrame&frame){
+      const auto format=unpack_audio_format(frame.format_packed);
+      assert(format.sample_rate==48000&&format.frame_ms==10&&frame.bytes==960);
+      assert(frame.pcm[0]==0x34&&frame.pcm[1]==0x12);++*static_cast<std::atomic<unsigned>*>(p);
+    },&receive_callbacks);
     phone.set_video_active_state_callback([](void *p,bool active){if(active)++*static_cast<std::atomic<unsigned>*>(p);},&active_callbacks);
     phone.set_sip_signal_callback([](void *p,SipSignal signal){if(signal.type==SipSignalType::INVITE||signal.type==SipSignalType::STATUS_200_OK||signal.type==SipSignalType::MEDIA_READY)++*static_cast<std::atomic<unsigned>*>(p);},&media_callbacks);
     assert(phone.request_video_send(mode=="initial-on"));assert(phone.start());
     const auto establish=[&](const std::string &id,bool reject_video){
       assert(phone.send_invite(id,"100","Phone","101","Peer"));auto offer=signaling.take();auto body=message_body(offer);port_in(body,"audio",audio.port());
+      if(asymmetric){const auto time=body.find("a=ptime:10");assert(time!=body.npos);body.replace(time,10,"a=ptime:20");}
       const auto offset=body.find("m=video ");
       if(offset!=body.npos){port_in(body,"video",reject_video?0:video.port());const auto direction=body.find("a=sendrecv",offset);if(direction!=body.npos)body.replace(direction,10,"a=recvonly");}
       signaling.deliver(reply(offer,200,body),local_sip);assert(signaling.take().rfind("ACK ",0)==0);eventually([&]{return phone.snapshot().call_active;});assert(phone.start_audio_path());
@@ -128,18 +150,33 @@ int main(int argc,char **argv){
             ";branch=z9hG4bK-incoming-"+method+"\r\nFrom: <"+uri+">;tag=desk\r\nTo: "+to+"\r\nContact: <"+uri+
             ">\r\nCall-ID: video-activation\r\nCSeq: 1 "+method+"\r\nContent-Length: "+std::to_string(body.size())+"\r\n\r\n"+body;
       };
-      const std::string body="v=0\r\no=- 77 1 IN IP4 127.0.0.1\r\ns=Peer\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio "+std::to_string(audio.port())+
+      std::string body="v=0\r\no=- 77 1 IN IP4 127.0.0.1\r\ns=Peer\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio "+std::to_string(audio.port())+
           " RTP/AVP 96\r\na=rtpmap:96 L16/16000/1\r\na=ptime:16\r\na=sendrecv\r\nm=video "+std::to_string(video.port())+" RTP/AVP 26\r\na=rtpmap:26 JPEG/90000\r\na=recvonly\r\n";
+      if(asymmetric){
+        const auto begin=body.find("m=audio "),end=body.find("m=video ");
+        body.replace(begin,end-begin,"m=audio "+std::to_string(audio.port())+
+          " RTP/AVP 110 111\r\na=rtpmap:110 L16/16000/1\r\na=rtpmap:111 L16/48000/1\r\na=ptime:20\r\na=maxptime:20\r\na=sendrecv\r\n");
+      }
       signaling.deliver(request("INVITE","<sip:100@127.0.0.1>",body),local_sip);assert(signaling.take().rfind("SIP/2.0 100",0)==0);
-      assert(phone.send_answer("video-activation",DEFAULT_AUDIO_FORMAT,DEFAULT_AUDIO_FORMAT));const auto answer=signaling.take();assert(answer.rfind("SIP/2.0 200",0)==0);
+      assert(phone.send_answer("video-activation",asymmetric?AudioFormat{16000,PcmFormat::S16LE,1,20,AudioCodec::PCM}:DEFAULT_AUDIO_FORMAT,asymmetric?AudioFormat{48000,PcmFormat::S16LE,1,10,AudioCodec::PCM}:DEFAULT_AUDIO_FORMAT));const auto answer=signaling.take();assert(answer.rfind("SIP/2.0 200",0)==0);
       assert(message_body(answer).find("m=video 0 ")!=std::string::npos);
       signaling.deliver(request("ACK",header_value(answer,"To"),""),local_sip);eventually([&]{return media_callbacks==1&&!phone.snapshot().terminal_transaction_pending;});assert(phone.start_audio_path());return answer;
     };
-    const auto initial=mode=="incoming"?incoming():establish("video-activation",mode!="initial-on");
+    const auto initial=(mode=="incoming"||mode=="catalog-uas")?incoming():establish("video-activation",mode!="initial-on");
     if(mode=="route")phone.use_route(routed,contact);
     Peer &peer=mode=="route"?routed:signaling;
+    uint16_t incoming_sequence=0;
     const auto check_audio=[&]{auto before=phone.snapshot();const auto cap=before.selected_tx_format;std::vector<uint8_t> pcm(cap.nominal_frame_bytes(),0);
-      phone.send_audio_frame(pcm.data(),pcm.size());auto packet=audio.take();assert(packet.size()>12);auto after=phone.snapshot();assert(after.call_active&&after.rtp_running&&after.rtp_tx_packets>before.rtp_tx_packets);return packet;};
+      phone.send_audio_frame(pcm.data(),pcm.size());auto packet=audio.take();assert(packet.size()>12);auto after=phone.snapshot();assert(after.call_active&&after.rtp_running&&after.rtp_tx_packets>before.rtp_tx_packets);
+      if(asymmetric){
+        assert(cap.sample_rate==16000&&cap.frame_ms==20&&after.selected_rx_format.sample_rate==48000&&after.selected_rx_format.frame_ms==10);
+        const auto received=receive_callbacks.load();std::string input(972,'\0');input[0]=char(0x80);input[1]=phone.receive_payload();
+        ++incoming_sequence;input[2]=char(incoming_sequence>>8);input[3]=char(incoming_sequence);const uint32_t stamp=incoming_sequence*480;
+        input[4]=char(stamp>>24);input[5]=char(stamp>>16);input[6]=char(stamp>>8);input[7]=char(stamp);input[8]=0x10;input[9]=0x20;input[10]=0x30;input[11]=0x40;
+        for(size_t i=12;i<input.size();i+=2){input[i]=0x12;input[i+1]=0x34;}audio.deliver(input,local_audio);
+        eventually([&]{return receive_callbacks.load()>received;});
+      }
+      return packet;};
     check_audio();const auto initial_callbacks=media_callbacks.load();assert(initial_callbacks==1);
     if(mode=="initial-on")eventually([&]{return source.active()&&!phone.snapshot().video_send_change_pending;});
     else {
@@ -147,17 +184,31 @@ int main(int argc,char **argv){
       if(mode=="local-failure"){source.available=false;assert(!phone.request_video_send(true));assert(!phone.snapshot().video_send_change_pending&&!phone.snapshot().video_send_requested);check_audio();source.available=true;}
       assert(phone.request_video_send(true)&&"configured source must offer video after the initial audio-only answer");
       auto offer=peer.take();assert(offer.rfind("INVITE ",0)==0);assert(header_value(offer,"Call-ID")==header_value(initial,"Call-ID"));
-      assert(mode=="incoming"||cseq_number(header_value(offer,"CSeq"))>cseq_number(header_value(initial,"CSeq")));
+      assert(mode=="incoming"||mode=="catalog-uas"||cseq_number(header_value(offer,"CSeq"))>cseq_number(header_value(initial,"CSeq")));
       if(mode=="route"){assert(!header_value(offer,"Route").empty()&&!header_value(offer,"Authorization").empty());assert(offer.find("INVITE sip:101@127.0.0.1:"+std::to_string(contact.port()))==0);}
       auto body=message_body(offer);assert(body.find("m=video "+std::to_string(local_video)+" RTP/AVP 26")!=body.npos);
       assert(body.find("a=rtpmap:26 JPEG/90000")!=body.npos);assert(audio_section(body)==audio_section(message_body(initial)));
       assert(body.find("m=video ",body.find("m=video ")+1)==body.npos);assert(!source.active());check_audio();
-      if(mode=="timeout"){
+      if(asymmetric)assert(phone.offered_rate(16000)&&phone.offered_rate(48000));
+      if(mode=="catalog-bad"||mode=="catalog-bad-pt"){
+        port_in(body,"audio",audio.port());port_in(body,"video",video.port());receive_only(body);
+        if(mode=="catalog-bad"){
+          const auto mapping=body.find("L16/48000");assert(mapping!=body.npos);body.replace(mapping,9,"L16/32000");
+        }else{
+          const auto begin=body.find("m=audio "),end=body.find("m=video ");assert(begin!=body.npos&&end>begin);
+          body.replace(begin,end-begin,"m=audio "+std::to_string(audio.port())+
+            " RTP/AVP 112 113\r\na=rtpmap:112 L16/16000/1\r\na=rtpmap:113 L16/48000/1\r\na=ptime:20\r\na=maxptime:20\r\na=sendrecv\r\n");
+        }
+        peer.deliver(reply(offer,200,body),local_sip);assert(peer.take().rfind("ACK ",0)==0);
+        const auto bye=peer.take();assert(bye.rfind("BYE ",0)==0);peer.deliver(reply(bye,200),local_sip);
+        eventually([&]{const auto state=phone.snapshot();return !state.call_active&&!state.terminal_transaction_pending&&state.media_lifecycle_phase==0;});
+      }else if(mode=="timeout"){
         phone.expire_video();auto bye=peer.take();assert(bye.rfind("BYE ",0)==0);peer.deliver(reply(bye,200),local_sip);eventually([&]{const auto state=phone.snapshot();return !state.call_active&&!state.terminal_transaction_pending&&state.media_lifecycle_phase==0;});assert(!source.active());
       }else if(mode=="reject-488"){
         peer.deliver(reply(offer,488),local_sip);assert(peer.take().rfind("ACK ",0)==0);eventually([&]{return !phone.snapshot().video_send_change_pending;});assert(!phone.snapshot().video_send_requested&&!source.active());check_audio();
       }else{
-        if(mode=="glare"){peer.deliver(reply(offer,491),local_sip);assert(peer.take().rfind("ACK ",0)==0);eventually([&]{return phone.snapshot().last_sip_status_code==491;});phone.expire_video(true);offer=peer.take();body=message_body(offer);}
+        if(mode=="glare"||mode=="catalog-glare"){peer.deliver(reply(offer,491),local_sip);assert(peer.take().rfind("ACK ",0)==0);eventually([&]{return phone.snapshot().last_sip_status_code==491;});const auto saved=message_body(offer);if(asymmetric)phone.clear_validation_catalog();phone.expire_video(true);offer=peer.take();body=message_body(offer);
+          assert(body==saved);if(asymmetric)assert(phone.offered_rate(16000)&&phone.offered_rate(48000));}
         port_in(body,"audio",audio.port());port_in(body,"video",mode=="reject-video"?0:video.port());
         receive_only(body);
         peer.deliver(reply(offer,200,body),local_sip);assert(peer.take().rfind("ACK ",0)==0);eventually([&]{return !phone.snapshot().video_send_change_pending;});
@@ -174,7 +225,7 @@ int main(int argc,char **argv){
       peer.deliver(reply(offer,200,body),local_sip);assert(peer.take().rfind("ACK ",0)==0);eventually([&]{return source.active()&&!phone.snapshot().video_send_change_pending;});source.publish(180000);assert(picture(video,source)-timestamp==90000);
       assert(active_callbacks==1);
     }
-    assert(media_callbacks==initial_callbacks);if(mode!="timeout"){assert(phone.send_bye("video-activation"));auto bye=peer.take();assert(bye.rfind("BYE ",0)==0);peer.deliver(reply(bye,200),local_sip);eventually([&]{const auto state=phone.snapshot();return !state.call_active&&!state.terminal_transaction_pending&&state.media_lifecycle_phase==0;});eventually([&]{return !source.active();});}
+    assert(media_callbacks==initial_callbacks);if(mode!="timeout"&&mode!="catalog-bad"&&mode!="catalog-bad-pt"){assert(phone.send_bye("video-activation"));auto bye=peer.take();assert(bye.rfind("BYE ",0)==0);peer.deliver(reply(bye,200),local_sip);eventually([&]{const auto state=phone.snapshot();return !state.call_active&&!state.terminal_transaction_pending&&state.media_lifecycle_phase==0;});eventually([&]{return !source.active();});}
     assert(phone.request_video_send(false));phone.set_remote("127.0.0.1",signaling.port(),audio.port());establish("redial",false);check_audio();assert(phone.send_bye("redial"));auto redial_bye=signaling.take();signaling.deliver(reply(redial_bye,200),local_sip);eventually([&]{const auto state=phone.snapshot();return !state.call_active&&!state.terminal_transaction_pending&&state.media_lifecycle_phase==0;});phone.stop();reap_host_tasks();
   }
   assert(video_probe::tasks==0&&video_probe::allocated==video_probe::freed&&video_probe::allocations.empty());

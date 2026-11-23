@@ -6,8 +6,7 @@ VoIP Stack
 
 The ``voip_stack`` component turns an ESP32 ESPHome device into a SIP endpoint.
 It handles SIP signaling over UDP or TCP, SDP offer/answer, RTP media over UDP,
-phonebook selection, call-state automation triggers, endpoint identity
-publishing and diagnostic snapshots.
+phonebook selection, call-state automation triggers and diagnostic snapshots.
 
 The component binds to standard ESPHome ``microphone`` and ``speaker``
 components. It does not own audio hardware or echo cancellation. For codec
@@ -33,24 +32,26 @@ exist. With native Home Assistant discovery enabled, retain
       microphone: clean_mic
       speaker: local_speaker
       audio:
-        tx: auto
-        rx:
-          sample_rate: 16000
-          pcm_format: s16le
-          channels: 1
-          frame_ms: 20
+        codecs:
+          - codec: pcm
+            tx:
+              - {sample_rate: 16000, pcm_format: s16le, channels: 1, frame_ms: 20}
+              - {sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 10}
+            rx:
+              - {sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 10}
+              - {sample_rate: 48000, pcm_format: s16le, channels: 1, frame_ms: 20}
+              - {sample_rate: 16000, pcm_format: s16le, channels: 1, frame_ms: 20}
 
 Endpoint capabilities
 ---------------------
 
-The published endpoint mode is inferred from YAML wiring:
+The hardware audio mode is inferred from YAML wiring:
 
 - microphone plus speaker: ``full_duplex``;
 - microphone only: ``mic_only``;
 - speaker only: ``speaker_only``.
 
-The mode is published in the endpoint text sensor so peers and Home Assistant do
-not attempt an audio direction that the device cannot provide. At least one
+Standard SDP advertises only the audio directions the device can provide. At least one
 audio direction is required; a signaling-only endpoint is not supported.
 Microphone-only offers advertise ``sendonly`` and speaker-only offers
 ``recvonly``. Settings for absent hardware do not add a fictitious direction.
@@ -73,16 +74,12 @@ Configuration variables
 - **microphone_source** (*Optional*): Microphone source block with microphone
   ID, bit-depth and channel selection.
 - **speaker** (*Optional*, :ref:`config-id`): ESPHome speaker used for RX.
-- **audio.tx** / **audio.rx** (*Optional*): Per-direction PCM format contract.
-  Each direction supports ``auto`` or explicit ``sample_rate``, ``pcm_format``,
-  ``channels`` and ``frame_ms``.
-- **audio.tx_formats** / **audio.rx_formats** (*Optional*, list): Up to seven
-  additional explicit capabilities advertised in SDP. TX entries retain its
-  decoded PCM geometry and can select supported codec/packet-time alternatives.
-  RX entries may describe other supported speaker-side formats. Opus entries
-  within one direction share decoded PCM rate, sample format and channels;
-  mixed PCM/Opus RX entries share that same geometry. PCM-only receive-rate
-  conversion remains supported.
+- **audio.codecs** (*Required*, list): Explicit codec declarations with ordered
+  ``tx`` and ``rx`` format lists. Each format declares ``sample_rate``,
+  ``pcm_format``, ``channels`` and ``frame_ms``. Omit an absent hardware direction.
+  PCM conversion supports real TX alternatives and speaker-side RX rates.
+  ``ptime`` is a receive preference; independent TX/RX durations are supported.
+  The retired ``audio.tx/rx`` and ``tx_formats/rx_formats`` schema is rejected.
 - **static_contacts** (*Optional*, list): Local outbound dial plan entries.
   Each structured contact requires ``name`` and may include ``ip``, ``port``,
   ``rtp_port`` and ``transport``. A pre-serialized ``entry`` is also accepted.
@@ -353,14 +350,10 @@ before changing the current list. Removed or replaced rows first retire their
 old subscriptions. Their credentials and flows remain owned through the final
 NOTIFY, Timer N or loss of that flow.
 
-With ``watch_contacts: true`` (default), explicit Phonebook metadata selects
-the first eligible resources up to the configured bound. HA roster v2 preserves
-its existing keys: ``contacts[].id`` is the dial target,
-``metadata.endpoint_id`` supplies the stable identity, and
-``metadata.account_id`` selects the SIP account. Explicit kinds esphome,
-sip_account and browser enable automatic watches unless disabled. A generic
-contact requires an explicit ``auto_blf: true`` provider policy. Unknown,
-group, service and automation entries remain excluded. Static contacts can
+With ``watch_contacts: true`` (default), typed Phonebook metadata selects
+eligible resources up to the configured bound. LDAP supplies public contact
+identity, route, kind and SIP account. Managed phone kinds enable automatic
+watches; groups, services and automations are excluded. Static contacts can
 supply ``contact_id``, ``kind``, ``account_id`` and ``auto_blf`` without LDAP.
 An explicit static ``route`` also requires its SIP endpoint ``ip``.
 

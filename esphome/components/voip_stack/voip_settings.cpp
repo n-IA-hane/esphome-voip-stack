@@ -319,11 +319,6 @@ void VoipStack::remove_contact(const std::string &name) {
 
 void VoipStack::set_contacts(const std::string &contacts_csv) {
   this->phonebook_.set_self_name(this->device_name_);
-  const std::string trimmed = Phonebook::trim(contacts_csv);
-  if (!trimmed.empty() && (trimmed.front() == '{' || trimmed.front() == '[')) {
-    ESP_LOGW(TAG, "Static contacts require CSV; dynamic PBX contacts use LDAP");
-    return;
-  }
   const std::string normalized_csv = this->normalize_phonebook_for_transport_(contacts_csv);
   if (normalized_csv.empty()) return;
   const bool changed = this->phonebook_.add_batch(normalized_csv);
@@ -463,7 +458,7 @@ DirectoryCommitResult VoipStack::commit_contact_directory(const void *provider, 
 }
 
 DirectoryCommitResult VoipStack::commit_contact_directory(const void *provider, ContactEntry *entries, size_t count,
-                                                          const std::string &account_id) {
+                                                          const std::string &account_id, DirectoryCommitInfo *info) {
   if (entries == nullptr && count != 0) return DirectoryCommitResult::INVALID;
   if (count > Phonebook::MAX_CONTACTS) return DirectoryCommitResult::CAPACITY;
   if (account_id.size() > 32) return DirectoryCommitResult::INVALID;
@@ -494,7 +489,7 @@ DirectoryCommitResult VoipStack::commit_contact_directory(const void *provider, 
     if (retained_count != i) entries[retained_count] = std::move(entries[i]);
     ++retained_count;
   }
-  const auto result = this->phonebook_.replace_directory(provider, entries, retained_count);
+  const auto result = this->phonebook_.replace_directory(provider, entries, retained_count, info);
   if (result == DirectoryCommitResult::APPLIED || result == DirectoryCommitResult::UNCHANGED) {
     const bool route_changed = binding != nullptr && (binding->owner != provider || binding->account_id != account_id);
     bool retained = false;
@@ -509,7 +504,7 @@ DirectoryCommitResult VoipStack::commit_contact_directory(const void *provider, 
 }
 #endif
 
-void VoipStack::call(const std::string &value) { this->call_(value, {}); }
+void VoipStack::call(const std::string &value) { this->call_(value); }
 
 void VoipStack::start_call_on_line(const std::string &target, const std::string &line,
                                   bool send_video, bool receive_video) {
@@ -521,7 +516,7 @@ void VoipStack::start_call_on_line(const std::string &target, const std::string 
   (void) receive_video;
 #endif
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
-  this->start_call_on_line_(target, line, {});
+  this->start_call_on_line_(target, line);
 #else
   if (line.empty() || line == "direct") this->call(target);
 #endif
@@ -535,7 +530,7 @@ void VoipStack::hangup_call_if_id(const std::string &call_id) {
   if (!call_id.empty() && call_id == this->get_current_call_id_()) this->stop();
 }
 
-void VoipStack::call_(const std::string &value, const std::string &call_id) {
+void VoipStack::call_(const std::string &value) {
   if (!this->can_start_call_()) return;
   const std::string target = Phonebook::trim(value);
   if (target.empty()) {
@@ -544,8 +539,8 @@ void VoipStack::call_(const std::string &value, const std::string &call_id) {
     return;
   }
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
-  if (call_id.empty() && !this->force_direct_call_ && this->default_line_ != "direct") {
-    this->start_call_on_line_(target, this->default_line_, {}); return;
+  if (!this->force_direct_call_ && this->default_line_ != "direct") {
+    this->start_call_on_line_(target, this->default_line_); return;
   }
 #endif
   if (sip_normalize_dial_target(value, Phonebook::MAX_ROUTE_BYTES).empty()) {
@@ -554,7 +549,7 @@ void VoipStack::call_(const std::string &value, const std::string &call_id) {
     return;
   }
 
-  if (call_id.empty() && this->phonebook_.select(target)) {
+  if (this->phonebook_.select(target)) {
     this->pending_dialplan_target_.clear();
     this->publish_destination_();
     ESP_LOGI(TAG, "Selected contact: %s", target.c_str());
@@ -575,7 +570,7 @@ void VoipStack::call_(const std::string &value, const std::string &call_id) {
   this->publish_destination_();
   ESP_LOGI(TAG, "Routing target '%s' through HA peer '%s'",
            target.c_str(), this->ha_peer_name_.c_str());
-  this->start_with_id_(call_id);
+  this->start_call_();
 }
 
 void VoipStack::next_contact() {

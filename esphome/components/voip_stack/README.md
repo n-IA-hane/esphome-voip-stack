@@ -15,12 +15,13 @@ It can run in two supported shapes:
   routing, TDM reference, dual-bus sync, media player, Voice Assistant or Micro
   Wake Word share the same audio backend.
 
-The component negotiates explicit PCM per direction. Duplex SIP/SDP selects one
-dialog `ptime` shared by both directions, while TX and RX sample rate/PCM
-format can still differ. One-way endpoints advertise only their actual audio
-direction. Maintained YAMLs publish their real capabilities; absent hardware
-does not contribute an invented format. AFE/AEC-backed branches remain
-16 kHz/s16/mono because Espressif esp-sr exposes that surface.
+The component negotiates explicit PCM per direction. TX and RX sample rate,
+PCM format and packet duration can differ. Standard SDP media mappings remain
+usable in both advertised directions; `ptime` expresses the local receive
+preference and `maxptime` bounds that receive envelope. One-way endpoints
+advertise only their actual audio direction. Absent hardware does not contribute
+an invented format. AFE/AEC capture stays 16 kHz/s16/mono because Espressif esp-sr
+exposes that surface; receive playback can use its declared 48 kHz format.
 
 Use ESPHome **2026.10.0 or newer**. See the
 [2026.10.1 upgrade steps](../../../README.md#upgrading-from-2026101) for custom
@@ -45,20 +46,10 @@ The endpoint capability is inferred from the YAML wiring:
 | `microphone`/`microphone_source` only | `mic_only` | Sends mic audio; incoming audio is ignored. |
 | `speaker` only | `speaker_only` | Plays incoming audio; no mic TX task is created. |
 
-The endpoint sensor publishes this device as a SIP phonebook endpoint. SIP is
-implicit. The public concepts are:
-
-- name: display and dial name;
-- address: optional host/IP for direct SIP endpoints;
-- SIP port and RTP port;
-- transport: SIP/TCP or SIP/UDP signaling;
-- audio mode: full duplex, microphone only or speaker only;
-- advertised TX/RX PCM capabilities.
-
-Home Assistant consumes those fields for routing/card display, format
-negotiation and avoiding audio directions that cannot exist. User YAML should
-use the structured `add_contact` action or HA-managed roster sync instead of
-hand-building serialized endpoint rows.
+REGISTER and Contact establish the signaling route. SDP advertises the actual
+codec mappings and receive envelope. Media capability decisions do not use an
+endpoint text sensor. Dynamic contacts come only from LDAP; static YAML contacts
+and the structured `add_contact` action remain available for local dial plans.
 
 ## Compile-time shape
 
@@ -288,45 +279,29 @@ voip_stack:
 `name` is required. `ip`, `port`, `rtp_port`, and `transport` are optional.
 When `transport` is omitted, the contact uses the component SIP signaling
 transport (`transport: udp` or `transport: tcp` on `voip_stack`). A name-only
-contact is a logical target that can later be upgraded by the HA roster or
-routed through HA.
+contact is a logical target that can be routed through the selected SIP account.
 
 Runtime YAML automations can mutate the local dial plan with
 `voip_stack.add_contact`, `voip_stack.remove_contact`,
-`voip_stack.set_contacts` and `voip_stack.flush_contacts`. With native HA
-integration enabled, the component exposes ESPHome API actions named
-`esphome.<slug>_add_contact`, `esphome.<slug>_remove_contact`,
-`esphome.<slug>_set_contacts`, `esphome.<slug>_flush_contacts` and
-`esphome.<slug>_update_contacts`. Use them for custom local behavior only; HA
-central contacts should be managed with HA `voip_stack.add_contact`,
-`voip_stack.remove_contact`, `voip_stack.set_contacts`,
-`voip_stack.clear_contacts` and `voip_stack.push_phonebook` services.
+`voip_stack.set_contacts` and `voip_stack.flush_contacts`. These local actions do
+not replace LDAP provisioning. Home Assistant serves the central directory via
+LDAP, using public SIP usernames and routes as identities.
 
-Each ESP publishes an `voip_endpoint` text sensor. Home Assistant builds the
-central `sensor.voip_phonebook` from those endpoints and adds itself as the
-HA peer.
+The Home Assistant native call command is
+`start_call_on_line(dest, line, send_video, receive_video)`. The ESP creates its
+own SIP Call-ID. `hangup_call_if_id(call_id)` affects only the matching dialog.
+Managed provisioning uses `register_ha_account()` with no arguments after the
+account fields are set. Hardware renames do not rename an existing SIP account.
 
-Inbound ESP calls are not rejected just because the caller is missing from the
-callee phonebook. The phonebook is the outbound SIP dial plan; inbound INVITE
-carries caller and destination identity. When HA is in the path, it resolves
-inbound SIP callers by:
+Custom configurations must remove the retired `endpoint` text sensor and
+`phonebook_subscribe` package, update the HA integration and rebuild ESP
+firmware. No JSON roster, private SDP attribute or media-route command is
+required. Keep `api.custom_services: true` when using native HA provisioning.
 
-1. socket source IP when it matches the endpoint host;
-2. SIP From URI user/name;
-3. caller friendly name from SIP headers.
-
-That keeps routed subnet/NAT/VPN installs working when HA sees a socket source
-address that differs from the ESP endpoint IP, while preserving the endpoint IP
-as the address other peers should dial.
-
-`advertise_host` in the HA integration is an advanced override for HA
-multihomed/LXC/NAT installs where Home Assistant would otherwise publish an
-address ESP devices cannot reach. It is not required just because ESPs and HA
-are on different routed subnets.
-
-ESP devices never register to the optional HA/provider trunk. If HA has a trunk,
-HA maps external numbers or inbound DTMF route digits to local phonebook
-targets and then calls ESP devices as normal SIP phones.
+Optional registered accounts use the same SIP owner as direct calls and support
+Digest authentication. REGISTER admission does not depend on LDAP delivery.
+The phonebook remains an outbound dial plan; normal registered-line/direct-call
+admission, busy/DND and SDP validation apply to incoming calls.
 
 ## SIP automation hooks
 
@@ -450,10 +425,10 @@ dual-bus AEC example is a separate Audio Stack configuration.
 
 ## Protocol and security boundaries
 
-- ESP endpoints do not register and do not implement SIP Digest challenges.
-- The phonebook is an outbound dial plan, not an inbound caller allowlist. Any
-  network-reachable peer may send an INVITE; normal busy/DND and SDP validation
-  still apply.
+- Optional PBX accounts use REGISTER and SIP Digest over their existing UDP or TCP signaling flow.
+- Registered-line admission uses the existing account and signaling flow.
+  Direct incoming calls require their explicit configuration; busy/DND and SDP
+  validation still apply.
 - SIP is UDP/TCP without TLS and RTP is plaintext UDP without SRTP. Use a
   trusted LAN/VPN or enforce admission at a firewall/SBC boundary.
 - In-dialog re-INVITE (including hold or codec renegotiation) receives `488`

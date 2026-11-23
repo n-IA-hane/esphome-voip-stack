@@ -613,7 +613,7 @@ CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), ha_integration.p
         cv.Optional(CONF_PAGING_AUTO_ANSWER_PEERS, default=[]): cv.ensure_list(cv.ipv4address),
         # On the first post-boot phonebook population, select the HA peer row
         # as the current destination so a freshly booted ESP is tuned to HA
-        # instead of whichever contact happens to be first in the roster order.
+        # instead of whichever contact happens to be first in the phonebook.
         cv.Optional(CONF_USE_HA_AS_FIRST_CONTACT, default=False): cv.boolean,
         # Targeted diagnostics: logs PCM peak/RMS on VoIP TX/RX.
         # Keep disabled by default; enable only on devices under audio-level test.

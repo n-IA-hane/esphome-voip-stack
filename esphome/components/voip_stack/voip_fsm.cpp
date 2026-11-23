@@ -202,9 +202,9 @@ bool VoipStack::can_start_call_() const {
   return true;
 }
 
-void VoipStack::start() { this->start_with_id_({}); }
+void VoipStack::start() { this->start_call_(); }
 
-void VoipStack::start_with_id_(const std::string &call_id) {
+void VoipStack::start_call_() {
   // Publishing a selected contact can run user automations before we get here.
   if (!this->can_start_call_()) {
     this->pending_dialplan_target_.clear();
@@ -212,10 +212,10 @@ void VoipStack::start_with_id_(const std::string &call_id) {
   }
   this->ha_media_fallback_pending_ = false;
   this->ha_media_fallback_attempted_ = false;
-  this->start_call_attempt_(false, call_id);
+  this->start_call_attempt_(false);
 }
 
-void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_call_id) {
+void VoipStack::start_call_attempt_(bool via_ha) {
 #ifdef USE_VOIP_HA_AUTO_REGISTER
   const std::string &caller_name = this->get_caller_display_name();
 #else
@@ -271,8 +271,7 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
       : (this->get_current_destination_route().empty()
              ? dest_name
              : this->get_current_destination_route());
-  const std::string call_id = !requested_call_id.empty() ? requested_call_id
-      : "esp-" + std::to_string(static_cast<unsigned>(esp_random())) + "-" + std::to_string(millis()) +
+  const std::string call_id = "esp-" + std::to_string(static_cast<unsigned>(esp_random())) + "-" + std::to_string(millis()) +
         "-" + std::to_string(static_cast<unsigned>(esp_random())) + "@esphome";
 
   if (dial_ip.empty() || dial_port == 0) {
@@ -296,7 +295,6 @@ void VoipStack::start_call_attempt_(bool via_ha, const std::string &requested_ca
 
   this->clear_terminal_call_snapshot_();
   this->set_remote_sip_transport_tcp(dial_sip_tcp);
-  if (this->transport_ != nullptr)
   this->set_remote_endpoint(dial_ip, dial_port, dial_rtp_port);
   this->set_call_identity_(call_id, caller_route, caller_name,
                             dest_route, dest_name, true);

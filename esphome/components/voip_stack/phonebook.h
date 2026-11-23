@@ -49,6 +49,9 @@ inline ContactKind contact_kind_from_string(std::string_view value) {
 
 enum class ContactOrigin : uint8_t { MANUAL, LDAP };
 enum class DirectoryCommitResult : uint8_t { APPLIED, UNCHANGED, INVALID, CONFLICT, CAPACITY };
+struct DirectoryCommitInfo {
+  size_t contacts{0}, omitted{0};
+};
 
 inline const char *contact_endpoint_type_to_str(ContactEndpointType endpoint_type) {
   switch (endpoint_type) {
@@ -201,8 +204,7 @@ class Phonebook {
   }
 
   /// Parse one CSV slot without mutating the phonebook. Used by VoipStack to
-  /// normalize the HA phonebook into a transport-local dial plan
-  /// before merge.
+  /// normalize static and manual contacts before merge.
   static bool parse_entry(const std::string &entry, ContactEntry *out) {
     return parse_entry_(entry, out);
   }
@@ -313,10 +315,12 @@ class Phonebook {
 #endif
     return true;
   }
-  DirectoryCommitResult replace_directory(const void *provider, ContactEntry *entries, size_t count) {
+  DirectoryCommitResult replace_directory(const void *provider, ContactEntry *entries, size_t count,
+                                          DirectoryCommitInfo *info = nullptr) {
     constexpr ContactOrigin source = ContactOrigin::LDAP;
     if (provider == nullptr || (entries == nullptr && count != 0)) return DirectoryCommitResult::INVALID;
     if (count > MAX_CONTACTS) return DirectoryCommitResult::CAPACITY;
+    if (info != nullptr) *info = {};
     for (size_t i = 0; i < count; ++i) {
       if (!valid_entry_(entries[i])) return DirectoryCommitResult::INVALID;
       for (size_t j = 0; j < i; ++j)
@@ -340,6 +344,7 @@ class Phonebook {
     size_t final_count = 0;
     for (const auto &old : this->entries_)
       final_count += retained(old);
+    size_t accepted = 0;
     for (size_t i = 0; i < count; ++i) {
       auto &entry = entries[i];
       if (shadowed(entry)) continue;
@@ -348,12 +353,21 @@ class Phonebook {
         if (!same_identity_(old, entry)) continue;
         if (old.origin != ContactOrigin::MANUAL) return DirectoryCommitResult::CONFLICT;
       }
-      if (++final_count > MAX_CONTACTS) return DirectoryCommitResult::CAPACITY;
-      entry.origin = source;
+      if (final_count == MAX_CONTACTS) {
+        if (info == nullptr) return DirectoryCommitResult::CAPACITY;
+        ++info->omitted;
+        continue;
+      }
+      if (accepted != i) entries[accepted] = std::move(entry);
+      auto &admitted = entries[accepted++];
+      ++final_count;
+      admitted.origin = source;
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
-      entry.provider = provider;
+      admitted.provider = provider;
 #endif
     }
+    count = accepted;
+    if (info != nullptr) info->contacts = count;
     bool unchanged = final_count == this->entries_.size();
     size_t position = 0;
     for (const auto &old : this->entries_)
@@ -361,18 +375,16 @@ class Phonebook {
         if (unchanged && !same_entry_(this->entries_[position], old)) unchanged = false;
         ++position;
       }
-    for (size_t i = 0; i < count; ++i)
-      if (!shadowed(entries[i])) {
+    for (size_t i = 0; i < count; ++i) {
         if (unchanged && !same_entry_(this->entries_[position], entries[i])) unchanged = false;
         ++position;
-      }
+    }
     if (unchanged) return DirectoryCommitResult::UNCHANGED;
     if (!this->ensure_directory_capacity_(final_count)) return DirectoryCommitResult::CAPACITY;
     const auto selected = this->snapshot_selection_();
     this->entries_.erase(std::remove_if(this->entries_.begin(), this->entries_.end(),
                         [&](const ContactEntry &entry) { return !retained(entry); }), this->entries_.end());
-    for (size_t i = 0; i < count; ++i)
-      if (!shadowed(entries[i])) this->entries_.push_back(std::move(entries[i]));
+    for (size_t i = 0; i < count; ++i) this->entries_.push_back(std::move(entries[i]));
     this->restore_selection_(selected);
     return DirectoryCommitResult::APPLIED;
   }

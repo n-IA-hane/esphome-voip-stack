@@ -74,7 +74,7 @@ struct VoipStack{
 #endif
  bool failed=false;bool is_failed(){return failed;}
  struct Formats{AudioFormat tx,rx;};Formats snapshot_current_media_formats_(){return {};}
- const char*configured_sip_transport_name(){return "udp";}const char*audio_capability_(){return "full_duplex";}const char*get_media_route_str(){return "direct";}
+ const char*configured_sip_transport_name(){return "udp";}const char*audio_capability_(){return "full_duplex";}
  std::function<void()>pending;
  void defer(const char*,std::function<void()>f){assert(!pending);pending=std::move(f);}
  void once(){assert(pending);auto f=std::move(pending);pending={};const auto n=lines.size();f();assert(lines.size()-n<=2);}
@@ -184,15 +184,12 @@ struct VoipStack {
   Sensor snapshot, state, reason;
   Sensor *sip_snapshot_sensor_{&snapshot}, *state_sensor_{&state}, *last_reason_sensor_{&reason};
   std::atomic<CallState> call_state_{CallState::IDLE};
-  std::atomic<bool> endpoint_publish_requested_{false};
   std::string last_sip_snapshot_, last_reason_;
   uint32_t last_sip_snapshot_refresh_ms_{0}, cycle_started_at_{0}, packets{0};
   static constexpr uint32_t calling_timeout_ms_=3000, ringing_timeout_ms_=3000;
   bool audio_debug_{false}, cycle_active_{false};
   void pump_application_media_start_() {}
-  void publish_endpoint_() {}
   void handle_call_timeouts_(uint32_t, uint32_t) {}
-  void publish_media_route_() {}
   void disable_loop() {}
   template<class F> void defer(F) {}
   std::string get_state_str() const {

@@ -2278,22 +2278,13 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
     assert 'TYPE_RING_GROUPS = "ring_groups"' in text_py
     assert 'TYPE_CONFERENCE_GROUPS = "conference_groups"' in text_py
     assert "VoipStackGroupsText" in text_py
-    assert 'TYPE_ENDPOINT = "endpoint"' in text_sensor_py
+    assert 'TYPE_ENDPOINT = "endpoint"' not in text_sensor_py
     assert 'TYPE_LAST_REASON = "last_reason"' in text_sensor_py
     assert 'CONF_CONFERENCE_RING = "conference_ring"' in switch_py
 
-    endpoint = stack_cpp[stack_cpp.index("std::string VoipStack::build_endpoint_string_"):]
-    assert "char buf[640]" in endpoint
-    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s%s"' in endpoint
-    for field in (" | at=", " | ar=", " | sf=", " | ip="):
-        assert field not in endpoint
-    assert 'video_extra = " | video=jpeg"' in endpoint
-    assert 'video_extra = " | video=h264"' in endpoint
-    assert 'video_extra = ""' in endpoint
-    assert "this->conference_groups_.c_str()" not in endpoint
-    assert "this->ring_groups_.c_str()" not in endpoint
-    assert 'this->conference_ring_ ? "1" : "0"' not in endpoint
-    assert "VoIP endpoint string truncated" in endpoint
+    for retired in ("build_endpoint_string_", "publish_endpoint_", "request_endpoint_publish_"):
+        assert retired not in stack_cpp
+        assert retired not in header
 
     set_extension = stack_cpp[
         stack_cpp.index("void VoipStack::set_extension(") :
@@ -2301,7 +2292,7 @@ def test_endpoint_group_membership_is_optional_and_forward_compatible() -> None:
     ]
     assert "normalize_endpoint_label(extension)" in set_extension
     assert "this->extension_text_->publish_state(normalized)" in set_extension
-    assert "this->request_endpoint_publish_()" in set_extension
+    assert "this->publish_sip_snapshot_()" in set_extension
 
     settings = read("voip_settings.cpp")
     assert "parse_json_roster_slot" not in settings
@@ -3168,8 +3159,8 @@ def test_terminal_sip_transaction_remains_owned_until_peer_completion() -> None:
     assert disconnect.index("return;") < disconnect.index("this->reset_dialog_();")
 
     start = cpp_method(fsm, r"VoipStack::start")
-    assert "start_with_id_" in start
-    assert "can_start_call_()" in cpp_method(fsm, r"VoipStack::start_with_id_")
+    assert "start_call_" in start
+    assert "can_start_call_()" in cpp_method(fsm, r"VoipStack::start_call_")
     readiness = cpp_method(fsm, r"VoipStack::can_start_call_")
     assert "snapshot().terminal_transaction_pending" in readiness
     finish = cpp_method(fsm, r"VoipStack::finish_call_termination_")

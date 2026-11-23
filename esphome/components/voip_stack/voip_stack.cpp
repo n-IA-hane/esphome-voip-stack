@@ -9,7 +9,6 @@
 
 #include "audio_core_ring_buffer_caps.h"
 #include "audio_core_task_utils.h"
-#include "esphome/components/network/util.h"
 #include "esphome/core/application.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
@@ -18,8 +17,6 @@
 #include "sip_transport.h"
 #endif
 
-#include "esp_event.h"
-#include "esp_netif.h"
 
 namespace esphome {
 namespace voip_stack {
@@ -494,7 +491,6 @@ void VoipStack::publish_initial_state_later_() {
     this->publish_state_();
     this->publish_destination_();
     this->publish_transport_();
-    this->publish_endpoint_();
     this->publish_sip_snapshot_();
   });
 }
@@ -554,9 +550,6 @@ void VoipStack::setup() {
 
   this->load_settings_();
   this->load_routing_settings_();
-  esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID,
-                                      &VoipStack::ip_event_handler_,
-                                      this, nullptr);
   this->publish_initial_state_later_();
 
   ESP_LOGI(TAG, "VoIP Stack ready as SIP phone on %s/%u RTP UDP/%u",
@@ -699,10 +692,6 @@ void VoipStack::loop() {
   }
 #endif
 #endif
-  if (this->endpoint_publish_requested_.exchange(false, std::memory_order_acq_rel)) {
-    this->publish_endpoint_();
-  }
-
   // Auto-decline timeouts (0 = disabled). CALLING falls back to
   // ringing_timeout when calling_timeout is unset.
   const uint32_t calling_to = this->calling_timeout_ms_ > 0
@@ -724,7 +713,6 @@ void VoipStack::loop() {
       (this->audio_debug_pcm_.pending.load(std::memory_order_acquire) ||
        this->audio_debug_mic_.pending.load(std::memory_order_acquire)));
 #endif
-  keep_loop = keep_loop || this->endpoint_publish_requested_.load(std::memory_order_acquire);
   if (!keep_loop) {
     this->disable_loop();
   }
@@ -835,85 +823,6 @@ void VoipStack::publish_transport_() {
 #endif
 }
 
-std::string VoipStack::audio_format_token_(const AudioFormat &fmt) {
-  const char *pcm = "s16le";
-  switch (fmt.pcm_format) {
-    case PcmFormat::S16LE:
-      pcm = "s16le";
-      break;
-    case PcmFormat::S24LE:
-      pcm = "s24le";
-      break;
-    case PcmFormat::S24LE_IN_S32:
-      pcm = "s24le_in_s32";
-      break;
-    case PcmFormat::S32LE:
-      pcm = "s32le";
-      break;
-    default:
-      pcm = "s16le";
-      break;
-  }
-  char token[48];
-  snprintf(token, sizeof(token), "%u:%s:%u:%u",
-           (unsigned) fmt.sample_rate, pcm,
-           (unsigned) fmt.channels, (unsigned) fmt.frame_ms);
-  return token;
-}
-
-std::string VoipStack::local_ip_string_() const {
-  char ip[network::IP_ADDRESS_BUFFER_SIZE];
-  for (auto &address : network::get_ip_addresses()) {
-    if (!address.is_ip4()) continue;
-    address.str_to(ip);
-    if (strcmp(ip, "0.0.0.0") != 0) {
-      return ip;
-    }
-  }
-  return "";
-}
-
-std::string VoipStack::build_endpoint_string_() const {
-  const std::string name = !this->device_name_.empty()
-                               ? this->device_name_
-                               : App.get_friendly_name().str();
-  const std::string ip = this->local_ip_string_();
-  if (name.empty() || ip.empty()) {
-    return "";
-  }
-
-  auto pcm_format_list_token = [&](const AudioFormatList &list) -> std::string {
-    std::string out;
-    for (uint8_t i = 0; i < list.count; i++) {
-      if (list.formats[i].codec != AudioCodec::PCM) continue;
-      if (!out.empty()) out += "; ";
-      out += VoipStack::audio_format_token_(list.formats[i]);
-    }
-    return out;
-  };
-  std::string tx = pcm_format_list_token(this->tx_audio_formats_);
-  std::string rx = pcm_format_list_token(this->rx_audio_formats_);
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-  constexpr const char *video_extra = " | video=jpeg";
-#elif defined(USE_ESPHOME_VOIP_STACK_VIDEO_H264)
-  constexpr const char *video_extra = " | video=h264";
-#else
-  constexpr const char *video_extra = "";
-#endif
-  char buf[640];
-  const int written = snprintf(
-      buf, sizeof(buf), "%s | %s | %u | %u | %s | %s | %s | %s | %s%s",
-      name.c_str(), ip.c_str(), (unsigned) this->sip_port_, (unsigned) this->rtp_port_,
-      this->audio_capability_(), tx.c_str(), rx.c_str(),
-      this->protocol_ == TransportType::TCP ? "sip_tcp" : "sip_udp",
-      this->extension_.c_str(), video_extra);
-  if (written < 0 || written >= (int) sizeof(buf)) {
-    ESP_LOGW(TAG, "VoIP endpoint string truncated; endpoint will not be published");
-    return "";
-  }
-  return buf;
-}
-
 void VoipStack::set_extension(const std::string &extension) {
   const std::string normalized = normalize_endpoint_label(extension);
   if (normalized == this->extension_) return;
@@ -923,7 +832,7 @@ void VoipStack::set_extension(const std::string &extension) {
     this->extension_text_->publish_state(normalized);
   }
 #endif
-  this->request_endpoint_publish_();
+  this->publish_sip_snapshot_();
   this->schedule_save_routing_settings_();
 }
 
@@ -1111,33 +1020,6 @@ void VoipStack::publish_sip_snapshot_() {
 #endif
 }
 
-void VoipStack::publish_endpoint_() {
-  std::string endpoint = this->build_endpoint_string_();
-  if (endpoint.empty()) {
-    ESP_LOGW(TAG, "VoIP endpoint waiting for IPv4 address from ESPHome network");
-    return;
-  }
-#ifdef USE_TEXT_SENSOR
-  if (this->endpoint_sensor_ != nullptr && endpoint != this->last_endpoint_) {
-    this->last_endpoint_ = endpoint;
-    this->endpoint_sensor_->publish_state(endpoint);
-  }
-#endif
-  this->publish_sip_snapshot_();
-}
-
-void VoipStack::request_endpoint_publish_() {
-  this->endpoint_publish_requested_.store(true, std::memory_order_release);
-  this->enable_loop_soon_any_context();
-}
-
-void VoipStack::ip_event_handler_(void *arg, esp_event_base_t event_base,
-                                    int32_t event_id, void *event_data) {
-  if (event_base != IP_EVENT) return;
-  if (event_id != IP_EVENT_STA_GOT_IP && event_id != IP_EVENT_ETH_GOT_IP) return;
-  static_cast<VoipStack *>(arg)->request_endpoint_publish_();
-}
-
 // Wired from YAML via `api.on_client_connected:`.
 void VoipStack::publish_entity_states() {
   // Re-publish on every HA reconnect so voip_stack sees it without
@@ -1147,7 +1029,6 @@ void VoipStack::publish_entity_states() {
   this->entity_restore_applied_ = true;
 
   this->publish_transport_();
-  this->publish_endpoint_();
   this->publish_sip_snapshot_();
 #ifdef USE_TEXT_SENSOR
   if (this->last_reason_sensor_ != nullptr) {

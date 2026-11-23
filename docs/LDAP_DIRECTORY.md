@@ -47,16 +47,29 @@ refresh defaults to five minutes. Standalone API configuration is optional and
 uses `configure_ldap_directory` plus `configure_ldap_credentials` only with
 explicit external credentials. YAML automation can call `ldap_directory.refresh`.
 
-A successful search is staged off the main loop and published atomically only
-after its terminal LDAP success result. A partial search, malformed response,
-wrong message ID, size limit, timeout or authentication failure retains the
-previous complete snapshot. A successful search with a mix of valid and invalid
-contacts publishes the valid contacts together and logs the number discarded.
-If every contact is invalid, the previous directory remains available and the
-refresh reports an error. An empty successful result clears this provider.
-Manual contacts take precedence. Conflicts with another provider or the shared
-64-contact capacity reject the whole replacement. Selection follows stable ID
-when a contact is renamed.
+A successful search is staged off the main loop and published atomically after
+its terminal result. The worker streams at most 256 entries and retains a
+deterministic prefix by public contact identity, bounded by `max_entries`
+(default 64). The canonical phonebook has 64 total slots, including manual
+contacts, which take precedence. Excess directory rows are omitted whole;
+identity and SIP routes are never shortened to fit.
+
+Terminal `sizeLimitExceeded` with received rows is a usable bounded result.
+Status is `truncated` when the server or local capacity limited the directory,
+and `ready` otherwise. Both use the normal refresh interval. `omitted_count()`
+counts known local omissions; `search_limited()` also identifies the server
+limit, whose unknown remaining count cannot be inferred. `on_truncated` receives
+the known omitted count. Narrow the directory filter or reduce manual contacts
+when all required entries do not fit.
+
+Malformed/truncated frames, wrong message IDs, too many wire entries, timeout,
+authentication failure and other unsuccessful terminal results retain the
+previous snapshot. Valid rows alongside invalid rows are published together;
+`discarded_count()` and `on_invalid_records` report the discarded count. Warnings
+and those triggers are emitted once per generation or changed result counts.
+If every contact is invalid, the previous directory remains and the refresh
+reports an error. An empty successful result clears this provider. Selection
+follows stable identity across caption changes.
 
 Standard attributes are `uid` for identity, `displayName` or `cn`,
 `telephoneNumber`, `labeledURI` and `ou`. Phone records use the literal SIP
@@ -87,7 +100,8 @@ Resource limits are explicit:
   lease mutex; only the worker destroys TLS and closes its connection.
 - Default worker stack 8192 bytes, priority 2, no affinity. Stack placement is
   internal by default; optional PSRAM stack follows the IDF configuration.
-- Default receive buffer 8192 bytes (configurable 1024..65536), up to 64 staged
+- Default receive buffer 8192 bytes (configurable 1024..65536), at most 256 streamed
+  results per search and up to 64 staged
   contacts. Buffers prefer PSRAM by default with internal fallback.
 - The canonical phonebook shares its 64 slots across all sources. With signaling
   PSRAM enabled its records and retained text use that placement and slots are

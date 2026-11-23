@@ -13,7 +13,7 @@ def video_activation_binary(tmp_path_factory):
     return build_transport_owner(tmp_path_factory, "video_media_activation.cpp", video=True, registration=True)
 
 
-@pytest.mark.parametrize("mode", ["rejected", "local-failure", "absent", "initial-on", "route", "incoming", "reject-488", "reject-video", "timeout", "glare"])
+@pytest.mark.parametrize("mode", ["rejected", "local-failure", "absent", "initial-on", "route", "incoming", "reject-488", "reject-video", "timeout", "glare", "catalog-uac", "catalog-uas", "catalog-glare", "catalog-bad", "catalog-bad-pt"])
 def test_video_source_can_join_established_audio(video_activation_binary, mode):
     ran = subprocess.run(
         [video_activation_binary, mode, ROOT / "tests/fixtures/video_source_frame.hex"],

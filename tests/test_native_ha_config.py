@@ -106,7 +106,7 @@ def test_native_ha_speaker_only_codegen(tmp_path):
     assert '->set_endpoint_sensor(' not in generated
 
 
-def test_explicit_legacy_endpoint_coexists_with_native_state(tmp_path):
+def test_retired_endpoint_sensor_is_rejected(tmp_path):
     result = validate(tmp_path, """
 api:
   custom_services: true
@@ -116,10 +116,5 @@ text_sensor:
     id: legacy_endpoint
     name: Legacy VoIP Endpoint
 """, generate=True)
-    assert result.returncode == 0, result.stdout + result.stderr
-    generated = next(tmp_path.rglob('main.cpp')).read_text()
-    assert 'VoipHAIntegration' in generated
-    assert 'voip_state' in generated
-    assert generated.count('->set_state_sensor(') == 1
-    assert generated.count('->set_endpoint_sensor(legacy_endpoint)') == 1
-    assert 'voip_endpoint' not in generated
+    assert result.returncode != 0
+    assert "endpoint" in result.stdout + result.stderr

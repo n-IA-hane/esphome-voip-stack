@@ -36,10 +36,10 @@ struct VoipStack {
  std::string pending_line_,pending_dialplan_target_;bool force_direct_call_=false;
  bool can_start_call_(){return true;}
  bool is_registered(const std::string&account){return account=="ha";}
- void call_(const std::string&target,const std::string&id){dialed=target;line=force_direct_call_?"direct":"wrong";correlation=id;}
- void start_with_id_(const std::string&id){dialed=pending_dialplan_target_;line=pending_line_;correlation=id;}
+ void call_(const std::string&target){dialed=target;line=force_direct_call_?"direct":"wrong";}
+ void start_call_(){dialed=pending_dialplan_target_;line=pending_line_;}
  void start_call_on_line(const std::string&,const std::string&,bool,bool);
- void start_call_on_line_(const std::string&,const std::string&,const std::string&);
+ void start_call_on_line_(const std::string&,const std::string&);
  struct Failure{void trigger(const std::string&,const std::string&){}}call_failed_trigger_;
  template<class F>void defer(F f){f();}
 };

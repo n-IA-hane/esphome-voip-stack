@@ -64,10 +64,10 @@ struct VoipStack {
  bool ready=true,force_direct_call_=false;unsigned calls=0;
  bool can_start_call_()const{return ready;}
  bool is_registered(const std::string&id){return owner.registration_.is_registered(id);}
- void call_(const std::string&t,const std::string&){++calls;dialed=t;line="direct";}
- void start_with_id_(const std::string&,const std::string& = {}){++calls;dialed=pending_dialplan_target_;line=pending_line_;}
+ void call_(const std::string&t){++calls;dialed=t;line="direct";}
+ void start_call_(){++calls;dialed=pending_dialplan_target_;line=pending_line_;}
  void start_call_on_line(const std::string&,const std::string&,bool,bool);
- void start_call_on_line_(const std::string&,const std::string&,const std::string&);
+ void start_call_on_line_(const std::string&,const std::string&);
  struct Failure{void trigger(const std::string&,const std::string&){}}call_failed_trigger_;
  template<class F>void defer(F f){f();}
  MessageWaitingState get_message_waiting(const std::string&);

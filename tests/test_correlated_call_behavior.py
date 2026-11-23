@@ -97,8 +97,8 @@ public:
   struct CallSnapshot {std::string call_id,caller_route,caller_name,dest_route,dest_name;};
   CallSnapshot identity,terminated_identity;CallEndReason termination_reason=CallEndReason::LOCAL_HANGUP;
   bool can_start_call_() const;
-  void start();void start_with_id_(const std::string &);
-  void start_call_attempt_(bool,const std::string & = {});
+  void start();void start_call_();
+  void start_call_attempt_(bool);
   enum class ApplicationMediaStart:uint8_t{NONE,ORIGINATE,ANSWER,CONFIRM,OFFER};
   void begin_application_media_start_(ApplicationMediaStart);void finish_application_media_start_(ApplicationMediaStart);void pump_application_media_start_();
   uint32_t prepared_peer_ip_=0x7f000001;uint16_t prepared_peer_port_=5060;bool prepared_peer_tcp_=false;
@@ -110,7 +110,7 @@ public:
   void enable_loop_soon_any_context(){}bool send_sip_answer_(const std::string&){return true;}
   void set_in_call_(bool on){if(on)call_state_=CallState::IN_CALL;}void reset_peer_audio_watchdog_(bool){}
 
-  void call(const std::string &);void call_(const std::string &,const std::string &);
+  void call(const std::string &);void call_(const std::string &);
   void start_call_on_line(const std::string &,const std::string &,bool,bool);void hangup_call_if_id(const std::string &);
   const char *get_call_state_str() const{return call_state_to_str(call_state_.load());}
   CallSnapshot snapshot_call_identity_() const{return identity;}

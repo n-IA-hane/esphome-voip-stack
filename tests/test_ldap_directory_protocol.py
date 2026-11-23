@@ -64,7 +64,7 @@ def test_search_filter_wire_matches_independent_ldap3_encoder(ldap_binary, value
 
     encoded = bytes.fromhex(execute(ldap_binary, "filter", value).strip())
     search = search_operation("ou=phonebook,dc=voip", value, SUBTREE, DEREF_NEVER,
-                              ["uid", "entryUUID", "cn", "displayName", "telephoneNumber", "labeledURI", "ou"],
+                              ["uid", "cn", "displayName", "telephoneNumber", "labeledURI", "ou"],
                               64, 3, False, False, True)
     message = LDAPMessage()
     message["messageID"] = 9
