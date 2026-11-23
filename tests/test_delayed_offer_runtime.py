@@ -62,7 +62,8 @@ def delayed_source(*, registered=False):
     code = code.replace(" uint16_t sip_port_=5060;", declarations + r'''
  AudioFormatList offer_tx_formats_,offer_rx_formats_;int media_config_lock_=0;
  PcmReceiveConverter pcm_receive_converter_;
- bool prepare_media_path(){return pcm_receive_converter_.prepare(negotiated_rx_payloads_,selected_rx_format_);}
+ // Production prepares the receiver only while its negotiated format is valid.
+ bool prepare_media_path(){return !selected_rx_format_.is_valid()||pcm_receive_converter_.prepare(negotiated_rx_payloads_,selected_rx_format_);}
  bool commit_media_path(){open_media_session_();return true;}
  void disconnect(){if(!terminal_transaction_pending_locked_())reset_dialog_();}
  void defer_udp_provisional_response_(const std::string&,uint32_t,uint16_t){assert(false);}

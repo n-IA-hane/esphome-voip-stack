@@ -83,11 +83,16 @@ struct AudioPayloadSelection {
                           (preferred_tx_ptime != 0 &&
                            match_tx(local.tx, fmt, 0, attributes, local.max_payload, &local_tx)));
     // The peer's ptime is its receive preference, hence our TX duration.
-    // Our receive duration belongs to our own offer/answer, not that hint.
-    const uint16_t preferred_rx_ptime = preferred_audio_ptime(local.rx, local.max_receive_payload);
+    // An incoming offer follows the first compatible local RX preference.
+    // A mapping absent from that offer must not impose its packet duration.
+    // An answer retains the receive preference from our already sent offer.
+    const uint16_t preferred_rx_ptime = policy.remote_is_answer
+                                           ? preferred_audio_ptime(local.rx, local.max_receive_payload)
+                                           : 0;
     bool rx_ok = peer_can_send &&
                  (audio_format_list_match_rtp_mapping(local.rx, fmt, preferred_rx_ptime, &local_rx, local.max_receive_payload) ||
-                  (audio_format_list_match_rtp_mapping(local.rx, fmt, 0, &local_rx, local.max_receive_payload)));
+                  (preferred_rx_ptime != 0 &&
+                   audio_format_list_match_rtp_mapping(local.rx, fmt, 0, &local_rx, local.max_receive_payload)));
     uint8_t receive_pt = pt;
     if (policy.remote_is_answer) {
       // Configured duration and UDP budget were checked above. The answer
@@ -192,16 +197,21 @@ struct AudioPayloadSelection {
     RtpAudioPayloads accepted_rx;
     for (uint8_t i = 0; i < received_payloads.count; ++i) {
       const auto &entry = received_payloads.entries[i];
-      bool usable = entry.format == selected_rx_format;
+      // One audio m-line advertises the selected receiver's packet duration.
+      // Keep each alternative at that duration when it is locally declared.
+      AudioFormat receive_format = entry.format;
+      audio_format_list_match_rtp_mapping(local.rx, entry.format, selected_rx_format.frame_ms,
+                                         &receive_format, local.max_receive_payload);
+      bool usable = receive_format == selected_rx_format;
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
       AudioFormat target_pcm = decoded_pcm_format(selected_rx_format);
-      target_pcm.frame_ms = entry.format.frame_ms;
-      usable |= pcm_receive_conversion_supported(decoded_pcm_format(entry.format), target_pcm);
+      target_pcm.frame_ms = receive_format.frame_ms;
+      usable |= pcm_receive_conversion_supported(decoded_pcm_format(receive_format), target_pcm);
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
-      usable |= same_decoded_audio_geometry(entry.format, selected_rx_format);
+      usable |= same_decoded_audio_geometry(receive_format, selected_rx_format);
 #endif
-      if (usable && !accepted_rx.add(entry.payload_type, entry.format)) return AudioSelectionResult::INVALID;
+      if (usable && !accepted_rx.add(entry.payload_type, receive_format)) return AudioSelectionResult::INVALID;
     }
     if (retained_call && !media.receive) accepted_rx = retained.rx_payloads;
     if (retained_call) {

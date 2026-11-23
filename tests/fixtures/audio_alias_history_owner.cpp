@@ -48,11 +48,30 @@ static uint16_t reserve_udp(int *fd) {
   assert(*fd >= 0);
   sockaddr_in address{};
   address.sin_family = AF_INET;
-  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_addr.s_addr = htonl(INADDR_ANY);
   assert(bind(*fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0);
   socklen_t length = sizeof(address);
   assert(getsockname(*fd, reinterpret_cast<sockaddr *>(&address), &length) == 0);
   return ntohs(address.sin_port);
+}
+static uint16_t reserve_sip(int *udp_fd, int *tcp_fd) {
+  // SipTransport owns both listeners, so a UDP-only port probe is insufficient.
+  for (unsigned attempt = 0; attempt < 64; ++attempt) {
+    const auto port = reserve_udp(udp_fd);
+    *tcp_fd = socket(AF_INET, SOCK_STREAM, 0);
+    assert(*tcp_fd >= 0);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_port = htons(port);
+    if (bind(*tcp_fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0) return port;
+    const auto error = errno;
+    close(*tcp_fd);
+    close(*udp_fd);
+    assert(error == EADDRINUSE);
+  }
+  assert(false && "No jointly available UDP and TCP SIP port");
+  return 0;
 }
 static std::string take(int fd) {
   pollfd ready{fd, POLLIN, 0};
@@ -66,11 +85,10 @@ static std::string take(int fd) {
 int main(int argc, char **argv) {
   assert(argc == 2);
   const std::string mode = argv[1];
-  int peer, reserved, remote_media;
+  int peer, reserved, remote_media, sip_udp, sip_tcp;
   const auto peer_port = reserve_udp(&peer);
   const auto remote_media_port = reserve_udp(&remote_media);
-  const auto sip_port = reserve_udp(&reserved);
-  close(reserved);
+  const auto sip_port = reserve_sip(&sip_udp, &sip_tcp);
   const auto media_port = reserve_udp(&reserved);
   close(reserved);
   {
@@ -82,6 +100,8 @@ int main(int argc, char **argv) {
     phone.set_audio_formats(formats, formats);
     phone.set_accept_direct_calls(true);
     phone.set_remote("127.0.0.1", peer_port, remote_media_port);
+    close(sip_udp);
+    close(sip_tcp);
     assert(phone.start());
     sockaddr_in endpoint{};
     endpoint.sin_family = AF_INET;

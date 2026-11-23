@@ -12,6 +12,40 @@ AudioFormat pcm(uint32_t rate, uint16_t ms) {
 int main(int argc, char **argv) {
   assert(argc == 2);
   const std::string mode = argv[1];
+  if (mode.rfind("ordered-receive-", 0) == 0) {
+    const bool answer = mode == "ordered-receive-answer";
+    for (bool wide : {false, true}) for (bool swapped : {false, true})
+        for (bool reverse : {false, true}) for (const std::string flow : {"sendrecv", "sendonly"}) {
+      AudioFormatList tx, rx;
+      tx.count = 3; rx.count = 4;
+      tx.formats[0] = pcm(16000, 20); tx.formats[1] = pcm(16000, 10); tx.formats[2] = pcm(48000, 10);
+      rx.formats[0] = pcm(48000, 10); rx.formats[1] = pcm(48000, 20);
+      rx.formats[2] = pcm(16000, swapped ? 10 : 20); rx.formats[3] = pcm(16000, swapped ? 20 : 10);
+      // Preserve the common 10ms preference from an already transmitted offer.
+      RtpAudioPayloads sent_rx;
+      assert(sent_rx.add(96, pcm(48000, 10))); assert(sent_rx.add(97, pcm(16000, 10)));
+      const LocalAudioOffer local{tx, rx, tx, sent_rx, 1200, 0x7f};
+      const std::string narrow_map = "a=rtpmap:117 L16/16000/1\r\n";
+      const std::string wide_map = wide ? "a=rtpmap:116 L16/48000/1\r\n" : "";
+      const std::string remote = "v=0\r\nc=IN IP4 192.0.2.2\r\nm=audio 40002 RTP/AVP 117" +
+          (wide ? std::string(" 116") : "") + "\r\n" +
+          (reverse ? wide_map + narrow_map : narrow_map + wide_map) +
+          "a=ptime:20\r\na=" + flow + "\r\n";
+      SdpAudioMedia retained, selected;
+      DtmfConfig dtmf;
+      assert(negotiate_audio_contract(remote, 0, answer, false, local, retained, selected, dtmf));
+      const auto expected_rx = pcm(wide ? 48000 : 16000, wide || answer || swapped ? 10 : 20);
+      assert(selected.rx == expected_rx && selected.receive);
+      assert(selected.send == (flow == "sendrecv"));
+      if (selected.send) assert(selected.tx == pcm(16000, 20));
+      assert(selected.rx_pt == (wide ? (answer ? 96 : 116) : (answer ? 97 : 117)));
+      AudioFormat accepted;
+      assert(selected.rx_payloads.find(answer ? 97 : 117, &accepted));
+      assert(accepted == pcm(16000, expected_rx.frame_ms));
+      assert(selected.rx_payloads.count == (wide ? 2 : 1));
+    }
+    return 0;
+  }
   if (mode.rfind("static-l16", 0) == 0) {
     AudioFormatList formats; formats.count = 1;
     formats.formats[0] = pcm(44100, 10);

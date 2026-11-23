@@ -34,7 +34,7 @@ def media_negotiator_binary(tmp_path_factory):
     return binary
 
 
-@pytest.mark.parametrize("mode", ["offer", "answer", "hard-maximum", "hard-maximum-no-compatible-duration", "tx-fallback", "directional-dtmf", "directional-dtmf-answer", "g722-dtmf", "static-l16-mono", "static-l16-stereo"])
+@pytest.mark.parametrize("mode", ["offer", "answer", "hard-maximum", "hard-maximum-no-compatible-duration", "tx-fallback", "directional-dtmf", "directional-dtmf-answer", "g722-dtmf", "static-l16-mono", "static-l16-stereo", "ordered-receive-offer", "ordered-receive-answer"])
 def test_standard_alternatives_and_independent_packet_times(media_negotiator_binary, mode):
     result = subprocess.run([media_negotiator_binary, mode], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stdout + result.stderr

@@ -76,7 +76,9 @@ int main(int argc,char**argv){
  body+="a=sendrecv\r\n";
  const bool ok=s.learn_remote_rtp_from_sdp_(body,0xc0000202,answer);
  assert(ok==(expected!=0));
- if(ok){assert(s.tx==pcm(16000,expected));assert(s.rx==pcm(16000,10));}
+ // An incoming narrow offer uses the first compatible RX format, 16k/20ms.
+ // An answer retains the 10ms receive preference from our published offer.
+ if(ok){assert(s.tx==pcm(16000,expected));assert(s.rx==pcm(16000,answer?10:20));}
  else{assert(s.tx==prior_tx&&s.rx==prior_rx&&s.accepted==prior&&s.tx_pt==112&&s.rx_pt==112);assert(s.remote_rtp_ip_v4_==0xc0000209&&s.remote_rtp_port_==45000);}
 }
 '''
