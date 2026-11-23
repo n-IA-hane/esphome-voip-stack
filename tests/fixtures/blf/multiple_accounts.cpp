@@ -2,6 +2,7 @@ int main(int argc, char **argv) {
   assert(argc == 3);
   const bool tcp = std::string(argv[1]) == "tcp";
   const bool select_other = std::string(argv[2]) == "other";
+  const bool direct_scope = std::string(argv[2]) == "direct";
   VoipStack app;
   auto &phone = *app.transport_;
   Peer office(tcp), other(tcp);
@@ -26,8 +27,9 @@ int main(int argc, char **argv) {
   a.route = "sip:101@pbx.example";
   b.route = "sip:101@other.example";
   a.kind = b.kind = ContactKind::SIP_ACCOUNT;
-  a.account_id = "office";
+  a.account_id = direct_scope ? "direct" : "office";
   b.account_id = "other";
+  a.auto_blf = b.auto_blf = true;
   assert(app.phonebook_.add_entry(a) == AddResult::Added);
   assert(app.phonebook_.add_entry(b) == AddResult::Added);
   assert(phone.configure_blf(2, nullptr));
@@ -40,8 +42,7 @@ int main(int argc, char **argv) {
   hooks.hash = SipTransport::registration_hash_;
   hooks.local_port = phone.sip_port_;
   phone.mwi_.set_hooks(hooks);
-  assert(phone.set_blf_watches({{"101", "office", "sip:101@pbx.example"},
-                                {"101", "other", "sip:101@other.example"}}));
+  app.sync_blf_contacts_();
   phone.pump_registration_mwi_(clock_ms);
   const auto subscribe = [&](Peer &peer, const char *domain) {
     std::string dialog;
@@ -85,17 +86,20 @@ int main(int argc, char **argv) {
   assert(phone.get_blf_info("101", &info, selected_line) && info.available &&
          info.state == BlfState::RINGING && info.ringing_dialogs == 1);
   assert(phone.get_blf_info("101", &info, active_line) && info.available && info.state == BlfState::ACTIVE);
+  const std::string selected_scope = direct_scope ? "direct" : selected_line;
+  const auto visible = app.get_contact_blf_info_("101", selected_scope);
+  assert(visible.available && visible.state == BlfState::RINGING && visible.account_id == selected_line);
   assert(!app.pickup_contact("101") && !app.pickup_contact("101", "missing"));
   assert(!app.pickup_contact("101", active_line));
   assert(office.drain().empty() && other.drain().empty());
-  assert(select_other ? app.pickup_contact("sip:101@other.example") : app.pickup_contact("101", selected_line));
+  assert(select_other ? app.pickup_contact("sip:101@other.example") : app.pickup_contact("101", selected_scope));
   Peer &selected = select_other ? other : office;
   Peer &unselected = select_other ? office : other;
   const std::string domain = select_other ? "other.example" : "pbx.example";
   const auto invite = one(selected, "INVITE ");
   assert(invite.rfind("INVITE sip:%2A99101@" + domain + " SIP/2.0\r\n", 0) == 0);
   assert(header_value(invite, "From").find("100@" + domain) != std::string::npos);
-  assert(app.phonebook_.current()->account_id == selected_line);
+  assert(app.phonebook_.current()->account_id == selected_scope);
   assert(unselected.drain().empty());
   int audio = socket(AF_INET, SOCK_DGRAM, 0);
   assert(audio >= 0);

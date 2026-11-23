@@ -54,7 +54,8 @@ void VoipStack::pump_blf_events_() {
 BlfStatus VoipStack::get_contact_blf(std::string_view id, std::string_view account) {
   BlfStatus status;
   if (this->transport_ != nullptr && this->blf_ready_)
-    static_cast<SipTransport *>(this->transport_.get())->get_blf_state(id, &status, account);
+    static_cast<SipTransport *>(this->transport_.get())->get_blf_state(
+        id, &status, blf_account_for_contact_scope(account, this->blf_account_id_));
   return status;
 }
 
@@ -62,7 +63,8 @@ BlfStateInfo VoipStack::get_contact_blf_info_(std::string_view id, std::string_v
   BlfStateInfo state;
   state.contact_id.assign(id.data(), id.size());
   if (this->transport_ != nullptr && this->blf_ready_)
-    static_cast<SipTransport *>(this->transport_.get())->get_blf_info(id, &state, account);
+    static_cast<SipTransport *>(this->transport_.get())->get_blf_info(
+        id, &state, blf_account_for_contact_scope(account, this->blf_account_id_));
   return state;
 }
 
@@ -78,8 +80,7 @@ void VoipStack::sync_blf_contacts_() {
   for (size_t i = 0; i < this->phonebook_.size() && watches.size() < this->blf_capacity_; ++i) {
     const auto *entry = this->phonebook_.at(i);
     if (entry == nullptr || !contact_can_auto_blf(*entry)) continue;
-    std::string account(this->get_contact_account_view(*entry));
-    if (account == "direct") account = this->blf_account_id_;
+    std::string account(blf_account_for_contact_scope(this->get_contact_account_view(*entry), this->blf_account_id_));
     if (!this->is_registered(account)) {
       ESP_LOGW("voip_stack.blf", "Skipping '%s': Account SIP is not registered", entry->name.c_str());
       continue;

@@ -27,6 +27,10 @@ struct BlfStateInfo : BlfStatus {
 struct BlfWatchConfig {
   std::string contact_id, account_id, target;
 };
+
+inline std::string_view blf_account_for_contact_scope(std::string_view scope, std::string_view watch_account) {
+  return scope == "direct" && !watch_account.empty() ? watch_account : scope;
+}
 #ifdef USE_ESPHOME_VOIP_PRESENCE
 // RFC 3863 basic availability is independent of RFC 4235 call activity.
 // The result is committed only after a complete bounded document validates.

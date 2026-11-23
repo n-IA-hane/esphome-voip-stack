@@ -11,6 +11,7 @@ def blf_pickup_source():
     code = '#define USE_ESP32\n#include "phonebook.h"\n#undef USE_ESP32\n' + code
     code = code.replace("uint32_t esp_random(){return 42;}", "uint32_t esp_random(){static uint32_t value=42;return ++value;}")
     code += "\nusing esphome::voip_stack::VOIP_STACK_MAX_ROUTE_ID_LEN;\n"
+    code += "using esphome::voip_stack::blf_account_for_contact_scope;\n"
     parser = (SOURCE / "sip_message.cpp").read_text()
     for marker in ["std::string sip_prefix_target_user(", "std::string sip_target_uri(", "std::string sip_normalize_dial_target("]:
         if marker not in code:
@@ -25,11 +26,13 @@ def blf_pickup_source():
     code += r'''
 struct VoipStack {
  Phonebook phonebook_;std::unique_ptr<SipTransport>transport_=std::make_unique<SipTransport>();
- bool ready=true,blf_ready_=true;std::string blf_pickup_prefix_="*99",blf_account_id_="office";
+ bool ready=true,blf_ready_=true,blf_watch_contacts_=true;uint8_t blf_capacity_=2;
+ std::string blf_pickup_prefix_="*99",blf_account_id_="office";
  bool can_start_call_()const{return ready;}
  bool is_registered(const std::string&id){return transport_->is_registered(id);}
  std::string_view get_contact_account_view(const ContactEntry&)const;
  bool pickup_contact(const std::string&,std::string_view = {});BlfStateInfo get_contact_blf_info_(std::string_view,std::string_view = {});
+ bool set_blf_watches(const std::vector<BlfWatchConfig>&);void sync_blf_contacts_();
  void start_call_on_line(const std::string&target,const std::string&line,bool send_video,bool receive_video){
   assert(!send_video&&!receive_video);
   std::string host;uint16_t port;bool tcp;assert(transport_->prepare_account_line(line,&host,&port,&tcp));
@@ -41,7 +44,8 @@ struct VoipStack {
     settings = (SOURCE / "voip_settings.cpp").read_text()
     code += "\n" + block(settings, "std::string_view VoipStack::get_contact_account_view(")
     facade = (SOURCE / "voip_blf.cpp").read_text()
-    for marker in ["BlfStateInfo VoipStack::get_contact_blf_info_(", "bool VoipStack::pickup_contact("]:
+    for marker in ["BlfStateInfo VoipStack::get_contact_blf_info_(", "bool VoipStack::pickup_contact(",
+                   "bool VoipStack::set_blf_watches(", "void VoipStack::sync_blf_contacts_("]:
         code += "\n" + block(facade, marker)
     code += r'''
 std::string dialog_document(const std::string&body,unsigned version=0,const char*state="full"){

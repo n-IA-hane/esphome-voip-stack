@@ -221,17 +221,12 @@ std::string SipTransport::build_sdp_capabilities_(uint32_t peer_ip) const {
   AudioFormatList formats;
   formats.count = 0;
   std::array<uint8_t, VOIP_STACK_MAX_AUDIO_FORMATS> directions{};
-  const auto same_encoding = [](const AudioFormat &left, AudioFormat right) {
-    // rtpmap describes the encoding; ptime is an independent optional hint.
-    right.frame_ms = left.frame_ms;
-    return audio_formats_share_wire_encoding(left, right);
-  };
   const auto collect = [&](const AudioFormatList &input, uint8_t direction) {
     for (uint8_t i = 0; i < input.count; ++i) {
       const auto &format = input.formats[i];
       if (audio_format_rtp_encoding(format, direction == 2 ? RTP_AUDIO_RECEIVE_PAYLOAD_BYTES : this->udp_max_payload_) == nullptr) continue;
       uint8_t slot = 0;
-      while (slot < formats.count && !same_encoding(formats.formats[slot], format)) ++slot;
+      while (slot < formats.count && !audio_formats_share_rtp_mapping(formats.formats[slot], format)) ++slot;
       if (slot == formats.count) {
         if (formats.count == VOIP_STACK_MAX_AUDIO_FORMATS) continue;
         formats.formats[formats.count++] = format;

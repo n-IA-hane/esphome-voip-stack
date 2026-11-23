@@ -23,7 +23,7 @@ class PcmReceiveConverter {
   }
 
   bool prepare(const AudioFormatList &payloads, const AudioFormat &target) {
-    if (audio_formats_share_rtp_mapping(target, this->target_)) {
+    if (same_decoded_audio_geometry(target, this->target_)) {
       bool covered = true;
       const uint8_t count = this->count_.load(std::memory_order_acquire);
       for (uint8_t i = 0; i < payloads.count && covered; ++i) {
@@ -33,7 +33,7 @@ class PcmReceiveConverter {
         if (source == packet_target) continue;
         bool found = false;
         for (uint8_t j = 0; j < count; ++j)
-          found |= audio_formats_share_rtp_mapping(this->entries_[j].format, source) &&
+          found |= same_decoded_audio_geometry(this->entries_[j].format, source) &&
                    this->entries_[j].format.frame_ms >= source.frame_ms;
         covered = found;
       }
@@ -54,7 +54,7 @@ class PcmReceiveConverter {
   }
 
   bool prepare_additional(const AudioFormatList &payloads, const AudioFormat &target) {
-    if (!audio_formats_share_rtp_mapping(target, this->target_)) return false;
+    if (!same_decoded_audio_geometry(target, this->target_)) return false;
     const uint8_t previous = this->count_.load(std::memory_order_acquire);
     uint8_t count = previous;
     auto rollback = [&]() {
@@ -69,7 +69,7 @@ class PcmReceiveConverter {
       if (!pcm_receive_conversion_supported(source, packet_target)) return rollback();
       bool found = false;
       for (uint8_t j = 0; j < count; ++j) {
-        if (!audio_formats_share_rtp_mapping(this->entries_[j].format, source)) continue;
+        if (!same_decoded_audio_geometry(this->entries_[j].format, source)) continue;
         if (this->entries_[j].format.frame_ms < source.frame_ms) return rollback();
         found = true;
       }
@@ -81,7 +81,7 @@ class PcmReceiveConverter {
       // One DSP history per PCM geometry. Use the descriptor's duration only
       // as its prepared maximum capacity, not as part of the stream identity.
       for (uint8_t j = 0; j < payloads.count; ++j)
-        if (audio_formats_share_rtp_mapping(payloads.formats[j], source))
+        if (same_decoded_audio_geometry(payloads.formats[j], source))
           entry.format.frame_ms = std::max(entry.format.frame_ms, payloads.formats[j].frame_ms);
       packet_target.frame_ms = entry.format.frame_ms;
       entry.converter.reset(new (std::nothrow) Converter(
@@ -114,7 +114,7 @@ class PcmReceiveConverter {
       if (!pcm_receive_conversion_supported(source, target)) return false;
       uint8_t count = this->count_.load(std::memory_order_relaxed);
       uint8_t slot = 0;
-      while (slot < count && !audio_formats_share_rtp_mapping(this->entries_[slot].target, target)) ++slot;
+      while (slot < count && !same_decoded_audio_geometry(this->entries_[slot].target, target)) ++slot;
       if (slot != count) {
         // Prepare the largest declared packet once for each target geometry.
         if (this->entries_[slot].format.frame_ms >= source.frame_ms) continue;
@@ -147,8 +147,8 @@ class PcmReceiveConverter {
     }
     for (uint8_t i = 0, count = this->count_.load(std::memory_order_acquire); i < count; ++i) {
       auto &entry = this->entries_[i];
-      if (!audio_formats_share_rtp_mapping(source, entry.format) ||
-          !audio_formats_share_rtp_mapping(target, entry.target) || source.frame_ms > entry.format.frame_ms) continue;
+      if (!same_decoded_audio_geometry(source, entry.format) ||
+          !same_decoded_audio_geometry(target, entry.target) || source.frame_ms > entry.format.frame_ms) continue;
       const auto result = entry.converter->resample(
           pcm, output, source.nominal_frame_samples(), target.nominal_frame_samples(), 0.0f);
       if (result.frames_used != source.nominal_frame_samples()) return 0;
@@ -169,7 +169,7 @@ class PcmReceiveConverter {
     if (pcm == nullptr || output == nullptr || bytes != source.nominal_frame_bytes()) return 0;
     for (uint8_t i = 0, count = this->count_.load(std::memory_order_acquire); i < count; ++i) {
       auto &entry = this->entries_[i];
-      if (!audio_formats_share_rtp_mapping(source, entry.format) || source.frame_ms > entry.format.frame_ms) continue;
+      if (!same_decoded_audio_geometry(source, entry.format) || source.frame_ms > entry.format.frame_ms) continue;
       AudioFormat packet_target = this->target_;
       packet_target.frame_ms = source.frame_ms;
       if (capacity < packet_target.nominal_frame_bytes()) return 0;

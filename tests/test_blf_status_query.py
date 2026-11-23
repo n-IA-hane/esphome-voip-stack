@@ -50,6 +50,7 @@ bool get_blf_info(std::string_view,BlfStateInfo*,std::string_view = {});
         code += block(adapter, marker) + "\n"
     code += """struct VoipStack {
 std::unique_ptr<SipTransport> transport_=std::make_unique<SipTransport>();bool blf_ready_=true;
+std::string blf_account_id_="long-account-identity-1234";
 BlfStatus get_contact_blf(std::string_view,std::string_view = {});
 BlfStateInfo get_contact_blf_info_(std::string_view,std::string_view = {});
 };
@@ -66,9 +67,12 @@ int main(){
   assert(!phone.get_contact_blf(id).available);
   assert(phone.get_contact_blf(id,"long-account-identity-1234").state==BlfState::ACTIVE);
   assert(phone.get_contact_blf(id,"other-account-identity-1234").state==BlfState::RINGING);
+  assert(phone.get_contact_blf(id,"direct").state==BlfState::ACTIVE);
   assert(!phone.get_contact_blf(id,"missing").available);
  }
  phone.transport_->mwi_.requested[1]=false;
+ phone.blf_account_id_.clear();
+ assert(!phone.get_contact_blf(id,"direct").available);
  measuring=false;const auto queries=allocations;
  measuring=true;allocations=0;
 '''

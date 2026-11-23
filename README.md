@@ -446,11 +446,18 @@ voip_stack:
         tx:
           - { sample_rate: 16000, frame_ms: 20 }
           - { sample_rate: 16000, frame_ms: 10 }
+          - { sample_rate: 48000, frame_ms: 10 }
         rx:
           - { sample_rate: 48000, frame_ms: 10 }
+          - { sample_rate: 48000, frame_ms: 20 }
           - { sample_rate: 16000, frame_ms: 20 }
           - { sample_rate: 16000, frame_ms: 10 }
 ```
+
+The first TX format matches the 16 kHz microphone stream. The real 48 kHz TX
+alternative lets both RTP mappings work in both directions, while the peer can
+send its preferred 48 kHz audio and receive the ESP's preferred 16 kHz audio.
+Each receiver chooses its own preferred packet duration.
 
 Audio Stack currently supports one instance per ESP. Its microphone and speaker
 bind to it automatically; `esp_audio_stack_id` can be omitted.

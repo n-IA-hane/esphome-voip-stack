@@ -181,12 +181,12 @@ bool SipTransport::send_answer(const std::string &call_id,
     return false;
   }
   if (!call_id.empty() && call_id != this->logical_call_id_) this->call_id_ = call_id;
-  uint8_t tx_payload_type = 96;
-  uint8_t rx_payload_type = 96;
-  RtpAudioPayloads rx_payloads;
-  this->get_media_config_(nullptr, nullptr, &tx_payload_type, &rx_payload_type, &rx_payloads);
-  this->set_media_config_(dest_to_caller_format, caller_to_dest_format,
-                          tx_payload_type, rx_payload_type, &rx_payloads);
+  // Answer the already admitted offer through its negotiated owner. In
+  // particular, the peer's receive fmtp remains our encoder's constraint.
+  auto media = this->negotiated_media_();
+  media.tx = dest_to_caller_format;
+  media.rx = caller_to_dest_format;
+  this->commit_negotiated_media_(media);
   this->outgoing_invite_pending_.store(false, std::memory_order_release);
   std::string answer;
   {

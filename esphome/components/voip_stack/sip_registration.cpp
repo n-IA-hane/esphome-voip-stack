@@ -541,7 +541,7 @@ bool SipRegistration::begin_keepalive_(size_t i, uint32_t now) {
   append_address_of_record(a.request, c); append(">;tag="); append(a.tag);
   append("\r\nTo: <"); append_address_of_record(a.request, c);
   append(">\r\nCall-ID: "); append(a.call_id); append("\r\nCSeq: ");
-  std::snprintf(number, sizeof(number), "%u", a.cseq); append(number);
+  std::snprintf(number, sizeof(number), "%u", static_cast<unsigned>(a.cseq)); append(number);
   append(" OPTIONS\r\n");
   append("Content-Length: 0\r\n\r\n");
   a.pending = true;

@@ -267,6 +267,28 @@ def _validate_tx_reframe_formats(tx_fmt: dict, tx_formats: list[dict]) -> None:
             raise cv.Invalid("TX sample-rate conversion requires s16le microphone PCM and alternatives")
 
 
+def _format_rtp_mapping_key(fmt: dict):
+    if fmt[CONF_AUDIO_CODEC] == AUDIO_CODEC_OPUS:
+        return (AUDIO_CODEC_OPUS, 48000, 2, None)
+    if fmt[CONF_AUDIO_CODEC] == AUDIO_CODEC_G722:
+        return (AUDIO_CODEC_G722, 8000, 1, None)
+    samples = fmt[CONF_SAMPLE_RATE] * fmt[CONF_FRAME_MS] // 1000 * fmt[CONF_CHANNELS]
+    wire_bits = _format_rtp_payload_bytes(fmt) * 8 // samples
+    return (AUDIO_CODEC_PCM, fmt[CONF_SAMPLE_RATE], fmt[CONF_CHANNELS], wire_bits)
+
+
+def _validate_rtp_duplex_mapping(audio: dict) -> None:
+    if audio[CONF_TX] is None or audio[CONF_RX] is None:
+        return
+    transmitted = {_format_rtp_mapping_key(fmt) for fmt in (audio[CONF_TX], *audio[CONF_TX_FORMATS])}
+    received = {_format_rtp_mapping_key(fmt) for fmt in (audio[CONF_RX], *audio[CONF_RX_FORMATS])}
+    if transmitted.isdisjoint(received):
+        raise cv.Invalid(
+            "Bidirectional SIP audio requires at least one RTP mapping supported by both tx and rx. "
+            "Declare real alternatives in both directions; ptime may differ."
+        )
+
+
 CODEC_PCM_FORMAT_SCHEMA = cv.Schema({
     cv.Required(CONF_SAMPLE_RATE): cv.one_of(*SUPPORTED_PHONE_SAMPLE_RATES, int=True),
     cv.Optional(CONF_PCM_FORMAT, default="s16le"): cv.one_of(*PCM_FORMAT_IDS.keys(), lower=True),
@@ -865,6 +887,16 @@ def _final_validate(config):
                        "Only raise udp_max_payload when this LAN is intentionally configured for larger datagrams; "
                        "the default limit is 1200 bytes.")
                 )
+        _validate_rtp_duplex_mapping(audio_cfg)
+        if audio_cfg[CONF_RX] is not None:
+            received = [audio_cfg[CONF_RX], *audio_cfg[CONF_RX_FORMATS]]
+            for fmt in received:
+                maximum = max(other[CONF_FRAME_MS] for other in received
+                              if _format_rtp_mapping_key(other) == _format_rtp_mapping_key(fmt))
+                decoded = (fmt[CONF_SAMPLE_RATE] * maximum // 1000 * fmt[CONF_CHANNELS]
+                           * (_format_container_bits(fmt) // 8))
+                if decoded > 2048:
+                    raise cv.Invalid("RTP receive mapping exceeds the fixed 2048-byte decode buffer at its declared maximum duration")
 
     opus_enabled = any(
         fmt[CONF_AUDIO_CODEC] == AUDIO_CODEC_OPUS

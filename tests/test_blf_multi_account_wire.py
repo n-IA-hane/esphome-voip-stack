@@ -30,7 +30,7 @@ def multi_account_blf_binary(tmp_path_factory):
 
 
 @pytest.mark.parametrize("transport", ["udp", "tcp"])
-@pytest.mark.parametrize("selected_line", ["office", "other"])
+@pytest.mark.parametrize("selected_line", ["office", "other", "direct"])
 def test_two_pbx_accounts_share_username_without_status_or_pickup_leak(
     multi_account_blf_binary, transport, selected_line,
 ):

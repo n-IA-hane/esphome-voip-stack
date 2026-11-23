@@ -129,7 +129,9 @@ inline AudioFormat decoded_pcm_format(AudioFormat format) {
 }
 
 inline bool same_decoded_audio_geometry(const AudioFormat &left, const AudioFormat &right) {
-  return left.is_valid() && right.is_valid() && decoded_pcm_format(left) == decoded_pcm_format(right);
+  auto decoded_right = decoded_pcm_format(right);
+  decoded_right.frame_ms = left.frame_ms;
+  return left.is_valid() && right.is_valid() && decoded_pcm_format(left) == decoded_right;
 }
 
 static constexpr size_t VOIP_STACK_MAX_AUDIO_FORMATS = 8;
@@ -270,18 +272,17 @@ inline uint8_t audio_format_rtp_channels(const AudioFormat &format) {
   return format.codec == AudioCodec::OPUS ? 2 : format.channels;
 }
 
-inline bool audio_formats_share_wire_encoding(const AudioFormat &left, const AudioFormat &right) {
-  if (left.codec != right.codec || left.frame_ms != right.frame_ms) return false;
-  if (left.codec == AudioCodec::OPUS) return true;
-  return left.sample_rate == right.sample_rate && left.channels == right.channels &&
-         left.pcm_format == right.pcm_format;
-}
-
-inline bool audio_formats_share_rtp_mapping(const AudioFormat &left, AudioFormat right) {
+inline bool audio_formats_share_rtp_mapping(const AudioFormat &left, const AudioFormat &right) {
   // RFC 3264 section 6.1: ptime is a receive preference, independent of rtpmap.
-  // Callers must still validate the chosen duration and its payload budget.
-  right.frame_ms = left.frame_ms;
-  return audio_formats_share_wire_encoding(left, right);
+  // Storage padding belongs to decoded resources, not the L16/L24 wire type.
+  const char *left_encoding = audio_format_rtp_encoding(left, static_cast<size_t>(-1));
+  const char *right_encoding = audio_format_rtp_encoding(right, static_cast<size_t>(-1));
+  return left.codec == right.codec &&
+         left_encoding != nullptr && right_encoding != nullptr &&
+         std::strcmp(left_encoding, right_encoding) == 0 &&
+         audio_format_rtp_clock_rate(left) != 0 && audio_format_rtp_channels(left) != 0 &&
+         audio_format_rtp_clock_rate(left) == audio_format_rtp_clock_rate(right) &&
+         audio_format_rtp_channels(left) == audio_format_rtp_channels(right);
 }
 
 // RFC 3551 section 6. The mapping is a registry fact, not permission to use
@@ -369,7 +370,8 @@ inline bool audio_format_list_match_udp_safe(const AudioFormatList &list, const 
   for (uint8_t i = 0; i < list.count; i++) {
     const AudioFormat &candidate = list.formats[i];
     const char *candidate_encoding = audio_format_rtp_encoding(candidate, max_payload);
-    const bool same_wire_format = audio_formats_share_wire_encoding(candidate, remote) &&
+    const bool same_wire_format = candidate.frame_ms == remote.frame_ms &&
+                                  audio_formats_share_rtp_mapping(candidate, remote) &&
                                   candidate_encoding != nullptr && remote_encoding != nullptr &&
                                   std::strcmp(candidate_encoding, remote_encoding) == 0;
     if (same_wire_format) {

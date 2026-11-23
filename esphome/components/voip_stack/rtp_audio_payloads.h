@@ -171,7 +171,8 @@ inline AudioFormatList configured_decoded_receive_formats(const RtpAudioPayloads
     if (!candidate.is_valid() || audio_format_rtp_encoding(candidate, max_payload) == nullptr) continue;
     for (uint8_t j = 0; j < negotiated.count; ++j) {
       if (!audio_formats_share_rtp_mapping(candidate, negotiated.entries[j].format)) continue;
-      const AudioFormat decoded = decoded_pcm_format(candidate);
+      AudioFormat decoded = decoded_pcm_format(negotiated.entries[j].format);
+      decoded.frame_ms = candidate.frame_ms;
       if (!audio_format_list_contains(result, decoded) && result.count < VOIP_STACK_MAX_AUDIO_FORMATS)
         result.formats[result.count++] = decoded;
       break;

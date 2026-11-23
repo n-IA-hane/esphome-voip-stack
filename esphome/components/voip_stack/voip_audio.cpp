@@ -270,7 +270,7 @@ void VoipStack::tx_task_() {
       continue;
 #ifdef USE_ESPHOME_VOIP_PCM_TX_CONVERSION
     const uint32_t epoch = this->tx_pcm_epoch_.load(std::memory_order_acquire);
-    if (converter_epoch != epoch || !audio_formats_share_rtp_mapping(converter_target, tx_format)) {
+    if (converter_epoch != epoch || !same_decoded_audio_geometry(converter_target, tx_format)) {
       this->tx_pcm_converter_.reset();
       converter_epoch = epoch;
       converter_target = tx_format;

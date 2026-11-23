@@ -84,10 +84,9 @@ struct AudioPayloadSelection {
                            match_tx(local.tx, fmt, 0, attributes, local.max_payload, &local_tx)));
     // The peer's ptime is its receive preference, hence our TX duration.
     // Our receive duration belongs to our own offer/answer, not that hint.
-    const uint16_t offered_rx_ptime = policy.remote_is_answer
-        ? preferred_audio_ptime(local.rx, local.max_receive_payload) : 0;
+    const uint16_t preferred_rx_ptime = preferred_audio_ptime(local.rx, local.max_receive_payload);
     bool rx_ok = peer_can_send &&
-                 (audio_format_list_match_rtp_mapping(local.rx, fmt, offered_rx_ptime, &local_rx, local.max_receive_payload) ||
+                 (audio_format_list_match_rtp_mapping(local.rx, fmt, preferred_rx_ptime, &local_rx, local.max_receive_payload) ||
                   (audio_format_list_match_rtp_mapping(local.rx, fmt, 0, &local_rx, local.max_receive_payload)));
     uint8_t receive_pt = pt;
     if (policy.remote_is_answer) {
