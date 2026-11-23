@@ -54,6 +54,7 @@ def register_automations(parent_type):
     action_type = cg.esphome_ns.namespace("voip_stack").class_("PickupContactAction", automation.Action)
     @automation.register_action("voip_stack.pickup_contact", action_type, cv.Schema({
         cv.GenerateID(): cv.use_id(parent_type), cv.Required("contact_id"): cv.templatable(cv.string_strict),
+        cv.Optional("account_id"): cv.templatable(account_id),
     }), synchronous=True)
     async def pickup_to_code(conf, action_id, template_arg, args):
         if "blf" not in ((CORE.config or {}).get("voip_stack") or {}):
@@ -61,4 +62,6 @@ def register_automations(parent_type):
         var = cg.new_Pvariable(action_id, template_arg)
         cg.add(var.set_parent(await cg.get_variable(conf["id"])))
         cg.add(var.set_contact_id(await cg.templatable(conf["contact_id"], args, cg.std_string)))
+        if "account_id" in conf:
+            cg.add(var.set_account_id(await cg.templatable(conf["account_id"], args, cg.std_string)))
         return var

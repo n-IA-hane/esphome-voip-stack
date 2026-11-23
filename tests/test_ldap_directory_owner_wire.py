@@ -97,7 +97,6 @@ int main(int argc,char**argv){
  const std::string mode=argv[1];voip_stack::VoipStack phone;ldap_directory::LdapDirectory directory(phone);
  directory.config_.port=std::stoi(argv[2]);directory.config_.tls=std::stoi(argv[3]);
  if(directory.config_.tls){std::ifstream file(argv[4]);directory.config_.ca_pem.assign(std::istreambuf_iterator<char>(file),{});}
- phone.phonebook_.set_self_name("New");
  assert(phone.phonebook_.add_one("Manual|manual|192.0.2.9|5060|40000|sip_udp")==voip_stack::AddResult::Added);
  voip_stack::ContactEntry previous;previous.id="entry-old";previous.name="Old";previous.route="old";
  assert(phone.commit_contact_directory(&directory,&previous,1,"ha")==voip_stack::DirectoryCommitResult::APPLIED);

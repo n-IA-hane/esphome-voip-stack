@@ -282,17 +282,18 @@ void VoipStack::set_mic_gain_db(float db) {
 // merge: same shape = noop, missing endpoint = upgrade, mismatch = replace.
 // Slot order is stable; only flush_contacts wipes.
 
-#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
-void VoipStack::set_contact_metadata(const std::string &name, const std::string &id, ContactKind kind,
-                                     const std::string &account_id, bool auto_blf) {
-  if (this->phonebook_.set_metadata(name, id, kind, account_id, auto_blf)) this->publish_phonebook_changed_();
-}
-#endif
-
-void VoipStack::add_contact(const std::string &entry) {
-  this->phonebook_.set_self_name(this->device_name_);
+void VoipStack::add_contact(const std::string &entry, const std::string &id, ContactKind kind,
+                            const std::string &account, bool auto_blf) {
   const std::string normalized_entry = this->normalize_phonebook_for_transport_(entry);
-  const AddResult r = this->phonebook_.add_one(normalized_entry);
+  ContactEntry contact;
+  if (!Phonebook::parse_entry(normalized_entry, &contact)) return;
+#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
+  if ((!id.empty() && !sip_valid_contact_identity(id)) || !sip_valid_text(account, 32)) return;
+  contact.id = id; contact.kind = kind; contact.account_id = account; contact.auto_blf = auto_blf;
+#else
+  if (!id.empty() || !account.empty() || auto_blf || kind != ContactKind::UNKNOWN) return;
+#endif
+  const AddResult r = this->phonebook_.add_entry(contact);
   switch (r) {
     case AddResult::Added:
       ESP_LOGI(TAG, "Contact added: %s", normalized_entry.c_str());
@@ -318,7 +319,6 @@ void VoipStack::remove_contact(const std::string &name) {
 }
 
 void VoipStack::set_contacts(const std::string &contacts_csv) {
-  this->phonebook_.set_self_name(this->device_name_);
   const std::string normalized_csv = this->normalize_phonebook_for_transport_(contacts_csv);
   if (normalized_csv.empty()) return;
   const bool changed = this->phonebook_.add_batch(normalized_csv);
@@ -410,15 +410,21 @@ bool VoipStack::set_contact(const std::string &name) {
   return false;
 }
 
-bool VoipStack::call_contact(const std::string &id) {
+bool VoipStack::call_contact(const std::string &id, std::string_view account) {
   if (!this->can_start_call_()) return false;
-  const auto *entry = this->phonebook_.find_id(id);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (!account.empty() && account != "direct" && !this->is_registered(std::string(account))) return false;
+#else
+  if (!account.empty() && account != "direct") return false;
+#endif
+  const auto account_for = [this](const ContactEntry &entry) { return this->get_contact_account_view(entry); };
+  const auto *entry = this->phonebook_.find_id(id, account, account_for);
   if (entry == nullptr) return false;
-  if (!this->phonebook_.select(id)) return false;
+  if (!this->phonebook_.select(id, account, account_for)) return false;
   this->pending_dialplan_target_.clear();
   this->publish_destination_();
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
-  this->pending_line_ = this->get_contact_account(id);
+  this->pending_line_ = this->get_contact_account(id, account);
 #endif
   this->start();
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
@@ -427,18 +433,16 @@ bool VoipStack::call_contact(const std::string &id) {
   return true;
 }
 
-std::string VoipStack::get_contact_account(std::string_view id) const {
+std::string_view VoipStack::get_contact_account_view(const ContactEntry &entry) const {
+  (void) entry;
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
-  const auto *entry = this->phonebook_.find_id(id);
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
-  if (entry != nullptr && !entry->account_id.empty()) return std::string(entry->account_id);
+  if (!entry.account_id.empty()) return {entry.account_id.data(), entry.account_id.size()};
 #endif
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
-  if (entry != nullptr && entry->provider != nullptr)
+  if (entry.provider != nullptr)
     for (const auto &provider : this->directory_providers_)
-      if (provider.owner == entry->provider && !provider.account_id.empty()) return provider.account_id;
-#else
-  (void) entry;
+      if (provider.owner == entry.provider && !provider.account_id.empty()) return provider.account_id;
 #endif
 #ifdef USE_ESPHOME_VOIP_BLF
   return this->blf_account_id_;
@@ -446,7 +450,18 @@ std::string VoipStack::get_contact_account(std::string_view id) const {
   return this->default_line_;
 #endif
 #else
-  (void) id;
+  return "direct";
+#endif
+}
+
+std::string VoipStack::get_contact_account(std::string_view id, std::string_view account) const {
+  const auto *entry = this->phonebook_.find_id(id, account,
+      [this](const ContactEntry &candidate) { return this->get_contact_account_view(candidate); });
+  if (entry == nullptr) return "";
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  const auto selected = this->get_contact_account_view(*entry);
+  return selected.empty() ? this->default_line_ : std::string(selected);
+#else
   return "direct";
 #endif
 }

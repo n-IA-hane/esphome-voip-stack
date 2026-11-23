@@ -31,6 +31,9 @@ def version_source(video):
     code = code.replace('struct RetainedCall {', completed + '\nstruct RetainedCall {CompletedServerTransaction accepted_refer;')
     code = code.replace('struct SipTransport {', r'''
 struct SipTransport {
+ #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+ CallVideoIntent video_call_intent_{};
+ #endif
  struct CompletedRefer {CompletedServerTransaction accepted,control;uint32_t expires_ms=0;};
  std::array<std::unique_ptr<CompletedRefer>,4>completed_refers_;
  bool replay_completed_response_(const std::string&,const sockaddr_in&,const std::string&,bool);

@@ -51,10 +51,11 @@ int main(){
  assert(!book.find_id("old-id")->auto_blf);
  assert(book.replace_directory(&ldap,{})==DirectoryCommitResult::APPLIED);
  assert(book.size()==1&&book.find("Manual"));
- assert(book.set_metadata("Manual","alias",ContactKind::CONTACT,"office",true));
+ auto updated=*book.find_id("manual-id");updated.id="alias";updated.kind=ContactKind::CONTACT;updated.account_id="office";updated.auto_blf=true;
+ assert(book.add_entry(updated)==AddResult::EndpointReplaced);
  assert(book.find_id("alias")->auto_blf&&book.find_id("alias")->account_id=="office");
- assert(!book.set_metadata("Manual","alias",ContactKind::CONTACT,"office",true));
- assert(!book.set_metadata("Manual","bad\nname",ContactKind::CONTACT,"office",true));
+ assert(book.add_entry(updated)==AddResult::Noop);
+ auto invalid_metadata=updated;invalid_metadata.id="bad\nname";assert(book.add_entry(invalid_metadata)==AddResult::Rejected);
  assert(book.find_id("alias"));
 }
 ''')

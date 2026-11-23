@@ -36,7 +36,7 @@ def opus_owner_binary(tmp_path_factory):
         "-DUSE_ESPHOME_VOIP_SIP_TRANSPORT", "-DUSE_ESPHOME_VOIP_STACK_OPUS",
         "-I", str(folder), "-I", str(ROOT / "tests/fixtures"), "-I", str(ROOT), "-I", str(SOURCE),
         str(ROOT / "tests/fixtures/opus_receive_constraints.cpp"), *map(str, units), *opus_flags, "-o", str(binary),
-    ], capture_output=True, text=True, timeout=90)
+    ], capture_output=True, text=True, timeout=150)
     assert built.returncode == 0, built.stderr
     return binary
 

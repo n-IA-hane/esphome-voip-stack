@@ -242,14 +242,14 @@ bool SipTransport::set_blf_watches(const std::vector<BlfWatchConfig> &watches) {
   // watched while an unrelated directory row waits for its account to exist.
   return all_accounts_found;
 }
-template<typename Result> bool SipTransport::copy_blf_state_(std::string_view id, Result *out) {
+template<typename Result> bool SipTransport::copy_blf_state_(std::string_view id, Result *out, std::string_view account) {
   if (out == nullptr) return false;
   LockGuard lock(this->dialog_mutex_);
   const BlfStateInfo *found = nullptr;
   bool requested = false;
   for (size_t slot = 0; slot < this->mwi_.blf_capacity(); ++slot) {
     const auto *state = this->mwi_.blf_state(slot);
-    if (state != nullptr && state->contact_id == id) {
+    if (state != nullptr && state->contact_id == id && (account.empty() || state->account_id == account)) {
       const bool current_requested = this->mwi_.blf_watch_requested(slot);
       if (found != nullptr && requested && current_requested) return false;
       if (found != nullptr && requested && !current_requested) continue;
@@ -262,11 +262,11 @@ template<typename Result> bool SipTransport::copy_blf_state_(std::string_view id
   *out = *found;
   return true;
 }
-bool SipTransport::get_blf_state(std::string_view id, BlfStatus *out) {
-  return this->copy_blf_state_(id, out);
+bool SipTransport::get_blf_state(std::string_view id, BlfStatus *out, std::string_view account) {
+  return this->copy_blf_state_(id, out, account);
 }
-bool SipTransport::get_blf_info(std::string_view id, BlfStateInfo *out) {
-  return this->copy_blf_state_(id, out);
+bool SipTransport::get_blf_info(std::string_view id, BlfStateInfo *out, std::string_view account) {
+  return this->copy_blf_state_(id, out, account);
 }
 bool SipTransport::copy_blf_slot(size_t index, BlfStateInfo *out) {
   if (out == nullptr) return false;

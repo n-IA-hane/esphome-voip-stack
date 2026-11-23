@@ -25,10 +25,11 @@ def blf_pickup_source():
     code += r'''
 struct VoipStack {
  Phonebook phonebook_;std::unique_ptr<SipTransport>transport_=std::make_unique<SipTransport>();
- bool ready=true,blf_ready_=true;std::string blf_pickup_prefix_="*99";
+ bool ready=true,blf_ready_=true;std::string blf_pickup_prefix_="*99",blf_account_id_="office";
  bool can_start_call_()const{return ready;}
  bool is_registered(const std::string&id){return transport_->is_registered(id);}
- bool pickup_contact(const std::string&);BlfStateInfo get_contact_blf_info_(std::string_view);
+ std::string_view get_contact_account_view(const ContactEntry&)const;
+ bool pickup_contact(const std::string&,std::string_view = {});BlfStateInfo get_contact_blf_info_(std::string_view,std::string_view = {});
  void start_call_on_line(const std::string&target,const std::string&line,bool send_video,bool receive_video){
   assert(!send_video&&!receive_video);
   std::string host;uint16_t port;bool tcp;assert(transport_->prepare_account_line(line,&host,&port,&tcp));
@@ -37,6 +38,8 @@ struct VoipStack {
  }
 };
 '''
+    settings = (SOURCE / "voip_settings.cpp").read_text()
+    code += "\n" + block(settings, "std::string_view VoipStack::get_contact_account_view(")
     facade = (SOURCE / "voip_blf.cpp").read_text()
     for marker in ["BlfStateInfo VoipStack::get_contact_blf_info_(", "bool VoipStack::pickup_contact("]:
         code += "\n" + block(facade, marker)
@@ -52,8 +55,9 @@ std::string notify_dialog(const std::string&subscribe,unsigned sequence,const st
 int main(int argc,char**argv){
  assert(argc==3);const std::string mode=argv[1];const bool tcp=std::string(argv[2])=="tcp";
  VoipStack app;auto&phone=*app.transport_;Peer peer(tcp);bind_account(phone,peer);
- assert(app.phonebook_.add_one("Desk|101|127.0.0.1|5060|40000|sip_udp")==AddResult::Added);
- assert(app.phonebook_.set_metadata("Desk","endpoint-desk",ContactKind::SIP_ACCOUNT,"office",true));
+ ContactEntry desk;assert(Phonebook::parse_entry("Desk|101|127.0.0.1|5060|40000|sip_udp",&desk));
+ desk.id="endpoint-desk";desk.kind=ContactKind::SIP_ACCOUNT;desk.account_id="office";desk.auto_blf=true;
+ assert(app.phonebook_.add_entry(desk)==AddResult::Added);
  assert(phone.configure_blf(mode=="admission"?2:1,nullptr));
  SipMwi::Hooks hooks;hooks.context=&phone;hooks.send=SipTransport::registration_send_view_;hooks.reply=SipTransport::registration_mwi_reply_;
  hooks.local_ip=SipTransport::registration_local_ip_;hooks.random=esp_random;hooks.hash=SipTransport::registration_hash_;hooks.local_port=phone.sip_port_;

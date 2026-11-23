@@ -51,18 +51,18 @@ void VoipStack::pump_blf_events_() {
   }
 }
 
-BlfStatus VoipStack::get_contact_blf(std::string_view id) {
+BlfStatus VoipStack::get_contact_blf(std::string_view id, std::string_view account) {
   BlfStatus status;
   if (this->transport_ != nullptr && this->blf_ready_)
-    static_cast<SipTransport *>(this->transport_.get())->get_blf_state(id, &status);
+    static_cast<SipTransport *>(this->transport_.get())->get_blf_state(id, &status, account);
   return status;
 }
 
-BlfStateInfo VoipStack::get_contact_blf_info_(std::string_view id) {
+BlfStateInfo VoipStack::get_contact_blf_info_(std::string_view id, std::string_view account) {
   BlfStateInfo state;
   state.contact_id.assign(id.data(), id.size());
   if (this->transport_ != nullptr && this->blf_ready_)
-    static_cast<SipTransport *>(this->transport_.get())->get_blf_info(id, &state);
+    static_cast<SipTransport *>(this->transport_.get())->get_blf_info(id, &state, account);
   return state;
 }
 
@@ -78,8 +78,7 @@ void VoipStack::sync_blf_contacts_() {
   for (size_t i = 0; i < this->phonebook_.size() && watches.size() < this->blf_capacity_; ++i) {
     const auto *entry = this->phonebook_.at(i);
     if (entry == nullptr || !contact_can_auto_blf(*entry)) continue;
-    std::string account = entry->account_id.empty() ? this->get_contact_account(entry->stable_id())
-                                                     : entry->account_id;
+    std::string account(this->get_contact_account_view(*entry));
     if (account == "direct") account = this->blf_account_id_;
     if (!this->is_registered(account)) {
       ESP_LOGW("voip_stack.blf", "Skipping '%s': Account SIP is not registered", entry->name.c_str());
@@ -92,15 +91,20 @@ void VoipStack::sync_blf_contacts_() {
 }
 
 
-bool VoipStack::pickup_contact(const std::string &id) {
+bool VoipStack::pickup_contact(const std::string &id, std::string_view account) {
   if (!this->can_start_call_() || this->blf_pickup_prefix_.empty()) return false;
-  const auto *entry = this->phonebook_.find_id(id);
+  const auto *entry = this->phonebook_.find_id(id, account,
+      [this](const ContactEntry &candidate) { return this->get_contact_account_view(candidate); });
   if (entry == nullptr) return false;
-  const auto state = this->get_contact_blf_info_(id);
+  const auto line = this->get_contact_account_view(*entry);
+  if (line.empty() || (!account.empty() && line != account)) return false;
+  const auto state = this->get_contact_blf_info_(entry->stable_id(), line);
   if (!state.available || state.ringing_dialogs == 0) return false;
   const std::string target = sip_prefix_target_user(entry->route, this->blf_pickup_prefix_);
   if (target.empty() || target.size() > Phonebook::MAX_ROUTE_BYTES) return false;
   if (!this->is_registered(state.account_id)) return false;
+  if (!this->phonebook_.select(entry->stable_id(), line,
+      [this](const ContactEntry &candidate) { return this->get_contact_account_view(candidate); })) return false;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->start_call_on_line(target, state.account_id, this->get_video_send(), this->get_video_receive());
 #else

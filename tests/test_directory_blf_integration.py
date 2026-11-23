@@ -29,13 +29,14 @@ struct VoipStack {
  struct DirectoryProvider{const void*owner=nullptr;std::string account_id;};std::array<DirectoryProvider,4>directory_providers_{};
  bool get_account_snapshot(const std::string&,SipAccountSnapshot*);
  bool is_registered(const std::string&id){return transport_->is_registered(id);}
- std::string get_contact_account(std::string_view)const;bool set_blf_watches(const std::vector<BlfWatchConfig>&);void sync_blf_contacts_();
+ std::string_view get_contact_account_view(const ContactEntry&)const;std::string get_contact_account(std::string_view,std::string_view = {})const;bool set_blf_watches(const std::vector<BlfWatchConfig>&);void sync_blf_contacts_();
  DirectoryCommitResult commit_contact_directory(const void*,ContactEntry*,size_t,const std::string&,DirectoryCommitInfo* = nullptr);
  void publish_phonebook_changed_(){++publications;sync_blf_contacts_();}
 };
 '''
     settings = (SOURCE / "voip_settings.cpp").read_text()
     code += block((SOURCE / "voip_registration.cpp").read_text(), "bool VoipStack::get_account_snapshot(") + "\n"
+    code += block(settings, "std::string_view VoipStack::get_contact_account_view(") + "\n"
     code += block(settings, "std::string VoipStack::get_contact_account(") + "\n"
     code += block(settings, "DirectoryCommitResult VoipStack::commit_contact_directory(const void *provider, ContactEntry *entries") + "\n"
     for marker in ["bool VoipStack::set_blf_watches(", "void VoipStack::sync_blf_contacts_("]:
@@ -73,7 +74,6 @@ int main(int argc, char **){
   std::string target="sip:"+user_on_wire+"@"+host+":5070;transport=tcp;opaque=";
   target.append(512-target.size(),'x');
   const std::string id(96,'i'); int provider;
-  app.phonebook_.set_self_name(username);
   ContactEntry saved=row(id.c_str(),username.c_str(),target.c_str(),"ha");
   assert(app.commit_contact_directory(&provider,&saved,1,"ha")==DirectoryCommitResult::APPLIED);
   const auto *selected=app.phonebook_.find_id(id);assert(selected && selected->name==username);

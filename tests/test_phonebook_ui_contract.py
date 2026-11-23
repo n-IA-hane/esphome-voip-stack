@@ -45,6 +45,7 @@ class VoipStack {
  std::string pending_dialplan_target_,observed_route,observed_line,default_line_="ha",pending_line_;
  struct Provider{const void*owner=nullptr;std::string account_id;};std::array<Provider,4>directory_providers_{};
  bool is_idle()const{return idle;}bool can_start_call_()const{return idle;}
+ bool is_registered(const std::string&line)const{return line!="direct"&&line!="missing";}
  void publish_destination_(){++publishes;}
  // Observe the existing call-owner boundary, never simulate SIP success.
  void start(){++starts;idle=false;observed_route=phonebook_.current_route();
@@ -65,7 +66,7 @@ uint32_t count(){COUNT}
 RowKey key(uint32_t index){KEY}
 uint8_t group(uint32_t index){GROUP}
 void render(uint32_t index,RowData&row){RENDER}
-void select(const std::string&row_id,[[maybe_unused]]uint8_t action){SELECT}
+void select(const std::string&row_id,[[maybe_unused]]uint8_t action,const std::string&row_scope=""){SELECT}
 int main(){
  using namespace voip_stack;
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
@@ -97,11 +98,18 @@ int main(){
  const std::string stable(key(1).id);assert(key(1).name=="Manual display");
  RowData row;render(1,row);assert(std::string(row.id.data())==stable&&std::string(row.name.data())==manual.name);
  assert(std::string(row.detail.data())=="+39000107");
+#if defined(USE_ESPHOME_VOIP_REGISTRATION) && !defined(USE_ESPHOME_VOIP_CONTACT_METADATA)
+ assert(phone.get_contact_account_view(*phone.get_contact(1))==phone.default_line_);
+ assert(std::string(row.scope.data())==phone.default_line_);
+#elif !defined(USE_ESPHOME_VOIP_REGISTRATION)
+ assert(phone.get_contact_account_view(*phone.get_contact(1))=="direct");
+ assert(std::string(row.scope.data())=="direct");
+#endif
  assert(phone.phonebook_.select(stable));
  manual.name="Renamed display";
  assert(phone.phonebook_.replace_all({manual}));
  assert(phone.phonebook_.current_name()=="Renamed display"&&key(0).id==stable);
- select(stable,0);assert(phone.starts==1&&phone.publishes==1&&phone.observed_route=="qa-manual-7");
+ select(stable,0,row.scope.data());assert(phone.starts==1&&phone.publishes==1&&phone.observed_route=="qa-manual-7");
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
  assert(phone.observed_line=="office");
@@ -116,12 +124,49 @@ int main(){
  phone.idle=true;phone.phonebook_.clear();select(stable,0);assert(phone.starts==1); // Stale row ID.
  assert(phone.phonebook_.add_entry(manual)==AddResult::Added);
  RowData again;render(0,again);assert(std::string(again.detail.data())=="+39000107");
+
+#if defined(USE_ESPHOME_VOIP_CONTACT_METADATA) && defined(USE_ESPHOME_VOIP_REGISTRATION)
+ phone.idle=true;
+ ContactEntry a=manual,b=manual;
+ const std::string line_a(32,'a'),line_b(32,'b');
+ a.id=b.id="101";a.name="PBX A";b.name="PBX B";
+ a.route="sip:101@a.example";b.route="sip:101@b.example";a.account_id=line_a;b.account_id=line_b;
+ assert(phone.phonebook_.replace_all({a,b}));
+ RowData left,right;render(0,left);render(1,right);
+ assert(std::string(left.scope.data())==line_a&&std::string(right.scope.data())==line_b);
+ assert(key(0).scope==line_a&&key(1).scope==line_b);
+ const auto previous=phone.starts;
+ assert(!phone.call_contact("101")&&!phone.call_contact("101","missing"));
+ assert(phone.starts==previous&&phone.get_contact_account("101").empty());
+ select("101",0,right.scope.data());
+ assert(phone.starts==previous+1&&phone.observed_route=="sip:101@b.example"&&phone.observed_line==line_b);
+ assert(phone.phonebook_.current_name()=="PBX B");
+ phone.idle=true;assert(phone.call_contact("sip:101@a.example"));
+ assert(phone.observed_line==line_a&&phone.phonebook_.current_name()=="PBX A");
+ ContactEntry direct=a;direct.id="direct-peer";direct.name="Direct peer";direct.route="sip:101@192.0.2.30";direct.account_id="direct";
+ assert(phone.phonebook_.replace_all({direct}));phone.idle=true;
+ RowData direct_row;render(0,direct_row);assert(std::string(direct_row.scope.data())=="direct");
+ const auto direct_before=phone.starts;select("direct-peer",0,direct_row.scope.data());
+ assert(phone.starts==direct_before+1&&phone.observed_line=="direct"&&phone.observed_route==direct.route);
+ a.kind=b.kind=ContactKind::SIP_ACCOUNT;
+ a.id="Reception";a.route="202";b.id="202";b.route="303";b.account_id=line_a;a.name=b.name="Desk";
+ assert(phone.phonebook_.replace_all({a,b}));
+ assert(phone.phonebook_.find_id("202",line_a)->route=="303");
+ assert(phone.phonebook_.select("202",line_a)&&phone.phonebook_.current_route()=="303");
+ assert(!phone.phonebook_.remove_one("Desk")&&phone.phonebook_.size()==2);
+ b.kind=ContactKind::CONTACT;assert(phone.phonebook_.add_entry(b)==AddResult::EndpointReplaced);
+ assert(phone.phonebook_.at(0)->kind==a.kind&&phone.phonebook_.at(1)->kind==ContactKind::CONTACT);
+ assert(phone.phonebook_.remove_one("202")&&phone.phonebook_.size()==1&&phone.phonebook_.at(0)->id=="Reception");
+#elif !defined(USE_ESPHOME_VOIP_CONTACT_METADATA)
+ assert(!phone.phonebook_.find_id(stable,"office")&&!phone.phonebook_.select(stable,"office"));
+ assert(!phone.call_contact(stable,"office"));
+#endif
  std::cout<<"sizeof_contact="<<sizeof(ContactEntry)<<" count="<<phone.get_contact_count()<<" route="<<phone.observed_route<<" line="<<phone.observed_line<<"\n";
 }
 '''
     code = code.replace("DECLARATIONS", declarations)
     code = code.replace("METHODS", "\n".join(block(settings, name) for name in [
-        "bool VoipStack::call_contact(", "std::string VoipStack::get_contact_account(",
+        "bool VoipStack::call_contact(", "std::string_view VoipStack::get_contact_account_view(", "std::string VoipStack::get_contact_account(",
     ]))
     for key, name in [("COUNT", "row_count"), ("KEY", "row_key"), ("GROUP", "row_group"), ("RENDER", "render_row")]:
         code = code.replace(key, str(view[name]))

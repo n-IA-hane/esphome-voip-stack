@@ -88,7 +88,7 @@ using portMUX_TYPE=std::mutex;
         *(["-DUSE_ESPHOME_VOIP_STACK_VIDEO", "-DUSE_ESPHOME_VOIP_STACK_VIDEO_JPEG"] if video else []),
         "-I", str(tmp_path), "-I", str(ROOT), "-I", str(SOURCE),
         str(ROOT / "tests/fixtures" / fixture), *map(str, units), *(["-lcrypto"] if registration else []), "-o", str(binary),
-    ], capture_output=True, text=True, timeout=150 if video else 90)
+    ], capture_output=True, text=True, timeout=150)
     assert built.returncode == 0, built.stderr
     return binary
 

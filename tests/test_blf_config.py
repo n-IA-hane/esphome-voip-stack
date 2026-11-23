@@ -36,7 +36,7 @@ script:
     assert "#define USE_ESPHOME_VOIP_CONTACT_METADATA" in defines
     assert ("#define USE_ESPHOME_VOIP_PRESENCE" in defines) is presence
     assert "#define USE_ESPHOME_VOIP_MWI" not in defines
-    assert "set_contact_metadata" in generated and "ContactKind::SIP_ACCOUNT" in generated
+    assert "add_contact" in generated and "ContactKind::SIP_ACCOUNT" in generated
     assert "get_blf_state_trigger" in generated and "PickupContactAction" in generated
 
 

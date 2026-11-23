@@ -7,6 +7,7 @@
 namespace esphome::phone_list_view {
 struct RowData {
   std::array<char, 161> id{};
+  std::array<char, 33> scope{};
   std::array<char, 129> name{};
   std::array<char, 129> detail{};
   std::array<char, 9> leading{};
@@ -29,6 +30,10 @@ struct RowData {
     if (value.size() >= this->id.size()) { this->enabled = false; return; }
     text(this->id, value);
   }
+  void set_scope(std::string_view value) {
+    if (value.size() >= this->scope.size()) { this->enabled = false; return; }
+    text(this->scope, value);
+  }
   void set_name(std::string_view value) { text(this->name, value); }
   void set_detail(std::string_view value) { text(this->detail, value); }
   void set_leading(std::string_view value) { text(this->leading, value); }
@@ -39,6 +44,7 @@ struct RowData {
 struct RowKey {
   std::string_view name;
   std::string_view id;
+  std::string_view scope{};
 };
 
 }

@@ -169,7 +169,7 @@ enum class AddResult : uint8_t {
   Added,
   Upgraded,          // name existed without endpoint, now has ip+port
   EndpointReplaced,  // existing endpoint overwritten
-  Rejected,          // empty name or self-name
+  Rejected,          // invalid or conflicting contact
 };
 
 /// Local contact list with idempotent merge semantics. Slot order is
@@ -181,9 +181,6 @@ class Phonebook {
   static constexpr size_t MAX_ID_BYTES = CONTACT_ID_BYTES;
   static constexpr size_t MAX_ROUTE_BYTES = SIP_URI_BYTES;
   static constexpr size_t MAX_ADDRESS_BYTES = SIP_HOST_BYTES;
-
-  /// Skip add_one() for this name (the device's own name).
-  void set_self_name(const std::string &n) { this->self_name_ = n; }
 
   /// Accept one compact transport row. This is an internal serialization used
   /// after structured contacts have already been normalized.
@@ -197,9 +194,6 @@ class Phonebook {
 #else
     (void) provider;
 #endif
-    if (!this->self_name_.empty() && incoming.name == this->self_name_) {
-      return AddResult::Rejected;
-    }
     return this->merge_(incoming);
   }
 
@@ -241,9 +235,6 @@ class Phonebook {
   }
 
   AddResult add_entry(const ContactEntry &entry) {
-    if (!this->self_name_.empty() && entry.name == this->self_name_) {
-      return AddResult::Rejected;
-    }
     return this->merge_(entry);
   }
 
@@ -400,35 +391,30 @@ class Phonebook {
   /// Cursor follows: removing before the cursor shifts it down; removing
   /// the cursor itself keeps it on the next slot (or wraps to 0).
   bool remove_one(std::string_view name) {
-    for (size_t i = 0; i < this->entries_.size(); i++) {
-      if (this->entries_[i].name != name) continue;
-      this->remove_at_(i);
-      return true;
-    }
-    return false;
+    const auto *entry = this->find(name);
+    if (entry == nullptr) return false;
+    this->remove_at_(static_cast<size_t>(entry - this->entries_.data()));
+    return true;
   }
 
   /// Move the cursor to the named contact. Returns false if not present.
-  bool select(std::string_view name) {
-#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
-    const auto *identity = this->find_id(name);
-    if (identity != nullptr) {
-      this->index_ = static_cast<size_t>(identity - this->entries_.data());
-      return true;
-    }
-    for (size_t i = 0; i < this->entries_.size(); ++i)
-      if (this->entries_[i].stable_id() == name) return false;
-#endif
-    size_t selected = this->entries_.size();
-    for (size_t i = 0; i < this->entries_.size(); i++) {
-      if (this->entries_[i].name == name || this->entries_[i].route == name) {
-        if (selected != this->entries_.size()) return false;
-        selected = i;
-      }
-    }
-    if (selected == this->entries_.size()) return false;
-    this->index_ = selected;
+  template<typename AccountFor>
+  bool select(std::string_view id, std::string_view account, AccountFor account_for) {
+    const auto *entry = account.empty() ? this->find(id) : this->find_id(id, account, account_for);
+    if (entry == nullptr) return false;
+    this->index_ = static_cast<size_t>(entry - this->entries_.data());
     return true;
+  }
+
+  bool select(std::string_view id, std::string_view account = {}) {
+    return this->select(id, account, [](const ContactEntry &entry) -> std::string_view {
+#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
+      return {entry.account_id.data(), entry.account_id.size()};
+#else
+      (void) entry;
+      return {};
+#endif
+    });
   }
 
   /// Step through positions in order. No-op on empty phonebook.
@@ -446,33 +432,41 @@ class Phonebook {
     return &this->entries_[this->index_ % this->entries_.size()];
   }
   const ContactEntry *at(size_t index) const { return index < this->entries_.size() ? &this->entries_[index] : nullptr; }
-  const ContactEntry *find_id(std::string_view id) const {
+  template<typename AccountFor>
+  const ContactEntry *find_id(std::string_view id, std::string_view account, AccountFor account_for) const {
     const ContactEntry *found = nullptr;
     for (const auto &entry : this->entries_)
-      if (entry.stable_id() == id) {
+      if (entry.stable_id() == id && (account.empty() || account_for(entry) == account)) {
+        if (found != nullptr) return nullptr;
+        found = &entry;
+      }
+    if (found != nullptr) return found;
+    // A public SIP URI selects its route only after exact contact identities.
+    if (id.substr(0, 4) != "sip:") return nullptr;
+    for (const auto &entry : this->entries_)
+      if (entry.route == id && (account.empty() || account_for(entry) == account)) {
         if (found != nullptr) return nullptr;
         found = &entry;
       }
     return found;
   }
 
+  const ContactEntry *find_id(std::string_view id, std::string_view account = {}) const {
+    return this->find_id(id, account, [](const ContactEntry &entry) -> std::string_view {
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
-  bool set_metadata(std::string_view name, std::string_view id, ContactKind kind,
-                    std::string_view account_id, bool auto_blf) {
-    if (!sip_valid_contact_identity(id) ||
-        !valid_text_field_(account_id, 32, true)) return false;
-    for (auto &entry : this->entries_) {
-      if (entry.name != name && entry.route != name) continue;
-      if (entry.id == id && entry.kind == kind && entry.account_id == account_id && entry.auto_blf == auto_blf) return false;
-      entry.id = id; entry.kind = kind; entry.account_id = account_id; entry.auto_blf = auto_blf;
-      return true;
-    }
-    return false;
-  }
+      return {entry.account_id.data(), entry.account_id.size()};
+#else
+      (void) entry;
+      return {};
 #endif
+    });
+  }
 
   /// Lookup without moving the cursor (safe on the FSM hot path).
   const ContactEntry *find(std::string_view name) const {
+    if (const auto *entry = this->find_id(name)) return entry;
+    for (const auto &entry : this->entries_)
+      if (entry.stable_id() == name) return nullptr;
     const ContactEntry *found = nullptr;
     for (const auto &e : this->entries_) {
       if (e.name == name || e.route == name) {
@@ -550,8 +544,6 @@ class Phonebook {
   /// Local entries outrank directory records. Automatic endpoint updates
   /// remain within their existing source/provider owner.
   AddResult merge_(const ContactEntry &incoming) {
-#ifdef USE_ESPHOME_VOIP_DIRECTORY
-
     if (!valid_entry_(incoming)) return AddResult::Rejected;
     if (incoming.origin != ContactOrigin::MANUAL) {
       for (const auto &existing : this->entries_) {
@@ -568,6 +560,15 @@ class Phonebook {
     for (auto &existing : this->entries_) {
       if (!same_identity_(existing, incoming)) continue;
       if (incoming.ip.empty() && incoming.port == 0 && incoming.rtp_port == 0) {
+#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
+        if ((!incoming.id.empty() || !incoming.account_id.empty() || incoming.kind != ContactKind::UNKNOWN || incoming.auto_blf)
+            && (existing.id != incoming.id || existing.account_id != incoming.account_id ||
+                existing.kind != incoming.kind || existing.auto_blf != incoming.auto_blf)) {
+          existing.id = incoming.id; existing.account_id = incoming.account_id;
+          existing.kind = incoming.kind; existing.auto_blf = incoming.auto_blf;
+          return AddResult::EndpointReplaced;
+        }
+#endif
         return AddResult::Noop;
       }
       if (same_entry_(existing, incoming)) {
@@ -588,9 +589,9 @@ class Phonebook {
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
       existing.auto_blf = incoming.auto_blf;
       existing.account_id = incoming.account_id;
+      existing.id = incoming.id;
 #endif
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
-      existing.id = incoming.id;
       existing.provider = incoming.provider;
 #endif
       return was_unset ? AddResult::Upgraded : AddResult::EndpointReplaced;
@@ -603,39 +604,6 @@ class Phonebook {
     this->entries_.push_back(incoming);
     return AddResult::Added;
 
-#else
-
-    if (!valid_entry_(incoming)) return AddResult::Rejected;
-    for (auto &existing : this->entries_) {
-      if (existing.route != incoming.route) continue;
-      if (incoming.ip.empty() && incoming.port == 0 && incoming.rtp_port == 0) {
-        return AddResult::Noop;
-      }
-      if (existing.ip == incoming.ip && existing.port == incoming.port &&
-          existing.rtp_port == incoming.rtp_port &&
-          existing.endpoint_type == incoming.endpoint_type &&
-          existing.sip_transport_tcp == incoming.sip_transport_tcp &&
-          existing.number == incoming.number &&
-          existing.name == incoming.name) {
-        return AddResult::Noop;
-      }
-      const bool was_unset = existing.ip.empty() && existing.port == 0 &&
-                             existing.rtp_port == 0;
-      existing.name = incoming.name;
-      existing.ip = incoming.ip;
-      existing.endpoint_type = incoming.endpoint_type;
-      existing.port = incoming.port;
-      existing.rtp_port = incoming.rtp_port;
-      existing.sip_transport_tcp = incoming.sip_transport_tcp;
-      existing.number = incoming.number;
-      return was_unset ? AddResult::Upgraded : AddResult::EndpointReplaced;
-    }
-    // New name: append; cursor unchanged so the UI doesn't jump.
-    if (this->entries_.size() >= MAX_CONTACTS) return AddResult::Rejected;
-    this->entries_.push_back(incoming);
-    return AddResult::Added;
-
-#endif
   }
 
   static bool same_entry_(const ContactEntry &a, const ContactEntry &b) {
@@ -838,7 +806,6 @@ class Phonebook {
   std::vector<ContactEntry> entries_;
 #endif
   size_t index_{0};
-  std::string self_name_;
 
 };
 

@@ -1146,15 +1146,16 @@ def _add_static_contacts(var, config):
     contacts = config.get(CONF_STATIC_CONTACTS, [])
     default_transport = config.get(CONF_TRANSPORT, TRANSPORT_UDP)
     for contact in contacts:
-        cg.add(var.add_contact(_static_contact_entry(contact, default_transport)))
         if any(key in contact for key in ("contact_id", "kind", "account_id", "auto_blf")):
             cg.add_define("USE_ESPHOME_VOIP_CONTACT_METADATA")
             kind = contact.get("kind", "unknown")
             enum = voip_stack_ns.enum("ContactKind", is_class=True)
             values = {"esphome": "ESP", "sip_account": "SIP_ACCOUNT", "browser": "BROWSER", "contact": "CONTACT", "automation": "AUTOMATION", "group": "GROUP", "service": "SERVICE", "unknown": "UNKNOWN"}
-            cg.add(var.set_contact_metadata(contact.get(CONF_NAME, contact.get(CONF_ENTRY, "").split("|", 1)[0]),
+            cg.add(var.add_contact(_static_contact_entry(contact, default_transport),
                 contact.get("contact_id", ""), getattr(enum, values[kind]), contact.get("account_id", ""),
                 contact.get("auto_blf", kind in ("esphome", "sip_account", "browser"))))
+        else:
+            cg.add(var.add_contact(_static_contact_entry(contact, default_transport)))
 
 
 async def _add_device_and_audio_settings(var, config):

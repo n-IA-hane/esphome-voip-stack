@@ -9,10 +9,8 @@ def test_status_queries_allocate_nothing_and_keep_owned_callback_info(tmp_path):
     defines = tmp_path / "esphome/core/defines.h"
     defines.parent.mkdir(parents=True)
     defines.write_text("")
-    header = (SOURCE / "sip_blf.h").read_text()
     adapter = (SOURCE / "sip_registration_transport.cpp").read_text()
     owner = (SOURCE / "voip_blf.cpp").read_text()
-    lightweight = "struct BlfStatus" in header
     code = r'''
 #include "sip_blf.h"
 #include <atomic>
@@ -31,51 +29,50 @@ void operator delete(void*p,size_t)noexcept{std::free(p);}void operator delete[]
 using namespace esphome::voip_stack;
 struct LockGuard{explicit LockGuard(int&){};};
 struct Cached {
- BlfStateInfo info;
- std::array<bool,1> requested{{true}};
+ BlfStateInfo info,other;
+ std::array<bool,2> requested{{true,false}};
  Cached(){info.contact_id="stable-directory-identity-123456789";info.account_id="long-account-identity-1234";
-  info.available=true;info.presence=PresenceState::OPEN;info.state=BlfState::ACTIVE;info.active_dialogs=1;info.version=7;}
- size_t blf_capacity()const{return 1;}
+  info.available=true;info.presence=PresenceState::OPEN;info.state=BlfState::ACTIVE;info.active_dialogs=1;info.version=7;other=info;other.account_id="other-account-identity-1234";other.state=BlfState::RINGING;other.active_dialogs=0;other.ringing_dialogs=1;}
+ size_t blf_capacity()const{return 2;}
  bool blf_watch_requested(size_t i)const{return requested.at(i);}
- const BlfStateInfo*blf_state(size_t i)const{return i==0?&info:nullptr;}
+ const BlfStateInfo*blf_state(size_t i)const{return i==0?&info:i==1?&other:nullptr;}
 };
 struct SipTransport {
  int dialog_mutex_=0;Cached mwi_;
 '''
-    if lightweight:
-        code += '''template<class Result> bool copy_blf_state_(std::string_view,Result*);
-bool get_blf_state(std::string_view,BlfStatus*);
-bool get_blf_info(std::string_view,BlfStateInfo*);
+    code += """template<class Result> bool copy_blf_state_(std::string_view,Result*,std::string_view = {});
+bool get_blf_state(std::string_view,BlfStatus*,std::string_view = {});
+bool get_blf_info(std::string_view,BlfStateInfo*,std::string_view = {});
 };
-'''
-        code += block(adapter, "template<typename Result> bool SipTransport::copy_blf_state_(") + "\n"
-        code += block(adapter, "bool SipTransport::get_blf_state(") + "\n"
-        code += block(adapter, "bool SipTransport::get_blf_info(") + "\n"
-        result_type = "BlfStatus"
-    else:
-        code += 'bool get_blf_state(std::string_view,BlfStateInfo*);\n};\n'
-        code += block(adapter, "bool SipTransport::get_blf_state(") + "\n"
-        result_type = "BlfStateInfo"
-    code += f'''struct VoipStack {{
+"""
+    for marker in ("template<typename Result> bool SipTransport::copy_blf_state_(",
+                   "bool SipTransport::get_blf_state(", "bool SipTransport::get_blf_info("):
+        code += block(adapter, marker) + "\n"
+    code += """struct VoipStack {
 std::unique_ptr<SipTransport> transport_=std::make_unique<SipTransport>();bool blf_ready_=true;
-{result_type} get_contact_blf(std::string_view);
-'''
-    if lightweight:
-        code += 'BlfStateInfo get_contact_blf_info_(std::string_view);\n};\n'
-        code += block(owner, "BlfStatus VoipStack::get_contact_blf(") + "\n"
-        code += block(owner, "BlfStateInfo VoipStack::get_contact_blf_info_(") + "\n"
-    else:
-        code += '};\n'
-        code += block(owner, "BlfStateInfo VoipStack::get_contact_blf(") + "\n"
+BlfStatus get_contact_blf(std::string_view,std::string_view = {});
+BlfStateInfo get_contact_blf_info_(std::string_view,std::string_view = {});
+};
+"""
+    code += block(owner, "BlfStatus VoipStack::get_contact_blf(") + "\n"
+    code += block(owner, "BlfStateInfo VoipStack::get_contact_blf_info_(") + "\n"
     code += r'''
 int main(){
  VoipStack phone;const std::string_view id=phone.transport_->mwi_.info.contact_id;
  measuring=true;allocations=0;
  for(unsigned n=0;n<20;++n){auto state=phone.get_contact_blf(id);assert(state.available&&state.version==7&&state.active_dialogs==1);}
+ phone.transport_->mwi_.requested[1]=true;
+ for(unsigned n=0;n<20;++n){
+  assert(!phone.get_contact_blf(id).available);
+  assert(phone.get_contact_blf(id,"long-account-identity-1234").state==BlfState::ACTIVE);
+  assert(phone.get_contact_blf(id,"other-account-identity-1234").state==BlfState::RINGING);
+  assert(!phone.get_contact_blf(id,"missing").available);
+ }
+ phone.transport_->mwi_.requested[1]=false;
  measuring=false;const auto queries=allocations;
  measuring=true;allocations=0;
 '''
-    read = "get_contact_blf_info_" if lightweight else "get_contact_blf"
+    read = "get_contact_blf_info_"
     code += f'for(unsigned n=0;n<20;++n){{auto info=phone.{read}(id);assert(info.contact_id==id&&info.account_id=="long-account-identity-1234");}}\n'
     code += r'''
  measuring=false;const auto owned=allocations;

@@ -12,18 +12,24 @@ def test_ldap_phone_accounts_and_explicit_external_policy_drive_watches(tmp_path
 #include "sip_blf.h"
 #include "directory_contact.h"
 #define ESP_LOGW(...) ((void)0)
+#define ESP_LOGI(...) ((void)0)
 #include <cassert>
 #include <memory>
 using namespace esphome::voip_stack;
 using namespace esphome::ldap_directory;
 struct SipTransport{std::vector<BlfWatchConfig>desired;bool set_blf_watches(const std::vector<BlfWatchConfig>&v){desired=v;return true;}};
 struct VoipStack{Phonebook phonebook_;bool blf_ready_=true,blf_watch_contacts_=true;uint8_t blf_capacity_=16;
- std::string blf_account_id_="ha",default_line_="qa";std::unique_ptr<SipTransport>transport_=std::make_unique<SipTransport>();
+ std::string blf_account_id_="ha",default_line_="qa",device_name_="Desk";unsigned publications=0;std::unique_ptr<SipTransport>transport_=std::make_unique<SipTransport>();
  bool is_registered(const std::string&)const{return true;}
- std::string get_contact_account(std::string_view)const;bool set_blf_watches(const std::vector<BlfWatchConfig>&);void sync_blf_contacts_();};
+ std::string normalize_phonebook_for_transport_(const std::string&entry){return entry;}
+ void publish_phonebook_changed_(){++publications;}
+ void add_contact(const std::string&,const std::string& = "",ContactKind=ContactKind::UNKNOWN,const std::string& = "",bool=false);
+ std::string_view get_contact_account_view(const ContactEntry&)const;std::string get_contact_account(std::string_view,std::string_view = {})const;bool set_blf_watches(const std::vector<BlfWatchConfig>&);void sync_blf_contacts_();};
 '''
     settings = (SOURCE / "voip_settings.cpp").read_text()
     facade = (SOURCE / "voip_blf.cpp").read_text()
+    code += block(settings, "void VoipStack::add_contact(") + "\n"
+    code += block(settings, "std::string_view VoipStack::get_contact_account_view(") + "\n"
     code += block(settings, "std::string VoipStack::get_contact_account(") + "\n"
     for marker in ["bool VoipStack::set_blf_watches(", "void VoipStack::sync_blf_contacts_("]:
         code += block(facade, marker) + "\n"
@@ -51,6 +57,14 @@ int main(){
  assert(phone.phonebook_.add_entry(scoped)==AddResult::Added);phone.sync_blf_contacts_();
  assert(phone.transport_->desired.size()==5&&phone.transport_->desired.back().account_id=="office");
  assert(!phone.phonebook_.find_id("Browser primary"));
+ const auto before=phone.phonebook_.size();
+ assert(phone.device_name_=="Desk");
+ phone.add_contact("Desk|101|192.0.2.1|5060|40000|sip_udp","101",ContactKind::SIP_ACCOUNT,"office",true);
+ phone.add_contact("Desk|101|192.0.2.2|5060|40000|sip_udp","101",ContactKind::SIP_ACCOUNT,"other",true);
+ assert(phone.phonebook_.size()==before+2&&phone.publications==2);
+ assert(phone.phonebook_.find_id("101")==nullptr);
+ assert(phone.phonebook_.find_id("101","office")->ip=="192.0.2.1");
+ assert(phone.phonebook_.find_id("101","other")->ip=="192.0.2.2");
 }
 '''
     cpp = tmp_path / "policy.cpp"

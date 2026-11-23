@@ -113,8 +113,8 @@ class SipTransport : public SipPhoneTransport {
   using BlfCallback = void (*)(void *, SipTransport *, size_t);
   bool configure_blf(uint8_t capacity, BlfCallback callback);
   bool set_blf_watches(const std::vector<BlfWatchConfig> &watches);
-  bool get_blf_state(std::string_view, BlfStatus *);
-  bool get_blf_info(std::string_view, BlfStateInfo *);
+  bool get_blf_state(std::string_view, BlfStatus *, std::string_view account = {});
+  bool get_blf_info(std::string_view, BlfStateInfo *, std::string_view account = {});
   bool copy_blf_slot(size_t, BlfStateInfo *);
 #endif
   void set_registration_keepalive_interval(uint32_t milliseconds) { this->registration_.set_keepalive_interval(milliseconds); }
@@ -918,7 +918,7 @@ class SipTransport : public SipPhoneTransport {
 #ifdef USE_ESPHOME_VOIP_BLF
   BlfCallback blf_callback_{nullptr};
   static void registration_blf_notify_(void *, const BlfStateInfo &);
-  template<typename Result> bool copy_blf_state_(std::string_view, Result *);
+  template<typename Result> bool copy_blf_state_(std::string_view, Result *, std::string_view account = {});
 #endif
   static void registration_binding_accepted_(void *, size_t, uint32_t);
   void pump_registration_mwi_(uint32_t now);

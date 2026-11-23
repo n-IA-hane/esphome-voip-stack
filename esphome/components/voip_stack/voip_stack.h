@@ -459,22 +459,20 @@ class VoipStack : public Component {
   void register_mic_gain_number(number::Number *num) { this->mic_gain_number_ = num; }
 #endif
   // SIP dial-plan contact management. Public YAML should prefer the
-  // structured add_contact action. add_contact(std::string) remains the compact
-  // compact transport-row path used by generated contact helpers.
+  // structured add_contact action. Generated helpers normalize transport rows
+  // and optional metadata before the same phonebook merge.
   // add_contact and set_contacts run the same idempotent merge: same shape
   // = no-op, missing endpoint upgraded in place, mismatched endpoint
   // replaced. Slot order is stable; only flush_contacts() trims.
-  void add_contact(const std::string &entry);
-#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
-  void set_contact_metadata(const std::string &, const std::string &, ContactKind, const std::string &, bool);
-#endif
+  void add_contact(const std::string &entry, const std::string &id = "", ContactKind kind = ContactKind::UNKNOWN,
+                   const std::string &account = "", bool auto_blf = false);
 #ifdef USE_ESPHOME_VOIP_BLF
   void set_blf_configuration(const std::string &account, uint8_t capacity, const std::string &prefix, bool contacts) {
     this->blf_account_id_ = account; this->blf_capacity_ = capacity; this->blf_pickup_prefix_ = prefix; this->blf_watch_contacts_ = contacts;
   }
-  BlfStatus get_contact_blf(std::string_view id);
+  BlfStatus get_contact_blf(std::string_view id, std::string_view account = {});
   bool set_blf_watches(const std::vector<BlfWatchConfig> &watches);
-  bool pickup_contact(const std::string &id);
+  bool pickup_contact(const std::string &id, std::string_view account = {});
   template<typename F> void add_on_blf_state_callback(F &&callback) {
     this->blf_callbacks_.add(std::forward<F>(callback)); this->blf_notifications_requested_.store(true, std::memory_order_release);
   }
@@ -517,8 +515,9 @@ class VoipStack : public Component {
   std::string get_active_peer_name() const;
   size_t get_contact_count() const { return this->phonebook_.size(); }
   const ContactEntry *get_contact(size_t index) const { return this->phonebook_.at(index); }
-  std::string get_contact_account(std::string_view id) const;
-  bool call_contact(const std::string &id);
+  std::string_view get_contact_account_view(const ContactEntry &entry) const;
+  std::string get_contact_account(std::string_view id, std::string_view account = {}) const;
+  bool call_contact(const std::string &id, std::string_view account = {});
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
   DirectoryCommitResult commit_contact_directory(const void *provider, std::vector<ContactEntry> entries, const std::string &account_id = {});
   DirectoryCommitResult commit_contact_directory(const void *provider, ContactEntry *entries, size_t count,
@@ -1291,7 +1290,7 @@ class VoipStack : public Component {
   void sync_blf_contacts_();
   static void blf_callback_(void *, SipTransport *, size_t);
   void pump_blf_events_();
-  BlfStateInfo get_contact_blf_info_(std::string_view id);
+  BlfStateInfo get_contact_blf_info_(std::string_view id, std::string_view account = {});
   uint8_t blf_capacity_{16};
   bool blf_ready_{false}, blf_watch_contacts_{true};
   std::string blf_account_id_{"ha"}, blf_pickup_prefix_;
