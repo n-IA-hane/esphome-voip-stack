@@ -224,7 +224,6 @@ struct Transaction{bool udp=false,completed=false;uint32_t next_ms=1,ip_v4=0;uin
 struct Pending{bool used=false,waiting_retry=false,target_send=false,previous_send=false;uint32_t retry_at_ms=1,response_deadline_ms=1000;Transaction transaction;
  bool pending()const{return used;}void clear(){used=false;}};
 struct SipTransport {
- CallVideoIntent video_call_intent_{},next_video_call_intent_{};
  enum:uint8_t{IMAGEATTR_DISABLED=4,IMAGEATTR_FALLBACK=8,IMAGEATTR_ACTIVE=16};
  uint8_t video_imageattr_state_=IMAGEATTR_DISABLED|IMAGEATTR_FALLBACK;
  Pending pending_video_direction_invite_;

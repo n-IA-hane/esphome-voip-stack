@@ -31,11 +31,10 @@ using namespace esphome;using namespace esphome::voip_stack;
 struct VoipStack {
  void *mic_buffer_=this;int16_t scratch[511]{};
  std::atomic<int16_t*>mic_converted_{scratch};std::atomic<float>mic_gain_{1};
- bool dc_offset_removal_=true;AudioFormat tx;
+ bool dc_offset_removal_=true;AudioFormat tx_audio_format_;
  FIELDS
  std::vector<int16_t> output;
  bool is_tx_stream_ready_()const{return true;}
- AudioFormat get_current_tx_audio_format_()const{return tx;}
  size_t mic_processing_samples_()const{return 511;}
  bool write_mic_buffer_(const uint8_t*p,size_t n){auto*s=reinterpret_cast<const int16_t*>(p);output.insert(output.end(),s,s+n/2);return true;}
  void on_microphone_data_(const uint8_t*,size_t);
@@ -46,7 +45,7 @@ struct VoipStack {
     code += block(source, "void VoipStack::on_microphone_data_(")
     code += r'''
 int main(int argc,char**argv){
- const unsigned channels=std::stoi(argv[1]);VoipStack phone;phone.tx.channels=channels;
+ const unsigned channels=std::stoi(argv[1]);VoipStack phone;phone.tx_audio_format_.channels=channels;
  for(unsigned call=0;call<2;++call){
   phone.reset_call();phone.output.clear();DcBlockerState expected[2];
   std::vector<int16_t> input(20000),reference;

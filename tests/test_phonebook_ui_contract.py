@@ -79,14 +79,16 @@ int main(){
 #else
  static_assert(!has_provider<ContactEntry>::value);
 #endif
- assert(phone.phonebook_.add_one("Legacy|192.0.2.1|5060|40000|full_duplex|48000|10|sip_udp")==AddResult::Added);
+ assert(phone.phonebook_.add_one("Standard|192.0.2.1|5060|40000|sip_udp")==AddResult::Added);
  assert(phone.phonebook_.at(0)->number.empty());
- RowData legacy;render(0,legacy);assert(std::string(legacy.detail.data()).empty());
+ RowData standard;render(0,standard);assert(std::string(standard.detail.data()).empty());
  ContactEntry parsed;
- assert(!Phonebook::parse_entry("Legacy|192.0.2.1|5060|40000|bad;hint|48000|10|sip_udp",&parsed));
- const std::string legacy_prefix="Legacy|192.0.2.1|5060|40000|",legacy_suffix="|48000|10|sip_udp";
- assert(Phonebook::parse_entry(legacy_prefix+std::string(160,'x')+legacy_suffix,&parsed)&&parsed.number.empty());
- assert(!Phonebook::parse_entry(legacy_prefix+std::string(161,'x')+legacy_suffix,&parsed));
+ // The retired extended row cannot supply codec hints or become a current endpoint.
+ assert(!Phonebook::parse_entry("Standard|192.0.2.1|5060|40000|full_duplex|48000|10|sip_udp",&parsed));
+ assert(!Phonebook::parse_entry("Standard|standard-route|192.0.2.1|5060|40000|full_duplex|48000|10|sip_udp",&parsed));
+ assert(!Phonebook::parse_entry("Standard|192.0.2.1|5060|40000|bad;transport",&parsed));
+ assert(Phonebook::parse_entry("Standard|192.0.2.1|5060|40000|sip_tcp",&parsed)&&parsed.sip_transport_tcp&&parsed.number.empty());
+ assert(Phonebook::parse_entry("Standard|standard-route|192.0.2.1|5060|40000|sip_udp",&parsed)&&parsed.route=="standard-route"&&!parsed.sip_transport_tcp&&parsed.number.empty());
  ContactEntry manual;manual.name="Manual display";manual.route="qa-manual-7";
  manual.ip="192.0.2.7";manual.port=5067;manual.endpoint_type=ContactEndpointType::SIP;
  manual.kind=ContactKind::CONTACT;manual.number="+39000107";

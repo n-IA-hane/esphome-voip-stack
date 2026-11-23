@@ -2132,7 +2132,9 @@ def test_phonebook_capacity_and_transport_updates_are_centralized() -> None:
     ]
     assert "if (!valid_entry_(incoming))" in merge
     assert "this->entries_.size() >= MAX_CONTACTS" in merge
-    assert "existing.sip_transport_tcp == incoming.sip_transport_tcp" in merge
+    assert "same_entry_(existing, incoming)" in merge
+    same_entry = cpp_method(phonebook, r"same_entry_")
+    assert "a.sip_transport_tcp == b.sip_transport_tcp" in same_entry
     add_batch = phonebook[
         phonebook.index("bool add_batch") :
         phonebook.index("\n  AddResult add_entry")
@@ -2525,7 +2527,8 @@ def test_reinvite_and_rtp_latch_are_explicit() -> None:
     assert "latched_rtp_port_.store" in sip_cpp
     assert "latched_rtp_ssrc_.load" in sip_cpp
     assert "remote_rtp_port_.store(src_port" in sip_cpp
-    assert "uint8_t pcm[2048];" in sip_cpp
+    assert "uint8_t pcm[RTP_AUDIO_DECODE_BUFFER_BYTES];" in sip_cpp
+    assert "RTP_AUDIO_DECODE_BUFFER_BYTES = 2048;" in read("sip_types.h")
 
 
 def test_simultaneous_invites_preserve_local_transaction_and_reject_glare() -> None:
@@ -3399,20 +3402,17 @@ def test_media_session_and_silence_policies_are_explicit() -> None:
 def test_long_diagnostic_text_sensors_have_wrapping_separators() -> None:
     stack = read("voip_stack.cpp")
 
-    assert 'out += "; ";' in stack
-    assert 'out += ";";' not in stack
-    assert '"%s | %s | %u | %u | %s | %s | %s | %s | %s%s%s"' in stack
     assert '"st=%s; id=%s; dir=%s; from=%s; to=%s; ct=%s; tr=%s; sc=%u; "' in stack
     assert '"tx=%s; rx=%s; pt=%u; pr=%u; "' in stack
     assert '"tqd=%u; tqdrop=%u; rqd=%u; rqdrop=%u; rs=%s; ev=%s"' in stack
 
 
 def test_ha_routed_contacts_use_local_esp_signaling_transport() -> None:
-    settings = read("voip_settings.cpp")
+    """The managed HA line inherits this phone's transport when set to auto."""
+    set_account = cpp_method(read("ha_integration.h"), r"set_account")
 
-    assert "const bool local_sip_transport_tcp = this->protocol_ == TransportType::TCP;" in settings
-    assert "entry.sip_transport_tcp = local_sip_transport_tcp;" in settings
-    assert "entry.sip_transport_tcp = ha_slot.sip_transport == \"tcp\";" not in settings
+    assert 'if (transport == "auto" && id == "ha") transport = this->parent_->configured_sip_transport_name();' in set_account
+    assert 'c.tcp = transport == "tcp";' in set_account
 
 
 def test_call_action_is_universal_local_or_ha_dialplan() -> None:

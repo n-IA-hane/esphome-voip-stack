@@ -17,8 +17,8 @@ def consumed_clock(tmp_path_factory):
     source = hold_source().split("\nint main(", 1)[0]
     producer = (SOURCE / "voip_audio.cpp").read_text()
     start = producer.index("    const auto consumed_context =")
-    end = producer.index("this->send_chunk_(audio_chunk, frame_bytes, consumed_context);", start)
-    consumed = producer[start:end + len("this->send_chunk_(audio_chunk, frame_bytes, consumed_context);")]
+    end = producer.index("\n    const int64_t frame_interval_us =", start)
+    consumed = producer[start:end]
     source += r'''
 struct MicBuffer {
  std::vector<uint8_t>pcm;std::function<void()>on_read;

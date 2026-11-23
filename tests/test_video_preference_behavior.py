@@ -75,5 +75,5 @@ int main() {
 ''')
     binary = tmp_path / 'video_preference'
     subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
-                    str(probe), '-o', str(binary)], check=True)
+                    '-I', str(ROOT), str(probe), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
