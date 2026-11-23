@@ -148,6 +148,17 @@ struct AudioPayloadSelection {
     const bool want_tx = local.tx.count != 0 && !zero_connection && (attributes.flow & 0x02) != 0;
     const bool want_rx = local.rx.count != 0 && !zero_connection && (attributes.flow & 0x01) != 0;
     if (retained_call) {
+      // Check every offered meaning before filtering unsupported mappings.
+      // A retired dynamic PT cannot be reassigned within the same session.
+      for (uint8_t pt = 0; pt < 128; ++pt) {
+        if (seen_mapping[pt] == 0) continue;
+        const auto offered = unpack_audio_format(seen_mapping[pt]);
+        AudioFormat previous;
+        if ((retained.rx_payloads.find_known(pt, &previous) &&
+             !audio_formats_share_rtp_mapping(previous, offered)) ||
+            (pt == retained.tx_pt && retained.tx.is_valid() &&
+             !audio_formats_share_rtp_mapping(retained.tx, offered))) return AudioSelectionResult::INVALID;
+      }
       const auto retained_mapping_offered = [&](const AudioFormat &format, uint8_t pt) {
         return format.is_valid() && seen_mapping[pt] != 0 &&
                audio_formats_share_rtp_mapping(format, unpack_audio_format(seen_mapping[pt]));
@@ -194,6 +205,12 @@ struct AudioPayloadSelection {
       if (usable && !accepted_rx.add(entry.payload_type, entry.format)) return AudioSelectionResult::INVALID;
     }
     if (retained_call && !media.receive) accepted_rx = retained.rx_payloads;
+    if (retained_call) {
+      // Preserve protocol history through unchanged and direction-only offers.
+      // Resource admission remains with the committed transport, not this parser.
+      auto known = retained.rx_payloads;
+      if (known.activate_known_set(accepted_rx)) accepted_rx = known;
+    }
     media.tx = selected_tx_format;
     media.rx = selected_rx_format;
     media.tx_pt = selected_tx_payload_type;

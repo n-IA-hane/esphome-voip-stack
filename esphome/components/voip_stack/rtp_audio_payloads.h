@@ -59,8 +59,9 @@ inline AudioFormat pcm_playout_format(const AudioFormat &wire, const AudioFormat
   return target.nominal_frame_bytes() <= capacity ? target : wire;
 }
 
-// A payload number has meaning only inside the current offer/answer exchange.
-// Keep the small negotiated set, rather than a permanent 128-entry RTP table.
+// RFC 3264 keeps a dynamic payload's meaning stable for the whole session.
+// Active mappings occupy the prefix; retired mappings share the same bounded
+// slots so a direction-only reoffer can restore an already admitted alias.
 struct RtpAudioPayloads {
   struct Entry {
     AudioFormat format;
@@ -68,6 +69,7 @@ struct RtpAudioPayloads {
   };
   Entry entries[VOIP_STACK_MAX_AUDIO_FORMATS]{};
   uint8_t count{0};
+  uint8_t known_count{0};
 
   bool add(uint8_t pt, const AudioFormat &format) {
     if (pt > 127 || !format.is_valid()) return false;
@@ -75,7 +77,9 @@ struct RtpAudioPayloads {
       if (this->entries[i].payload_type == pt)
         return this->entries[i].format == format;
     }
-    if (this->count == VOIP_STACK_MAX_AUDIO_FORMATS) return false;
+    // A retained table changes its active set through activate_known_set().
+    // Do not overwrite a retired mapping with an unrelated new payload.
+    if (this->known_count > this->count || this->count == VOIP_STACK_MAX_AUDIO_FORMATS) return false;
     this->entries[this->count++] = Entry{format, pt};
     return true;
   }
@@ -88,6 +92,39 @@ struct RtpAudioPayloads {
       }
     }
     return false;
+  }
+
+  bool find_known(uint8_t pt, AudioFormat *format) const {
+    const uint8_t limit = this->known_count > this->count ? this->known_count : this->count;
+    if (limit > VOIP_STACK_MAX_AUDIO_FORMATS) return false;
+    for (uint8_t i = 0; i < limit; ++i) {
+      if (this->entries[i].payload_type == pt) {
+        if (format != nullptr) *format = this->entries[i].format;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Protocol bookkeeping only: this does not allocate or admit media resources.
+  // The transport must validate geometry against its old committed media owner.
+  bool activate_known_set(const RtpAudioPayloads &active) {
+    const uint8_t limit = this->known_count > this->count ? this->known_count : this->count;
+    if (limit > VOIP_STACK_MAX_AUDIO_FORMATS || active.count > limit) return false;
+    RtpAudioPayloads next = *this;
+    for (uint8_t i = 0; i < active.count; ++i) {
+      uint8_t found = 0;
+      while (found < limit && next.entries[found].payload_type != active.entries[i].payload_type) ++found;
+      if (found < i || found == limit ||
+          !audio_formats_share_rtp_mapping(next.entries[found].format, active.entries[i].format)) return false;
+      const Entry previous = next.entries[i];
+      next.entries[i] = active.entries[i];
+      if (found != i) next.entries[found] = previous;
+    }
+    next.count = active.count;
+    next.known_count = limit;
+    *this = next;
+    return true;
   }
 
   AudioFormatList formats() const {

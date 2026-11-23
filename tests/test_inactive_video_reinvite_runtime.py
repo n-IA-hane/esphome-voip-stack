@@ -160,6 +160,15 @@ int main(int argc,char**argv){
  const auto old_rx=t.accepted;const auto old_tx=t.tx;const auto old_format=t.negotiated_video_capability_;
  const auto old_dtmf=DtmfConfig{t.dtmf_tx,t.dtmf_rx};const auto old_direction=t.video_receive_enabled_;
  auto proposal=park_offer;
+ if(mode=="alias-shrink"){
+  proposal=initial_answer;
+  proposal.replace(proposal.find("RTP/AVP 97 96 120"),17,"RTP/AVP 96 120");
+  const std::string omitted="a=rtpmap:97 L16/16000/1\r\n";
+  proposal.erase(proposal.find(omitted),omitted.size());
+  proposal.replace(proposal.find("a=sendrecv"),10,"a=sendonly");
+  for(auto position=proposal.find("a=x-voip-stack-");position!=std::string::npos;position=proposal.find("a=x-voip-stack-"))
+   proposal.erase(position,proposal.find("\r\n",position)+2-position);
+ }
  if(mode=="old-ports"){
   proposal.replace(proposal.find("video 40042"),11,"video 40040");
   proposal.replace(proposal.find("rtcp:40043"),10,"rtcp:40041");
@@ -173,7 +182,9 @@ int main(int argc,char**argv){
  sockaddr_in peer{};peer.sin_addr.s_addr=htonl(0xc0a801c8);peer.sin_port=htons(5060);
  const bool result=t.handle_reinvite_(request,peer);
  std::cerr<<"status="<<t.status<<" reason="<<t.reason<<" final_attempts="<<t.finals<<" child_calls="<<t.child.calls<<" remote_video="<<t.remote_video_rtp_port_<<"\n";
- assert(t.tx==old_tx&&t.accepted==old_rx&&t.media_active_&&t.media_proposal_epoch_==2);
+ assert(t.tx==old_tx&&t.media_active_&&t.media_proposal_epoch_==2);
+ if(mode=="alias-shrink")assert(t.accepted.count==1&&t.accepted.find(96,nullptr)&&t.accepted.find_known(97,nullptr));
+ else assert(t.accepted==old_rx);
  assert((DtmfConfig{t.dtmf_tx,t.dtmf_rx}==old_dtmf)&&t.negotiated_video_capability_.encoding==old_format.encoding);
  const bool reject=mode=="active-retarget"||mode=="inactive-to-active"||mode=="format-change";
  if(reject){
@@ -186,8 +197,8 @@ int main(int argc,char**argv){
   assert(!result&&t.status==200&&t.finals==1);
  }else{
   assert(result&&t.status==200&&t.finals==1);
-  assert(t.remote_video_rtp_port_==(mode=="old-ports"?40040:40042));
-  assert(t.remote_video_rtcp_port_==(mode=="old-ports"?40041:40043));
+  assert(t.remote_video_rtp_port_==((mode=="old-ports"||mode=="alias-shrink")?40040:40042));
+  assert(t.remote_video_rtcp_port_==((mode=="old-ports"||mode=="alias-shrink")?40041:40043));
   assert(t.remote_dialog_cseq_==2&&t.last_invite_cseq_number_==2&&t.remote_target_uri_=="sip:new-target@192.168.1.200");
   assert(!t.video_send_enabled_&&!t.video_receive_enabled_&&t.active_emits==0);
   assert(t.answer.find("a=inactive")!=std::string::npos);
@@ -219,7 +230,7 @@ def reinvite(tmp_path_factory):
     return binary
 
 
-@pytest.mark.parametrize('scenario',['old-ports','new-ports','send-failure','active-retarget','inactive-to-active','no-rtcp-attribute','format-change','commit-failure'])
+@pytest.mark.parametrize('scenario',['old-ports','new-ports','send-failure','active-retarget','inactive-to-active','no-rtcp-attribute','format-change','commit-failure','alias-shrink'])
 def test_inactive_video_reoffer_uses_existing_dialog_without_activating_media(reinvite,scenario):
     result=subprocess.run([str(reinvite),scenario],capture_output=True,text=True,timeout=5)
     assert result.returncode==0,result.stdout+result.stderr

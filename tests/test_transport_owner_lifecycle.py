@@ -102,3 +102,14 @@ def transport_lifecycle_binary(tmp_path_factory):
 def test_complete_transport_joins_workers_and_reuses_one_socket_reader(transport_lifecycle_binary, mode):
     ran = subprocess.run([transport_lifecycle_binary, mode], capture_output=True, text=True, timeout=15)
     assert ran.returncode == 0, ran.stdout + ran.stderr
+
+
+@pytest.fixture(scope="module")
+def audio_alias_history_binary(tmp_path_factory):
+    return build_transport_owner(tmp_path_factory, fixture="audio_alias_history_owner.cpp")
+
+
+@pytest.mark.parametrize("mode", ["shrink-restore", "retired-remap", "unprepared-alias", "unprepared-owner", "primary-change"])
+def test_direction_only_alias_changes_reuse_committed_media(audio_alias_history_binary, mode):
+    ran = subprocess.run([str(audio_alias_history_binary), mode], capture_output=True, text=True, timeout=15)
+    assert ran.returncode == 0, ran.stdout + ran.stderr

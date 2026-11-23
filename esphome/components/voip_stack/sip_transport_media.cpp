@@ -173,7 +173,9 @@ bool SipTransport::received_audio_format_(uint8_t pt, AudioFormat *format,
   if (!this->audio_receive_enabled_.load(std::memory_order_acquire)) return false;
   AudioFormat mapping;
   portENTER_CRITICAL(&this->media_config_lock_);
-  const bool found = this->negotiated_rx_payloads_.find(pt, &mapping);
+  // Keep already admitted retired mappings ready for in-flight RTP across a
+  // new answer (RFC 3264 section 8.3.2); only the active prefix is advertised.
+  const bool found = this->negotiated_rx_payloads_.find_known(pt, &mapping);
   portEXIT_CRITICAL(&this->media_config_lock_);
   if (!found) return false;
   if (payload == nullptr) {

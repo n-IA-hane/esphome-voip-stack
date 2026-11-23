@@ -451,16 +451,35 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   const auto &new_video_capability = proposed.video;
 #endif
 
+  auto committed_rx_payloads = old_rx_payloads;
+  bool same_receive_resources = new_rx_payloads == old_rx_payloads;
+  const bool one_way_transition = !old_media.send || !old_media.receive || !proposed.send || !proposed.receive;
+  if (!same_receive_resources && phase == MediaLifecyclePhase::ACTIVE && one_way_transition) {
+    // ACTIVE follows preparation of the old committed table. Direction changes
+    // do not release its converters/decoders. Only reuse those exact admitted
+    // geometries, never treat protocol history in a fresh proposal as allocation.
+    same_receive_resources = true;
+    for (uint8_t i = 0; i < new_rx_payloads.count && same_receive_resources; ++i) {
+      const auto &entry = new_rx_payloads.entries[i];
+      AudioFormat admitted;
+      same_receive_resources = old_rx_payloads.find_known(entry.payload_type, &admitted) && admitted == entry.format;
+    }
+    same_receive_resources = same_receive_resources && committed_rx_payloads.activate_known_set(new_rx_payloads);
+  }
   const bool same_audio =
       new_tx == old_tx && new_rx == old_rx &&
       new_tx_pt == old_tx_pt && new_rx_pt == old_rx_pt &&
-      new_rx_payloads == old_rx_payloads &&
+      same_receive_resources &&
       new_audio_ip == old_audio_ip && new_audio_port == old_audio_port;
   if (!same_audio) {
     return this->send_stateless_response_(
         message, src, 488, "Not Acceptable Here",
         "audio_renegotiation_unsupported", true);
   }
+
+  // Publish the active prefix and its retained meanings only after the final
+  // response succeeds, through the existing commit_negotiated_media_ owner.
+  proposed.rx_payloads = committed_rx_payloads;
 
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   // Keep one authoritative media child. A video attachment can be admitted

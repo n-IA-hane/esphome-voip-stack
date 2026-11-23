@@ -83,12 +83,20 @@ int main(int argc,char**argv){
   const bool accepted=t.handle_reinvite_(request,peer);
   std::cerr<<"Asymmetric reoffer single="<<single<<" direction="<<direction<<" status="<<t.status<<" reason="<<t.reason<<"\n";
   assert(accepted&&t.status==200&&"A one-way reoffer needs only the active direction mapping");
-  assert(t.tx==pcm&&t.rx==receive&&t.accepted==old_payloads);
+  assert(t.tx==pcm&&t.rx==receive);
+  if(single&&direction=="sendonly"){
+   assert(t.accepted.count==1&&t.accepted.find(96,nullptr)&&!t.accepted.find(97,nullptr));
+   assert(t.accepted.find_known(97,nullptr));
+  }else assert(t.accepted==old_payloads);
   const auto start=t.answer.find("m=audio ");const auto end=t.answer.find("\r\n",start);
   uint16_t port=0;bool payloads[128]{};assert(parse_audio_media_line(t.answer.substr(start,end-start),&port,payloads));
   std::cerr<<"Asymmetric "<<direction<<" answer="<<t.answer.substr(start,end-start)<<"\n";
   if(direction=="sendonly"){
-   assert(payloads[96]&&!payloads[97]&&"recvonly answer must advertise receive mappings only");
+   // Both mappings in the original offer are real RX alternatives. The
+   // send preference does not make PT97 transmit-only.
+   for(unsigned pt=0;pt<128;++pt)
+    assert(payloads[pt]==t.accepted.find(static_cast<uint8_t>(pt),nullptr));
+   assert(payloads[96]&&payloads[97]==!single);
    assert(t.answer.find("a=recvonly\r\n")!=std::string::npos);
   }else if(direction=="recvonly"){
    assert(!payloads[96]&&payloads[97]&&"sendonly answer must advertise transmit mappings only");
