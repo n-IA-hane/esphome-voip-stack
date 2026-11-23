@@ -9,7 +9,7 @@ from test_transport_owner_lifecycle import build_transport_owner
 
 @pytest.fixture(scope="module")
 def pcm_refresh_owner(tmp_path_factory):
-    return build_transport_owner(tmp_path_factory, "negotiated_media_refresh.cpp", video=True)
+    return build_transport_owner(tmp_path_factory, "negotiated_media_refresh.cpp", video=True, speaker=True)
 
 
 @pytest.mark.parametrize("transport", ["udp", "tcp"])

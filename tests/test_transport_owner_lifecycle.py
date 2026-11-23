@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = Path(os.environ.get("TRANSPORT_LIFECYCLE_SOURCE", ROOT / "esphome/components/voip_stack"))
 
 
-def build_transport_owner(tmp_path_factory, fixture="transport_owner_lifecycle.cpp", video=False, registration=False, opus=False):
+def build_transport_owner(tmp_path_factory, fixture="transport_owner_lifecycle.cpp", video=False, registration=False, opus=False, speaker=False):
     tmp_path = tmp_path_factory.mktemp("transport-lifecycle")
     sdk = (ROOT / "tests/fixtures/video_host_sdk.h").read_text()
     sdk = sdk.replace("struct HostTask { std::thread thread; };", """
@@ -84,11 +84,24 @@ using portMUX_TYPE=std::mutex;
     if opus:
         units.append(SOURCE / "opus_rtp_codec.cpp")
         opus_flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "opus"], text=True))
+    speaker_flags = []
+    if speaker:
+        location = os.environ.get("ESP_AUDIO_LIBS_SOURCE")
+        if not location:
+            pytest.fail("ESP_AUDIO_LIBS_SOURCE is required for the native PCM receive converter")
+        library = Path(location)
+        units.extend(library / name for name in (
+            "src/resample/resampler.cpp", "src/resample/art_resampler.cpp",
+            "src/resample/art_biquad.cpp", "src/quantization_utils.cpp",
+            "src/memory_utils.cpp", "src/dsp/dsps_dotprod_f32_ansi.c",
+        ))
+        speaker_flags = ["-DUSE_ESPHOME_VOIP_STACK_SPEAKER", "-I", str(library / "include")]
     binary = tmp_path / "transport-owner"
     built = subprocess.run([
-        "g++", "-std=c++17", "-O0" if video else "-O1", "-g1" if video else "-g", "-pthread", "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
+        "g++", "-std=c++20" if speaker else "-std=c++17", "-O0" if video else "-O1", "-g1" if video else "-g", "-pthread", "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
         "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie", "-DUSE_ESP32",
         "-DUSE_ESPHOME_VOIP_SIP_TRANSPORT", "-DUSE_ESPHOME_VOIP_STACK_PCM",
+        *speaker_flags,
         *(["-DUSE_ESPHOME_VOIP_STACK_OPUS"] if opus else []),
         *(["-DUSE_ESPHOME_VOIP_REGISTRATION"] if registration else []),
         *(["-DUSE_ESPHOME_VOIP_STACK_VIDEO", "-DUSE_ESPHOME_VOIP_STACK_VIDEO_JPEG"] if video else []),

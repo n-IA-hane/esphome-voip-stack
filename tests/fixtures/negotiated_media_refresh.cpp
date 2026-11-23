@@ -126,6 +126,9 @@ struct Phone : SipTransport {
     esphome::LockGuard dialog(dialog_mutex_); RtpAudioPayloads result;
     get_media_config_(nullptr, nullptr, nullptr, nullptr, &result); return result;
   }
+  bool active() const {
+    return media_lifecycle_phase_.load() == MediaLifecyclePhase::ACTIVE && rtp_running_.load();
+  }
   bool acked() const { esphome::LockGuard dialog(dialog_mutex_); return !completed_invite_.awaiting_ack; }
   bool idle() const { esphome::LockGuard dialog(dialog_mutex_); return call_id_.empty(); }
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
@@ -197,11 +200,13 @@ int main(int argc, char **argv) {
       assert(phone.send_answer(id, opus, opus)); const auto answer = peer.take();
       assert(answer.rfind("SIP/2.0 200", 0) == 0); to = header_value(answer, "To");
       peer.send_to(request("ACK", 1), sip_port); settled([&] { return phone.acked(); });
+      assert(phone.commit_media_path() && phone.active());
       assert(phone.constraints() == limits && phone.encoder() == encoder && phone.decoder() == decoder);
       size_t encoded_bytes = 0; std::vector<int16_t> pcm(960);
       for (unsigned frame = 0; frame < 500; ++frame) {
         for (size_t i = 0; i < pcm.size(); ++i) pcm[i] = static_cast<int16_t>(15000 * std::sin((frame * pcm.size() + i) * .197));
-        phone.send_audio_frame(reinterpret_cast<uint8_t *>(pcm.data()), pcm.size() * sizeof(int16_t));
+        const auto context = phone.audio_tx_frame_context(opus); assert(context.valid);
+        phone.send_audio_frame(reinterpret_cast<uint8_t *>(pcm.data()), pcm.size() * sizeof(int16_t), context);
         const auto packet = media.take(); assert(packet.size() > 12 && (packet[1] & 127) == 111);
         encoded_bytes += packet.size() - 12;
         assert(opus_packet_get_nb_channels(reinterpret_cast<const uint8_t *>(packet.data()) + 12) == 1);
@@ -232,7 +237,8 @@ int main(int argc, char **argv) {
     if (l24) phone.set_audio_callback(Received::capture, &received);
     phone.set_audio_formats(tx, rx);
     Sink sink; phone.set_video_endpoints(nullptr, &sink); phone.set_video_config(VideoCodec::JPEG, free_pair(), 26, 1200);
-    assert(phone.start()); assert(phone.send_invite("rx-preference", "100", "Phone", "101", "Peer"));
+    assert(phone.start()); assert(phone.originate("127.0.0.1", peer.port()));
+    assert(phone.send_invite("rx-preference", "100", "Phone", "101", "Peer"));
     if (tcp) peer.accept_phone(); const auto invite = peer.take();
     const uint8_t p16 = pcm_payload(message_body(invite), 16000, l24 ? "L24" : "L16");
     const uint8_t p48 = l24 ? p16 : pcm_payload(message_body(invite), 48000);
@@ -254,7 +260,9 @@ int main(int argc, char **argv) {
     };
     const auto initial = audio("sendrecv");
     peer.send_to(response(invite, initial, "sip:101@127.0.0.1:" + std::to_string(peer.port())), sip_port);
-    assert(peer.take().rfind("ACK ", 0) == 0); const auto initial_map = phone.payloads();
+    assert(peer.take().rfind("ACK ", 0) == 0);
+    assert(phone.prepare_media_path() && phone.commit_media_path() && phone.active());
+    const auto initial_map = phone.payloads();
     AudioFormat alias; assert(initial_map.find(p16, &alias) && alias.sample_rate == 16000 && alias.frame_ms == 10);
     if (l24) assert(alias.pcm_format == PcmFormat::S24LE_IN_S32);
     unsigned cseq = 1;
@@ -288,7 +296,9 @@ int main(int argc, char **argv) {
     std::vector<uint8_t> pcm(tx.formats[0].nominal_frame_bytes());
     for (unsigned i = 0; i < pcm.size(); ++i) pcm[i] = static_cast<uint8_t>(i * 7);
     const auto before = phone.rtp_facts();
-    phone.send_audio_frame(pcm.data(), pcm.size()); const auto packet = media.take();
+    assert(phone.active());
+    const auto context = phone.audio_tx_frame_context(tx.formats[0]); assert(context.valid);
+    phone.send_audio_frame(pcm.data(), pcm.size(), context); const auto packet = media.take();
     assert(packet.size() == pcm.size() + 12 && (packet[1] & 127) == p16);
     const auto u32 = [&](size_t at) {
       return (uint32_t(uint8_t(packet[at])) << 24) | (uint32_t(uint8_t(packet[at + 1])) << 16) |
