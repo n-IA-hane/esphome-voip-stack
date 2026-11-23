@@ -248,7 +248,7 @@ void SipTransport::swap_dialog_(ReferDialog &other) {
   SWAP_FIELD(cseq_); SWAP_FIELD(invite_cseq_); SWAP_FIELD(sdp_session_id_); SWAP_FIELD(sdp_session_version_);
   SWAP_FIELD(completed_invite_); SWAP_FIELD(completed_control_); SWAP_FIELD(completed_invite_client_);
   SWAP_FIELD(pending_invite_); SWAP_FIELD(pending_cancel_); SWAP_FIELD(pending_bye_); SWAP_FIELD(pending_update_);
-  SWAP_FIELD(delayed_offer_pending_); SWAP_FIELD(terminate_after_invite_ack_);
+  SWAP_FIELD(delayed_offer_pending_); SWAP_FIELD(delayed_offer_reinvite_); SWAP_FIELD(terminate_after_invite_ack_);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   SWAP_FIELD(video_call_intent_);
 #endif

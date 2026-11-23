@@ -682,8 +682,12 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
       SipDigest challenge;
       uint8_t& attempts = status == 401 ? a.auth_attempts : a.proxy_auth_attempts;
       if (!challenge.parse_response(message, status == 407) || (++attempts > (challenge.stale ? 3 : 2))) {
-        a.scheduled = false;
-        this->state_(i, RegistrationState::FAILED, status);
+        uint32_t retry = 0;
+        decimal(header(message, "Retry-After"), &retry);
+        // Stop this digest exchange, then retry the still-enabled line using
+        // the existing backoff. Remote account policy can change independently
+        // of local credentials; each later attempt gets a fresh bounded budget.
+        this->retry_(i, status, now, std::min<uint32_t>(retry, 86400) * 1000);
         return true;
       }
       (status == 401 ? a.digest : a.proxy_digest) = std::move(challenge);
@@ -757,11 +761,7 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
     }
     uint32_t retry = 0;
     decimal(header(message, "Retry-After"), &retry);
-    if (status == 403 || status == 404) {
-      a.scheduled = false;
-      this->state_(i, RegistrationState::FAILED, status);
-    } else
-      this->retry_(i, status, now, std::min<uint32_t>(retry, 86400) * 1000);
+    this->retry_(i, status, now, std::min<uint32_t>(retry, 86400) * 1000);
     return true;
   }
   return method != "OPTIONS";

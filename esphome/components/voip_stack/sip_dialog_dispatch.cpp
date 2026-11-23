@@ -366,7 +366,8 @@ bool SipTransport::handle_reinvite_(const std::string &message,
         message, src, 500, "Server Internal Error", "stale_cseq", true,
         static_cast<int>(esp_random() % 11U));
   }
-  if (media_type != "application/sdp" || message_body(message).empty()) {
+  const bool offerless = message_body(message).empty() && media_type.empty();
+  if (!offerless && media_type != "application/sdp") {
     return this->send_stateless_response_(
         message, src, 415, "Unsupported Media Type", "", true);
   }
@@ -388,8 +389,6 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   const auto &old_tx = old_media.tx, &old_rx = old_media.rx;
   const auto old_tx_pt = old_media.tx_pt, old_rx_pt = old_media.rx_pt;
   const auto &old_rx_payloads = old_media.rx_payloads;
-  const auto old_audio_ip = old_media.audio_ip;
-  const auto old_audio_port = old_media.audio_port;
   const auto old_audio_receive = old_media.receive;
   const std::string old_last_invite_via = this->last_invite_via_;
   const std::string old_last_invite_from = this->last_invite_from_;
@@ -426,6 +425,37 @@ bool SipTransport::handle_reinvite_(const std::string &message,
     this->remote_target_uri_ = old_remote_target_uri;
   };
 
+  if (offerless) {
+    // Offer only the already prepared media contract. Keep confirmed RTP and
+    // DSP owners running until the ACK supplies an admissible answer.
+    const auto offer = this->build_negotiated_sdp_answer_(old_media, this->sdp_session_version_ + 1);
+    if (offer.empty()) return this->send_stateless_response_(message, src, 488, "Not Acceptable Here");
+    this->last_invite_via_ = header_values(message, "Via");
+    this->last_invite_from_ = incoming_from;
+    this->last_invite_to_ = incoming_to;
+    this->last_invite_cseq_ = header_value(message, "CSeq");
+    this->last_invite_cseq_number_ = incoming_cseq;
+    this->remote_dialog_cseq_ = incoming_cseq;
+    this->last_invite_peer_ip_v4_ = src_ip;
+    this->last_invite_peer_port_ = ntohs(src.sin_port);
+    if (!this->send_response_(200, "OK", offer)) {
+      restore_old_dialog_metadata();
+      return false;
+    }
+    this->local_offered_rx_payloads_ = old_media.rx_payloads;
+    this->local_offered_tx_formats_.count = old_media.tx.is_valid() ? 1 : 0;
+    this->local_offered_tx_formats_.formats[0] = old_media.tx;
+    this->delayed_offer_pending_ = true;
+    this->delayed_offer_reinvite_ = true;
+    ++this->sdp_session_version_;
+    const auto target = strip_angle_uri(header_value(message, "Contact"));
+    if (!target.empty()) this->remote_target_uri_ = target;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+    this->confirmed_local_sdp_ = offer;
+#endif
+    return true;
+  }
+
   ScopedMediaProposal proposal_scope(this->media_proposal_epoch_);
   NegotiatedMedia proposed;
   if (!this->parse_remote_media_(message_body(message), src_ip, false, old_media, &proposed, true)) {
@@ -441,8 +471,6 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   const auto &new_tx = proposed.tx, &new_rx = proposed.rx;
   const auto new_tx_pt = proposed.tx_pt, new_rx_pt = proposed.rx_pt;
   const auto &new_rx_payloads = proposed.rx_payloads;
-  const auto new_audio_ip = proposed.audio_ip;
-  const auto new_audio_port = proposed.audio_port;
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   const auto new_video_negotiated = proposed.video_negotiated;
   const auto new_video_send = proposed.video_send, new_video_receive = proposed.video_receive;
@@ -469,8 +497,7 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   const bool same_audio =
       new_tx == old_tx && new_rx == old_rx &&
       new_tx_pt == old_tx_pt && new_rx_pt == old_rx_pt &&
-      same_receive_resources &&
-      new_audio_ip == old_audio_ip && new_audio_port == old_audio_port;
+      same_receive_resources;
   if (!same_audio) {
     return this->send_stateless_response_(
         message, src, 488, "Not Acceptable Here",
@@ -655,6 +682,8 @@ bool SipTransport::handle_reinvite_(const std::string &message,
   this->commit_negotiated_media_(proposed);
   // Only an actual RX resume creates notifications. These are consumed by
   // the worker and never copied into negotiated signaling values.
+  const bool audio_target_changed = proposed.audio_ip != old_media.audio_ip || proposed.audio_port != old_media.audio_port;
+  if (audio_target_changed) this->rtp_source_reacquire_pending_.store(true, std::memory_order_release);
   if (proposed.receive && !old_audio_receive) {
     this->audio_receive_reset_pending_.store(true, std::memory_order_release);
     this->rtp_source_reacquire_pending_.store(true, std::memory_order_release);

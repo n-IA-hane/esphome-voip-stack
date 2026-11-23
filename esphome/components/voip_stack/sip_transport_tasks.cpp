@@ -109,6 +109,11 @@ void SipTransport::sip_task_() {
         include_txn(this->pending_cancel_);
         include_txn(this->pending_bye_);
         include_txn(this->pending_update_);
+        auto include_forks = [&](const CompletedInviteClientTransaction &completed) {
+          for (const auto &fork : completed.rejected) { include_txn(fork.bye); include_at(fork.expires_ms); }
+        };
+        include_forks(this->completed_invite_client_);
+        for (const auto &entry : this->completed_refers_) if (entry) include_forks(entry->invite);
         if (this->refer_dialog_) {
           include_txn(this->refer_dialog_->pending_invite_);
           include_txn(this->refer_dialog_->pending_cancel_);
@@ -528,7 +533,13 @@ void SipTransport::rtp_task_() {
       bool source_changed = false;
       if (ssrc_latched &&
           this->latched_rtp_ip_v4_.load(std::memory_order_acquire) != src_ip) {
-        continue;
+        // A committed SDP address update may reuse the existing RTP worker,
+        // codec and SSRC. Reacquire only the negotiated IP, after payload and
+        // epoch validation; an arbitrary source cannot consume this permission.
+        if (!this->rtp_source_reacquire_pending_.load(std::memory_order_acquire) ||
+            expected_ip == 0 || src_ip != expected_ip) continue;
+        this->latched_rtp_ip_v4_.store(src_ip, std::memory_order_release);
+        source_changed = true;
       }
       if (ssrc_latched &&
           this->latched_rtp_ssrc_.load(std::memory_order_acquire) != ssrc) {

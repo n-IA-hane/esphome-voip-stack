@@ -219,6 +219,10 @@ bool SipTransport::send_invite_transaction_request_(const char *method, const st
   if (ack_request && remember_ack) {
     this->remember_completed_invite_ack_(control, transaction.ip_v4, transaction.port);
     this->completed_invite_client_.udp = transaction.udp;
+    // A non-2xx ACK belongs to the immutable original next hop, even if a
+    // later Contact or route has already changed the active dialog target.
+    this->completed_invite_client_.response_ip_v4 = transaction.ip_v4;
+    this->completed_invite_client_.response_port = transaction.port;
   }
   const bool sent = transaction.udp
       ? this->send_sip_udp_bytes_(control.data(), control.size(), transaction.ip_v4, transaction.port)

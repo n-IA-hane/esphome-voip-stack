@@ -142,6 +142,37 @@ void account_refer_direct_case(SipTransport &s, Peer &pbx, bool target_tcp, bool
 int main(int argc, char **argv) {
   assert(argc == 3); const std::string scenario = argv[1]; const bool tcp = std::string(argv[2]) == "tcp";
   SipTransport s; Peer pbx(tcp); bind_account(s, pbx);
+  if (scenario == "fork-recovery" || scenario == "late-fork") {
+    start_account_call(s, pbx); const auto invite = pick(pbx.drain(), "INVITE");
+    const auto tagged = [&](unsigned status, const std::string &tag) {
+      auto msg = response(invite, status);
+      const auto to = header_value(msg, "To");
+      auto uri = to.substr(0, to.find(";tag="));
+      msg.replace(msg.find("\r\nTo: ") + 6, to.size(), uri + ";tag=" + tag);
+      msg.insert(msg.find("Content-Length:"), "Contact: <" + pbx.uri() + ">\r\n");
+      return msg;
+    };
+    if (scenario == "late-fork") {
+      pbx.send_to(s, tagged(486, "A")); assert(!pick(pbx.drain(), "ACK").empty() && s.call_id_.empty());
+    } else {
+      pbx.send_to(s, tagged(180, "A")); assert(pbx.drain().empty());
+      const auto accepted = tagged(200, "B"); pbx.send_to(s, accepted);
+      const auto ack = pick(pbx.drain(), "ACK"); assert(tag_from_header(header_value(ack, "To")) == "B");
+      pbx.send_to(s, accepted); assert(pick(pbx.drain(), "ACK") == ack && s.media_active_);
+    }
+    const auto id = s.call_id_, tag = s.remote_tag_;
+    const auto late = tagged(200, "C"); pbx.send_to(s, late);
+    const auto records = pbx.drain();
+    const auto ack = pick(records, "ACK"), bye = pick(records, "BYE");
+    assert(tag_from_header(header_value(ack, "To")) == "C" && tag_from_header(header_value(bye, "To")) == "C");
+    pbx.send_to(s, response(bye, 200));
+    assert(s.call_id_ == id && s.remote_tag_ == tag && s.registration_.is_registered("office"));
+    pbx.send_to(s, late); assert(pick(pbx.drain(), "ACK") == ack);
+    if (!id.empty()) { assert(s.send_bye_unlocked_(id)); auto end = pick(pbx.drain(), "BYE"); pbx.send_to(s, response(end, 200)); }
+    assert(s.call_id_.empty());
+    for (auto &flow : s.registration_flows_) s.close_tcp_flow_(flow);
+    close(s.sip_socket_); return 0;
+  }
   if (scenario == "record-route-syntax") {
     start_account_call(s,pbx);const auto invite=pick(pbx.drain(),"INVITE");
     const auto route=[&](const char*user){return std::string("<sip:")+user+"@127.0.0.1:"+std::to_string(ntohs(pbx.address.sin_port))+";lr>";};

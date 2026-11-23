@@ -112,6 +112,7 @@ void SipTransport::reset_dialog_media_locked_() {
   this->connected_identity_sent_ = false;
   this->dialog_originated_ = false;
   this->delayed_offer_pending_ = false;
+  this->delayed_offer_reinvite_ = false;
   this->remote_media_shape_.clear();
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
   this->video_call_intent_ = {};
@@ -205,13 +206,14 @@ void SipTransport::pump_udp_retransmits_unlocked_() {
   bool ack_timed_out = false;
   std::string timed_out_call_id;
   auto pump = [this, now, &reset_terminal_dialog, &invite_timed_out,
-               &timed_out_call_id](UdpTransaction &txn, const char *method) {
+               &timed_out_call_id](UdpTransaction &txn, const char *method, bool owns_dialog = true, int tcp_socket = -1) {
     if (txn.empty() || txn.ip_v4 == 0 || txn.port == 0) return;
     if (time_reached(now, txn.deadline_ms)) {
       ESP_LOGW(TAG, "SIP %s %s transaction timed out after %u ms",
                txn.udp ? "UDP" : "TCP", method,
                (unsigned) SIP_TRANSACTION_TIMEOUT_MS);
       txn.clear();
+      if (!owns_dialog) return;
       if (std::strcmp(method, "INVITE") == 0) {
         invite_timed_out = true;
         timed_out_call_id = this->call_id_;
@@ -231,7 +233,13 @@ void SipTransport::pump_udp_retransmits_unlocked_() {
       txn.next_ms = txn.deadline_ms;
       return;
     }
-    const bool sent = this->send_sip_(txn.request, txn.ip_v4, txn.port);
+    bool sent;
+    if (owns_dialog) sent = this->send_sip_(txn.request, txn.ip_v4, txn.port);
+    else if (txn.udp) sent = this->send_sip_udp_bytes_(txn.request.data(), txn.request.size(), txn.ip_v4, txn.port);
+    else {
+      LockGuard send_lock(this->tcp_send_mutex_);
+      sent = this->send_sip_tcp_record_(txn.request.data(), txn.request.size(), tcp_socket);
+    }
     txn.retries++;
     if (sent) {
       ESP_LOGD(TAG, "SIP UDP %s retransmit #%u", method, (unsigned) txn.retries);
@@ -249,6 +257,13 @@ void SipTransport::pump_udp_retransmits_unlocked_() {
   pump(this->pending_cancel_, "CANCEL");
   pump(this->pending_bye_, "BYE");
   pump(this->pending_update_, "UPDATE");
+  auto pump_forks = [&](CompletedInviteClientTransaction &completed) {
+    for (auto &fork : completed.rejected) pump(fork.bye, "BYE", false, fork.tcp_socket);
+    completed.rejected.erase(std::remove_if(completed.rejected.begin(), completed.rejected.end(),
+        [now](const auto &fork) { return time_reached(now, fork.expires_ms); }), completed.rejected.end());
+  };
+  pump_forks(this->completed_invite_client_);
+  for (auto &entry : this->completed_refers_) if (entry) pump_forks(entry->invite);
   if (!this->refer_context_active_ && this->refer_dialog_) {
     pump(this->refer_dialog_->pending_notify_, "NOTIFY");
     pump(this->refer_dialog_->pending_notify_final_, "NOTIFY");

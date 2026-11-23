@@ -1,7 +1,8 @@
 #pragma once
 
-// POSIX sockets and mutexes service one real SipTransport on its calling
-// thread. Every scheduler operation is forbidden in this signaling fixture.
+// POSIX sockets and mutexes service a real SipTransport. Scheduler creation
+// is forbidden. A dedicated RTP fixture may run the worker on a POSIX thread,
+// adapting only its start notification and task-exit boundary.
 #include <arpa/inet.h>
 #include <array>
 #include <cstdint>
@@ -72,10 +73,22 @@ inline BaseType_t xTaskCreatePinnedToCore(TaskFunction_t, const char *, uint32_t
 }
 inline void taskYIELD() { std::abort(); }
 inline int eTaskGetState(TaskHandle_t) { std::abort(); }
-inline void vTaskDelete(TaskHandle_t) { std::abort(); }
+inline void vTaskDelete(TaskHandle_t) {
+#ifdef VOIP_HOST_RTP_WORKER
+  return;
+#else
+  std::abort();
+#endif
+}
 inline void vTaskSuspend(TaskHandle_t) { std::abort(); }
 inline void xTaskNotifyGive(TaskHandle_t) { std::abort(); }
-inline uint32_t ulTaskNotifyTake(BaseType_t, uint32_t) { std::abort(); }
+inline uint32_t ulTaskNotifyTake(BaseType_t, uint32_t) {
+#ifdef VOIP_HOST_RTP_WORKER
+  return 1;
+#else
+  std::abort();
+#endif
+}
 inline SemaphoreHandle_t xSemaphoreCreateBinaryStatic(StaticSemaphore_t *) { std::abort(); }
 inline int xSemaphoreTake(SemaphoreHandle_t, uint32_t) { std::abort(); }
 inline int xSemaphoreGive(SemaphoreHandle_t) { std::abort(); }

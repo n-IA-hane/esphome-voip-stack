@@ -623,7 +623,8 @@ int main(int argc, char** argv) {
       h.feed(h.first, response(initial, 401, challenge), i + 1);
       if (i != 2) initial = h.first.receive();
     }
-    assert(h.manager.account(0).state == RegistrationState::FAILED);
+    assert(h.manager.account(0).state == RegistrationState::RETRY && h.manager.account(0).scheduled);
+    assert(h.manager.account(0).next_ms >= 30003);
     assert(h.manager.request_registration("office", true, 9));
     h.manager.tick(9);
     h.first.receive();

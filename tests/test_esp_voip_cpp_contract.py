@@ -1051,8 +1051,13 @@ def test_reinvite_waits_for_prior_invite_ack_without_mutating_dialog() -> None:
     mutate_dialog = reinvite.index(
         'this->last_invite_via_ = header_values(message, "Via");'
     )
-    assert pending < parse_media < mutate_dialog
-    pending_response = reinvite[pending:parse_media]
+    # Offerless re-INVITEs have no remote SDP to parse. Both branches still
+    # reject an outstanding ACK before touching the dialog, and the ordinary
+    # offered branch admits SDP before updating its response metadata.
+    assert pending < mutate_dialog and pending < parse_media
+    offered_mutation = reinvite.index('this->last_invite_via_ = header_values(message, "Via");', parse_media)
+    assert parse_media < offered_mutation
+    pending_response = reinvite[pending:mutate_dialog]
     assert 'message, src, 500, "Server Internal Error"' in pending_response
     assert "esp_random() % 11U" in pending_response
     assert "false" in pending_response

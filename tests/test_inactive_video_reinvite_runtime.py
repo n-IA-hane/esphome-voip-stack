@@ -70,6 +70,7 @@ struct Child {
  std::mutex media_lifecycle_mutex_;
  std::atomic<uint32_t>media_proposal_epoch_{0};std::atomic<bool>media_active_{true};
  bool refer_retiring_=false,terminate_after_invite_ack_=false,fail_send=false;
+ bool delayed_offer_pending_=false,delayed_offer_reinvite_=false;
  struct{bool awaiting_ack=false;}completed_invite_;struct{bool pending()const{return false;}}pending_video_direction_invite_;
  enum class MediaLifecyclePhase{IDLE,ACTIVE,CLEANING,SHUTTING_DOWN};
  std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::ACTIVE};

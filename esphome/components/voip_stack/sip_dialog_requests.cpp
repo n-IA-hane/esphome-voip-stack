@@ -503,14 +503,149 @@ bool SipTransport::replay_completed_invite_ack_(const std::string &response,
   const uint32_t peer_ip = ntohl(src.sin_addr.s_addr);
   const bool transport_matches =
       completed->udp == incoming_udp;
-  if (status < 200 || cseq_method(cseq) != "INVITE" ||
-      header_value(response, "Call-ID") != completed->call_id ||
-      cseq_number(cseq) != completed->cseq ||
-      peer_ip != completed->response_ip_v4 ||
-      !transport_matches ||
-      (!completed->branch.empty() &&
-       via_branch(header_value(response, "Via")) != completed->branch)) {
-    return false;
+  int incoming_socket = this->tcp_flow_.socket.load(std::memory_order_acquire);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->dispatch_socket_ >= 0) incoming_socket = this->dispatch_socket_;
+#endif
+  const auto method = cseq_method(cseq);
+  const auto from = tag_from_header(header_value(response, "From"));
+  const auto to = tag_from_header(header_value(response, "To"));
+  // Already accepted fork transactions retain their own complete identity
+  // when a subsequent call replaces the primary completed INVITE cache.
+  for (auto &fork : completed->rejected) {
+    if (time_reached(millis(), fork.expires_ms) ||
+        header_value(response, "Call-ID") != header_value(fork.ack, "Call-ID") ||
+        from != tag_from_header(header_value(fork.ack, "From")) || to != fork.remote_tag ||
+        incoming_udp != (fork.tcp_socket < 0) || (!incoming_udp && incoming_socket != fork.tcp_socket)) continue;
+    if (method == "BYE" && status >= 200 && !fork.bye.empty() &&
+        cseq_number(cseq) == cseq_number(header_value(fork.bye.request, "CSeq")) &&
+        via_branch(header_value(response, "Via")) == via_branch(header_value(fork.bye.request, "Via")) &&
+        peer_ip == fork.bye.ip_v4 && (!incoming_udp || ntohs(src.sin_port) == fork.bye.port)) {
+      fork.bye.clear();
+      return true;
+    }
+    if (method == "INVITE" && status >= 200 && status < 300 &&
+        cseq_number(cseq) == cseq_number(header_value(fork.ack, "CSeq")) &&
+        via_branch(header_value(response, "Via")) == fork.invite_branch && peer_ip == fork.response_ip_v4 &&
+        (!incoming_udp || ntohs(src.sin_port) == fork.response_port)) {
+      if (incoming_udp) this->send_sip_udp_bytes_(fork.ack.data(), fork.ack.size(), fork.ack_ip_v4, fork.ack_port);
+      else {
+        LockGuard send_lock(this->tcp_send_mutex_);
+        this->send_sip_tcp_record_(fork.ack.data(), fork.ack.size(), fork.tcp_socket);
+      }
+      return true;
+    }
+  }
+  if (status < 200 || header_value(response, "Call-ID") != completed->call_id ||
+      !transport_matches || (!incoming_udp && completed->response_socket != incoming_socket) ||
+      from != tag_from_header(header_value(completed->ack, "From"))) return false;
+  if (method != "INVITE" || peer_ip != completed->response_ip_v4 || cseq_number(cseq) != completed->cseq ||
+      (incoming_udp && completed->response_port != ntohs(src.sin_port)) ||
+      (!completed->branch.empty() && via_branch(header_value(response, "Via")) != completed->branch)) return false;
+  const bool cached_success = via_branch(header_value(completed->ack, "Via")) != completed->branch;
+  if (status >= 300 && cached_success) return true;
+  if (to != tag_from_header(header_value(completed->ack, "To")) ||
+      (status < 300 && via_branch(header_value(completed->ack, "Via")) == completed->branch)) {
+    if (status >= 300 || to.empty()) return false;
+    // Fresh forks belong only to this original transaction's acceptance
+    // interval. Preserved older cleanup records cannot reopen that interval.
+    if (time_reached(millis(), completed->accept_forks_until_ms)) return true;
+    uint32_t target_ip = completed->response_ip_v4;
+    uint16_t target_port = completed->response_port;
+    std::string target = strip_angle_uri(header_value(response, "Contact"));
+    if (target.empty()) target = sip_request_uri(completed->ack);
+    if (incoming_udp) sip_uri_ipv4_target(target, &target_ip, &target_port);
+    std::array<std::string, 8> route_set;
+    size_t route_count = 0;
+    sip_record_fields(response, "Record-Route", [&](std::string_view field) {
+      std::string value = sip_record_unfold(field);
+      size_t offset = 0;
+      while (offset < value.size() && route_count < route_set.size()) {
+        const auto close = value.find('>', offset);
+        const auto comma = value.find(',', close == value.npos ? offset : close);
+        route_set[route_count++] = trim_copy(value.substr(offset, comma == value.npos ? comma : comma - offset));
+        if (comma == value.npos) break;
+        offset = comma + 1;
+      }
+      return route_count < route_set.size();
+    });
+    std::reverse(route_set.begin(), route_set.begin() + route_count);
+    std::string routes;
+    if (route_count > 0) {
+      const auto first = strip_angle_uri(route_set[0]);
+      if (incoming_udp) sip_uri_ipv4_target(first, &target_ip, &target_port);
+      const bool loose = first.find(";lr") != first.npos;
+      for (size_t i = loose ? 0 : 1; i < route_count; ++i) routes += "Route: " + route_set[i] + "\r\n";
+      if (!loose) { routes += "Route: <" + target + ">\r\n"; target = first; }
+    }
+    if (completed->forced_next_hop_ip != 0) {
+      target_ip = completed->forced_next_hop_ip;
+      target_port = completed->forced_next_hop_port;
+    }
+    const auto make_control = [&](const char *verb, uint32_t sequence) {
+      std::string via = header_value(completed->ack, "Via");
+      const auto old_branch = via_branch(via);
+      const auto branch_at = via.find(old_branch);
+      if (branch_at != via.npos) via.replace(branch_at, old_branch.size(), "z9hG4bK" + make_token("fork"));
+      std::string credentials;
+      if (std::strcmp(verb, "ACK") == 0) {
+        for (const auto *name : {"Authorization", "Proxy-Authorization"}) {
+          const auto value = header_value(completed->ack, name);
+          if (!value.empty()) credentials += std::string(name) + ": " + value + "\r\n";
+        }
+      }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+      else if (this->active_account_ >= 0 && this->call_id_ == completed->call_id) {
+        for (auto *digest : {&this->dialog_digest_, &this->dialog_proxy_digest_}) {
+          if (!digest->empty()) credentials += digest->authorization(
+              this->registration_.account(this->active_account_).config, verb, target, make_token("auth"), registration_hash_);
+        }
+      }
+#endif
+      return std::string(verb) + " " + target + " SIP/2.0\r\nVia: " + via +
+          "\r\nFrom: " + header_value(completed->ack, "From") + "\r\nTo: " + header_value(response, "To") +
+          "\r\nCall-ID: " + completed->call_id + "\r\nCSeq: " + std::to_string(sequence) + " " + verb +
+          "\r\nMax-Forwards: 70\r\n" + routes + credentials + "Content-Length: 0\r\n\r\n";
+    };
+    // Keep at most eight retained fork transactions across call reuse. At
+    // capacity still ACK/BYE the extra confirmed dialog once, without evicting
+    // an already owned BYE or allocating an unbounded transaction history.
+    CompletedInviteClientTransaction::RejectedDialog overflow;
+    auto *record = &overflow;
+    if (completed->rejected.size() < 8) {
+      completed->rejected.emplace_back();
+      record = &completed->rejected.back();
+    } else {
+      ESP_LOGW(TAG, "SIP fork transaction capacity reached; sending one-shot ACK/BYE");
+    }
+    auto &fork = *record;
+    fork.remote_tag = to;
+    fork.invite_branch = completed->branch;
+    fork.response_ip_v4 = completed->response_ip_v4;
+    fork.response_port = completed->response_port;
+    fork.expires_ms = millis() + SIP_TRANSACTION_TIMEOUT_MS;
+    fork.ack = make_control("ACK", completed->cseq);
+    fork.bye.request = make_control("BYE", completed->cseq + 1);
+    fork.ack_ip_v4 = target_ip; fork.ack_port = target_port;
+    fork.bye.ip_v4 = target_ip; fork.bye.port = target_port;
+    fork.bye.udp = incoming_udp;
+    fork.tcp_socket = incoming_udp ? -1 : incoming_socket;
+    // Retain the cleanup owner until this late fork's own BYE deadline. New
+    // forks are still bounded by the original INVITE acceptance interval.
+    completed->completed_ms = millis();
+    fork.bye.interval_ms = SIP_T1_MS;
+    fork.bye.next_ms = millis() + SIP_T1_MS;
+    fork.bye.deadline_ms = millis() + SIP_TRANSACTION_TIMEOUT_MS;
+    if (incoming_udp) {
+      this->send_sip_udp_bytes_(fork.ack.data(), fork.ack.size(), target_ip, target_port);
+      this->send_sip_udp_bytes_(fork.bye.request.data(), fork.bye.request.size(), target_ip, target_port);
+    } else {
+      LockGuard send_lock(this->tcp_send_mutex_);
+      this->send_sip_tcp_record_(fork.ack.data(), fork.ack.size(), fork.tcp_socket);
+      this->send_sip_tcp_record_(fork.bye.request.data(), fork.bye.request.size(), fork.tcp_socket);
+    }
+    this->wake_sip_task_();
+    return true;
   }
   ESP_LOGI(TAG, "SIP INVITE final retransmission replaying ACK for call_id=%s",
            completed->call_id.c_str());
@@ -527,15 +662,35 @@ void SipTransport::remember_completed_invite_ack_(const std::string &request,
                                                   uint32_t target_ip_v4,
                                                   uint16_t target_port) {
   if (request.empty() || target_ip_v4 == 0 || target_port == 0) return;
+  // A new completed INVITE replaces only its own replay identity. Losing
+  // dialogs already accepted by this owner keep their exact BYE deadlines.
+  auto rejected = std::move(this->completed_invite_client_.rejected);
+  this->completed_invite_client_.clear();
+  this->completed_invite_client_.rejected = std::move(rejected);
   this->completed_invite_client_.call_id = this->call_id_;
   this->completed_invite_client_.cseq = this->invite_cseq_;
   this->completed_invite_client_.branch = this->branch_;
   this->completed_invite_client_.ack = request;
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->active_account_ >= 0) {
+    const auto &account = this->registration_.account(this->active_account_);
+    if (!account.config.proxy.empty()) {
+      this->completed_invite_client_.forced_next_hop_ip = account.target_ip;
+      this->completed_invite_client_.forced_next_hop_port = account.target_port;
+    }
+  }
+#endif
+  this->completed_invite_client_.response_port = this->remote_sip_port_.load(std::memory_order_acquire);
   this->completed_invite_client_.response_ip_v4 =
       this->remote_ip_v4_.load(std::memory_order_acquire);
   this->completed_invite_client_.ack_ip_v4 = target_ip_v4;
   this->completed_invite_client_.ack_port = target_port;
+  this->completed_invite_client_.response_socket = this->tcp_flow_.socket.load(std::memory_order_acquire);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  if (this->dispatch_socket_ >= 0) this->completed_invite_client_.response_socket = this->dispatch_socket_;
+#endif
   this->completed_invite_client_.completed_ms = millis();
+  this->completed_invite_client_.accept_forks_until_ms = millis() + SIP_TRANSACTION_TIMEOUT_MS;
   this->completed_invite_client_.udp =
       !this->remote_sip_tcp_.load(std::memory_order_acquire);
 }

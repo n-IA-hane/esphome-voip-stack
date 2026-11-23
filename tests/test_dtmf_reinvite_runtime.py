@@ -18,7 +18,7 @@ def reinvite_binary(tmp_path_factory):
  using LockGuard=std::lock_guard<std::mutex>;
  mutable std::mutex media_config_lock_,media_lifecycle_mutex_;
  std::atomic<uint32_t>media_proposal_epoch_{0},dtmf_generation_{8};
- std::atomic<bool>media_active_{true};bool refer_retiring_=false;
+ std::atomic<bool>media_active_{true};bool refer_retiring_=false,delayed_offer_pending_=false,delayed_offer_reinvite_=false;
  struct{bool awaiting_ack=false;}completed_invite_;
  enum class MediaLifecyclePhase{IDLE,ACTIVE,CLEANING,SHUTTING_DOWN};
  std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::ACTIVE};

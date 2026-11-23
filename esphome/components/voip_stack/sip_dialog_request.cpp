@@ -1,14 +1,13 @@
-#include "sip_transport.h"
+#include "sip_transport_internal.h"
 
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_SIP_TRANSPORT)
 
 #include "sip_dialog_message.h"
 #include "sip_message.h"
+#include "sip_record.h"
 #include "esphome/core/log.h"
 
 namespace esphome::voip_stack {
-
-static const char *const TAG = "voip_stack.sip";
 
 void SipTransport::dispatch_dialog_message_(const std::string &msg, const SipStartLine &start,
                                             const sockaddr_in &src) {
@@ -106,12 +105,49 @@ void SipTransport::handle_dialog_ack_(const std::string &msg, const sockaddr_in 
   if (this->delayed_offer_pending_) {
     const std::string answer = message_body(msg);
     bool accepted = false;
-    if (!answer.empty()) {
+    std::string mime = trim_copy(header_value(msg, "Content-Type"));
+    mime = mime.substr(0, mime.find(';'));
+    for (auto &ch : mime) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (!answer.empty() && (!this->delayed_offer_reinvite_ || mime == "application/sdp")) {
       LockGuard media_lock(this->media_lifecycle_mutex_);
-      accepted = this->learn_remote_rtp_from_sdp_(
-          answer, ntohl(src.sin_addr.s_addr), true);
+      if (!this->delayed_offer_reinvite_) {
+        accepted = this->learn_remote_rtp_from_sdp_(answer, ntohl(src.sin_addr.s_addr), true);
+      } else {
+        ScopedMediaProposal proposal_scope(this->media_proposal_epoch_);
+        const auto retained = this->negotiated_media_();
+        NegotiatedMedia proposed;
+        accepted = this->parse_remote_media_(answer, ntohl(src.sin_addr.s_addr), true, retained, &proposed, true) &&
+            proposed.tx == retained.tx && proposed.rx == retained.rx &&
+            proposed.tx_pt == retained.tx_pt && proposed.rx_pt == retained.rx_pt &&
+            proposed.rx_payloads == retained.rx_payloads;
+#ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+        // Delayed reoffers reuse the prepared child; resource changes continue
+        // to require the ordinary offer/answer admission path.
+        accepted = accepted && proposed.video_negotiated == retained.video_negotiated &&
+            proposed.video_send == retained.video_send && proposed.video_receive == retained.video_receive &&
+            proposed.video_ip == retained.video_ip && proposed.video_port == retained.video_port &&
+            proposed.video_rtcp_ip == retained.video_rtcp_ip && proposed.video_rtcp_port == retained.video_rtcp_port &&
+            proposed.video.payload_type == retained.video.payload_type &&
+            proposed.video.receive_payload_type() == retained.video.receive_payload_type() &&
+            proposed.video.encoding == retained.video.encoding && proposed.video.clock_rate == retained.video.clock_rate &&
+            proposed.video.packetization_mode == retained.video.packetization_mode &&
+            proposed.video.profile_level_id == retained.video.profile_level_id &&
+            proposed.video.max_fps == retained.video.max_fps &&
+            proposed.video.level_asymmetry_allowed == retained.video.level_asymmetry_allowed &&
+            proposed.video.max_bitrate_bps == retained.video.max_bitrate_bps &&
+            proposed.video.rtcp_feedback_pli == retained.video.rtcp_feedback_pli &&
+            proposed.video.rtcp_feedback_fir == retained.video.rtcp_feedback_fir;
+#endif
+        if (accepted) {
+          const bool retarget = proposed.audio_ip != retained.audio_ip || proposed.audio_port != retained.audio_port;
+          this->commit_negotiated_media_(proposed);
+          if (retarget) this->rtp_source_reacquire_pending_.store(true, std::memory_order_release);
+          if (proposed.receive && !retained.receive) this->audio_receive_reset_pending_.store(true, std::memory_order_release);
+        }
+      }
     }
     this->delayed_offer_pending_ = false;
+    this->delayed_offer_reinvite_ = false;
     if (!accepted) {
       ESP_LOGW(TAG, "SIP delayed offer ACK missing a compatible SDP answer");
       std::string failed_call_id = this->call_id_;
@@ -158,7 +194,7 @@ void SipTransport::handle_dialog_cancel_(const std::string &msg, const sockaddr_
                                         ? incoming_branch == invite_branch
                                         : incoming_via == this->last_invite_via_;
   if (cseq_method(header_value(msg, "CSeq")) != "CANCEL" ||
-      this->media_active_.load(std::memory_order_acquire) || this->last_invite_cseq_number_ == 0 ||
+      this->last_invite_cseq_number_ == 0 ||
       incoming_cseq_number != this->last_invite_cseq_number_ || !same_transaction_via) {
     this->send_stateless_response_(msg, src, 481, "Call/Transaction Does Not Exist");
     return;
@@ -168,6 +204,9 @@ void SipTransport::handle_dialog_cancel_(const std::string &msg, const sockaddr_
     return;
   }
   this->send_stateless_response_(msg, src, 200, "OK", "", true);
+  // A CANCEL received after the INVITE final response acknowledges only that
+  // transaction. It cannot undo the completed offer or the confirmed media.
+  if (this->media_active_.load(std::memory_order_acquire)) return;
   this->send_response_(487, "Request Terminated");
   this->emit_dialog_status_(SipSignalType::CANCEL, 487, this->call_id_, "cancelled");
   this->reset_dialog_();

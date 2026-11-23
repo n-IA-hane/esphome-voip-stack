@@ -70,6 +70,9 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
     }
 
     const bool pending = !transaction->empty();
+    // Completed INVITE responses have already crossed the tagged replay/fork
+    // owner above. They must never re-enter negotiation without a transaction.
+    if (!pending) return true;
     uint32_t expected_sequence = this->invite_cseq_;
     std::string control_branch;
     std::string_view expected_branch = this->branch_;
@@ -84,6 +87,8 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
       expected_ip = pending && transaction->ip_v4 != 0 ? transaction->ip_v4 :
           this->remote_ip_v4_.load(std::memory_order_acquire);
     }
+    if (pending && !this->remote_sip_tcp_.load(std::memory_order_acquire) &&
+        transaction->port != 0 && ntohs(src.sin_port) != transaction->port) return true;
     const auto from = tag_from_header(header_value(message, "From"));
     auto to = tag_from_header(header_value(message, "To"));
     const auto branch = via_branch(header_value(message, "Via"));
@@ -95,7 +100,12 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
       return true;
     }
 
-    if (status > 100 && this->remote_tag_.empty() && !to.empty()) this->remote_tag_ = std::move(to);
+    // An initial INVITE transaction can produce several early dialogs. Its
+    // final response selects the confirmed tag, independently of a 180 tag.
+    if (kind == SipClientMethod::INVITE && status >= 200 && status < 300)
+      this->remote_tag_ = std::move(to);
+    else if (status > 100 && this->remote_tag_.empty() && !to.empty())
+      this->remote_tag_ = std::move(to);
   }
   if (method == "INVITE" && status > 100 &&
       sip_option_supported(message, "from-change")) {

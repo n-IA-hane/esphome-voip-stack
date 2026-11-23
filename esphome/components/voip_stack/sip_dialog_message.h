@@ -82,7 +82,7 @@ inline SipResponseMismatch match_sip_response(const SipResponseKey &key, const S
   }
   if (expected.peer_ip != 0 && key.source_ip != expected.peer_ip) return SipResponseMismatch::PEER;
   if (key.status > 100) {
-    if (!key.to_tag.empty() && !expected.remote_tag.empty() && key.to_tag != expected.remote_tag)
+    if (!invite_sequence && !key.to_tag.empty() && !expected.remote_tag.empty() && key.to_tag != expected.remote_tag)
       return SipResponseMismatch::TO_TAG;
     if (key.to_tag.empty() && key.method != SipClientMethod::INVITE) return SipResponseMismatch::MISSING_TO_TAG;
   }

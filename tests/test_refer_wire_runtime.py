@@ -19,6 +19,8 @@ def wire_source(*, full_invite=False):
     parser = (SOURCE / 'sip_message.cpp').read_text()
     response_owner = (SOURCE / 'sip_dialog_response.cpp').read_text()
     code = '#include "esphome/components/voip_stack/sip_dialog_message.h"\n' + refer_fixture_source()
+    proposal = block(source, "class ScopedMediaProposal {") + ";\n"
+    code = code.replace("struct SipPhoneTransport {", proposal + "struct SipPhoneTransport {", 1)
     code = code.replace('#include <algorithm>', '#include <algorithm>\n#include <cstring>\n#include <cerrno>\n#include <unistd.h>\n#include <fcntl.h>\n#include <sys/socket.h>\n#include <netinet/tcp.h>\n#include <poll.h>\n#include <cstdio>')
     code = code.replace('using SipSignalingString=std::string;', 'struct SipSignalingString:std::string {using std::string::string;using std::string::operator=;std::string str()const{return *this;}};')
     code = code.replace('return std::string(prefix)+"new";', 'static unsigned n=0;return std::string(prefix)+std::to_string(++n);')
@@ -129,7 +131,7 @@ template<class T>void reset_string(T&s){s.clear();}
  void stop_audio_path(){media_active_=false;}
  bool send_request_(const std::string&m){SipRequestOptions o;return send_request_(m,"",o);}
  std::array<char,8192> sip_rx_scratch_{};
- std::atomic<bool> running_{true},transport_stopping_{false},audio_receive_reset_pending_{false};
+ std::atomic<bool> running_{true},transport_stopping_{false},audio_receive_reset_pending_{false},rtp_source_reacquire_pending_{false};
  enum class MediaLifecyclePhase {IDLE,PREPARED,ACTIVE,CLEANING,SHUTTING_DOWN};std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::IDLE};
  std::atomic<uint16_t>last_sip_status_code_{0};
  DeferredUdpResponse pending_provisional_response_;
@@ -144,6 +146,7 @@ template<class T>void reset_string(T&s){s.clear();}
  bool send_connected_identity_update_(){return false;}
  std::string build_sdp_offer_(){return "v=0\r\nm=audio 40000 RTP/AVP 96\r\na=rtpmap:96 L16/16000/1\r\n";}
  bool learn_remote_rtp_from_sdp_(const std::string&,uint32_t,bool){return true;}
+ bool parse_remote_media_(const std::string&,uint32_t,bool,const NegotiatedMedia&,NegotiatedMedia*,bool=false)const{assert(false);return false;}
 ''')
     marker = 'bool remote_audio_expected() const override'
     if 'struct AudioSdpDirection {' in header:

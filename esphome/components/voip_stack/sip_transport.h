@@ -608,6 +608,24 @@ class SipTransport : public SipPhoneTransport {
     std::string call_id;
     std::string branch;
     SipSignalingString ack;
+    // Additional confirmed forks are ended here, without a media/call owner.
+    // Allocate records only when a proxy actually forks this transaction.
+    struct RejectedDialog {
+      std::string remote_tag, invite_branch;
+      uint32_t response_ip_v4{0}, expires_ms{0};
+      uint16_t response_port{0};
+      SipSignalingString ack;
+      uint32_t ack_ip_v4{0};
+      uint16_t ack_port{0};
+      UdpTransaction bye;
+      int tcp_socket{-1};
+    };
+    std::vector<RejectedDialog> rejected;
+    uint16_t response_port{0};
+    int response_socket{-1};
+    uint32_t accept_forks_until_ms{0};
+    uint32_t forced_next_hop_ip{0};
+    uint16_t forced_next_hop_port{0};
     uint32_t cseq{0};
     uint32_t response_ip_v4{0};
     uint32_t ack_ip_v4{0};
@@ -618,6 +636,12 @@ class SipTransport : public SipPhoneTransport {
       this->call_id.clear();
       this->branch.clear();
       this->ack.clear();
+      this->rejected.clear();
+      this->response_port = 0;
+      this->response_socket = -1;
+      this->accept_forks_until_ms = 0;
+      this->forced_next_hop_ip = 0;
+      this->forced_next_hop_port = 0;
       this->cseq = 0;
       this->response_ip_v4 = 0;
       this->ack_ip_v4 = 0;
@@ -729,6 +753,7 @@ class SipTransport : public SipPhoneTransport {
   bool connected_identity_sent_{false};
   bool dialog_originated_{false};
   bool delayed_offer_pending_{false};
+  bool delayed_offer_reinvite_{false};
   CompletedServerTransaction completed_invite_;
   CompletedServerTransaction completed_control_;
   CompletedInviteClientTransaction completed_invite_client_;
@@ -1012,7 +1037,7 @@ class SipTransport : public SipPhoneTransport {
     SipIdentity caller_, destination_;
     bool dialog_originated_{false}, peer_supports_from_change_{false}, connected_identity_sent_{false};
     bool outgoing_invite_pending_{false}, cancel_requested_{false};
-    bool delayed_offer_pending_{false}, terminate_after_invite_ack_{false};
+    bool delayed_offer_pending_{false}, delayed_offer_reinvite_{false}, terminate_after_invite_ack_{false};
     uint32_t cseq_{1}, invite_cseq_{1}, sdp_session_id_{0}, sdp_session_version_{0};
     uint32_t remote_ip_v4_{0};
     uint16_t remote_sip_port_{5060};
