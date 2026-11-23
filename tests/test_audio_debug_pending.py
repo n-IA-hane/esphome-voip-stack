@@ -59,10 +59,10 @@ struct VoipStack{
  std::array<Dc,2>dc_blockers_{};Buffer buffer;Buffer*mic_buffer_=&buffer;
  Transport transport;Transport*transport_=&transport;
  std::atomic<int16_t*>mic_converted_{nullptr};std::atomic<float>mic_gain_{1},volume_{1};float get_volume()const{return volume_.load(std::memory_order_relaxed);}
- std::atomic<CallState>call_state_{CallState::IN_CALL};AudioFormat format;
+ std::atomic<CallState>call_state_{CallState::IN_CALL};AudioFormat tx_audio_format_;
  std::atomic<uint32_t>media_tx_queue_depth_{2},media_tx_queue_drops_{3},media_tx_queue_drop_bytes_{4};
  unsigned wakes=0;void enable_loop_soon_any_context(){++wakes;}
- bool is_tx_stream_ready_()const{return true;}AudioFormat get_current_tx_audio_format_(){return format;}
+ bool is_tx_stream_ready_()const{return true;}AudioFormat get_current_tx_audio_format_(){return tx_audio_format_;}
  const char*get_call_state_str(){return call_state_to_str(call_state_.load());}
  size_t tx_audio_chunk_bytes_(){return 4;}size_t mic_processing_samples_(){return 2;}
  bool write_mic_buffer_(const uint8_t*,size_t){queued=true;return true;}
@@ -110,9 +110,9 @@ int main(){
  owner.emit_audio_debug_pending_();assert(lines.size()==initial+2);
  assert(lines[initial].find("frames=4")!=std::string::npos&&lines[initial].find("producer_ms=3000")!=std::string::npos);
  // Existing empty and non-S16 branches keep their labels/fields and never read a payload later.
- now=4000;owner.record_tx_debug_(nullptr,0,owner.format);
+ now=4000;owner.record_tx_debug_(nullptr,0,owner.tx_audio_format_);
  owner.emit_audio_debug_pending_();assert(lines.back().find("empty state=in_call")!=std::string::npos);
- now=5000;owner.format.pcm_format=PcmFormat::S32LE;
+ now=5000;owner.tx_audio_format_.pcm_format=PcmFormat::S32LE;
  owner.send_chunk_(reinterpret_cast<uint8_t*>(pcm),4);owner.emit_audio_debug_pending_();
  assert(lines.back().find("levels=skipped_non_s16")!=std::string::npos);
  now=6000;owner.audio_debug_pcm_.busy.test_and_set();owner.send_chunk_(reinterpret_cast<uint8_t*>(pcm),4);

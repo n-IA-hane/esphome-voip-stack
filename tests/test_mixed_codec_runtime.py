@@ -303,17 +303,18 @@ def pcm_packet_times_binary(g722_playout_binary):
     code = g722_playout_binary.with_suffix(".cpp").read_text().split("int main(")[0]
     code += r'''
 int main(int argc,char**argv){
- assert(argc==2);const std::string mode=argv[1];const bool reject=mode!="valid";
+ assert(argc==2);const std::string mode=argv[1];const bool reject=mode!="valid"&&mode!="rx-larger-than-tx-budget";
  SipTransport s;const auto ten=fmt(16000,10,AudioCodec::PCM),twenty=fmt(16000,20,AudioCodec::PCM);
  s.offer_tx_formats_.count=s.offer_rx_formats_.count=2;
  s.offer_tx_formats_.formats[0]=twenty;s.offer_tx_formats_.formats[1]=ten;
  s.offer_rx_formats_.formats[0]=ten;s.offer_rx_formats_.formats[1]=twenty;
  if(mode=="undeclared")s.offer_rx_formats_.count=1;
- if(mode=="unsafe")s.udp_max_payload_=576;
+ if(mode=="rx-larger-than-tx-budget")s.udp_max_payload_=576;
  s.set_audio_formats(s.offer_tx_formats_,s.offer_rx_formats_);
  const auto offer=s.build_sdp_offer_();assert(offer.find("a=ptime:10\r\n")!=std::string::npos);
- const std::string answer=std::string("v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio 40002 RTP/AVP 96\r\na=rtpmap:96 L16/16000/1\r\na=ptime:")+(mode=="unsafe"?"10":"20")+"\r\na=sendrecv\r\n";
- assert(s.learn_remote_rtp_from_sdp_(answer,0,true));assert(s.tx==(mode=="unsafe"?ten:twenty)&&s.rx==ten);
+ assert(offer.find(mode=="undeclared"?"a=maxptime:10\r\n":"a=maxptime:20\r\n")!=std::string::npos);
+ const std::string answer=std::string("v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio 40002 RTP/AVP 96\r\na=rtpmap:96 L16/16000/1\r\na=ptime:")+(mode=="rx-larger-than-tx-budget"?"10":"20")+"\r\na=sendrecv\r\n";
+ assert(s.learn_remote_rtp_from_sdp_(answer,0,true));assert(s.tx==(mode=="rx-larger-than-tx-budget"?ten:twenty)&&s.rx==ten);
  s.rtp_port_=0;assert(s.prepare_media_path_locked_());assert(s.commit_media_path_locked_());
  sockaddr_in destination{};socklen_t length=sizeof(destination);
  assert(getsockname(s.rtp_socket_,reinterpret_cast<sockaddr*>(&destination),&length)==0);
@@ -321,13 +322,17 @@ int main(int argc,char**argv){
  uint8_t storage[16*640]{};RtpJitterBuffer jitter(storage,640,16,1);Speaker speaker;VoipStack app;
  app.speaker_=&speaker;app.rx_jitter_buffer_=&jitter;app.transport_=&s;phone=&app;
  app.rx_audio_chunk_alloc_bytes_=app.rx_jitter_frame_alloc_bytes_=640;
- std::vector<int16_t> authored(320);for(unsigned i=0;i<320;++i)authored[i]=int16_t(i*101-16000);
+ // A small transmit budget never shrinks the independent 20 ms receiver.
+ // The negative envelope case is 21 ms: still below 2036 RX bytes, but over
+ // the configured duration. Keep exactly six real input datagrams.
+ const unsigned samples=mode=="over-envelope"?336:320;
+ std::vector<int16_t> authored(samples);for(unsigned i=0;i<samples;++i)authored[i]=int16_t(i*101-16000);
  for(unsigned seq:{1U,2U,4U,5U,7U,8U}){
-  uint8_t packet[652]{};packet[0]=0x80;packet[1]=mode=="unknown"?99:s.rx_pt;packet[2]=seq>>8;packet[3]=seq;packet[11]=42;
-  const unsigned ts=seq*320;packet[4]=ts>>24;packet[5]=ts>>16;packet[6]=ts>>8;packet[7]=ts;
-  for(unsigned i=0;i<320;++i){packet[12+2*i]=uint16_t(authored[i])>>8;packet[13+2*i]=authored[i];}
-  const size_t length=sizeof(packet)-(mode=="malformed"?2:0);
-  assert(sendto(sender,packet,length,0,reinterpret_cast<sockaddr*>(&destination),sizeof(destination))==ssize_t(length));
+  std::vector<uint8_t> packet(12+samples*2);packet[0]=0x80;packet[1]=mode=="unknown"?99:s.rx_pt;packet[2]=seq>>8;packet[3]=seq;packet[11]=42;
+  const unsigned ts=seq*samples;packet[4]=ts>>24;packet[5]=ts>>16;packet[6]=ts>>8;packet[7]=ts;
+  for(unsigned i=0;i<samples;++i){packet[12+2*i]=uint16_t(authored[i])>>8;packet[13+2*i]=authored[i];}
+  const size_t length=packet.size()-(mode=="malformed"?2:0);
+  assert(sendto(sender,packet.data(),length,0,reinterpret_cast<sockaddr*>(&destination),sizeof(destination))==ssize_t(length));
  }
  bounded_ingress=&s;try{s.rtp_task_();assert(false);}catch(const EndRtp&){}
  if(reject){assert(s.rtp_rx_datagrams_==6&&s.rtp_rx_packets_==0&&jitter.depth()==0);close(sender);close(s.rtp_socket_);return 0;}
@@ -350,7 +355,7 @@ int main(int argc,char**argv){
     return binary
 
 
-@pytest.mark.parametrize("mode", ["valid", "undeclared", "unsafe", "unknown", "malformed"])
+@pytest.mark.parametrize("mode", ["valid", "undeclared", "rx-larger-than-tx-budget", "unknown", "malformed", "over-envelope"])
 def test_declared_pcm_packet_duration_is_admitted_independently_of_preferred_ptime(pcm_packet_times_binary, mode):
     result = subprocess.run([pcm_packet_times_binary, mode], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr

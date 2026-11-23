@@ -44,6 +44,16 @@ def g722_clock_binary(g722_playout_binary):
     code += refer.replace("this->", "self.")
     code += r'''
 #include <fstream>
+#include <new>
+static int fail_converter_allocation_after=-1;
+static unsigned converter_allocation_attempts=0;
+void* operator new(size_t bytes,const std::nothrow_t&) noexcept {
+ if(fail_converter_allocation_after>=0){
+  ++converter_allocation_attempts;
+  if(fail_converter_allocation_after--==0)return nullptr;
+ }
+ try{return ::operator new(bytes);}catch(...){return nullptr;}
+}
 int main(int argc,char **argv){
  assert(argc==4);const unsigned duration=std::stoul(argv[1]);const std::string mode=argv[2];
  const auto g10=fmt(16000,10,AudioCodec::G722),g20=fmt(16000,20,AudioCodec::G722);
@@ -59,7 +69,10 @@ int main(int argc,char **argv){
    if(kind==2)formats.formats[0]=fmt(8000,10,AudioCodec::PCM);
    if(kind==3){formats.count=4;formats.formats[3]=fmt(48000,10,AudioCodec::OPUS);}
    if(kind==4)formats.formats[0].pcm_format=PcmFormat::S32LE;
-   assert(pcm_playout_format(g20,formats)==g20);
+   // A configured 8 kHz PCM sink is now supported by the shared resampler.
+   // Other cases retain the encoded G722 boundary or reject mixed PCM widths.
+   const auto expected=kind==2?fmt(8000,20,AudioCodec::PCM):g20;
+   assert(pcm_playout_format(g20,formats)==expected);
   }
   return 0;
  }
@@ -80,8 +93,17 @@ int main(int argc,char **argv){
   failed.media.rx=g10;failed.media.rx_payloads.add(9,g10);
   assert(!prepare_refer_media(s,failed)&&failed.media.rx==g10&&s.rx==wire);
   assert(s.convert_received_pcm(decoded_pcm_format(g10),input,sizeof(input),output,sizeof(output))==sizeof(output));
-  // A failed additional source must roll back its new DSP entries and retain
-  // the existing target/history. Both new sources are genuinely configured.
+  // Admission of an unoffered mapping belongs to the actual offer/answer
+  // negotiator, before the media resource preparation below.
+  const auto local_offer=s.build_sdp_offer_();
+  assert(!local_offer.empty());const auto before_tx=s.tx,before_rx=s.rx;const auto before_payloads=s.accepted;
+  const std::string unoffered="v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio 40002 RTP/AVP 110\r\n"
+   "a=rtpmap:110 L16/12000/1\r\na=ptime:10\r\na=sendrecv\r\n";
+  assert(!s.learn_remote_rtp_from_sdp_(unoffered,0,true));
+  assert(s.tx==before_tx&&s.rx==before_rx&&s.accepted==before_payloads);
+  // Both additional PCM rates are configured and convertible. Inject a
+  // real resource failure on the second Converter allocation to exercise
+  // rollback of the first addition, rather than treating 48 kHz as unsupported.
   SipTransport narrow;narrow.tx=s.tx;narrow.rx=g20;narrow.offer_rx_formats_.count=4;
   narrow.offer_rx_formats_.formats[0]=fmt(16000,10,AudioCodec::PCM);
   narrow.offer_rx_formats_.formats[1]=g20;
@@ -92,7 +114,11 @@ int main(int argc,char **argv){
    original,narrow.offer_rx_formats_,1200),decoded_pcm_format(g20)));
   ReferDialog incompatible;incompatible.media.tx=narrow.tx;incompatible.media.rx=pcm48;
   incompatible.media.rx_payloads.add(98,pcm8);incompatible.media.rx_payloads.add(99,pcm48);
-  assert(!prepare_refer_media(narrow,incompatible)&&incompatible.media.rx==pcm48&&narrow.rx==g20);
+  fail_converter_allocation_after=1;converter_allocation_attempts=0;
+  const bool prepared=prepare_refer_media(narrow,incompatible);
+  fail_converter_allocation_after=-1;
+  assert(converter_allocation_attempts==2);
+  assert(!prepared&&incompatible.media.rx==pcm48&&narrow.rx==g20);
   uint8_t low[160]{};assert(narrow.convert_received_pcm(pcm8,low,sizeof(low),output,sizeof(output))==0);
   close(s.rtp_socket_);return 0;
  }

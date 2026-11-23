@@ -75,6 +75,9 @@ struct Child {
  std::atomic<MediaLifecyclePhase>media_lifecycle_phase_{MediaLifecyclePhase::ACTIVE};
  std::string local_tag_="local",remote_tag_="remote",last_invite_via_="old-via",last_invite_from_="old-from",last_invite_to_="old-to",last_invite_cseq_="1 INVITE",last_invite_response_="old-response",remote_target_uri_="sip:old-target",call_id_="owned-call";
  uint32_t last_invite_cseq_number_=1,remote_dialog_cseq_=1,last_invite_peer_ip_v4_=0xc0a801c8;uint16_t last_invite_peer_port_=5060;
+ #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
+ CallVideoIntent video_call_intent_{};
+ #endif
  bool video_offered_=false,video_negotiated_=false,video_send_enabled_=false,video_receive_enabled_=false;
  void *video_source_=nullptr,*video_sink_=this;VideoCapability video_rx_,negotiated_video_capability_;
  Child child;Child*video_session_=&child;
