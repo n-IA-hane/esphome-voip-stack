@@ -938,9 +938,12 @@ socket paths, transaction cleanup and PCM conversion. It does not run an ESP
 scheduler or prove physical audio quality. Use Python with ESPHome and pytest,
 plus a C++20-capable compiler, `pkg-config` and the native Opus development library
 (`libopus-dev` on Debian/Ubuntu). PCM and mixed-codec tests also require the
-real audio library:
+real audio library. LDAP wire checks use `ldap3`, `ldaptor` and Twisted; the
+TLS/digest adapters require OpenSSL development headers (`libssl-dev`). Install
+the native dependencies above and the pinned server packages before running:
 
 ```sh
+python -m pip install pytest==9.0.3 ldap3==2.9.1 ldaptor==21.2.0 Twisted==26.10.0
 git clone --branch v4.0.1 --depth 1 https://github.com/esphome-libs/esp-audio-libs.git .test-deps/esp-audio-libs
 git -C .test-deps/esp-audio-libs rev-parse HEAD
 ESP_AUDIO_LIBS_SOURCE="$PWD/.test-deps/esp-audio-libs" python -m pytest -q

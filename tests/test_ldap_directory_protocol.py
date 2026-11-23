@@ -76,13 +76,14 @@ def test_search_filter_wire_matches_independent_ldap3_encoder(ldap_binary, value
 
 def test_real_ldaptor_bind_substring_search_and_contact_mapping(ldap_binary, ldap_server):
     result = execute(ldap_binary, "wire", ldap_server, "(cn=A*)", "64", "fixture-password")
-    assert result == "SUCCESS 1\ndevice-a|Alice|101|127.0.0.1|5060|1|esphome\n"
+    assert result == "SUCCESS 1\n101|Alice|101|127.0.0.1|5060|1|sip_account\n"
 
 
 def test_real_ldaptor_boolean_filter_and_multiple_result_frames(ldap_binary, ldap_server):
     result = execute(ldap_binary, "wire", ldap_server, "(|(cn=Alice)(telephoneNumber=102))", "64", "fixture-password")
     assert result.startswith("SUCCESS 2\n")
-    assert "device-a|Alice|101" in result and "device-b|Bob|102" in result
+    assert "101|Alice|101" in result and "102|Bob|102" in result
+    assert "device-a" not in result and "device-b" not in result
 
 
 def test_real_ldaptor_rejects_wrong_bind_without_search(ldap_binary, ldap_server):

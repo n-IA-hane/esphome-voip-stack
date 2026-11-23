@@ -113,8 +113,11 @@ int main(){
  phone.transport.value.media_lifecycle_phase=2;
 #endif
  auto text=phone.build_sip_snapshot_string_();
- const auto call_id=phone.identity.call_id;assert(call_id.rfind("esp-",0)==0);
- assert(text.find("st=calling; id="+call_id+";")!=std::string::npos);
+ const auto call_id=phone.identity.call_id;assert(call_id.rfind("esp-",0)==0&&call_id.size()>12);
+ const auto preview=call_id.substr(0,12);
+ assert(text.find("st=calling; id="+preview+";")!=std::string::npos);
+ phone.hangup_call_if_id(preview);
+ assert(phone.stops==0&&phone.identity.call_id==call_id&&phone.call_state_==CallState::CALLING);
  assert(text.find("dir=out; from=Phone; to=Desk; ct=Desk; tr=udp; sc=200")!=std::string::npos);
  assert(text.find("tx=16k/10; rx=48k/10; pt=123; pr=456")!=std::string::npos);
  assert(text.find("tqd=1; tqdrop=2; rqd=3; rqdrop=4")!=std::string::npos);
@@ -127,7 +130,8 @@ int main(){
  phone.phonebook_.clear();text=phone.build_sip_snapshot_string_();
  assert(text.find("to=Desk; ct=;")!=std::string::npos);
  // Empty current selection cannot erase the owned terminal identity.
- phone.stop();phone.last_terminal_call_id_="old-call";phone.last_reason_="local_hangup";
+ phone.hangup_call_if_id(call_id);assert(phone.stops==1&&phone.call_state_==CallState::IDLE);
+ phone.last_terminal_call_id_="old-call";phone.last_reason_="local_hangup";
  phone.last_terminal_caller_name_="Phone";phone.last_terminal_dest_name_="Desk";
  phone.last_terminal_direction_="outgoing";
  phone.last_terminal_tx_audio_format_.sample_rate=16000;
