@@ -272,7 +272,7 @@ std::string SipTransport::build_sdp_capabilities_(uint32_t peer_ip) const {
   // Omit the hint unless every described direction can use that one value.
   const auto supports_time = [&](const AudioFormatList &list, const AudioFormat &format) {
     for (uint8_t i = 0; i < list.count; ++i)
-      if (list.formats[i].frame_ms == ptime && same_encoding(list.formats[i], format)) return true;
+      if (list.formats[i].frame_ms == ptime && audio_formats_share_rtp_mapping(list.formats[i], format)) return true;
     return false;
   };
   for (uint8_t i = 0; i < formats.count && ptime != 0; ++i)
