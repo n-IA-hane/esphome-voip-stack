@@ -157,7 +157,7 @@ std::string sip_route_id(const std::string &v,size_t){return v;}
                       'std::string name_addr_uri(', 'std::string strip_angle_uri(', 'bool sip_uri_ipv4_target(', 'std::string sip_user_from_header(',
                       'std::string cseq_method(', 'uint32_t cseq_number(', 'std::string tag_from_header(']:
         code += block(parser, signature) + '\n'
-    code += 'std::string sip_display_name_from_header(const std::string&,size_t){return "Room";}\n'
+    code += block(parser, 'std::string sip_display_name_from_header(') + '\n'
     code += declarations + r'''
 struct SipPhoneTransport {
  std::vector<SipSignal> delivered;

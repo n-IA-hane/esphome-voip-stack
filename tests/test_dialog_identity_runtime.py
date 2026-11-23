@@ -99,6 +99,7 @@ def native_dialog_owner(tmp_path_factory):
     return binary
 
 
-@pytest.mark.parametrize("mode", ["decline", "success", "crossed", "incompatible", "incoming"])
+@pytest.mark.parametrize("mode", ["decline", "success", "crossed", "incompatible", "incoming",
+                                  "identity-name", "identity-bare", "identity-number"])
 def test_native_dialog_owner_ack_terminal_and_reuse(native_dialog_owner, mode):
     subprocess.run([native_dialog_owner, mode], check=True, timeout=5)

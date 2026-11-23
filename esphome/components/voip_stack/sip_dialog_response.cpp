@@ -207,7 +207,32 @@ bool SipTransport::accept_invite_response_(const std::string &message, uint32_t 
     return true;
   }
   this->open_media_session_();
+  // The final response may supply a display name for the requested identity.
+  // Its To URI cannot retarget the dialog; Contact remains the remote target.
+  const std::string identity_uri = strip_angle_uri(this->remote_uri_);
+  const std::string identity_route = sip_route_id(
+      sip_user_from_header(this->remote_uri_), VOIP_STACK_MAX_ROUTE_ID_LEN);
+  const std::string display_name = sip_display_name_from_header(
+      header_value(message, "To"), VOIP_STACK_MAX_NAME_LEN);
+  // A bare To repeats the requested URI without asserting a new display name.
+  const std::string identity_name = !display_name.empty() ? display_name :
+      (!this->destination_.name.empty() ? this->destination_.name : identity_route);
+  const bool identity_changed = !identity_uri.empty() && !identity_route.empty() &&
+      this->destination_.name != identity_name;
+  if (identity_changed) {
+    if (!display_name.empty()) this->remote_uri_ = sip_name_addr(identity_uri, display_name);
+    this->destination_ = {identity_route, identity_name};
+  }
+  const std::string accepted_call_id = this->call_id_;
   this->emit_negotiated_media_(SipSignalType::STATUS_200_OK, status);
+  if (identity_changed && this->call_id_ == accepted_call_id) {
+    SipSignal signal;
+    signal.type = SipSignalType::CONNECTED_IDENTITY;
+    signal.call_id = accepted_call_id;
+    signal.connected_route = identity_route;
+    signal.connected_name = display_name;
+    this->emit_sip_signal_(std::move(signal));
+  }
   return true;
 }
 

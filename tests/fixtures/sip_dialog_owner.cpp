@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <poll.h>
+#include <tuple>
 #include <vector>
 
 using namespace esphome::voip_stack;
@@ -55,6 +56,14 @@ struct NativePhone : SipTransport {
   bool idle() const {
     return call_id_.empty() && pending_invite_.empty() && pending_bye_.empty() && rtp_socket_ < 0 && !media_active_;
   }
+  auto identity_facts() const {
+    return std::make_tuple(call_id_, local_uri_, local_contact_uri_, local_tag_, remote_tag_);
+  }
+  auto media_facts() const {
+    AudioFormat tx, rx;
+    get_media_config_(&tx, &rx, nullptr, nullptr);
+    return std::make_tuple(rtp_socket_, remote_rtp_ip_v4_.load(), remote_rtp_port_.load(), tx, rx);
+  }
 };
 
 static std::string response(const std::string &request, unsigned status, const std::string &body = "") {
@@ -76,16 +85,22 @@ int main(int argc, char **argv) {
   NativePhone phone(endpoint, local_media_port);
   phone.set_remote("127.0.0.1", ntohs(peer.address.sin_port), 40000);
   std::vector<SipSignalType> events;
+  std::vector<SipSignal> identity_events;
+  std::pair<std::vector<SipSignalType> *, std::vector<SipSignal> *> observed{&events, &identity_events};
   phone.set_sip_signal_callback(
-      [](void *opaque, SipSignal sig) { static_cast<std::vector<SipSignalType> *>(opaque)->push_back(sig.type); },
-      &events);
+      [](void *opaque, SipSignal sig) {
+        auto &output = *static_cast<decltype(observed) *>(opaque);
+        output.first->push_back(sig.type);
+        if (sig.type == SipSignalType::CONNECTED_IDENTITY) output.second->push_back(std::move(sig));
+      },
+      &observed);
   const auto deliver = [&](const std::string &msg) {
     assert(sendto(peer.fd, msg.data(), msg.size(), 0, reinterpret_cast<const sockaddr *>(&receiver),
                   sizeof(receiver)) == static_cast<ssize_t>(msg.size()));
     phone.receive();
   };
   const auto dial = [&](const char *id) {
-    assert(phone.send_invite(id, "100", "Phone", "101", "Peer"));
+    assert(phone.send_invite(id, "100", "Phone", "101", std::string(argv[1]) == "identity-number" ? "" : "Peer"));
     const auto inv = peer.take();
     assert(inv.rfind("INVITE ", 0) == 0);
     assert(message_body(inv).find("m=audio " + std::to_string(local_media_port) + " RTP/AVP ") != std::string::npos);
@@ -161,8 +176,47 @@ int main(int argc, char **argv) {
     offset += 8;
     body.replace(offset, body.find(' ', offset) - offset, std::to_string(ntohs(remote_media.address.sin_port)));
     if (mode == "incompatible") body = "v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio 40000 RTP/AVP 0\r\n";
-    deliver(response(inv, 200, body));
+    auto accepted = response(inv, 200, body);
+    const bool identity_case = mode == "identity-name" || mode == "identity-bare" || mode == "identity-number";
+    if (identity_case) {
+      const auto old_to = header_value(accepted, "To");
+      const auto new_to = sip_name_addr(name_addr_uri(old_to),
+          mode == "identity-name" ? "Connected reception" : "") + ";tag=desk";
+      accepted.replace(accepted.find("\r\nTo: ") + 6, old_to.size(), new_to);
+      accepted.insert(accepted.find("Content-Length:"),
+          "Contact: <sip:reachable@127.0.0.1:" + std::to_string(ntohs(peer.address.sin_port)) + ">\r\n");
+    }
+    deliver(accepted);
     assert(peer.take().rfind("ACK ", 0) == 0);
+    if (identity_case) {
+      if (mode != "identity-bare") {
+        assert(identity_events.size() == 1 && events[events.size() - 2] == SipSignalType::STATUS_200_OK);
+        const auto &identity = identity_events.back();
+        assert(identity.call_id == "call-a" && identity.connected_route == "101" && !identity.media_source_changed);
+        assert(identity.connected_name == (mode == "identity-name" ? "Connected reception" : ""));
+      } else {
+        assert(identity_events.empty() && events.back() == SipSignalType::STATUS_200_OK);
+      }
+      assert(phone.snapshot().call_active);
+      const auto identity_before = phone.identity_facts();
+      const auto media_before = phone.media_facts();
+      const auto count = events.size();
+      deliver(accepted);
+      assert(peer.take().rfind("ACK ", 0) == 0);
+      assert(events.size() == count && phone.identity_facts() == identity_before && phone.media_facts() == media_before);
+      assert(phone.send_bye("call-a"));
+      const auto bye = peer.take();
+      assert(name_addr_uri(header_value(bye, "From")) == name_addr_uri(header_value(inv, "From")));
+      assert(header_value(bye, "Contact") == header_value(inv, "Contact"));
+      assert(header_value(bye, "Call-ID") == header_value(inv, "Call-ID"));
+      assert(name_addr_uri(header_value(bye, "To")) == name_addr_uri(header_value(inv, "To")));
+      assert(sip_display_name_from_header(header_value(bye, "To"), 160) ==
+          (mode == "identity-name" ? "Connected reception" : mode == "identity-bare" ? "Peer" : ""));
+      assert(sip_request_uri(bye) == "sip:reachable@127.0.0.1:" + std::to_string(ntohs(peer.address.sin_port)));
+      deliver(response(bye, 200));
+      assert(phone.idle());
+      return 0;
+    }
     if (mode == "incompatible") {
       assert(events.back() == SipSignalType::MEDIA_INCOMPATIBLE);
     } else if (!cancel) {
