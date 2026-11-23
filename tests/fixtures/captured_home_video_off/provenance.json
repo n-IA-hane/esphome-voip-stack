@@ -1,0 +1,20 @@
+{
+  "source_pcap_sha256": "ecb8712a2e02ef337a80a87e63aa257b69c92a2268f69ac16fde4b507184fdda",
+  "bodies": {
+    "initial_answer": {
+      "frame": 35,
+      "sha256": "a3c64b1c78b6663bfe1cec656c0f3c8f394bf4fd516ca7f4163f97a509a99e5d",
+      "bytes": 402
+    },
+    "video_on_answer": {
+      "frame": 133,
+      "sha256": "2a27b9f7a27b4b7f0d2a80c2b9991875bc4e3f6e229b25a585749ca54c9b852b",
+      "bytes": 535
+    },
+    "video_off_answer": {
+      "frame": 503,
+      "sha256": "a7ccb23107691d1061083535072cc35c6be405aa750cc4369a2701ba740e9992",
+      "bytes": 535
+    }
+  }
+}

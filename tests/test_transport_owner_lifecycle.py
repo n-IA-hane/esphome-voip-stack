@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = Path(os.environ.get("TRANSPORT_LIFECYCLE_SOURCE", ROOT / "esphome/components/voip_stack"))
 
 
-def build_transport_owner(tmp_path_factory, fixture="transport_owner_lifecycle.cpp", video=False, registration=False, opus=False, speaker=False):
+def build_transport_owner(tmp_path_factory, fixture="transport_owner_lifecycle.cpp", video=False, registration=False, opus=False, speaker=False, dtmf=False):
     tmp_path = tmp_path_factory.mktemp("transport-lifecycle")
     sdk = (ROOT / "tests/fixtures/video_host_sdk.h").read_text()
     sdk = sdk.replace("struct HostTask { std::thread thread; };", """
@@ -59,11 +59,23 @@ using portMUX_TYPE=std::mutex;
 """
     if registration:
         sdk += (ROOT / "tests/fixtures/transport_registration_host_sdk.h").read_text()
+    if dtmf:
+        sdk += r'''
+#include <cstring>
+struct StaticQueue_t {std::mutex mutex;uint8_t *bytes=nullptr;unsigned depth=0,size=0,count=0,head=0;};
+using QueueHandle_t=StaticQueue_t*;
+inline QueueHandle_t xQueueCreateStatic(unsigned depth,unsigned size,uint8_t *bytes,StaticQueue_t *queue){queue->depth=depth;queue->size=size;queue->bytes=bytes;queue->count=queue->head=0;return queue;}
+inline void xQueueReset(QueueHandle_t queue){std::lock_guard<std::mutex> lock(queue->mutex);queue->count=queue->head=0;}
+inline unsigned uxQueueMessagesWaiting(QueueHandle_t queue){std::lock_guard<std::mutex> lock(queue->mutex);return queue->count;}
+inline unsigned uxQueueSpacesAvailable(QueueHandle_t queue){std::lock_guard<std::mutex> lock(queue->mutex);return queue->depth-queue->count;}
+inline BaseType_t xQueueSend(QueueHandle_t queue,const void *value,unsigned){std::lock_guard<std::mutex> lock(queue->mutex);if(queue->count==queue->depth)return 0;memcpy(queue->bytes+((queue->head+queue->count)%queue->depth)*queue->size,value,queue->size);++queue->count;return pdTRUE;}
+inline BaseType_t xQueueReceive(QueueHandle_t queue,void *value,unsigned){std::lock_guard<std::mutex> lock(queue->mutex);if(!queue->count)return 0;memcpy(value,queue->bytes+queue->head*queue->size,queue->size);queue->head=(queue->head+1)%queue->depth;--queue->count;return pdTRUE;}
+'''
     (tmp_path / "transport_host_sdk.h").write_text(sdk)
     for name in (
         "esphome/core/defines.h", "esphome/core/helpers.h", "esphome/core/log.h", "esphome/core/hal.h",
         "esphome/components/network/util.h", "esp_system.h", "esp_heap_caps.h", "esp_timer.h", "lwip/sockets.h",
-        "freertos/FreeRTOS.h", "freertos/task.h", "freertos/portmacro.h", "freertos/semphr.h",
+        "freertos/FreeRTOS.h", "freertos/task.h", "freertos/portmacro.h", "freertos/semphr.h", "freertos/queue.h",
     ):
         header = tmp_path / name
         header.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +92,8 @@ using portMUX_TYPE=std::mutex;
         units.extend(SOURCE / name for name in ("video_rtp.cpp", "rtp_jpeg.cpp"))
     if registration:
         units.extend(SOURCE / name for name in ("sip_registration.cpp", "sip_registration_transport.cpp"))
+    if dtmf:
+        units.append(SOURCE / "sip_dtmf.cpp")
     opus_flags = []
     if opus:
         units.append(SOURCE / "opus_rtp_codec.cpp")
@@ -104,6 +118,7 @@ using portMUX_TYPE=std::mutex;
         *speaker_flags,
         *(["-DUSE_ESPHOME_VOIP_STACK_OPUS"] if opus else []),
         *(["-DUSE_ESPHOME_VOIP_REGISTRATION"] if registration else []),
+        *(["-DUSE_ESPHOME_VOIP_DTMF"] if dtmf else []),
         *(["-DUSE_ESPHOME_VOIP_STACK_VIDEO", "-DUSE_ESPHOME_VOIP_STACK_VIDEO_JPEG"] if video else []),
         "-I", str(tmp_path), "-I", str(ROOT), "-I", str(SOURCE),
         str(ROOT / "tests/fixtures" / fixture), *map(str, units), *(["-lcrypto"] if registration else []), *opus_flags, "-o", str(binary),

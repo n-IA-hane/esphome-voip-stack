@@ -640,7 +640,7 @@ bool SipTransport::parse_remote_video_(const std::string &sdp, uint32_t default_
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   media->imageattr_state &= ~IMAGEATTR_PEER;
 #endif
-  const VideoCapability local_send = this->video_call_intent_.allows_send()
+  VideoCapability local_send = this->video_call_intent_.allows_send()
       ? this->local_video_send_capability_() : VideoCapability{};
   const VideoCapability local_receive = this->video_call_intent_.allows_receive()
       ? this->local_video_receive_capability_() : VideoCapability{};
@@ -657,6 +657,13 @@ bool SipTransport::parse_remote_video_(const std::string &sdp, uint32_t default_
                                                 media->video.payload_type, media->video_zero_connection);
   if (disposition != VideoOfferDisposition::SELECT_PAYLOAD)
     return disposition == VideoOfferDisposition::DISABLED;
+  // RFC 3264 section 6.1 keeps the codec list negotiated for inactive media.
+  // An explicit send/receive preference can mask both endpoints while pausing
+  // a known stream; retain its codec without enabling either direction.
+  if (offer.media_direction == 0 && retained.video_negotiated &&
+      !local_send.valid() && !local_receive.valid()) {
+    local_send = retained.video;
+  }
   VideoPayloadSelection selected{media->video};
   if (!select_video_payload(offer, local_send, local_receive, this->video_send_requested_.load(std::memory_order_acquire),
                             remote_is_answer, this->video_offer_payload_type_, selected))
