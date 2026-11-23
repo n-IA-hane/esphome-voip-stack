@@ -63,7 +63,7 @@ int main(int argc,char**argv){
   return 0;
  }
  assert(occurrences(answer,"a=rtpmap:96 ")==1);
- assert(s.accepted.find(96,&f)&&f==pcm(16000,20));
+ assert(s.accepted.find(96,&f)&&f==pcm(16000,10));
  assert(s.accepted.find(100,&f)&&f==pcm(48000,10));
  assert(s.accepted.find(9,&f)); // Every mutually declared standard mapping is accepted.
  if(mode=="admission"){
