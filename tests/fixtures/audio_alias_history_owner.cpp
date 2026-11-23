@@ -122,7 +122,7 @@ int main(int argc, char **argv) {
     const auto original = phone.stable_facts();
     const auto initial = phone.payloads();
     assert(initial.count == 2 && initial.find(96, nullptr) && initial.find(97, nullptr));
-    const auto allocated = video_probe::allocated;
+    const auto allocated = video_probe::allocated.load();
     unsigned cseq = 2;
     const auto negotiate = [&](const std::string &sdp, unsigned expected) {
       const auto number = cseq++;
@@ -130,7 +130,7 @@ int main(int argc, char **argv) {
       const auto answer = take(peer);
       assert(answer.rfind("SIP/2.0 " + std::to_string(expected), 0) == 0);
       // Taking the owner's lock waits for its complete publish/commit section.
-      assert(phone.stable_facts() == original && video_probe::allocated == allocated);
+      assert(phone.stable_facts() == original && video_probe::allocated.load() == allocated);
       deliver(request("ACK", number, "", expected >= 300));
       return answer;
     };
