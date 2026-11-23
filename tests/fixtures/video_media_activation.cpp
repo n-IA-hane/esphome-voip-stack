@@ -115,6 +115,18 @@ int main(int argc,char **argv){
   assert(argc==3);const std::string mode=argv[1];Peer signaling,audio,video,routed(0,0x7f000002),contact;const auto local_sip=free_port(),local_audio=free_port(),local_video=free_pair();
   const bool asymmetric=mode.rfind("catalog-",0)==0;
   Source source(argv[2]);Sink sink;
+  const auto peer_audio=[asymmetric](std::string body){
+    if(asymmetric){
+      // The independent peer keeps receiving 20 ms packets throughout the
+      // call. Echoing our RX preference would request an audio change.
+      const auto audio=body.find("m=audio ");assert(audio!=body.npos);
+      const auto next=body.find("\r\nm=",audio),time=body.find("a=ptime:",audio);
+      assert(time!=body.npos&&(next==body.npos||time<next));
+      const auto end=body.find("\r\n",time);assert(end!=body.npos);
+      body.replace(time,end-time,"a=ptime:20");
+    }
+    return body;
+  };
   {
     Phone phone(local_sip,local_audio,1200,"127.0.0.1",false);phone.initialize_registration();phone.set_remote("127.0.0.1",signaling.port(),audio.port());
     if(asymmetric){
@@ -136,10 +148,9 @@ int main(int argc,char **argv){
     assert(phone.request_video_send(mode=="initial-on"));assert(phone.start());
     const auto establish=[&](const std::string &id,bool reject_video){
       assert(phone.send_invite(id,"100","Phone","101","Peer"));auto offer=signaling.take();auto body=message_body(offer);port_in(body,"audio",audio.port());
-      if(asymmetric){const auto time=body.find("a=ptime:10");assert(time!=body.npos);body.replace(time,10,"a=ptime:20");}
       const auto offset=body.find("m=video ");
       if(offset!=body.npos){port_in(body,"video",reject_video?0:video.port());const auto direction=body.find("a=sendrecv",offset);if(direction!=body.npos)body.replace(direction,10,"a=recvonly");}
-      signaling.deliver(reply(offer,200,body),local_sip);assert(signaling.take().rfind("ACK ",0)==0);eventually([&]{return phone.snapshot().call_active;});assert(phone.start_audio_path());
+      signaling.deliver(reply(offer,200,peer_audio(body)),local_sip);assert(signaling.take().rfind("ACK ",0)==0);eventually([&]{return phone.snapshot().call_active;});assert(phone.start_audio_path());
       return offer;
     };
     const auto incoming=[&]{
@@ -158,7 +169,7 @@ int main(int argc,char **argv){
           " RTP/AVP 110 111\r\na=rtpmap:110 L16/16000/1\r\na=rtpmap:111 L16/48000/1\r\na=ptime:20\r\na=maxptime:20\r\na=sendrecv\r\n");
       }
       signaling.deliver(request("INVITE","<sip:100@127.0.0.1>",body),local_sip);assert(signaling.take().rfind("SIP/2.0 100",0)==0);
-      assert(phone.send_answer("video-activation",asymmetric?AudioFormat{16000,PcmFormat::S16LE,1,20,AudioCodec::PCM}:DEFAULT_AUDIO_FORMAT,asymmetric?AudioFormat{48000,PcmFormat::S16LE,1,10,AudioCodec::PCM}:DEFAULT_AUDIO_FORMAT));const auto answer=signaling.take();assert(answer.rfind("SIP/2.0 200",0)==0);
+      assert(phone.send_answer("video-activation",asymmetric?AudioFormat{48000,PcmFormat::S16LE,1,10,AudioCodec::PCM}:DEFAULT_AUDIO_FORMAT,asymmetric?AudioFormat{16000,PcmFormat::S16LE,1,20,AudioCodec::PCM}:DEFAULT_AUDIO_FORMAT));const auto answer=signaling.take();assert(answer.rfind("SIP/2.0 200",0)==0);
       assert(message_body(answer).find("m=video 0 ")!=std::string::npos);
       signaling.deliver(request("ACK",header_value(answer,"To"),""),local_sip);eventually([&]{return media_callbacks==1&&!phone.snapshot().terminal_transaction_pending;});assert(phone.start_audio_path());return answer;
     };
@@ -199,7 +210,7 @@ int main(int argc,char **argv){
           body.replace(begin,end-begin,"m=audio "+std::to_string(audio.port())+
             " RTP/AVP 112 113\r\na=rtpmap:112 L16/16000/1\r\na=rtpmap:113 L16/48000/1\r\na=ptime:20\r\na=maxptime:20\r\na=sendrecv\r\n");
         }
-        peer.deliver(reply(offer,200,body),local_sip);assert(peer.take().rfind("ACK ",0)==0);
+        peer.deliver(reply(offer,200,peer_audio(body)),local_sip);assert(peer.take().rfind("ACK ",0)==0);
         const auto bye=peer.take();assert(bye.rfind("BYE ",0)==0);peer.deliver(reply(bye,200),local_sip);
         eventually([&]{const auto state=phone.snapshot();return !state.call_active&&!state.terminal_transaction_pending&&state.media_lifecycle_phase==0;});
       }else if(mode=="timeout"){
@@ -211,7 +222,7 @@ int main(int argc,char **argv){
           assert(body==saved);if(asymmetric)assert(phone.offered_rate(16000)&&phone.offered_rate(48000));}
         port_in(body,"audio",audio.port());port_in(body,"video",mode=="reject-video"?0:video.port());
         receive_only(body);
-        peer.deliver(reply(offer,200,body),local_sip);assert(peer.take().rfind("ACK ",0)==0);eventually([&]{return !phone.snapshot().video_send_change_pending;});
+        peer.deliver(reply(offer,200,peer_audio(body)),local_sip);assert(peer.take().rfind("ACK ",0)==0);eventually([&]{return !phone.snapshot().video_send_change_pending;});
         if(mode=="reject-video"){assert(!source.active()&&!phone.snapshot().video_send_enabled);check_audio();}
         else eventually([&]{return source.active()&&!phone.snapshot().video_send_change_pending;});
       }
@@ -219,10 +230,10 @@ int main(int argc,char **argv){
     if(source.active()){
       source.publish(90000);const auto timestamp=picture(video,source);check_audio();
       assert(phone.request_video_send(false));auto offer=peer.take();auto body=message_body(offer);port_in(body,"audio",audio.port());port_in(body,"video",video.port());
-      peer.deliver(reply(offer,200,body),local_sip);assert(peer.take().rfind("ACK ",0)==0);eventually([&]{return !source.active()&&!phone.snapshot().video_send_change_pending;});check_audio();
+      peer.deliver(reply(offer,200,peer_audio(body)),local_sip);assert(peer.take().rfind("ACK ",0)==0);eventually([&]{return !source.active()&&!phone.snapshot().video_send_change_pending;});check_audio();
       assert(phone.request_video_send(true));offer=peer.take();body=message_body(offer);port_in(body,"audio",audio.port());port_in(body,"video",video.port());
       receive_only(body);
-      peer.deliver(reply(offer,200,body),local_sip);assert(peer.take().rfind("ACK ",0)==0);eventually([&]{return source.active()&&!phone.snapshot().video_send_change_pending;});source.publish(180000);assert(picture(video,source)-timestamp==90000);
+      peer.deliver(reply(offer,200,peer_audio(body)),local_sip);assert(peer.take().rfind("ACK ",0)==0);eventually([&]{return source.active()&&!phone.snapshot().video_send_change_pending;});source.publish(180000);assert(picture(video,source)-timestamp==90000);
       assert(active_callbacks==1);
     }
     assert(media_callbacks==initial_callbacks);if(mode!="timeout"&&mode!="catalog-bad"&&mode!="catalog-bad-pt"){assert(phone.send_bye("video-activation"));auto bye=peer.take();assert(bye.rfind("BYE ",0)==0);peer.deliver(reply(bye,200),local_sip);eventually([&]{const auto state=phone.snapshot();return !state.call_active&&!state.terminal_transaction_pending&&state.media_lifecycle_phase==0;});eventually([&]{return !source.active();});}

@@ -113,7 +113,8 @@ int main(){
  phone.transport.value.media_lifecycle_phase=2;
 #endif
  auto text=phone.build_sip_snapshot_string_();
- assert(text.find("st=calling; id=phone-100-42")!=std::string::npos);
+ const auto call_id=phone.identity.call_id;assert(call_id.rfind("esp-",0)==0);
+ assert(text.find("st=calling; id="+call_id+";")!=std::string::npos);
  assert(text.find("dir=out; from=Phone; to=Desk; ct=Desk; tr=udp; sc=200")!=std::string::npos);
  assert(text.find("tx=16k/10; rx=48k/10; pt=123; pr=456")!=std::string::npos);
  assert(text.find("tqd=1; tqdrop=2; rqd=3; rqdrop=4")!=std::string::npos);

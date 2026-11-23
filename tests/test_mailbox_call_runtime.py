@@ -132,9 +132,20 @@ int main(int argc,char**argv){
  }
  if(scenario=="parser"){
   MessageWaitingState state;assert(SipMwi::parse_summary("Messages-Waiting: yes\r\nMessage-Account: sip:x@pbx.example\r\n",&state));
-  for(const auto&line:{std::string("Message-Account: <sip:x@pbx.example>\r\n"),std::string("Message-Account: not a uri\r\n"),std::string("Message-Account: sip:x@pbx.example\r\nMessage-Account: sip:y@pbx.example\r\n"),std::string("Message-Account: sip:")+std::string(513,'x')+"\r\n"})
+  for(const auto&line:{std::string("Message-Account: <sip:x@pbx.example>\r\n"),std::string("Message-Account: not a uri\r\n"),std::string("Message-Account: sip:x@pbx.example\r\nMessage-Account: sip:y@pbx.example\r\n"),std::string("Message-Account: sip:")+std::string(SIP_URI_BYTES,'x')+"\r\n"})
    assert(!SipMwi::parse_summary("Messages-Waiting: yes\r\n"+line,&state));
-  assert(state.message_account==std::string("sip:x@pbx.example"));return 0;
+  assert(state.message_account==std::string("sip:x@pbx.example"));
+  const auto base="sip:"+sip_uri_user_encode("Caffè 20%@Casa")+"@pbx.example;opaque=";
+  for(const size_t bytes:{size_t(513),size_t(SIP_URI_BYTES)}){
+   const auto uri=base+std::string(bytes-base.size(),'x');
+   assert(uri.size()==bytes&&sip_normalize_dial_target(uri,Phonebook::MAX_ROUTE_BYTES)==uri);
+   assert(SipMwi::parse_summary("Messages-Waiting: yes\r\nMessage-Account: "+uri+"\r\n",&state));
+   assert(state.message_account==uri);
+  }
+  const auto retained=state.message_account;
+  assert(retained.size()==SIP_URI_BYTES);
+  assert(!SipMwi::parse_summary("Messages-Waiting: yes\r\nMessage-Account: "+retained+"x\r\n",&state));
+  assert(state.message_account==retained);return 0;
  }
  if(scenario=="direct-default")phone.default_line_="direct";
  assert(phone.can_call_mailbox()&&phone.calls==0);const auto previous=phone.default_line_;
