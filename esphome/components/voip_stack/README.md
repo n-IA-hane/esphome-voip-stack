@@ -79,7 +79,7 @@ microphone:
     i2s_audio_id: rx_i2s
     i2s_din_pin: GPIO11
     channel: right
-    sample_rate: 48000
+    sample_rate: 16000
     bits_per_sample: 32bit
 
 speaker:
@@ -100,16 +100,20 @@ voip_stack:
     channels: [0]
   speaker: native_speaker
   audio:
-    tx:
-      sample_rate: 48000
-      pcm_format: s16le
-      channels: 1
-      frame_ms: 10
-    rx:
-      sample_rate: 48000
-      pcm_format: s16le
-      channels: 1
-      frame_ms: 10
+    codecs:
+      - codec: pcm
+        tx:
+          # Prefer the native 16 kHz / 20 ms microphone stream.
+          - {sample_rate: 16000, frame_ms: 20}
+          - {sample_rate: 16000, frame_ms: 10}
+          # This real alternative makes 48 kHz usable in both directions.
+          - {sample_rate: 48000, frame_ms: 10}
+        rx:
+          # Prefer 48 kHz / 10 ms; accept 20 ms within the receive envelope.
+          - {sample_rate: 48000, frame_ms: 10}
+          - {sample_rate: 48000, frame_ms: 20}
+          - {sample_rate: 16000, frame_ms: 20}
+          - {sample_rate: 16000, frame_ms: 10}
 ```
 
 Use `microphone_source:` when the ESPHome microphone is wider than the VoIP
@@ -117,10 +121,14 @@ stream and `voip_stack` must select a channel or bit depth. For example, an
 I2S microphone can expose 32-bit stereo while SIP/RTP should send 16-bit mono.
 
 Use `microphone:` when the referenced microphone already exposes the exact PCM
-stream you want to advertise in `audio.tx`. This is the normal shape with
+stream declared by the first `audio.codecs` TX format. This is the normal shape with
 `esp_audio_stack`, because its microphone platform already publishes the
 post-AEC/AFE clean microphone stream. Maintained AEC/AFE profiles publish
-`16000:s16le:1` toward VoIP.
+`16000:s16le:1` toward VoIP. The examples above use that native 16 kHz TX
+preference and a real 48 kHz TX alternative, with 48 kHz preferred for RX.
+The send budget defaults to 1200 bytes; receive wire and decoded PCM storage
+are bounded separately, allowing mono S16 at 48 kHz/20 ms. Registered SIP phones
+and PBXs negotiate these alternatives through ordinary SDP.
 
 ## Software AEC and AFE
 
@@ -159,8 +167,20 @@ voip_stack:
   microphone: clean_mic
   speaker: stack_speaker
   audio:
-    tx: auto
-    rx: auto
+    codecs:
+      - codec: pcm
+        tx:
+          # Prefer the native 16 kHz / 20 ms microphone stream.
+          - {sample_rate: 16000, frame_ms: 20}
+          - {sample_rate: 16000, frame_ms: 10}
+          # This real alternative makes 48 kHz usable in both directions.
+          - {sample_rate: 48000, frame_ms: 10}
+        rx:
+          # Prefer 48 kHz / 10 ms; accept 20 ms within the receive envelope.
+          - {sample_rate: 48000, frame_ms: 10}
+          - {sample_rate: 48000, frame_ms: 20}
+          - {sample_rate: 16000, frame_ms: 20}
+          - {sample_rate: 16000, frame_ms: 10}
 ```
 
 Audio Stack currently supports one instance per ESP. Its microphone and speaker

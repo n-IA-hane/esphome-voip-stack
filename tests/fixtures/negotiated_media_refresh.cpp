@@ -129,6 +129,11 @@ struct Phone : SipTransport {
   bool active() const {
     return media_lifecycle_phase_.load() == MediaLifecyclePhase::ACTIVE && rtp_running_.load();
   }
+  bool media_idle() const {
+    esphome::LockGuard media(media_lifecycle_mutex_);
+    return media_lifecycle_phase_.load() == MediaLifecyclePhase::IDLE &&
+           rtp_task_quiesced_.load() && !rtp_running_.load();
+  }
   bool acked() const { esphome::LockGuard dialog(dialog_mutex_); return !completed_invite_.awaiting_ack; }
   bool idle() const { esphome::LockGuard dialog(dialog_mutex_); return call_id_.empty(); }
 #ifdef USE_ESPHOME_VOIP_STACK_OPUS
@@ -216,7 +221,10 @@ int main(int argc, char **argv) {
       assert(bitrate == (leg == 0 ? 12000 : 24000)); if (leg == 0) assert(encoded_bytes * 8 / 10 <= 12000);
       assert(phone.encoder() == encoder && phone.decoder() == decoder);
       peer.send_to(request("BYE", 2), sip_port); assert(peer.take().rfind("SIP/2.0 200", 0) == 0);
-      settled([&] { return phone.idle(); }); assert(phone.constraints() == OpusReceiveConstraints{});
+      settled([&] { return phone.idle(); });
+      settled([&] { return phone.media_idle(); });
+      assert(phone.constraints() == OpusReceiveConstraints{});
+      assert(!phone.audio_tx_frame_context(opus).valid);
     }
 #else
     const bool l24 = mode == "l24-storage";

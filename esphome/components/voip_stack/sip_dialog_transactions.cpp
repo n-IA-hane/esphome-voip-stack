@@ -56,7 +56,13 @@ void SipTransport::reset_dialog_media_locked_() {
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
   this->video_imageattr_state_ = 0;
 #endif
-  if (!this->refer_context_active_) this->request_audio_path_stop_locked_();
+  if (!this->refer_context_active_) {
+    this->request_audio_path_stop_locked_();
+#ifdef USE_ESPHOME_VOIP_STACK_OPUS
+    // This dialog has relinquished its media; retained REFER media keeps its constraints.
+    this->set_opus_tx_constraints_({});
+#endif
+  }
   bool abort_queued_tcp_record = false;
   {
     // Serialize with promote_tcp_flow_(): once that path swaps the queued
