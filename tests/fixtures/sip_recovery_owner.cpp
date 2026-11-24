@@ -63,7 +63,11 @@ struct Wire {
       int server = socket(AF_INET, SOCK_STREAM, 0);
       assert(server >= 0);
       auto address = peer.address;
+      address.sin_port = 0;
       assert(bind(server, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0);
+      socklen_t address_size = sizeof(address);
+      assert(getsockname(server, reinterpret_cast<sockaddr *>(&address), &address_size) == 0);
+      peer.address = address;
       assert(listen(server, 1) == 0);
       int client = socket(AF_INET, SOCK_STREAM, 0);
       assert(connect(client, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0);
