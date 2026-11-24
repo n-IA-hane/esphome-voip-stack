@@ -139,8 +139,20 @@ class RendererVideoSink : public EncodedVideoSink {
 class S3RendererVideoSink final : public RendererVideoSink {
  public:
   using RendererVideoSink::RendererVideoSink;
+  VideoCapability get_receive_video_capability() const override {
+    auto capability = RendererVideoSink::get_receive_video_capability();
+    const auto caps = this->renderer_->get_capabilities();
+    if (caps.preferred.codec == video_renderer::Codec::JPEG) {
+      capability.width = caps.max_decode_width;
+      capability.height = caps.max_decode_height;
+    }
+    return capability;
+  }
   bool start_video(const VideoCapability &capability) override {
     const auto caps = this->renderer_->get_capabilities();
+    if (caps.preferred.codec == video_renderer::Codec::JPEG)
+      return capability.width <= caps.max_decode_width && capability.height <= caps.max_decode_height &&
+             RendererVideoSink::start_video(capability);
     return capability.width <= caps.preferred.width && capability.height <= caps.preferred.height &&
            RendererVideoSink::start_video(capability);
   }

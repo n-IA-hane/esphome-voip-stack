@@ -604,6 +604,112 @@ adds independent PBX accounts and a selected outgoing line; it does not replace
 Home Assistant's trunk settings. In calls routed through HA, trunk numbers and
 inbound DTMF routes are mapped by HA to local phonebook targets.
 
+### Direct ESP-to-ESP calls
+
+Two compatible ESP phones can exchange SIP and RTP directly on the LAN,
+without Home Assistant or a SIP registrar. Keep the maintained FULL profile,
+wiring, audio processing and calibration for each board. Merge these fragments
+into its existing `voip_stack` block; they are not complete board profiles.
+Replace the documentation addresses with actual fixed LAN addresses or DHCP
+reservations.
+
+Peer A, a P4 at `192.0.2.10`, calls the Box:
+
+```yaml
+voip_stack:
+  id: phone
+  ha_integration: false
+  use_ha_as_first_contact: false
+  transport: udp
+  sip_port: 5060
+  registration:
+    accept_direct_calls: true
+    default_line: direct
+  static_contacts:
+    - name: Box
+      ip: 192.0.2.11
+      port: 5060
+      rtp_port: 40000
+      transport: udp
+```
+
+Peer B, a Box at `192.0.2.11`, calls the P4:
+
+```yaml
+voip_stack:
+  id: phone
+  ha_integration: false
+  use_ha_as_first_contact: false
+  transport: udp
+  sip_port: 5060
+  registration:
+    accept_direct_calls: true
+    default_line: direct
+  static_contacts:
+    - name: P4
+      ip: 192.0.2.10
+      port: 5060
+      rtp_port: 40000
+      transport: udp
+```
+
+`registration.accept_direct_calls` is an opt-in on each receiving peer and
+defaults to `false`. Answer with that phone's existing controls or answer
+policy. The contact supplies the SIP endpoint; SDP negotiates the actual RTP
+destinations. If the phone also has a registered HA account, select `direct`
+for this call instead of the managed `ha` line:
+
+```cpp
+id(phone).start_call_on_line("Box", "direct", false, false);
+```
+
+Use `"P4"` on the Box for reverse audio. For P4-to-Box video, configure an
+encoded source on the P4 and a compatible sink on the Box. Once that profile
+has been qualified, `start_call_on_line("Box", "direct", true, false)` requests
+send-only video alongside bidirectional audio. Camera privacy settings still
+apply.
+
+A 16 kHz wire stream can play through a 48 kHz speaker when the maintained
+local audio path provides the conversion. Advertise compatible real formats
+on both peers and retain the board profile's hardware clock settings.
+Direct SIP has no HA transcoder. Matching JPEG alone is insufficient: an
+800x800 P4 source is not automatically resized for a 320x240 Box sink.
+Configure a size the actual source produces and the sink accepts, or use a
+profile that implements local adaptation. Rewriting SDP dimensions does not
+resize frames. These examples are schema-validated; physical audio/video
+qualification of the chosen boards and geometry remains a separate step.
+
+#### Runtime contacts and the optional native API
+
+The native ESPHome API adapter is separate from a Home Assistant SIP server.
+To expose the device's existing `add_contact` action, retain `api:` with
+`custom_services: true` and replace `ha_integration: false` with
+`ha_integration: { auto_register: false }`. This enables the native API surface
+without automatically registering an HA PBX account or putting HA into the
+direct SIP/RTP path. With `ha_integration: false`, that optional API action is
+absent; local ESPHome automations and C++ controls remain available.
+
+Call the native `add_contact` action with this `entry` argument:
+
+```yaml
+entry: "Box|192.0.2.11|5060|40000|sip_udp"
+```
+
+The equivalent local C++ operation is:
+
+```cpp
+id(phone).add_contact("Box|192.0.2.11|5060|40000|sip_udp");
+```
+
+Runtime additions live in the in-memory phonebook; they are not saved as new
+YAML or persistent contacts across a reboot. `static_contacts` is compiled
+into the firmware and recreates those contacts on every boot. Alternatively,
+reapply a local boot automation. LDAP refreshes preserve manual contacts,
+including these runtime additions and static entries. A conflicting identity
+can reject the directory refresh rather than overwrite a manual endpoint;
+use distinct peer names and routes. No HA device identifier or
+controller-issued call identity is needed.
+
 ESP devices can also publish optional HA-managed group membership:
 
 ```yaml

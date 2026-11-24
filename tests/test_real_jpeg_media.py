@@ -107,6 +107,7 @@ uint32_t micros(){return std::chrono::duration_cast<std::chrono::microseconds>(
 struct EspVideoRenderer {
  struct Input{uint8_t*data;size_t size;};struct Surface{uint8_t*data;uint16_t width=0,height=0;};
  Input inputs_[1];Surface surfaces_[1];uint16_t width_,height_;size_t surface_capacity_;
+ uint16_t max_decode_width_{0},max_decode_height_{0};
  alignas(16) uint8_t decoder_workspace_[JPEG_WORKSPACE_BYTES];
  std::atomic<uint32_t>decode_errors_{0},decoded_{0},decode_max_us_{0};
  bool decode_(int,int);
@@ -152,10 +153,14 @@ int main(int argc,char**argv){
  esphome::esp_video_renderer::EspVideoRenderer renderer;
  renderer.inputs_[0]={received.data(),completed};renderer.surfaces_[0].data=surface.data()+16;
  renderer.width_=width;renderer.height_=height;renderer.surface_capacity_=width*height*2;
+ const unsigned input_limit=std::atoi(argv[5]);
+ renderer.max_decode_width_=input_limit;renderer.max_decode_height_=input_limit;
  assert(renderer.decode_(0,0));assert(renderer.decoded_.load()==1&&renderer.decode_errors_.load()==0);
- assert(renderer.surfaces_[0].width==width&&renderer.surfaces_[0].height==height);
+ const unsigned output_width=renderer.surfaces_[0].width,output_height=renderer.surfaces_[0].height;
+ if(input_limit)assert(output_width==200&&output_height==200&&width==320&&height==240);
+ else assert(output_width==width&&output_height==height);
  for(unsigned i=0;i<16;i++)assert(surface[i]==0xa5&&surface[surface.size()-1-i]==0xa5);
- std::ofstream output(argv[2],std::ios::binary);output.write(reinterpret_cast<char*>(surface.data()+16),width*height*2);output.close();
+ std::ofstream output(argv[2],std::ios::binary);output.write(reinterpret_cast<char*>(surface.data()+16),output_width*output_height*2);output.close();
  // Complete header with invalid Huffman selectors passes structural admission,
  // but must fail the actual decoder and never publish another surface.
  for(size_t i=2;i+9<completed;i++)if(received[i]==0xff&&received[i+1]==0xda){received[i+6]=0x33;break;}
@@ -163,7 +168,7 @@ int main(int argc,char**argv){
  renderer.inputs_[0].size=completed-2;assert(!renderer.decode_(0,0));
  assert(renderer.decoded_.load()==1&&renderer.decode_errors_.load()==2);
  std::cout<<"{\"fragments\":"<<fragments<<",\"jpeg_bytes\":"<<completed
-  <<",\"width\":"<<width<<",\"height\":"<<height<<",\"decoded\":1,\"rejected\":2}";
+  <<",\"width\":"<<output_width<<",\"height\":"<<output_height<<",\"decoded\":1,\"rejected\":2}";
 }
 '''.replace("@WORKSPACE@", workspace).replace("@UPDATE@", update).replace("@DECODE@", decode))
     binary = temporary / "media"
@@ -207,4 +212,32 @@ def test_real_udp_jpeg_and_shipped_renderer_decode(real_jpeg_binary, tmp_path, s
         rgb565 = int.from_bytes(pixels[offset:offset + 2], "little")
         actual = ((rgb565 >> 11) * 255 // 31, ((rgb565 >> 5) & 63) * 255 // 63, (rgb565 & 31) * 255 // 31)
         assert max(abs(a - b) for a, b in zip(actual, reference.getpixel((x, y)))) <= 10
+    (tmp_path / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+
+
+def test_real_udp_800_jpeg_uses_small_surface_with_explicit_input_limit(real_jpeg_binary, tmp_path):
+    image = Image.new("RGB", (800, 800))
+    colors = [(216, 48, 32), (24, 204, 64), (40, 64, 224), (200, 192, 48)]
+    for index, color in enumerate(colors):
+        x, y = (index % 2) * 400, (index // 2) * 400
+        image.paste(color, (x, y, x + 400, y + 400))
+    encoded = tmp_path / "input-800.jpg"
+    image.save(encoded, "JPEG", quality=80, subsampling=2, optimize=False, progressive=False)
+    output = tmp_path / "rgb565-200"
+    result = subprocess.run([real_jpeg_binary, encoded, output, "320", "240", "800"],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    receipt = json.loads(result.stdout)
+    assert receipt["width"] == receipt["height"] == 200
+    assert receipt["decoded"] == 1 and receipt["rejected"] == 2 and receipt["fragments"] > 1
+    pixels = output.read_bytes()
+    assert len(pixels) == 200 * 200 * 2
+    with Image.open(encoded) as original, Image.open(str(output) + ".jpg") as restored:
+        assert restored.size == original.size == (800, 800)
+        assert restored.convert("RGB").tobytes() == original.convert("RGB").tobytes()
+        for index, (x, y) in enumerate([(50, 50), (150, 50), (50, 150), (150, 150)]):
+            offset = (y * 200 + x) * 2
+            value = int.from_bytes(pixels[offset:offset + 2], "little")
+            actual = ((value >> 11) * 255 // 31, ((value >> 5) & 63) * 255 // 63, (value & 31) * 255 // 31)
+            assert max(abs(a - b) for a, b in zip(actual, original.convert("RGB").getpixel((x * 4, y * 4)))) <= 10
     (tmp_path / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
