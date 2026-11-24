@@ -302,8 +302,8 @@ transport (`transport: udp` or `transport: tcp` on `voip_stack`). A name-only
 contact is a logical target that can be routed through the selected SIP account.
 
 Runtime YAML automations can mutate the local dial plan with
-`voip_stack.add_contact`, `voip_stack.remove_contact`,
-`voip_stack.set_contacts` and `voip_stack.flush_contacts`. These local actions do
+`voip_stack.add_contact`, `voip_stack.remove_contact` and
+`voip_stack.flush_contacts`. These local actions do
 not replace LDAP provisioning. Home Assistant serves the central directory via
 LDAP, using public SIP usernames and routes as identities.
 

@@ -467,7 +467,7 @@ class VoipStack : public Component {
   // SIP dial-plan contact management. Public YAML should prefer the
   // structured add_contact action. Generated helpers normalize transport rows
   // and optional metadata before the same phonebook merge.
-  // add_contact and set_contacts run the same idempotent merge: same shape
+  // add_contact runs one idempotent merge: same shape
   // = no-op, missing endpoint upgraded in place, mismatched endpoint
   // replaced. Slot order is stable; only flush_contacts() trims.
   void add_contact(const std::string &entry, const std::string &id = "", ContactKind kind = ContactKind::UNKNOWN,
@@ -487,8 +487,6 @@ class VoipStack : public Component {
   }
 #endif
   void remove_contact(const std::string &name);
-  void set_contacts(const std::string &contacts_csv);  // batch wrapper, same
-                                                       // merge rules per entry
   void flush_contacts();
   bool set_contact(const std::string &name);
   void call(const std::string &target);

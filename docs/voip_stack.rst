@@ -130,7 +130,7 @@ Call control: ``voip_stack.start``, ``voip_stack.stop``,
 
 Phonebook: ``voip_stack.next_contact``, ``voip_stack.prev_contact``,
 ``voip_stack.add_contact``, ``voip_stack.remove_contact``,
-``voip_stack.set_contact``, ``voip_stack.set_contacts``,
+``voip_stack.set_contact``,
 ``voip_stack.flush_contacts`` and ``voip_stack.set_ha_peer_name``.
 
 Audio and diagnostics: ``voip_stack.set_volume``,

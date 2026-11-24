@@ -62,7 +62,7 @@ struct VoipStack {
  void call(std::string){}void hangup_call_if_id(std::string){}
  void answer_call(){}void decline_call(std::string){}void stop(){}void send_dtmf(char){}
 void set_ha_peer_name(std::string){}
- void set_contacts(std::string){}void add_contact(std::string){}void remove_contact(std::string){}
+ void add_contact(std::string){}void remove_contact(std::string){}
  void flush_contacts(){}
 };
 ''' + adapter + r'''
@@ -79,6 +79,7 @@ int main(int argc,char**argv){
  adapter.services.at("set_pbx_media_diagnostics").invoke({std::string("sip-leg"),std::string("forwarded,resampled"),std::string("inactive,converted")});
  assert(parent.media_call=="sip-leg"&&parent.media_audio=="forwarded,resampled"&&parent.media_video=="inactive,converted");
  assert(!adapter.services.count("start_call_via_ha")&&!adapter.services.count("set_media_route")&&!adapter.services.count("set_roster_json"));
+ assert(!adapter.services.count("set_contacts"));
  auto&service=adapter.services.at("set_account");
  const std::vector<std::string>expected{"account_id","registrar","port","domain","username","password","auth_username","proxy","proxy_port","transport","expires","persist"};
  assert(service.args==expected);

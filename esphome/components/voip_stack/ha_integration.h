@@ -26,7 +26,6 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
     this->register_service(&VoipHAIntegration::decline_call, "decline_call", {"reason"});
     this->register_service(&VoipHAIntegration::hangup_call, "hangup_call");
     this->register_service(&VoipHAIntegration::set_ha_peer_name, "set_ha_peer_name", {"name"});
-    this->register_service(&VoipHAIntegration::set_contacts, "set_contacts", {"contacts_csv"});
     this->register_service(&VoipHAIntegration::add_contact, "add_contact", {"entry"});
     this->register_service(&VoipHAIntegration::remove_contact, "remove_contact", {"entry"});
     this->register_service(&VoipHAIntegration::flush_contacts, "flush_contacts");
@@ -93,7 +92,6 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
   void decline_call(std::string reason) { this->parent_->decline_call(reason); }
   void hangup_call() { this->parent_->stop(); }
   void set_ha_peer_name(std::string name) { this->parent_->set_ha_peer_name(name); }
-  void set_contacts(std::string contacts) { this->parent_->set_contacts(contacts); }
   void add_contact(std::string entry) { this->parent_->add_contact(entry); }
   void remove_contact(std::string entry) { this->parent_->remove_contact(entry); }
   void flush_contacts() { this->parent_->flush_contacts(); }

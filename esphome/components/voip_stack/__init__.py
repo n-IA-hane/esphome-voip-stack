@@ -534,7 +534,6 @@ PublishEntityStatesAction = voip_stack_ns.class_("PublishEntityStatesAction", au
 SetVolumeAction = voip_stack_ns.class_("SetVolumeAction", automation.Action)
 SetMicGainDbAction = voip_stack_ns.class_("SetMicGainDbAction", automation.Action)
 SetVideoSendAction = voip_stack_ns.class_("SetVideoSendAction", automation.Action)
-SetContactsAction = voip_stack_ns.class_("SetContactsAction", automation.Action)
 SetContactAction = voip_stack_ns.class_("SetContactAction", automation.Action)
 SendDtmfAction = voip_stack_ns.class_("SendDtmfAction", automation.Action)
 VoipCanSendDtmfCondition = voip_stack_ns.class_("VoipCanSendDtmfCondition", automation.Condition)
@@ -1393,7 +1392,6 @@ async def send_dtmf_action_to_code(config, action_id, template_arg, args):
 CONF_VOLUME = "volume"
 CONF_GAIN_DB = "gain_db"
 CONF_ENABLED = "enabled"
-CONF_CONTACTS_CSV = "contacts_csv"
 CONF_TARGET = "target"
 
 
@@ -1456,16 +1454,6 @@ async def set_video_send_action_to_code(config, action_id, template_arg, args):
     templ = await cg.templatable(config[CONF_ENABLED], args, cg.bool_)
     cg.add(var.set_enabled(templ))
     return var
-_register_templated_action(
-    "voip_stack.set_contacts",
-    SetContactsAction,
-    CONF_CONTACTS_CSV,
-    cv.string,
-    cg.std_string,
-    lambda var, value: var.set_contacts_csv(value),
-)
-
-
 _register_templated_action(
     "voip_stack.set_contact",
     SetContactAction,

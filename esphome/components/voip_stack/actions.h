@@ -181,15 +181,6 @@ class SetVideoSendAction : public Action<Ts...>, public Parented<VoipStack> {
 #endif
 
 template<typename... Ts>
-class SetContactsAction : public Action<Ts...>, public Parented<VoipStack> {
- public:
-  TEMPLATABLE_VALUE(std::string, contacts_csv)
-  void play(const Ts &...x) override {
-    this->parent_->set_contacts(this->contacts_csv_.value(x...));
-  }
-};
-
-template<typename... Ts>
 class SetContactAction : public Action<Ts...>, public Parented<VoipStack> {
  public:
   TEMPLATABLE_VALUE(std::string, contact)

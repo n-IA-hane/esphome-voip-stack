@@ -278,7 +278,7 @@ void VoipStack::set_mic_gain_db(float db) {
 }
 
 // === Contacts ===
-// Phonebook owns merge logic. add/set route through the same idempotent
+// Phonebook owns merge logic. add_contact uses one idempotent
 // merge: same shape = noop, missing endpoint = upgrade, mismatch = replace.
 // Slot order is stable; only flush_contacts wipes.
 
@@ -316,17 +316,6 @@ void VoipStack::remove_contact(const std::string &name) {
   }
   ESP_LOGI(TAG, "Contact removed: %s", name.c_str());
   this->publish_phonebook_changed_();
-}
-
-void VoipStack::set_contacts(const std::string &contacts_csv) {
-  const std::string normalized_csv = this->normalize_phonebook_for_transport_(contacts_csv);
-  if (normalized_csv.empty()) return;
-  const bool changed = this->phonebook_.add_batch(normalized_csv);
-  const bool selected = this->maybe_auto_select_ha_first_();
-  if (changed || selected) {
-    ESP_LOGI(TAG, "Contacts batch applied: %zu total", this->phonebook_.size());
-    this->publish_phonebook_changed_();
-  }
 }
 
 std::string VoipStack::normalize_phonebook_for_transport_(const std::string &contacts_csv) {

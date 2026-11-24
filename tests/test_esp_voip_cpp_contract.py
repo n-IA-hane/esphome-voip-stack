@@ -2140,12 +2140,6 @@ def test_phonebook_capacity_and_transport_updates_are_centralized() -> None:
     assert "same_entry_(existing, incoming)" in merge
     same_entry = cpp_method(phonebook, r"same_entry_")
     assert "a.sip_transport_tcp == b.sip_transport_tcp" in same_entry
-    add_batch = phonebook[
-        phonebook.index("bool add_batch") :
-        phonebook.index("\n  AddResult add_entry")
-    ]
-    assert "processed < MAX_CONTACTS" in add_batch
-    assert "this->entries_.size() < MAX_CONTACTS" not in add_batch
     assert "MAX_ROSTER_JSON_BYTES" not in settings
     assert "apply_roster_json_contacts_" not in settings
 

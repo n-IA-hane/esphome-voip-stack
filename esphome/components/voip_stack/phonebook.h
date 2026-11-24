@@ -213,27 +213,6 @@ class Phonebook {
     return split_(s, sep);
   }
 
-  /// Batch add. True if at least one slot mutated.
-  bool add_batch(const std::string &csv, ContactOrigin origin = ContactOrigin::MANUAL,
-                 const void *provider = nullptr) {
-    bool changed = false;
-    size_t start = 0;
-    size_t processed = 0;
-    while (start <= csv.size() && processed < MAX_CONTACTS) {
-      const size_t comma = csv.find(',', start);
-      const size_t end = (comma == std::string::npos) ? csv.size() : comma;
-      const AddResult r = this->add_one(csv.substr(start, end - start), origin, provider);
-      processed++;
-      if (r == AddResult::Added || r == AddResult::Upgraded ||
-          r == AddResult::EndpointReplaced) {
-        changed = true;
-      }
-      if (comma == std::string::npos) break;
-      start = comma + 1;
-    }
-    return changed;
-  }
-
   AddResult add_entry(const ContactEntry &entry) {
     return this->merge_(entry);
   }
