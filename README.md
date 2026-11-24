@@ -859,6 +859,7 @@ platform entities you need:
 | `text_sensor` | `contacts` | Published local contact list. |
 | `text_sensor` | `transport` | Active signaling transport. |
 | `text_sensor` | `sip_snapshot` | SIP and media details captured on call or configuration changes. Run `voip_stack.dump_diagnostics` for current counters. With `audio_debug: true`, active calls also sample every 500 ms. |
+| `text_sensor` | `media_diagnostics` | Optional call-scoped processing indicator for the phone display. It does not select a route, codec or account. |
 | `text` | `ring_groups` | Editable comma-separated ring group memberships. |
 | `text` | `queues` | Editable comma-separated queue declarations; HA owns agent login and pause. |
 | `text` | `conference_groups` | Editable comma-separated conference group memberships. |
@@ -922,6 +923,28 @@ button:
     previous_contact: { name: Previous Contact }
     decline: { name: Decline }
 ```
+
+### Optional media processing indicator
+
+The `media_diagnostics` text sensor is a display aid. `Direct` describes the
+current call's direct SIP line. A matched registered line starts as `Via PBX |
+unknown`: another PBX's processing cannot be inferred from its IP address or
+the negotiated codecs. The indicator is cleared when the call ends.
+
+HA can optionally report its committed processing through the native API
+service `set_pbx_media_diagnostics(call_id, audio, video)`. Both media arguments
+contain `tx,rx` operations relative to this ESP, and the Call-ID must match its
+active SIP dialog. A report during the existing connecting phase is retained
+until the call is in progress. Missing services, disconnected API clients and stale Call-IDs
+do not affect calls. This service does not change SIP signaling, accounts,
+negotiation, media routes or media ownership.
+
+The compact display distinguishes forwarded audio, packet-time adaptation,
+resampling and codec conversion, including combined resampling and conversion.
+HA video conversion includes JPEG geometry changes even when the codec stays
+JPEG. Audio at 16 kHz on the wire with a 48 kHz local speaker is local ESP
+resampling; local video fitting to the display is also separate from HA
+processing. Inactive media directions are omitted from the display.
 
 ## Configuration reference
 

@@ -99,6 +99,7 @@ public:
   bool can_start_call_() const;
   void start();void start_call_();
   void start_call_attempt_(bool);
+  void set_call_sip_mode_(bool){}
   enum class ApplicationMediaStart:uint8_t{NONE,ORIGINATE,ANSWER,CONFIRM,OFFER};
   void begin_application_media_start_(ApplicationMediaStart);void finish_application_media_start_(ApplicationMediaStart);void pump_application_media_start_();
   uint32_t prepared_peer_ip_=0x7f000001;uint16_t prepared_peer_port_=5060;bool prepared_peer_tcp_=false;

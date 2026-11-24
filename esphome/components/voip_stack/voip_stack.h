@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 
 #ifdef USE_ESP32
 
@@ -417,6 +418,10 @@ class VoipStack : public Component {
                : ConnectionState::CONNECTED;
   }
   const char *get_state_str() const;
+  // Optional presentation only. The SIP dialog remains the identity owner.
+  bool set_pbx_media_diagnostics(const std::string &call_id, const std::string &audio,
+                                 const std::string &video);
+  std::string get_media_diagnostics_str() const;
 
 #ifdef USE_TEXT_SENSOR
   // Optional text-sensor platform registration.
@@ -427,6 +432,7 @@ class VoipStack : public Component {
   void set_transport_sensor(text_sensor::TextSensor *sensor) { this->transport_sensor_ = sensor; }
   void set_last_reason_sensor(text_sensor::TextSensor *sensor) { this->last_reason_sensor_ = sensor; }
   void set_sip_snapshot_sensor(text_sensor::TextSensor *sensor) { this->sip_snapshot_sensor_ = sensor; }
+  void set_media_diagnostics_sensor(text_sensor::TextSensor *sensor) { this->media_diagnostics_sensor_ = sensor; }
 #endif
 #ifdef USE_TEXT
   void set_ring_groups_text(text::Text *entity) { this->ring_groups_text_ = entity; }
@@ -820,6 +826,7 @@ class VoipStack : public Component {
   text_sensor::TextSensor *transport_sensor_{nullptr};    // SIP signaling transport: "udp" or "tcp"
   text_sensor::TextSensor *last_reason_sensor_{nullptr};  // terminal reason for HA/card mirroring
   text_sensor::TextSensor *sip_snapshot_sensor_{nullptr};
+  text_sensor::TextSensor *media_diagnostics_sensor_{nullptr};
   std::string last_sip_snapshot_;
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
   uint32_t last_sip_snapshot_refresh_ms_{0};
@@ -1125,6 +1132,21 @@ class VoipStack : public Component {
   // the helpers below (set/snapshot/clear) are allowed to touch them.
   mutable Mutex call_state_mutex_;
   std::string current_call_id_;
+  enum class PbxMediaOperation : uint8_t {
+    UNKNOWN, INACTIVE, FORWARDED, REPACKETIZED, RESAMPLED, CODEC_CONVERTED,
+    RESAMPLED_CODEC_CONVERTED, CONVERTED
+  };
+  struct PbxMediaDiagnostics {
+    bool via_pbx{false};
+    bool reported{false};
+    std::array<PbxMediaOperation, 2> audio{PbxMediaOperation::UNKNOWN, PbxMediaOperation::UNKNOWN};
+    std::array<PbxMediaOperation, 2> video{PbxMediaOperation::UNKNOWN, PbxMediaOperation::UNKNOWN};
+  } pbx_media_diagnostics_;
+  static bool parse_pbx_media_diagnostic_pair_(const std::string &value, bool video,
+                                               std::array<PbxMediaOperation, 2> *result);
+  static std::string format_pbx_media_diagnostic_pair_(const std::array<PbxMediaOperation, 2> &value);
+  void set_call_sip_mode_(bool via_pbx);
+  void publish_media_diagnostics_();
   std::string current_caller_route_id_;
   std::string current_caller_name_;
   std::string current_dest_route_id_;

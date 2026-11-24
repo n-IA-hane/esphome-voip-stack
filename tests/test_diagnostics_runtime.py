@@ -192,6 +192,8 @@ struct VoipStack {
   void handle_call_timeouts_(uint32_t, uint32_t) {}
   void disable_loop() {}
   template<class F> void defer(F) {}
+  template<class F> void defer(const char *, F) {}
+  void publish_media_diagnostics_() {}
   std::string get_state_str() const {
     switch (call_state_.load()) {
       case CallState::RINGING: return "ringing";

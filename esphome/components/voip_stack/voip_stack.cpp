@@ -1030,6 +1030,7 @@ void VoipStack::publish_entity_states() {
 
   this->publish_transport_();
   this->publish_sip_snapshot_();
+  this->publish_media_diagnostics_();
 #ifdef USE_TEXT_SENSOR
   if (this->last_reason_sensor_ != nullptr) {
     this->last_reason_sensor_->publish_state(this->last_reason_);

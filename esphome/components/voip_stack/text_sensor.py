@@ -16,6 +16,7 @@ TYPE_SIP_SNAPSHOT = "sip_snapshot"
 TYPE_DESTINATION = "destination"
 TYPE_CALLER = "caller"
 TYPE_CONTACTS = "contacts"
+TYPE_MEDIA_DIAGNOSTICS = "media_diagnostics"
 
 TYPES = {
     TYPE_STATE: ("VoIP State", "mdi:phone-settings", "set_state_sensor"),
@@ -25,6 +26,7 @@ TYPES = {
     TYPE_DESTINATION: ("VoIP Destination", "mdi:phone-forward", "set_destination_sensor"),
     TYPE_CALLER: ("VoIP Caller", "mdi:phone-incoming", "set_caller_sensor"),
     TYPE_CONTACTS: ("VoIP Contacts", "mdi:account-group", "set_contacts_sensor"),
+    TYPE_MEDIA_DIAGNOSTICS: ("VoIP Media Diagnostics", "mdi:information-outline", "set_media_diagnostics_sensor"),
 }
 
 

@@ -108,6 +108,8 @@ struct VoipStack {
  void publish_destination_(){}
  bool recent_terminal_call_(const std::string&,std::string*)const{return false;}
  void publish_state_(){}
+ bool call_via_pbx=false;
+ void set_call_sip_mode_(bool via_pbx){call_via_pbx=via_pbx;}
  void answer_call(){}
  std::string get_current_destination()const{return "destination";}
  void end_call_(CallEndReason,const std::string&);

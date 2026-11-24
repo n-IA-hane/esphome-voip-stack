@@ -12,6 +12,7 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
     this->register_service(&VoipHAIntegration::start_call, "start_call", {"dest"});
     this->register_service(&VoipHAIntegration::start_call_on_line, "start_call_on_line", {"dest", "line", "send_video", "receive_video"});
     this->register_service(&VoipHAIntegration::hangup_call_if_id, "hangup_call_if_id", {"call_id"});
+    this->register_service(&VoipHAIntegration::set_pbx_media_diagnostics, "set_pbx_media_diagnostics", {"call_id", "audio", "video"});
 #ifdef USE_ESPHOME_VOIP_DTMF
     this->register_service(&VoipHAIntegration::send_dtmf, "send_dtmf", {"digit"});
 #endif
@@ -46,6 +47,9 @@ class VoipHAIntegration : public Component, public api::CustomAPIDevice, public 
     this->defer([this]() { this->parent_->publish_entity_states(); });
   }
   float get_setup_priority() const override { return setup_priority::AFTER_CONNECTION; }
+  void set_pbx_media_diagnostics(std::string call_id, std::string audio, std::string video) {
+    this->parent_->set_pbx_media_diagnostics(call_id, audio, video);
+  }
 #ifdef USE_VOIP_HA_AUTO_REGISTER
   void register_ha_account() { this->parent_->register_account("ha"); }
   void set_ha_display_name(std::string name) { this->parent_->set_ha_display_name(name); }
