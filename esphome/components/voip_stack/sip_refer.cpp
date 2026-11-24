@@ -272,6 +272,7 @@ void SipTransport::swap_negotiation_(ReferDialog &other) {
   using std::swap;
 #ifdef USE_ESPHOME_VOIP_DTMF
   swap(this->dtmf_offered_clocks_, other.dtmf_offered_clocks_);
+  swap(this->local_offered_dtmf_, other.local_offered_dtmf_);
 #endif
   swap(this->local_offered_rx_payloads_, other.local_offered_rx_payloads_);
   swap(this->local_offered_tx_formats_, other.local_offered_tx_formats_);

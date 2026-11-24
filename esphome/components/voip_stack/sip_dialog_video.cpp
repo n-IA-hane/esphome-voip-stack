@@ -127,12 +127,22 @@ bool SipTransport::send_video_direction_reinvite_unlocked_(bool enabled,
   AudioFormatList offered_tx;
   RtpAudioPayloads offered_rx;
   uint8_t offered_clocks = 0;
+#ifdef USE_ESPHOME_VOIP_DTMF
+  DtmfPayloads offered_dtmf;
+#endif
   if (retry) {
     offered_tx = this->pending_video_direction_invite_.offered_tx;
     offered_rx = this->pending_video_direction_invite_.offered_rx;
     offered_clocks = this->pending_video_direction_invite_.offered_dtmf_clocks;
+#ifdef USE_ESPHOME_VOIP_DTMF
+    offered_dtmf = this->pending_video_direction_invite_.offered_dtmf;
+#endif
   } else if (!capture_audio_offer(offer, this->offer_tx_formats_, this->offer_rx_formats_,
-                                  this->udp_max_payload_, &offered_tx, &offered_rx, &offered_clocks)) {
+                                  this->udp_max_payload_, &offered_tx, &offered_rx, &offered_clocks
+#ifdef USE_ESPHOME_VOIP_DTMF
+                                  , &offered_dtmf
+#endif
+                                  )) {
     this->video_send_requested_.store(previous_send, std::memory_order_release);
     return false;
   }
@@ -169,6 +179,8 @@ bool SipTransport::send_video_direction_reinvite_unlocked_(bool enabled,
   this->local_offered_rx_payloads_ = offered_rx;
 #ifdef USE_ESPHOME_VOIP_DTMF
   this->dtmf_offered_clocks_ = offered_clocks;
+  this->local_offered_dtmf_ = offered_dtmf;
+  pending.offered_dtmf = offered_dtmf;
 #endif
   pending.cseq = cseq;
   pending.session_version = session_version;

@@ -10,13 +10,12 @@ namespace esphome::voip_stack {
 inline bool capture_audio_offer(const std::string &sdp, const AudioFormatList &tx,
                                 const AudioFormatList &rx, size_t send_budget,
                                 AudioFormatList *offered_tx, RtpAudioPayloads *offered_rx,
-                                uint8_t *offered_dtmf_clocks = nullptr) {
+                                uint8_t *offered_dtmf_clocks = nullptr, DtmfPayloads *offered_dtmf = nullptr) {
   if (offered_tx == nullptr || offered_rx == nullptr) return false;
   AudioOfferAttributes attributes;
   if (!read_audio_offer_attributes(sdp, attributes) || attributes.section == std::string::npos ||
       attributes.port == 0) return false;
   RtpAudioPayloads mappings;
-  uint8_t clocks = 0;
   SdpLines lines(sdp);
   std::string line;
   bool audio = false;
@@ -29,7 +28,6 @@ inline bool capture_audio_offer(const std::string &sdp, const AudioFormatList &t
     if (!attributes.offered(static_cast<uint8_t>(declared))) continue;
     DtmfFormat event;
     if (dtmf_rtpmap(line, &event)) {
-      clocks |= 1U << dtmf_clock_index(event.clock);
       continue;
     }
     AudioFormat mapping;
@@ -82,9 +80,17 @@ inline bool capture_audio_offer(const std::string &sdp, const AudioFormatList &t
         !receives.add(mapping.payload_type, candidate)) return false;
   }
   if ((tx.count != 0 && sends.count == 0) || (rx.count != 0 && receives.count == 0)) return false;
+  const auto next_media = sdp.find("\r\nm=", attributes.section);
+  const std::string_view audio_section(sdp.data() + attributes.section,
+      (next_media == std::string::npos ? sdp.size() : next_media + 2) - attributes.section);
+  DtmfPayloads events;
+  if (!capture_dtmf_payloads(audio_section, attributes.payload_rank, &events)) return false;
+  for (uint8_t payload = 96; payload < 128; ++payload)
+    if (events.find_payload(payload).valid() && mappings.find(payload, nullptr)) return false;
   *offered_tx = sends;
   *offered_rx = receives;
-  if (offered_dtmf_clocks != nullptr) *offered_dtmf_clocks = clocks;
+  if (offered_dtmf_clocks != nullptr) *offered_dtmf_clocks = events.clocks();
+  if (offered_dtmf != nullptr) *offered_dtmf = events;
   return true;
 }
 

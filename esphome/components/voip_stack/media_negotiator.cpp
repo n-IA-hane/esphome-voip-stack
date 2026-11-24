@@ -106,13 +106,25 @@ bool negotiate_audio_contract(const std::string &sdp, uint32_t default_ip, bool 
         (selection.seen_mapping[events.payload_type] != 0 ||
          selection.received_payloads.find(events.payload_type, nullptr) ||
          (selection.selected_tx && selection.selected_tx_payload_type == events.payload_type))) return DtmfFormat{};
-    if (receive && remote_is_answer && events.valid()) {
-      events.payload_type = 120 + dtmf_clock_index(events.clock);
-      if (local.offered_rx.find(events.payload_type, nullptr)) return DtmfFormat{};
+    if (remote_is_answer && events.valid()) {
+      if (local.offered_dtmf == nullptr) return DtmfFormat{};
+      auto offered = local.offered_dtmf->select(events.clock, events.events);
+      if (receive && retained_call && local.retained_dtmf_rx != nullptr && local.retained_dtmf_rx->valid()) {
+        const auto retained_offer = local.offered_dtmf->find_payload(local.retained_dtmf_rx->payload_type);
+        if (retained_offer == *local.retained_dtmf_rx && retained_offer.clock == events.clock &&
+            (retained_offer.events & events.events) != 0) offered = retained_offer;
+      }
+      if (!offered.valid()) return DtmfFormat{};
+      // The answer owns our transmitter's PT. Our exact serialized offer owns
+      // the receive PT. Preserve the existing conservative event intersection.
+      events.events &= offered.events;
+      if (!events.valid()) return DtmfFormat{};
+      if (receive) events.payload_type = offered.payload_type;
+      if (receive && local.offered_rx.find(events.payload_type, nullptr)) return DtmfFormat{};
     }
     return events;
   };
-  // Contract P5/CC-4: each direction follows its actual RTP clock. G.722
+  // Each direction follows its actual RTP clock. G.722
   // decodes at 16 kHz but its audio and telephone-event timestamps use 8 kHz.
   const DtmfConfig dtmf_config{
       selection.selected_tx ? events_for(selection.selected_tx_format, false) : DtmfFormat{},

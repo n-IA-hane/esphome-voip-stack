@@ -74,6 +74,8 @@ def negotiated_fixture_source(code, *, sdp=False, video=False):
             declarations += declaration
             implementations += '\n' + body
     if sdp or video:
+        if 'DtmfPayloads local_offered_dtmf_' not in code:
+            declarations += '#ifdef USE_ESPHOME_VOIP_DTMF\nDtmfPayloads local_offered_dtmf_;\n#endif\n'
         # The legacy wire harness supplies the SIP dialog and platform edges.
         # Compile the production negotiation headers and use their real namespace.
         policy = '#include "esphome/components/voip_stack/sip_sdp_audio_negotiation.h"\n'

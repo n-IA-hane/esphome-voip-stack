@@ -398,8 +398,18 @@ std::string SipTransport::build_sdp_offer_() {
 #endif
   AudioFormatList offered_tx;
   RtpAudioPayloads offered_rx;
+#ifdef USE_ESPHOME_VOIP_DTMF
+  DtmfPayloads offered_dtmf;
+#endif
   if (!capture_audio_offer(sdp, this->offer_tx_formats_, this->offer_rx_formats_,
-                           this->udp_max_payload_, &offered_tx, &offered_rx)) return "";
+                           this->udp_max_payload_, &offered_tx, &offered_rx
+#ifdef USE_ESPHOME_VOIP_DTMF
+                           , &this->dtmf_offered_clocks_, &offered_dtmf
+#endif
+                           )) return "";
+#ifdef USE_ESPHOME_VOIP_DTMF
+  this->local_offered_dtmf_ = offered_dtmf;
+#endif
   this->local_offered_rx_payloads_ = offered_rx;
   return sdp;
 }
@@ -569,6 +579,10 @@ bool SipTransport::parse_remote_media_(const std::string &sdp, uint32_t default_
                              this->udp_max_payload_
 #ifdef USE_ESPHOME_VOIP_DTMF
                              , this->dtmf_offered_clocks_
+#endif
+                             , RTP_AUDIO_RECEIVE_PAYLOAD_BYTES
+#ifdef USE_ESPHOME_VOIP_DTMF
+                             , &this->local_offered_dtmf_, &retained.dtmf.rx
 #endif
   };
   const auto report_mapping = []([[maybe_unused]] uint8_t pt, [[maybe_unused]] const AudioFormat &fmt,

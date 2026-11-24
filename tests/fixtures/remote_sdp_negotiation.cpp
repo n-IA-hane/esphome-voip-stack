@@ -1,4 +1,5 @@
 #include "sip_sdp_audio_negotiation.h"
+#include "sip_sdp_audio_offer.h"
 #include "sip_sdp_video_selection.h"
 
 #include <cassert>
@@ -45,7 +46,15 @@ static void audio_section(const char *fixture_path) {
   formats.formats[0] = g722;
   RtpAudioPayloads previously_offered;
   assert(previously_offered.add(9, g722));
-  const LocalAudioOffer local{formats, formats, formats, previously_offered, 1200, 1};
+  const std::string local_sdp = "v=0\r\nc=IN IP4 192.0.2.1\r\nm=audio 40000 RTP/AVP 9 120\r\n"
+      "a=rtpmap:9 G722/8000/1\r\na=rtpmap:120 telephone-event/8000\r\na=fmtp:120 0-15\r\na=ptime:10\r\na=sendrecv\r\n";
+  AudioFormatList offered_tx;
+  DtmfPayloads offered_dtmf;
+  uint8_t offered_clocks = 0;
+  assert(capture_audio_offer(local_sdp, formats, formats, 1200, &offered_tx,
+                             &previously_offered, &offered_clocks, &offered_dtmf));
+  const LocalAudioOffer local{formats, formats, offered_tx, previously_offered, 1200,
+                              offered_clocks, RTP_AUDIO_RECEIVE_PAYLOAD_BYTES, &offered_dtmf};
   const SdpAudioMedia retained;
   SdpAudioMedia negotiated;
   DtmfConfig dtmf;

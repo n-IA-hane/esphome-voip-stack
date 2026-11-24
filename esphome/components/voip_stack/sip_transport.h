@@ -660,6 +660,9 @@ class SipTransport : public SipPhoneTransport {
     AudioFormatList offered_tx;
     RtpAudioPayloads offered_rx;
     uint8_t offered_dtmf_clocks{0};
+#ifdef USE_ESPHOME_VOIP_DTMF
+    DtmfPayloads offered_dtmf;
+#endif
     uint32_t cseq{0};
     uint32_t session_version{0};
     uint32_t response_deadline_ms{0};
@@ -676,6 +679,9 @@ class SipTransport : public SipPhoneTransport {
       this->offered_tx.count = 0;
       this->offered_rx.count = 0;
       this->offered_dtmf_clocks = 0;
+#ifdef USE_ESPHOME_VOIP_DTMF
+      this->offered_dtmf = {};
+#endif
       this->cseq = 0;
       this->session_version = 0;
       this->response_deadline_ms = 0;
@@ -801,6 +807,7 @@ class SipTransport : public SipPhoneTransport {
   // rolling back that proposal must not retire an unchanged DTMF event.
   std::atomic<uint32_t> dtmf_generation_{0};
   uint8_t dtmf_offered_clocks_{0};
+  DtmfPayloads local_offered_dtmf_;
   struct DtmfRequest { uint32_t epoch; uint16_t duration_ms; uint8_t event; };
   static constexpr size_t kDtmfQueueDepth = 8;
   QueueHandle_t dtmf_queue_{nullptr};
@@ -1051,6 +1058,7 @@ class SipTransport : public SipPhoneTransport {
 #endif
 #ifdef USE_ESPHOME_VOIP_DTMF
     uint8_t dtmf_offered_clocks_{0};
+    DtmfPayloads local_offered_dtmf_;
 #endif
     RtpAudioPayloads local_offered_rx_payloads_;
     AudioFormatList local_offered_tx_formats_;

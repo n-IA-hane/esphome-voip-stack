@@ -1,6 +1,9 @@
 #pragma once
 
 #include "sip_sdp_facts.h"
+#ifdef USE_ESPHOME_VOIP_DTMF
+#include "rtp_dtmf.h"
+#endif
 
 #include <algorithm>
 #include <cstdint>
@@ -20,6 +23,10 @@ struct LocalAudioOffer {
   uint8_t offered_dtmf_clocks;
 #endif
   size_t max_receive_payload{RTP_AUDIO_RECEIVE_PAYLOAD_BYTES};
+#ifdef USE_ESPHOME_VOIP_DTMF
+  const DtmfPayloads *offered_dtmf{nullptr};
+  const DtmfFormat *retained_dtmf_rx{nullptr};
+#endif
 };
 
 struct AudioOfferAttributes {

@@ -23,6 +23,41 @@ inline int dtmf_clock_index(uint32_t clock) {
   for (unsigned i = 0; i < 7; ++i) if (DTMF_CLOCKS[i] == clock) return i;
   return -1;
 }
+// The exact dynamic payload meanings and preferences of one serialized offer.
+// This value stays in the existing dialog/transaction snapshot; it owns no tasks.
+struct DtmfPayloads {
+  struct Entry { uint16_t events{0}; uint8_t clock_index{255}; uint8_t rank{255}; };
+  Entry entries[32]{};
+  bool add(const DtmfFormat &format, uint8_t rank = 0) {
+    const int index = dtmf_clock_index(format.clock);
+    if (index < 0 || !format.valid() || rank == 255) return false;
+    auto &entry = this->entries[format.payload_type - 96];
+    if (entry.clock_index != 255 && (entry.clock_index != index || entry.events != format.events)) return false;
+    entry = {format.events, static_cast<uint8_t>(index), rank};
+    return true;
+  }
+  DtmfFormat find_payload(uint8_t payload) const {
+    if (payload < 96 || payload > 127) return {};
+    const auto &entry = this->entries[payload - 96];
+    return entry.clock_index < 7 ? DtmfFormat{DTMF_CLOCKS[entry.clock_index], entry.events, payload} : DtmfFormat{};
+  }
+  DtmfFormat select(uint32_t clock, uint16_t events = 0xffff) const {
+    DtmfFormat selected; uint8_t rank = 255;
+    for (uint8_t index = 0; index < 32; ++index) {
+      const auto &entry = this->entries[index];
+      if (entry.clock_index < 7 && DTMF_CLOCKS[entry.clock_index] == clock && (entry.events & events) != 0 && entry.rank < rank) {
+        selected = {clock, entry.events, static_cast<uint8_t>(96 + index)}; rank = entry.rank;
+      }
+    }
+    return selected;
+  }
+  uint8_t clocks() const {
+    uint8_t result = 0;
+    for (const auto &entry : this->entries) if (entry.clock_index < 7) result |= 1U << entry.clock_index;
+    return result;
+  }
+};
+static_assert(sizeof(DtmfPayloads) == 128);
 inline int dtmf_event(char digit) {
   if (digit >= '0' && digit <= '9') return digit - '0';
   if (digit == '*') return 10;
@@ -118,6 +153,30 @@ inline DtmfFormat negotiate_dtmf(std::string_view media, const uint8_t *ranks,
     start = end + 1;
   }
   return best;
+}
+
+// Capture every unambiguous dynamic mapping atomically. Reuse the normal SDP
+// event parser, including fmtp validation and the missing-fmtp compatibility rule.
+inline bool capture_dtmf_payloads(std::string_view media, const uint8_t *ranks, DtmfPayloads *out) {
+  if (out == nullptr) return false;
+  DtmfPayloads captured;
+  uint8_t only_payload[128];std::fill(only_payload,only_payload+128,255);
+  for (size_t start = 0; start < media.size();) {
+    const auto end = media.find('\n', start);
+    const auto line = dtmf_trim(media.substr(start, end - start));
+    DtmfFormat mapping;
+    if (dtmf_rtpmap(line, &mapping) && ranks[mapping.payload_type] != 255) {
+      only_payload[mapping.payload_type] = ranks[mapping.payload_type];
+      const auto selected = negotiate_dtmf(media, only_payload, mapping.clock, false, 0);
+      only_payload[mapping.payload_type] = 255;
+      if (!selected.valid() || selected.clock != mapping.clock ||
+          !captured.add(selected, ranks[mapping.payload_type])) return false;
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  *out = captured;
+  return true;
 }
 
 class DtmfSender {

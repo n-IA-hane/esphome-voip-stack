@@ -1,4 +1,5 @@
 #include "sip_transport_internal.h"
+#include "sip_sdp_audio_offer.h"
 
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_SIP_TRANSPORT)
 
@@ -430,6 +431,16 @@ bool SipTransport::handle_reinvite_(const std::string &message,
     // DSP owners running until the ACK supplies an admissible answer.
     const auto offer = this->build_negotiated_sdp_answer_(old_media, this->sdp_session_version_ + 1);
     if (offer.empty()) return this->send_stateless_response_(message, src, 488, "Not Acceptable Here");
+#ifdef USE_ESPHOME_VOIP_DTMF
+    AudioFormatList offered_tx;
+    RtpAudioPayloads offered_rx;
+    DtmfPayloads offered_dtmf;
+    uint8_t offered_clocks = 0;
+    if (!capture_audio_offer(offer, this->offer_tx_formats_, this->offer_rx_formats_,
+                             this->udp_max_payload_, &offered_tx, &offered_rx,
+                             &offered_clocks, &offered_dtmf))
+      return this->send_stateless_response_(message, src, 488, "Not Acceptable Here");
+#endif
     this->last_invite_via_ = header_values(message, "Via");
     this->last_invite_from_ = incoming_from;
     this->last_invite_to_ = incoming_to;
@@ -442,6 +453,10 @@ bool SipTransport::handle_reinvite_(const std::string &message,
       restore_old_dialog_metadata();
       return false;
     }
+#ifdef USE_ESPHOME_VOIP_DTMF
+    this->local_offered_dtmf_ = offered_dtmf;
+    this->dtmf_offered_clocks_ = offered_clocks;
+#endif
     this->local_offered_rx_payloads_ = old_media.rx_payloads;
     this->local_offered_tx_formats_.count = old_media.tx.is_valid() ? 1 : 0;
     this->local_offered_tx_formats_.formats[0] = old_media.tx;
