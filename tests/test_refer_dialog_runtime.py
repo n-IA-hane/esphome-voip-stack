@@ -77,6 +77,7 @@ def negotiated_fixture_source(code, *, sdp=False, video=False):
         # The legacy wire harness supplies the SIP dialog and platform edges.
         # Compile the production negotiation headers and use their real namespace.
         policy = '#include "esphome/components/voip_stack/sip_sdp_audio_negotiation.h"\n'
+        policy += '#include "esphome/components/voip_stack/sip_sdp_audio_offer.h"\n'
         policy += '#ifdef USE_ESPHOME_VOIP_STACK_VIDEO\n#include "esphome/components/voip_stack/sip_sdp_video_selection.h"\n#endif\n'
         implementations += '\n#include "esphome/components/voip_stack/media_negotiator.cpp"\n'
         code = code.replace('using namespace esphome::voip_stack;', policy + 'using namespace esphome::voip_stack;', 1)

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = Path(os.environ.get("TRANSPORT_LIFECYCLE_SOURCE", ROOT / "esphome/components/voip_stack"))
 
 
-def build_transport_owner(tmp_path_factory, fixture="transport_owner_lifecycle.cpp", video=False, registration=False, opus=False, speaker=False, dtmf=False):
+def build_transport_owner(tmp_path_factory, fixture="transport_owner_lifecycle.cpp", video=False, registration=False, opus=False, speaker=False, dtmf=False, g722=False):
     tmp_path = tmp_path_factory.mktemp("transport-lifecycle")
     sdk = (ROOT / "tests/fixtures/video_host_sdk.h").read_text()
     sdk = sdk.replace("struct HostTask { std::thread thread; };", """
@@ -94,6 +94,13 @@ inline BaseType_t xQueueReceive(QueueHandle_t queue,void *value,unsigned){std::l
         units.extend(SOURCE / name for name in ("sip_registration.cpp", "sip_registration_transport.cpp"))
     if dtmf:
         units.append(SOURCE / "sip_dtmf.cpp")
+    g722_flags = []
+    if g722:
+        vendor = ROOT / "tests/fixtures/g722_esp_audio_codec_2_5_0"
+        adapter = tmp_path / "g722_adapter.cpp"
+        adapter.write_text('#define main unused_g722_reference_main\n#include "' + str(vendor / 'runtime.cpp') + '"\n')
+        units.extend((SOURCE / "g722_rtp_codec.cpp", adapter))
+        g722_flags = ["-DUSE_ESPHOME_VOIP_STACK_G722", "-I", str(vendor)]
     opus_flags = []
     if opus:
         units.append(SOURCE / "opus_rtp_codec.cpp")
@@ -116,12 +123,14 @@ inline BaseType_t xQueueReceive(QueueHandle_t queue,void *value,unsigned){std::l
         "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie", "-DUSE_ESP32",
         "-DUSE_ESPHOME_VOIP_SIP_TRANSPORT", "-DUSE_ESPHOME_VOIP_STACK_PCM",
         *speaker_flags,
+        *g722_flags,
         *(["-DUSE_ESPHOME_VOIP_STACK_OPUS"] if opus else []),
         *(["-DUSE_ESPHOME_VOIP_REGISTRATION"] if registration else []),
         *(["-DUSE_ESPHOME_VOIP_DTMF"] if dtmf else []),
         *(["-DUSE_ESPHOME_VOIP_STACK_VIDEO", "-DUSE_ESPHOME_VOIP_STACK_VIDEO_JPEG"] if video else []),
         "-I", str(tmp_path), "-I", str(ROOT), "-I", str(SOURCE),
-        str(ROOT / "tests/fixtures" / fixture), *map(str, units), *(["-lcrypto"] if registration else []), *opus_flags, "-o", str(binary),
+        str(ROOT / "tests/fixtures" / fixture), *map(str, units), *(["-lcrypto"] if registration else []),
+        *(["-lspandsp"] if g722 else []), *opus_flags, "-o", str(binary),
     ], capture_output=True, text=True, timeout=150)
     assert built.returncode == 0, built.stderr
     return binary

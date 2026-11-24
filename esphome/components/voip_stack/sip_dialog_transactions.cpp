@@ -307,6 +307,12 @@ void SipTransport::pump_udp_retransmits_unlocked_() {
         this->terminate_after_invite_ack_ = false;
         ack_timed_out = true;
         timed_out_call_id = this->call_id_;
+      } else if (this->completed_invite_.status >= 300) {
+        // Timer H retires this server transaction even when its dialog and
+        // media already ended. Wake the application cleanup barrier once.
+        this->emit_dialog_status_(SipSignalType::TERMINAL_COMPLETE, 408,
+                                  this->completed_invite_.call_id, "ack_timeout",
+                                  this->terminal_transaction_pending_locked_());
       }
     } else if ((this->completed_invite_.udp ||
                 this->completed_invite_.status < 300) &&

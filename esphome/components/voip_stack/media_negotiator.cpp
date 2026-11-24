@@ -69,7 +69,8 @@ bool negotiate_audio_contract(const std::string &sdp, uint32_t default_ip, bool 
   for (uint8_t pt = 9; pt <= 11; ++pt)
     if (attributes.offered(pt) && selection.seen_mapping[pt] == 0 &&
         !consider_mapping(static_rtp_audio_format(pt), pt)) return false;
-  const auto result = selection.finish(local, attributes, retained, retained_call, media_ip, zero_connection, media);
+  const auto result = selection.finish(local, attributes, retained, retained_call, media_ip, zero_connection, media,
+                                       remote_is_answer);
   if (result == AudioSelectionResult::INCOMPATIBLE) {
     if (trace.incompatible != nullptr)
       trace.incompatible(trace.context, sdp.size(), attributes.port, media_ip, selection.selected_tx, selection.selected_rx);

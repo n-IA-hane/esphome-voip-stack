@@ -50,6 +50,15 @@ inline bool capture_audio_offer(const std::string &sdp, const AudioFormatList &t
   }
   AudioFormatList sends;
   sends.count = 0;
+  AudioFormatList bounded_rx;
+  bounded_rx.count = 0;
+  for (uint8_t i = 0; i < rx.count; ++i) {
+    const auto &candidate = rx.formats[i];
+    // This maximum is from our own offer, so it bounds our receiver rather
+    // than the encoder whose policy comes from the remote answer.
+    if (!attributes.has_maxptime || candidate.frame_ms <= attributes.maxptime)
+      bounded_rx.formats[bounded_rx.count++] = candidate;
+  }
   RtpAudioPayloads receives;
   for (uint8_t i = 0; i < tx.count; ++i) {
     const auto &candidate = tx.formats[i];
@@ -63,7 +72,13 @@ inline bool capture_audio_offer(const std::string &sdp, const AudioFormatList &t
   for (uint8_t i = 0; i < mappings.count; ++i) {
     const auto &mapping = mappings.entries[i];
     AudioFormat candidate;
-    if (audio_format_list_match_rtp_mapping(rx, mapping.format, 0, &candidate, RTP_AUDIO_RECEIVE_PAYLOAD_BYTES) &&
+    // This is our own serialized SDP: ptime describes the packets we prefer
+    // to receive. Keep its executable preference with the offered mapping.
+    const bool admitted = audio_format_list_match_rtp_mapping(
+        bounded_rx, mapping.format, attributes.ptime, &candidate, RTP_AUDIO_RECEIVE_PAYLOAD_BYTES) ||
+        (attributes.ptime != 0 && audio_format_list_match_rtp_mapping(
+            bounded_rx, mapping.format, 0, &candidate, RTP_AUDIO_RECEIVE_PAYLOAD_BYTES));
+    if (admitted &&
         !receives.add(mapping.payload_type, candidate)) return false;
   }
   if ((tx.count != 0 && sends.count == 0) || (rx.count != 0 && receives.count == 0)) return false;

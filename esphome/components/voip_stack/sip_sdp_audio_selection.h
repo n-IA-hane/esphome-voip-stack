@@ -83,12 +83,18 @@ struct AudioPayloadSelection {
                           (preferred_tx_ptime != 0 &&
                            match_tx(local.tx, fmt, 0, attributes, local.max_payload, &local_tx)));
     // The peer's ptime is its receive preference, hence our TX duration.
-    // An incoming offer follows the first compatible local RX preference.
-    // A mapping absent from that offer must not impose its packet duration.
-    // An answer retains the receive preference from our already sent offer.
-    const uint16_t preferred_rx_ptime = policy.remote_is_answer
-                                           ? preferred_audio_ptime(local.rx, local.max_receive_payload)
-                                           : 0;
+    // An answer follows the executable receive preference captured from our
+    // actual offer, rather than recomputing it from the configured catalog.
+    uint16_t preferred_rx_ptime = 0;
+    if (policy.remote_is_answer) {
+      for (uint8_t i = 0; i < local.offered_rx.count; ++i) {
+        const auto &entry = local.offered_rx.entries[i];
+        if (audio_formats_share_rtp_mapping(entry.format, fmt)) {
+          preferred_rx_ptime = entry.format.frame_ms;
+          break;
+        }
+      }
+    }
     bool rx_ok = peer_can_send &&
                  (audio_format_list_match_rtp_mapping(local.rx, fmt, preferred_rx_ptime, &local_rx, local.max_receive_payload) ||
                   (preferred_rx_ptime != 0 &&
@@ -148,7 +154,7 @@ struct AudioPayloadSelection {
 
   AudioSelectionResult finish(const LocalAudioOffer &local, const AudioOfferAttributes &attributes,
                               const SdpAudioMedia &retained, bool retained_call, uint32_t media_ip,
-                              bool zero_connection, SdpAudioMedia &media) {
+                              bool zero_connection, SdpAudioMedia &media, bool remote_is_answer = false) {
     const bool want_tx = local.tx.count != 0 && !zero_connection && (attributes.flow & 0x02) != 0;
     const bool want_rx = local.rx.count != 0 && !zero_connection && (attributes.flow & 0x01) != 0;
     if (retained_call) {
@@ -167,6 +173,22 @@ struct AudioPayloadSelection {
         return format.is_valid() && seen_mapping[pt] != 0 &&
                audio_formats_share_rtp_mapping(format, unpack_audio_format(seen_mapping[pt]));
       };
+      if (want_rx && !remote_is_answer && retained_mapping_offered(retained.rx, retained.rx_pt) &&
+          audio_format_list_contains(local.rx, retained.rx) &&
+          audio_format_rtp_encoding(retained.rx, local.max_receive_payload) != nullptr) {
+        AudioFormat prepared, offered;
+        // A remote reoffer changes its own receive preference, hence our TX.
+        // Keep our complete admitted RX contract when that exact PT/mapping
+        // is still eligible. The prepared table and resource owner below
+        // continue to reject new meanings, aliases or DSP geometry changes.
+        if (retained.rx_payloads.find(retained.rx_pt, &prepared) && prepared == retained.rx &&
+            received_payloads.find(retained.rx_pt, &offered) &&
+            audio_formats_share_rtp_mapping(offered, retained.rx)) {
+          selected_rx_format = retained.rx;
+          selected_rx_payload_type = retained.rx_pt;
+          selected_rx = true;
+        }
+      }
       // A suspended direction need not appear in a one-way offer. Keep exactly
       // its admitted geometry/PT instead of inventing or migrating a mapping.
       if (!want_tx && !want_rx && !retained_mapping_offered(retained.tx, retained.tx_pt) &&

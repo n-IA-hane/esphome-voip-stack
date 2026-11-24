@@ -4,6 +4,7 @@
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_SIP_TRANSPORT)
 
 #include "sip_sdp_audio_negotiation.h"
+#include "sip_sdp_audio_offer.h"
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO
 #include "sip_sdp_video_selection.h"
 #endif
@@ -395,6 +396,11 @@ std::string SipTransport::build_sdp_offer_() {
     this->video_imageattr_state_ &= ~IMAGEATTR_OFFERED;
 #endif
 #endif
+  AudioFormatList offered_tx;
+  RtpAudioPayloads offered_rx;
+  if (!capture_audio_offer(sdp, this->offer_tx_formats_, this->offer_rx_formats_,
+                           this->udp_max_payload_, &offered_tx, &offered_rx)) return "";
+  this->local_offered_rx_payloads_ = offered_rx;
   return sdp;
 }
 
