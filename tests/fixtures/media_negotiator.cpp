@@ -1,4 +1,5 @@
 #include "media_negotiator.h"
+#include "sip_sdp_audio_offer.h"
 
 #include <cassert>
 #include <string>
@@ -102,7 +103,24 @@ int main(int argc, char **argv) {
   RtpAudioPayloads sent_rx;
   assert(sent_rx.add(96, rx.formats[0]));
   assert(sent_rx.add(97, rx.formats[2]));
-  const LocalAudioOffer local{tx, rx, tx, sent_rx, 1200, 0x7f};
+  // Answer negotiation consumes the exact sent offer, including event payloads.
+  // A clock bitmap alone cannot describe directional RTP payload numbers.
+  const std::string sent_offer =
+      "v=0\r\nc=IN IP4 192.0.2.1\r\nm=audio 40000 RTP/AVP 96 97 120 122 126\r\n"
+      "a=rtpmap:96 L16/48000/1\r\na=rtpmap:97 L16/16000/1\r\n"
+      "a=rtpmap:120 telephone-event/8000\r\na=fmtp:120 0-15\r\n"
+      "a=rtpmap:122 telephone-event/16000\r\na=fmtp:122 0-15\r\n"
+      "a=rtpmap:126 telephone-event/48000\r\na=fmtp:126 0-15\r\n"
+      "a=ptime:10\r\na=maxptime:20\r\na=sendrecv\r\n";
+  AudioFormatList captured_tx;
+  RtpAudioPayloads captured_rx;
+  DtmfPayloads offered_events;
+  uint8_t offered_clocks = 0;
+  assert(capture_audio_offer(sent_offer, tx, rx, 1200, &captured_tx, &captured_rx,
+                             &offered_clocks, &offered_events));
+  assert(captured_rx == sent_rx);
+  const LocalAudioOffer local{tx, rx, tx, sent_rx, 1200, offered_clocks,
+                             RTP_AUDIO_RECEIVE_PAYLOAD_BYTES, &offered_events};
   const bool answer = mode == "answer" || mode == "directional-dtmf-answer";
   const bool directional_dtmf = mode.rfind("directional-dtmf", 0) == 0;
   std::string remote =

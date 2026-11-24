@@ -95,8 +95,15 @@ int main(int argc,char **argv){
   assert(s.convert_received_pcm(decoded_pcm_format(g10),input,sizeof(input),output,sizeof(output))==sizeof(output));
   // Admission of an unoffered mapping belongs to the actual offer/answer
   // negotiator, before the media resource preparation below.
+  // The socket used port0 only to reserve an isolated host port. Publish its
+  // real binding before building SDP: m=audio0 means a rejected media stream.
+  sockaddr_in bound{};socklen_t bound_bytes=sizeof(bound);
+  assert(getsockname(s.rtp_socket_,reinterpret_cast<sockaddr*>(&bound),&bound_bytes)==0);
+  s.rtp_port_=ntohs(bound.sin_port);assert(s.rtp_port_!=0);
   const auto local_offer=s.build_sdp_offer_();
-  assert(!local_offer.empty());const auto before_tx=s.tx,before_rx=s.rx;const auto before_payloads=s.accepted;
+  assert(!local_offer.empty());
+  assert(local_offer.find("m=audio "+std::to_string(s.rtp_port_)+" RTP/AVP ")!=std::string::npos);
+  const auto before_tx=s.tx,before_rx=s.rx;const auto before_payloads=s.accepted;
   const std::string unoffered="v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio 40002 RTP/AVP 110\r\n"
    "a=rtpmap:110 L16/12000/1\r\na=ptime:10\r\na=sendrecv\r\n";
   assert(!s.learn_remote_rtp_from_sdp_(unoffered,0,true));
