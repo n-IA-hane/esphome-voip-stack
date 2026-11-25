@@ -453,10 +453,14 @@ bool SipTransport::set_account(const SipAccountConfig& config, AccountCommit com
   if (this->account_in_use_(i) || (i >= 0 && !this->registration_subscriptions_retired_(i))) return false;
   // Retire a registered binding explicitly before replacing credentials or
   // registrar. A successful unregister leaves the same slot reusable.
-  if (i >= 0 && this->registration_.account(i).bound) return false;
-  if (i >= 0 && this->registration_.account(i).state != RegistrationState::DISABLED &&
-      this->registration_.account(i).state != RegistrationState::FAILED)
-    return false;
+  if (i >= 0) {
+    const auto &account = this->registration_.account(i);
+    if (account.bound || account.pending || account.resolving) return false;
+    // An unbound RETRY is only a scheduled future attempt. Its generation can
+    // be retired below, including queued TCP/DNS state, after persistence has
+    // accepted the replacement. Do not require a FAILED state which ordinary
+    // authentication rejection no longer enters.
+  }
   if (i < 0) {
     size_t occupied = 0;
     for (size_t j = 0; j < SipRegistration::CAPACITY; ++j)
