@@ -433,6 +433,7 @@ void SipTransport::retire_registration_flow_(size_t index) {
   LockGuard send_lock(this->tcp_send_mutex_);
   flow.connect_requested.store(false, std::memory_order_release);
   flow.close_requested.store(true, std::memory_order_release);
+  flow.clear_tx();
   LockGuard pending_lock(this->tcp_tx_pending_mutex_);
   flow.pending.clear();
 }

@@ -88,6 +88,7 @@ void SipTransport::request_tcp_client_close_() {
 
 void SipTransport::close_tcp_flow_(SipTcpFlow &flow) {
   LockGuard send_lock(this->tcp_send_mutex_);
+  flow.clear_tx();
   const int socket = flow.socket.exchange(-1, std::memory_order_acq_rel);
   flow.close_requested.store(false, std::memory_order_release);
   flow.peer_ip.store(0, std::memory_order_release);
@@ -498,24 +499,87 @@ bool SipTransport::send_sip_tcp_record_(const std::string &message, int socket) 
 
 bool SipTransport::send_sip_tcp_record_(const char *data, size_t size,
                                         int socket) {
-  // Caller owns tcp_send_mutex_. Keep this primitive allocation-free so the
-  // SIP task can flush the one queued record atomically when connect finishes.
-  if (size == 0 || socket < 0) return false;
-  size_t sent_total = 0;
-  while (sent_total < size) {
-    const int sent = send(socket, data + sent_total, size - sent_total, 0);
+  // Caller owns tcp_send_mutex_. The fast path remains allocation-free; only
+  // backpressure retains bytes in the existing flow owner. Append whole later
+  // records after the unfinished record, never interleave their bytes.
+  if (size == 0 || size > SipTcpFlow::TX_PENDING_LIMIT || socket < 0) return false;
+  auto *flow = this->tcp_flow_for_socket_(socket);
+  if (flow != nullptr && !flow->tx_pending.empty()) {
+    if (!this->flush_tcp_tx_locked_(*flow)) return false;
+    if (!flow->tx_pending.empty()) {
+      const size_t remaining = flow->tx_pending.size() - flow->tx_offset;
+      if (size > SipTcpFlow::TX_PENDING_LIMIT - remaining) {
+        ESP_LOGW(TAG, "SIP TCP pending write budget exhausted");
+        return false;
+      }
+      if (flow->tx_offset != 0) {
+        flow->tx_pending.erase(0, flow->tx_offset);
+        flow->tx_offset = 0;
+      }
+      flow->tx_pending.append(data, size);
+      this->wake_sip_task_();
+      return true;
+    }
+  }
+  size_t offset = 0;
+  if (!this->write_sip_tcp_record_(data, size, &offset, socket)) return false;
+  if (offset == size) return true;
+  if (flow == nullptr) {
+    // Every production signaling socket has a flow owner. An unowned stream
+    // cannot retain a partial record safely.
+    if (offset != 0) shutdown(socket, SHUT_RDWR);
+    return false;
+  }
+  flow->tx_pending.reserve(SipTcpFlow::TX_PENDING_LIMIT);
+  flow->tx_pending.assign(data + offset, size - offset);
+  flow->tx_offset = 0;
+  uint32_t deadline = millis() + SIP_TRANSACTION_TIMEOUT_MS;
+  flow->tx_deadline.store(deadline != 0 ? deadline : 1, std::memory_order_release);
+  this->wake_sip_task_();
+  return true;
+}
+
+bool SipTransport::write_sip_tcp_record_(const char *data, size_t size,
+                                         size_t *offset, int socket) {
+  while (*offset < size) {
+    const int sent = send(socket, data + *offset, size - *offset, 0);
     if (sent <= 0) {
       const int err = errno;
+      if (sent < 0 && err == EINTR) continue;
+      if (sent < 0 && (err == EAGAIN || err == EWOULDBLOCK)) return true;
       ESP_LOGW(TAG, "SIP TCP TX failed: %s (%d: %s)", socket_errno_name(err), err, socket_errno_text(err));
-      // A partial SIP record cannot be resumed by a later caller. Closing the
-      // stream lets the SIP task perform one coherent dialog teardown.
       shutdown(socket, SHUT_RDWR);
       return false;
     }
-    sent_total += static_cast<size_t>(sent);
+    *offset += static_cast<size_t>(sent);
   }
-  ESP_LOGI(TAG, "SIP TCP TX %u bytes", (unsigned) size);
   return true;
+}
+
+bool SipTransport::flush_tcp_tx_locked_(SipTcpFlow &flow) {
+  if (flow.tx_pending.empty()) return true;
+  const int socket = flow.socket.load(std::memory_order_acquire);
+  const uint32_t deadline = flow.tx_deadline.load(std::memory_order_acquire);
+  if (socket < 0 || (deadline != 0 && time_reached(millis(), deadline))) {
+    ESP_LOGW(TAG, "SIP TCP pending write expired");
+    if (socket >= 0) shutdown(socket, SHUT_RDWR);
+    flow.clear_tx();
+    return false;
+  }
+  if (!this->write_sip_tcp_record_(flow.tx_pending.data(), flow.tx_pending.size(),
+                                  &flow.tx_offset, socket)) {
+    flow.clear_tx();
+    return false;
+  }
+  if (flow.tx_offset == flow.tx_pending.size()) flow.clear_tx();
+  return true;
+}
+
+bool SipTransport::pump_tcp_tx_(SipTcpFlow &flow, bool writable) {
+  LockGuard send_lock(this->tcp_send_mutex_);
+  const uint32_t deadline = flow.tx_deadline.load(std::memory_order_acquire);
+  if (deadline == 0 || (!writable && !time_reached(millis(), deadline))) return true;
+  return this->flush_tcp_tx_locked_(flow);
 }
 
 void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {

@@ -71,6 +71,8 @@ template<class T>void reset_string(T&s){s.clear();}
         'void SipTransport::clear_bye_transaction_(', 'bool SipTransport::defer_bye_until_uas_ack_locked_(', 'bool SipTransport::terminal_transaction_pending_locked_(',
         'bool SipTransport::send_sip_bytes_(', 'bool SipTransport::send_sip_tcp_bytes_(',
         'bool SipTransport::send_sip_tcp_record_(const char', 'void SipTransport::close_tcp_flow_(',
+        'bool SipTransport::write_sip_tcp_record_(', 'bool SipTransport::flush_tcp_tx_locked_(',
+        'bool SipTransport::pump_tcp_tx_(', 'void SipTransport::retire_completed_invite_ack_(',
         'SipTransport::SipTcpFlow *SipTransport::tcp_flow_for_socket_(',
         'void SipTransport::handle_sip_stream_(',
     ]

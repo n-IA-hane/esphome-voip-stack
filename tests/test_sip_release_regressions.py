@@ -33,10 +33,12 @@ def release_regressions(tmp_path_factory):
     units.extend(sorted(component.glob("sip_dialog_*.cpp")))
     units.extend(unit for unit in transport_units(component) if unit not in units)
     binary = folder / "regressions"
+    resume = "pump_tcp_tx_" in (component / "sip_transport.h").read_text()
     subprocess.run([
         "g++", "-std=c++17", "-O1", "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
         "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-no-pie", "-DUSE_ESP32",
         "-DUSE_ESPHOME_VOIP_SIP_TRANSPORT", "-DUSE_ESPHOME_VOIP_STACK_PCM", "-DVOIP_HOST_RTP_WORKER", "-pthread",
+        "-Wl,--wrap=send", *(["-DVOIP_HAS_TCP_TX_RESUME"] if resume else []),
         "-I", str(folder), "-I", str(fixtures), "-I", str(production), "-I", str(component),
         str(fixtures / "sip_release_regressions.cpp"), *map(str, units), "-o", str(binary),
     ], check=True)
@@ -51,3 +53,8 @@ def release_regressions(tmp_path_factory):
 ])
 def test_transaction_release_regressions(release_regressions, transport, mode):
     subprocess.run([release_regressions, mode, transport], check=True, timeout=5)
+
+
+@pytest.mark.parametrize("mode", ["tcp-eagain", "tcp-partial", "tcp-deadline", "tcp-hard-error"])
+def test_tcp_release_regressions(release_regressions, mode):
+    subprocess.run([release_regressions, mode, "tcp"], check=True, timeout=5)

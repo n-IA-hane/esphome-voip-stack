@@ -57,7 +57,10 @@ void SipTransport::sip_task_() {
          ) {
       if (flow == nullptr) continue;
       const int socket = flow->socket.load(std::memory_order_acquire);
-      if (socket >= 0) { FD_SET(socket, &readfds); max_fd = std::max(max_fd, socket); }
+      if (socket >= 0) {
+        FD_SET(socket, &readfds); max_fd = std::max(max_fd, socket);
+        if (flow->tx_deadline.load(std::memory_order_acquire) != 0) FD_SET(socket, &writefds);
+      }
       if (flow->connecting_socket >= 0) {
         FD_SET(flow->connecting_socket, &writefds);
         max_fd = std::max(max_fd, flow->connecting_socket);
@@ -78,12 +81,16 @@ void SipTransport::sip_task_() {
          std::array<SipTcpFlow *, 2>{&this->tcp_flow_, this->refer_dialog_ ? &this->refer_dialog_->tcp_flow_ : nullptr}
 #endif
          ) {
-      if (flow == nullptr || flow->connecting_socket < 0) continue;
-      const uint32_t now = millis();
-      const uint32_t remaining = time_reached(now, flow->connect_deadline) ? 0 : flow->connect_deadline - now;
-      if (!have_timeout || remaining < timeout_ms) timeout_ms = remaining;
-      have_timeout = true;
-      timeout_ptr = &timeout;
+      if (flow == nullptr) continue;
+      for (uint32_t deadline : {flow->connecting_socket >= 0 ? flow->connect_deadline : 0,
+                                flow->tx_deadline.load(std::memory_order_acquire)}) {
+        if (deadline == 0) continue;
+        const uint32_t now = millis();
+        const uint32_t remaining = time_reached(now, deadline) ? 0 : deadline - now;
+        if (!have_timeout || remaining < timeout_ms) timeout_ms = remaining;
+        have_timeout = true;
+        timeout_ptr = &timeout;
+      }
     }
     {
       const uint32_t now = millis();
@@ -227,6 +234,15 @@ void SipTransport::sip_task_() {
       if (flow != nullptr && flow->connecting_socket >= 0 && time_reached(millis(), flow->connect_deadline)) {
         this->fail_tcp_flow_(*flow, ETIMEDOUT);
         connect_expired = true;
+        continue;
+      }
+      if (flow != nullptr) {
+        const int socket = flow->socket.load(std::memory_order_acquire);
+        const bool writable = ready > 0 && socket >= 0 && FD_ISSET(socket, &writefds);
+        if (!this->pump_tcp_tx_(*flow, writable)) {
+          this->handle_tcp_peer_loss_(flow);
+          connect_expired = true;
+        }
       }
     }
     if (connect_expired) continue;

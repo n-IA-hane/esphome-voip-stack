@@ -17,6 +17,19 @@ namespace fixture {
 using fixture::Wire;
 using namespace esphome::voip_stack;
 
+// Inject one partial write followed by EAGAIN while retaining real TCP bytes.
+// The ordinary pressure scenario below fills the actual kernel send buffer.
+static int partial_socket = -1;
+static unsigned partial_calls = 0;
+extern "C" ssize_t __real_send(int, const void *, size_t, int);
+extern "C" ssize_t __wrap_send(int fd, const void *data, size_t size, int flags) {
+  if (fd == partial_socket) {
+    if (partial_calls++ != 0) { errno = EAGAIN; return -1; }
+    size = std::min<size_t>(size, 3);
+  }
+  return __real_send(fd, data, size, flags);
+}
+
 static unsigned completions(const Wire &wire) {
   return std::count(wire.events.begin(), wire.events.end(), SipSignalType::TERMINAL_COMPLETE);
 }
@@ -26,6 +39,65 @@ int main(int argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
   const std::string mode = argv[1];
   Wire wire(std::string(argv[2]) == "tcp");
+  if (mode.rfind("tcp-", 0) == 0) {
+    assert(wire.tcp);
+    const int fd = wire.phone.stream_fd();
+    const std::string first = "REGISTER sip:peer SIP/2.0\r\nContent-Length: 0\r\n\r\n";
+    const std::string second = "SUBSCRIBE sip:peer SIP/2.0\r\nContent-Length: 0\r\n\r\n";
+    if (mode == "tcp-hard-error") {
+      assert(shutdown(fd, SHUT_WR) == 0);
+      assert(!wire.phone.send_sip_tcp_record_(first, fd));
+      return 0;
+    }
+    size_t padding_size = 0;
+    if (mode == "tcp-partial") {
+      partial_socket = fd;
+    } else {
+      int small = 1024;
+      assert(setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &small, sizeof(small)) == 0);
+      const std::string padding(65536, 'x');
+      for (;;) {
+        const auto count = send(fd, padding.data(), padding.size(), MSG_NOSIGNAL);
+        if (count < 0) break;
+        padding_size += count;
+      }
+      assert(errno == EAGAIN || errno == EWOULDBLOCK);
+    }
+    assert(wire.phone.send_sip_tcp_record_(first, fd));
+#ifdef VOIP_HAS_TCP_TX_RESUME
+    assert(!wire.phone.tcp_flow_.tx_pending.empty());
+    const uint32_t deadline = wire.phone.tcp_flow_.tx_deadline;
+    assert(wire.phone.send_sip_tcp_record_(second, fd));
+    assert(wire.phone.tcp_flow_.tx_deadline == deadline);
+    if (mode == "tcp-deadline") {
+      wire.phone.tcp_flow_.tx_deadline = 1;
+      assert(!wire.phone.pump_tcp_tx_(wire.phone.tcp_flow_, false));
+      assert(wire.phone.tcp_flow_.tx_pending.empty());
+      assert(send(fd, "x", 1, MSG_NOSIGNAL) < 0 && errno == EPIPE);
+      return 0;
+    }
+    assert(!wire.phone.send_sip_tcp_record_(std::string(8193, 'y'), fd));
+    partial_socket = -1;
+    std::string observed;
+    const size_t expected_size = padding_size + first.size() + second.size();
+    for (unsigned i = 0; i < 2000 && observed.size() < expected_size; ++i) {
+      char bytes[8192];
+      const auto count = recv(wire.peer.fd, bytes, sizeof(bytes), MSG_DONTWAIT);
+      if (count > 0) observed.append(bytes, count);
+      pollfd writable{fd, POLLOUT, 0};
+      assert(wire.phone.pump_tcp_tx_(wire.phone.tcp_flow_, poll(&writable, 1, 0) > 0));
+      if (observed.size() < expected_size) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(observed == std::string(padding_size, 'x') + first + second);
+    assert(wire.phone.tcp_flow_.tx_pending.empty() && wire.phone.tcp_flow_.tx_deadline == 0);
+    const std::string bye = "BYE sip:peer SIP/2.0\r\nContent-Length: 0\r\n\r\n";
+    assert(wire.phone.send_sip_tcp_record_(bye, fd));
+    assert(wire.take() == bye);
+    return 0;
+#else
+    assert(false && "baseline has no owner for a retained TCP record");
+#endif
+  }
   const auto invite = wire.dial();
   if (mode == "timer100" || mode == "timer180" || mode == "timer-unanswered" ||
       mode == "cancel-proceeding") {

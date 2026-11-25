@@ -459,6 +459,9 @@ class SipTransport : public SipPhoneTransport {
   void promote_tcp_flow_(SipTcpFlow &flow);
   void fail_tcp_flow_(SipTcpFlow &flow, int error);
   SipTcpFlow *tcp_flow_for_socket_(int socket);
+  bool write_sip_tcp_record_(const char *data, size_t size, size_t *offset, int socket);
+  bool flush_tcp_tx_locked_(SipTcpFlow &flow);
+  bool pump_tcp_tx_(SipTcpFlow &flow, bool writable);
   void release_refer_dialog_();
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   std::array<SipTcpFlow *, 3 + SipRegistration::CAPACITY> signaling_flows_();
@@ -907,11 +910,23 @@ class SipTransport : public SipPhoneTransport {
 #endif
   };
   struct SipTcpFlow {
+    // Allocated only on TCP backpressure. Bound bytes retained across records;
+    // the oldest record owns the deadline, so a busy producer cannot extend it.
+    static constexpr size_t TX_PENDING_LIMIT = 8192;
     std::atomic<int> socket{-1};
     std::atomic<uint32_t> peer_ip{0}, target_ip{0};
     std::atomic<uint16_t> target_port{0};
     std::atomic<bool> connect_requested{false}, close_requested{false};
     SipSignalingString rx_buffer, pending;
+    SipSignalingString tx_pending;
+    size_t tx_offset{0};
+    std::atomic<uint32_t> tx_deadline{0};
+
+    void clear_tx() {
+      this->tx_pending.clear();
+      this->tx_offset = 0;
+      this->tx_deadline.store(0, std::memory_order_release);
+    }
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
     std::atomic<uint32_t> ingress_deadline{0};
     bool received_record{false};
@@ -931,6 +946,7 @@ class SipTransport : public SipPhoneTransport {
       exchange(target_port, other.target_port);
       exchange(connect_requested, other.connect_requested);
       exchange(close_requested, other.close_requested);
+      exchange(tx_deadline, other.tx_deadline);
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
       exchange(ingress_deadline, other.ingress_deadline);
 #endif
@@ -940,6 +956,8 @@ class SipTransport : public SipPhoneTransport {
 #endif
       swap(rx_buffer, other.rx_buffer);
       swap(pending, other.pending);
+      swap(tx_pending, other.tx_pending);
+      swap(tx_offset, other.tx_offset);
       swap(connecting_socket, other.connecting_socket);
       swap(connect_deadline, other.connect_deadline);
       swap(connecting_ip, other.connecting_ip);

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_partial_sip_record_failure_and_retry(tmp_path):
     source = read_production_source(ROOT / "esphome/components/voip_stack/sip_transport.cpp")
-    start = source.index("bool SipTransport::send_sip_tcp_record_(const char *data")
+    start = source.index("bool SipTransport::write_sip_tcp_record_(const char *data")
     method = source[start : source.index("\n}", start) + 2]
     cpp = tmp_path / "send.cpp"
     cpp.write_text(
@@ -28,7 +28,7 @@ const char* socket_errno_text(int){return "injected";}
 constexpr int SHUT_RDWR=2;int fail_at=0,calls=0,shutdowns=0;std::string wire;
 int send(int,const char*p,size_t n,int){if(++calls==fail_at){errno=EPIPE;return -1;}size_t count=n>3?3:n;wire.append(p,count);return count;}
 int shutdown(int,int){++shutdowns;return 0;}
-struct SipTransport{bool send_sip_tcp_record_(const char*,size_t,int);};
+struct SipTransport{bool write_sip_tcp_record_(const char*,size_t,size_t*,int);};
 """
         + method
         + r"""
@@ -36,9 +36,11 @@ int main(){
  const char message[]="INVITE sip:peer SIP/2.0\r\n\r\n";
  for(int failed_write:{1,2,3}){
   SipTransport transport;fail_at=failed_write;calls=shutdowns=0;wire.clear();
-  assert(!transport.send_sip_tcp_record_(message,sizeof(message)-1,5));assert(shutdowns==1);assert(wire.size()==size_t(failed_write-1)*3);
+  size_t offset=0;
+  assert(!transport.write_sip_tcp_record_(message,sizeof(message)-1,&offset,5));assert(shutdowns==1);assert(wire.size()==size_t(failed_write-1)*3);
   fail_at=0;calls=shutdowns=0;wire.clear();
-  assert(transport.send_sip_tcp_record_(message,sizeof(message)-1,6));assert(wire==message&&shutdowns==0);
+  offset=0;
+  assert(transport.write_sip_tcp_record_(message,sizeof(message)-1,&offset,6));assert(wire==message&&shutdowns==0);
  }
 }
 """

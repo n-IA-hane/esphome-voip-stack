@@ -467,7 +467,7 @@ uint16_t SipTransport::acknowledge_completed_invite_(
       (this->completed_invite_.status < 300 ||
        this->completed_invite_.branch.empty() || branch == this->completed_invite_.branch);
   if (!transaction_matches) return 0;
-  this->retire_completed_invite_ack_(this->completed_invite_.status);
+  this->retire_completed_invite_ack_(this->completed_invite_.status, "");
   if (this->completed_invite_.status < 300 &&
       this->terminate_after_invite_ack_) {
     this->terminate_after_invite_ack_ = false;
