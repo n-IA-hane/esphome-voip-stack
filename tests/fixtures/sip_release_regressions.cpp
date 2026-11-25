@@ -99,6 +99,22 @@ int main(int argc, char **argv) {
 #endif
   }
   const auto invite = wire.dial();
+  if (mode == "cancel-timeout" || mode == "cancel-late-provisional") {
+    wire.deliver(wire.reply(invite, 180, "A"));
+    assert(wire.phone.send_cancel("recovery"));
+    const auto cancel = wire.take();
+    assert(cancel.rfind("CANCEL ", 0) == 0);
+    wire.deliver(wire.reply(cancel, 200, "A"));
+    const uint32_t terminal_deadline = wire.phone.pending_invite_.deadline_ms;
+    if (mode == "cancel-late-provisional") wire.deliver(wire.reply(invite, 183, "A"));
+    assert(wire.phone.pending_invite_.deadline_ms == terminal_deadline);
+    wire.phone.pending_invite_.deadline_ms = 0;
+    wire.phone.pump_udp_retransmits_();
+    assert(wire.phone.pending_invite_.empty());
+    assert(!wire.phone.snapshot().terminal_transaction_pending && wire.phone.idle());
+    wire.reuse();
+    return 0;
+  }
   if (mode == "timer100" || mode == "timer180" || mode == "timer-unanswered" ||
       mode == "cancel-proceeding") {
     if (mode != "timer-unanswered") wire.deliver(wire.reply(invite, mode == "timer100" ? 100 : 180, "A"));

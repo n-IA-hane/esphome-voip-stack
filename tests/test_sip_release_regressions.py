@@ -47,7 +47,7 @@ def release_regressions(tmp_path_factory):
 
 @pytest.mark.parametrize("transport", ["udp", "tcp"])
 @pytest.mark.parametrize("mode", [
-    "timer100", "timer180", "timer-unanswered", "cancel-proceeding",
+    "timer100", "timer180", "timer-unanswered", "cancel-proceeding", "cancel-timeout", "cancel-late-provisional",
     "bye-before-ack-timeout", "bye-before-ack-delayed", "bye-after-ack",
     "rtp-old-newssrc", "rtp-clean-newssrc", "rtp-old-samessrc",
 ])
