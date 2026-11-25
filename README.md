@@ -581,6 +581,16 @@ This does not increase the 2047-byte SIP/UDP receive limit or enable IPv6
 reassembly. Larger messages still require an appropriate transport and message
 size; see [RFC 3261 section 18.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-18.1.1).
 
+### DTMF duration limits on ESP
+
+The firmware `send_dtmf` action uses the negotiated RFC 4733 clock. A request
+must be at least 40 ms and at most 8000 ms, and fit the event's 16-bit duration
+field. Consequently the accepted maximum is 8000 ms at 8 kHz, 4095 ms at
+16 kHz, or 1365 ms at 48 kHz. The firmware does not segment a longer press;
+`send_dtmf()` returns false before queuing any digit. `can_send_dtmf()` describes
+current call readiness and queue capacity, not support for every duration.
+HA's own DTMF relay behavior does not extend this firmware API contract.
+
 ## Phonebook and routing
 
 ```yaml

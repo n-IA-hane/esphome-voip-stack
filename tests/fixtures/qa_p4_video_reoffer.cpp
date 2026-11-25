@@ -1,6 +1,7 @@
 #include "sip_transport.h"
 #include "sip_message.h"
 #include "transport_host_sdk.h"
+#include "socket_reservations.h"
 #include <fstream>
 #include <poll.h>
 #include <vector>
@@ -25,16 +26,6 @@ struct Peer {
     assert(sendto(fd,data.data(),data.size(),0,reinterpret_cast<sockaddr*>(&dest),sizeof(dest))==static_cast<ssize_t>(data.size()));
   }
 };
-static uint16_t free_port(){Peer reservation;return reservation.port();}
-static uint16_t free_pair() {
-  for(uint16_t port=38000;port<45000;port+=2) {
-    int a=socket(AF_INET,SOCK_DGRAM,0),b=socket(AF_INET,SOCK_DGRAM,0);sockaddr_in address{};
-    address.sin_family=AF_INET;address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);address.sin_port=htons(port);
-    const bool first=bind(a,reinterpret_cast<sockaddr*>(&address),sizeof(address))==0;address.sin_port=htons(port+1);
-    const bool second=bind(b,reinterpret_cast<sockaddr*>(&address),sizeof(address))==0;close(a);close(b);if(first&&second)return port;
-  }
-  std::abort();
-}
 static VideoCapability capability(){VideoCapability cap;cap.encoding="JPEG";cap.payload_type=26;cap.width=320;cap.height=240;cap.max_fps=10;return cap;}
 struct Source : EncodedVideoSource {
   std::mutex mutex;EncodedVideoAccessUnitCallback callback=nullptr;void *context=nullptr;
@@ -126,7 +117,9 @@ static uint32_t picture(const Peer &peer,const Source &source){
 }
 template<class F>static void eventually(F predicate){for(unsigned i=0;i<200;++i){if(predicate())return;delay(5);}assert(predicate());}
 int main(int argc,char **argv){
-  assert(argc==3||argc==4);const std::string mode=argv[1];const bool captured=mode.rfind("captured-home",0)==0;assert(!captured||argc==4);Peer signaling,audio,video,routed(0,0x7f000002),contact;const auto local_sip=free_port(),local_audio=free_port(),local_video=free_pair();
+  assert(argc==3||argc==4);const std::string mode=argv[1];const bool captured=mode.rfind("captured-home",0)==0;assert(!captured||argc==4);Peer signaling,audio,video,routed(0,0x7f000002),contact;
+  ReservedPorts sip_reservation(ReservedPorts::Kind::SIP), audio_reservation(ReservedPorts::Kind::UDP), video_reservation(ReservedPorts::Kind::RTP_PAIR);
+  const auto local_sip=sip_reservation.port(),local_audio=audio_reservation.port(),local_video=video_reservation.port();
   const bool asymmetric=mode.rfind("catalog-",0)==0||captured;
   Source source(argv[2]);Sink sink;
   if(captured)source.advertised.width=source.advertised.height=800;
@@ -173,7 +166,9 @@ int main(int argc,char **argv){
     },&receive_callbacks);
     phone.set_video_active_state_callback([](void *p,bool active){if(active)++*static_cast<std::atomic<unsigned>*>(p);},&active_callbacks);
     phone.set_sip_signal_callback([](void *p,SipSignal signal){if(signal.type==SipSignalType::INVITE||signal.type==SipSignalType::STATUS_200_OK||signal.type==SipSignalType::MEDIA_READY)++*static_cast<std::atomic<unsigned>*>(p);if(signal.type==SipSignalType::MEDIA_INCOMPATIBLE)std::cerr<<"terminal_signal="<<signal.reason<<"\n";},&media_callbacks);
-    assert(phone.request_video_send(mode=="initial-on"));assert(phone.start());
+    assert(phone.request_video_send(mode=="initial-on"));
+    sip_reservation.release();audio_reservation.release();video_reservation.release();
+    if(!phone.start()){std::cerr<<"transport start failed before scenario "<<mode<<" sip="<<local_sip<<" rtp="<<local_audio<<" video="<<local_video<<" errno="<<errno<<"\n";std::abort();}
     const auto establish=[&](const std::string &id,bool reject_video){
       assert(phone.send_invite(id,"100","Phone","101","Peer"));auto offer=signaling.take();auto body=message_body(offer);port_in(body,"audio",audio.port());
       const auto offset=body.find("m=video ");

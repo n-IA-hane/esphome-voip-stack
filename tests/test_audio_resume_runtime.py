@@ -47,6 +47,10 @@ def resume_source():
      int sip_server_=-1;sockaddr_in sip_peer_{};
      void remember_completed_response_(const std::string&,uint32_t,uint16_t,const std::string&,const std::string&,bool=false);
      uint16_t acknowledge_completed_invite_(const std::string&,const sockaddr_in&,bool* =nullptr);
+     void retire_completed_invite_ack_(uint16_t,const char*);
+     bool terminal_transaction_pending_locked_()const{return completed_invite_.awaiting_ack;}
+     void emit_dialog_status_(SipSignalType,uint16_t,const std::string&,const char*,bool){assert(false);}
+
     '''
     code = code.replace('struct SipTransport {', 'struct SipTransport {' + extra)
     code = code.replace('void reset_rtp_latch_(){++latch_resets;}', 'void reset_rtp_latch_();')
@@ -60,7 +64,8 @@ def resume_source():
     code = code.replace(old, replacement)
     for marker in ['void SipTransport::reset_rtp_latch_(',
                    'void SipTransport::remember_completed_response_(',
-                   'uint16_t SipTransport::acknowledge_completed_invite_(']:
+                   'uint16_t SipTransport::acknowledge_completed_invite_(',
+                   'void SipTransport::retire_completed_invite_ack_(']:
         code += '\n' + block(transport, marker)
     code += r'''
     #define USE_ESP32

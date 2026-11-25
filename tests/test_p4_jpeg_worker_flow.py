@@ -77,6 +77,7 @@ int lv_obj_get_content_width(lv_obj_t*p){return p->width;}int lv_obj_get_content
 void lv_obj_get_coords(lv_obj_t*p,lv_area_t*a){*a={p->x,p->y,p->x+p->width-1,p->y+p->height-1};}
 int lv_area_get_width(const lv_area_t*a){return a->x2-a->x1+1;}int lv_area_get_height(const lv_area_t*a){return a->y2-a->y1+1;}
 unsigned invalidations=0;void lv_obj_invalidate(lv_obj_t*){++invalidations;}
+void lv_obj_invalidate_area(lv_obj_t*,const lv_area_t*){++invalidations;}
 enum{PPA_SRM_COLOR_MODE_RGB565=1,PPA_SRM_ROTATION_ANGLE_0=0,PPA_TRANS_MODE_BLOCKING=0};
 struct ppa_srm_oper_config_t{
  struct{const void*buffer{};uint32_t pic_w{},pic_h{},block_w{},block_h{};int srm_cm{};}in;
@@ -112,6 +113,7 @@ struct SlotState {
 bool xSemaphoreTake(std::mutex*m,int wait){assert(wait==0);return m->try_lock();}void xSemaphoreGive(std::mutex*m){m->unlock();}void xTaskNotifyGive(void*){}
 struct P4VideoRenderer {
  lv_obj_t container;lv_obj_t*video_container_=&container;mipi_dsi::MipiDsi hardware;mipi_dsi::MipiDsi*display_=&hardware;
+ lv_area_t presented_area_{};bool presented_area_valid_{false};
  std::atomic<uint32_t>layout_size_{(1280U<<16)|720U};
  static constexpr size_t surface_count_=1;size_t surface_capacity_bytes_=1280000;
  std::vector<uint8_t>storage=std::vector<uint8_t>(1280000);uint8_t*surfaces_[1]{storage.data()};
@@ -152,7 +154,7 @@ int main(int argc,char**argv){
   };
   assert(r.consume(a));r.worker_one();r.loop();assert(changed);
   if(mode==4){assert(!r.rx_active_&&r.pending_surface_==-1);r.loop();assert(r.hardware.commits==0);}
-  else{assert(r.pending_surface_==0);r.loop();assert(r.hardware.commits==1&&r.hardware.color==0xb2b2);}
+  else{assert(r.pending_surface_==0);r.loop();assert(r.hardware.commits==0&&r.presentation_in_flight_);r.on_display_refresh_ready_();r.loop();assert(r.hardware.commits==1&&r.hardware.color==0xb2b2);}
   return 0;
  }
  if(mode==6){
@@ -173,7 +175,7 @@ int main(int argc,char**argv){
  assert(r.hardware.x==180&&r.hardware.y==15&&r.hardware.width==920&&r.hardware.height==690&&r.hardware.scale==2.875f);
  assert(r.hardware.color==0xa1a1&&decode_calls==1);assert(r.first_frame_trigger_.count==1);
  if(mode==1){assert(r.consume(b));r.worker_one();r.loop();assert(r.hardware.commits==2&&r.hardware.color==0xb2b2);assert(r.surface_content_width_[0]==640&&r.surface_content_height_[0]==480);}
- if(mode==11){PayloadFrame portrait{480,640,0xc3c3};assert(r.consume(portrait));r.worker_one();r.loop();assert(r.hardware.commits==2&&r.hardware.color==0xc3c3);assert(r.hardware.width==540&&r.hardware.height==720);}
+ if(mode==11){PayloadFrame portrait{480,640,0xc3c3};assert(r.consume(portrait));r.worker_one();r.loop();assert(r.hardware.commits==1&&r.pending_surface_==0&&r.presentation_in_flight_);assert(invalidations>0);r.on_display_refresh_ready_();r.loop();assert(r.hardware.commits==2&&r.hardware.color==0xc3c3);assert(r.hardware.width==540&&r.hardware.height==720);}
  r.stop();r.loop();assert(!r.has_remote_frame()&&r.pending_surface_==-1);assert(invalidations>0);
 }
 '''.replace("WORKER", worker).replace("METHODS", methods)

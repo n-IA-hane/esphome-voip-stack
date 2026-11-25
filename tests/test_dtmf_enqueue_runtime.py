@@ -128,6 +128,15 @@ struct SipTransport {
     code += r'''
 void socket_for(SipTransport&s){s.rtp_socket_=socket(AF_INET,SOCK_DGRAM,0);assert(s.rtp_socket_>=0);sockaddr_in addr{};addr.sin_family=AF_INET;addr.sin_addr.s_addr=htonl(INADDR_LOOPBACK);assert(bind(s.rtp_socket_,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))==0);socklen_t len=sizeof(addr);assert(getsockname(s.rtp_socket_,reinterpret_cast<sockaddr*>(&addr),&len)==0);s.rtp_port_=ntohs(addr.sin_port);}
 int main(){
+ // Public duration admission is clock-dependent. Long unsupported presses
+ // fail explicitly and publish no queued digit; can_send checks readiness.
+ for(const auto limits:std::array<std::array<uint32_t,2>,3>{{{8000,8000},{16000,4095},{48000,1365}}}){
+  SipTransport boundary;socket_for(boundary);boundary.dtmf_tx_format_.clock=limits[0];
+  assert(boundary.can_send_dtmf());
+  assert(!boundary.send_dtmf('1',limits[1]+1)&&boundary.queue.count==0);
+  assert(boundary.send_dtmf('1',limits[1])&&boundary.queue.count==1);
+  assert(boundary.queue.data[0].duration_ms==limits[1]);close(boundary.rtp_socket_);
+ }
  SipTransport phone;socket_for(phone);assert(phone.can_send_dtmf());
  assert(!phone.send_dtmf('x')&&!phone.send_dtmf('1',39)&&phone.queue.count==0);
  phone.dtmf_tx_format_.clock=48000;assert(!phone.send_dtmf('1',8000)&&phone.queue.count==0);phone.dtmf_tx_format_.clock=8000;
