@@ -241,11 +241,12 @@ def test_refer_ringing_uses_sip_deadline_and_restores_rtp_watchdog(wire_binary,o
 @pytest.mark.parametrize("original_tcp,target_tcp", [(0, 0), (0, 1), (1, 0), (1, 1)])
 @pytest.mark.parametrize("original_ended", [False, True])
 @pytest.mark.parametrize("late_status", [200, 487])
+@pytest.mark.parametrize("late_pump", [False, True], ids=["prompt-worker", "delayed-worker"])
 def test_refer_action_deadline_cancels_candidate_and_preserves_owner(
-    wire_binary, original_tcp, target_tcp, original_ended, late_status
+    wire_binary, original_tcp, target_tcp, original_ended, late_status, late_pump
 ):
     result = subprocess.run([
         str(wire_binary), "action-timeout", str(original_tcp), str(target_tcp),
-        str(int(original_ended)), str(late_status),
+        str(int(original_ended)), str(late_status), str(int(late_pump)),
     ], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr

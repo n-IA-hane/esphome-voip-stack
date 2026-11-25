@@ -371,6 +371,10 @@ void SipTransport::pump_refer_() {
         this->send_cancel_unlocked_(this->call_id_);
     }
     this->finish_failed_refer_(408, "Transfer Failed");
+    // A delayed worker may reach this phase after the original total bound.
+    // Newly created CANCEL/NOTIFY records still need their completion budget;
+    // this runs once on phase entry and never extends the ringing deadline.
+    this->refer_expires_ = millis() + SIP_TRANSACTION_TIMEOUT_MS;
   }
   const auto &dialog = *this->refer_dialog_;
   if (this->refer_retiring_ && dialog.call_id_.empty() && dialog.pending_invite_.empty() &&

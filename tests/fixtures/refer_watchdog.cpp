@@ -59,7 +59,7 @@ void watchdog_case(bool old_tcp,bool new_tcp,unsigned outcome) {
   cleanup(sip);
 }
 
-void refer_action_timeout_case(bool old_tcp,bool new_tcp,bool original_ended,unsigned late_status) {
+void refer_action_timeout_case(bool old_tcp,bool new_tcp,bool original_ended,unsigned late_status,bool late_pump) {
   SipTransport sip;Peer original(old_tcp),target(new_tcp);setup(sip,original);
   auto invite=begin(sip,original,target);
   const uint32_t deadline=sip.refer_dialog_->attempt_deadline_ms;
@@ -68,9 +68,13 @@ void refer_action_timeout_case(bool old_tcp,bool new_tcp,bool original_ended,uns
     const auto ended=original.drain();assert(ended.size()==1&&ended[0].rfind("SIP/2.0 200",0)==0);
   }
   target.send_to(sip,response(invite,180));
-  clock_ms=deadline-1;sip.pump_refer_();
-  assert(target.drain().empty()&&original.drain().empty()&&!sip.refer_retiring_);
-  clock_ms=deadline;sip.pump_refer_();
+  if(!late_pump){
+    clock_ms=deadline-1;sip.pump_refer_();
+    assert(target.drain().empty()&&original.drain().empty()&&!sip.refer_retiring_);
+  }
+  clock_ms=late_pump?deadline+SIP_TRANSACTION_TIMEOUT_MS+1000:deadline;sip.pump_refer_();
+  assert(sip.refer_dialog_&&sip.refer_retiring_);
+  assert(sip.refer_dialog_->attempt_deadline_ms==deadline);
   const auto cancelled=target.drain();
   assert(cancelled.size()==1&&cancelled[0].rfind("CANCEL ",0)==0);
   const auto final=original.drain();
