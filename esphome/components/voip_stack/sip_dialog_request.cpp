@@ -75,10 +75,7 @@ void SipTransport::handle_dialog_ack_(const std::string &msg, const sockaddr_in 
     return;
   }
   if (completed_status >= 300) {
-    // ACK is the terminal event for a non-2xx INVITE server transaction.
-    // The dialog may already have been detached after CANCEL, but the call
-    // lifecycle must still cross its cleanup barrier and become reusable.
-    this->emit_dialog_status_(SipSignalType::TERMINAL_COMPLETE, completed_status, std::move(request_call_id));
+    // The cached transaction owner emitted its terminal completion once.
     return;
   }
   const uint32_t expected_ip = this->remote_ip_v4_.load(std::memory_order_acquire);

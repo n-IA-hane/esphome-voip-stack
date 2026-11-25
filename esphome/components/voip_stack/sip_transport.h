@@ -484,6 +484,7 @@ class SipTransport : public SipPhoneTransport {
   void reset_dialog_();
   void reset_dialog_media_locked_();
   bool terminal_transaction_pending_locked_() const;
+  void retire_completed_invite_ack_(uint16_t status, const char *reason = "");
   bool replay_completed_response_(const std::string &request, const sockaddr_in &src,
                                   const std::string &method, bool incoming_udp);
   void remember_completed_response_(const std::string &request, uint32_t peer_ip_v4,
@@ -524,6 +525,9 @@ class SipTransport : public SipPhoneTransport {
     // record for their response deadline; only UDP retransmits the request.
     bool udp{true};
     bool completed{false};
+    // Timer B belongs to Calling. Once a provisional INVITE response has
+    // arrived, the application owns the ringing/cancellation deadline.
+    bool proceeding{false};
     void clear() {
       this->request.clear();
       this->ip_v4 = 0;
@@ -534,6 +538,7 @@ class SipTransport : public SipPhoneTransport {
       this->retries = 0;
       this->udp = true;
       this->completed = false;
+      this->proceeding = false;
     }
     bool empty() const { return this->request.empty(); }
   };

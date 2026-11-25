@@ -118,10 +118,11 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
   this->mark_sip_event_(SipEvent::RESPONSE, static_cast<uint16_t>(status));
   if (method == "INVITE" && status >= 100) {
     if (status < 200 && !this->pending_invite_.empty()) {
-      // A provisional response stops INVITE retransmission but not Timer B.
-      // Keep the bounded transaction until its original 64*T1 deadline so a
-      // peer that sends 100/180 and then disappears cannot strand the call.
+      // RFC 3261 17.1.1.2: Timer B only expires in Calling. Keep this
+      // transaction through Proceeding so a slow answer is still ACKed. The
+      // configured application timeout sends CANCEL if ringing lasts too long.
       this->pending_invite_.completed = true;
+      this->pending_invite_.proceeding = true;
       this->pending_invite_.next_ms = this->pending_invite_.deadline_ms;
     } else {
       if (status >= 300)

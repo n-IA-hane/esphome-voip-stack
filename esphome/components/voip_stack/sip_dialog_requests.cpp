@@ -257,6 +257,8 @@ bool SipTransport::send_cancel_unlocked_(const std::string &call_id) {
     // Stop retransmission but retain the original wire request until its final
     // response: the non-2xx ACK must reuse that exact transaction, even after180.
     this->pending_invite_.completed = true;
+    this->pending_invite_.proceeding = false;
+    this->pending_invite_.deadline_ms = millis() + SIP_TRANSACTION_TIMEOUT_MS;
     this->pending_invite_.next_ms = this->pending_invite_.deadline_ms;
   } else {
     this->cancel_requested_.store(false, std::memory_order_release);
@@ -447,6 +449,7 @@ uint16_t SipTransport::acknowledge_completed_invite_(
   if (this->completed_invite_.empty()) return 0;
   const uint32_t now = millis();
   if (time_reached(now, this->completed_invite_.completed_ms + SIP_TRANSACTION_TIMEOUT_MS)) {
+    this->retire_completed_invite_ack_(408, "ack_timeout");
     this->completed_invite_.clear();
     return 0;
   }
@@ -464,7 +467,7 @@ uint16_t SipTransport::acknowledge_completed_invite_(
       (this->completed_invite_.status < 300 ||
        this->completed_invite_.branch.empty() || branch == this->completed_invite_.branch);
   if (!transaction_matches) return 0;
-  this->completed_invite_.awaiting_ack = false;
+  this->retire_completed_invite_ack_(this->completed_invite_.status);
   if (this->completed_invite_.status < 300 &&
       this->terminate_after_invite_ack_) {
     this->terminate_after_invite_ack_ = false;

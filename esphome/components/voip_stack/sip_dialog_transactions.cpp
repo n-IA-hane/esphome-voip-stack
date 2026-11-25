@@ -146,6 +146,22 @@ bool SipTransport::terminal_transaction_pending_locked_() const {
          this->terminate_after_invite_ack_;
 }
 
+void SipTransport::retire_completed_invite_ack_(uint16_t status, const char *reason) {
+  if (!this->completed_invite_.awaiting_ack) return;
+  this->completed_invite_.awaiting_ack = false;
+  const bool owns_dialog = !this->call_id_.empty() &&
+      this->call_id_ == this->completed_invite_.call_id &&
+      this->last_invite_cseq_number_ == this->completed_invite_.cseq;
+  // BYE can retire an accepted dialog before its ACK arrives. Clearing that
+  // cached transaction must wake the same application barrier as a non-2xx
+  // ACK, exactly once. An old transaction never tears down a newer dialog.
+  if (this->completed_invite_.status >= 300 || !owns_dialog) {
+    this->emit_dialog_status_(SipSignalType::TERMINAL_COMPLETE, status,
+                              this->completed_invite_.call_id, reason,
+                              this->terminal_transaction_pending_locked_());
+  }
+}
+
 void SipTransport::remember_udp_transaction_(const std::string &method, const std::string &message,
                                              uint32_t ip_v4, uint16_t port) {
   if (message.empty() || ip_v4 == 0 || port == 0) {
@@ -176,6 +192,7 @@ void SipTransport::remember_udp_transaction_(const std::string &method, const st
   txn->retries = 0;
   txn->udp = !this->remote_sip_tcp_.load(std::memory_order_acquire);
   txn->completed = false;
+  txn->proceeding = false;
   this->wake_sip_task_();
 }
 
@@ -207,7 +224,7 @@ void SipTransport::pump_udp_retransmits_unlocked_() {
   std::string timed_out_call_id;
   auto pump = [this, now, &reset_terminal_dialog, &invite_timed_out,
                &timed_out_call_id](UdpTransaction &txn, const char *method, bool owns_dialog = true, int tcp_socket = -1) {
-    if (txn.empty() || txn.ip_v4 == 0 || txn.port == 0) return;
+    if (txn.empty() || txn.ip_v4 == 0 || txn.port == 0 || txn.proceeding) return;
     if (time_reached(now, txn.deadline_ms)) {
       ESP_LOGW(TAG, "SIP %s %s transaction timed out after %u ms",
                txn.udp ? "UDP" : "TCP", method,
@@ -298,7 +315,7 @@ void SipTransport::pump_udp_retransmits_unlocked_() {
       ESP_LOGW(TAG, "SIP %s INVITE final response timed out waiting for ACK after %u ms",
                this->completed_invite_.udp ? "UDP" : "TCP",
                (unsigned) SIP_TRANSACTION_TIMEOUT_MS);
-      this->completed_invite_.awaiting_ack = false;
+      this->retire_completed_invite_ack_(408, "ack_timeout");
       const bool active_2xx_dialog = this->completed_invite_.status < 300 &&
                                      !this->call_id_.empty() &&
                                      this->call_id_ == this->completed_invite_.call_id &&
@@ -307,12 +324,6 @@ void SipTransport::pump_udp_retransmits_unlocked_() {
         this->terminate_after_invite_ack_ = false;
         ack_timed_out = true;
         timed_out_call_id = this->call_id_;
-      } else if (this->completed_invite_.status >= 300) {
-        // Timer H retires this server transaction even when its dialog and
-        // media already ended. Wake the application cleanup barrier once.
-        this->emit_dialog_status_(SipSignalType::TERMINAL_COMPLETE, 408,
-                                  this->completed_invite_.call_id, "ack_timeout",
-                                  this->terminal_transaction_pending_locked_());
       }
     } else if ((this->completed_invite_.udp ||
                 this->completed_invite_.status < 300) &&

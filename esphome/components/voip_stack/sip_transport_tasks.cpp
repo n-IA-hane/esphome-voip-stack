@@ -99,7 +99,7 @@ void SipTransport::sip_task_() {
       {
         LockGuard lock(this->dialog_mutex_);
         auto include_txn = [&include_at](const UdpTransaction &txn) {
-          if (txn.empty()) return;
+          if (txn.empty() || txn.proceeding) return;
           include_at(txn.udp && !txn.completed ? txn.next_ms
                                                : txn.deadline_ms);
         };
@@ -530,6 +530,11 @@ void SipTransport::rtp_task_() {
       }
       const bool ssrc_latched =
           this->rtp_ssrc_latched_.load(std::memory_order_acquire);
+      const uint16_t expected_port = this->remote_rtp_port_.load(std::memory_order_acquire);
+      const bool reaches_replacement_source = !ssrc_latched ||
+          this->latched_rtp_ip_v4_.load(std::memory_order_acquire) != src_ip ||
+          this->latched_rtp_port_.load(std::memory_order_acquire) != src_port ||
+          src_port == expected_port;
       bool source_changed = false;
       if (ssrc_latched &&
           this->latched_rtp_ip_v4_.load(std::memory_order_acquire) != src_ip) {
@@ -573,7 +578,12 @@ void SipTransport::rtp_task_() {
       }
       this->rtp_rx_packets_.fetch_add(1, std::memory_order_acq_rel);
       this->rtp_rx_bytes_.fetch_add(static_cast<uint32_t>(n), std::memory_order_acq_rel);
-      this->rtp_source_reacquire_pending_.store(false, std::memory_order_release);
+      // An in-flight packet from the old, still-valid source may be delivered
+      // after a port-only SDP update. It must not consume permission for the
+      // replacement endpoint to introduce its new SSRC. A real endpoint
+      // transition also accepts the existing symmetric-RTP/NAT port policy.
+      if (reaches_replacement_source)
+        this->rtp_source_reacquire_pending_.store(false, std::memory_order_release);
       source_changed |= this->audio_receive_reset_pending_.exchange(false, std::memory_order_acq_rel);
       this->emit_audio_frame_(audio_data, audio_bytes, sequence, timestamp,
                               source_changed, pack_audio_format(rx_format));

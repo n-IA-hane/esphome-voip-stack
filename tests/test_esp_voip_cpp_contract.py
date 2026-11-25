@@ -2031,7 +2031,7 @@ def test_sip_udp_transactions_are_minimal_and_explicit() -> None:
     response = dialog_response_method("handle_response_")
     assert "if (status < 200 && !this->pending_invite_.empty())" in response
     assert "this->pending_invite_.completed = true;" in response
-    assert "this->pending_invite_.next_ms = this->pending_invite_.deadline_ms;" in response
+    assert "this->pending_invite_.proceeding = true;" in response
 
 
 def test_uas_bye_waits_for_final_response_ack() -> None:
