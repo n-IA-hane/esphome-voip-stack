@@ -27,6 +27,16 @@ def control_admission_binary(tmp_path_factory):
     account = (Path(__file__).parent / "fixtures/registration_transport.cpp").read_text()
     code += "\n" + account[:account.index("std::string account_refer(")]
     code += r'''
+int blocked_fd=-1;size_t send_budget=0;
+extern "C" ssize_t __real_send(int,const void*,size_t,int);
+extern "C" ssize_t __wrap_send(int fd,const void*data,size_t size,int flags){
+ if(fd==blocked_fd){
+  if(send_budget==0){errno=EAGAIN;return -1;}
+  const auto count=__real_send(fd,data,std::min(size,send_budget),flags);
+  if(count>0)send_budget-=size_t(count);return count;
+ }
+ return __real_send(fd,data,size,flags);
+}
 void expect_status(Peer &peer,unsigned status){
  const auto replies=peer.drain();assert(replies.size()==1);
  if(replies[0].rfind("SIP/2.0 "+std::to_string(status),0)!=0)
@@ -36,7 +46,35 @@ void expect_status(Peer &peer,unsigned status){
 int main(int argc,char **argv){
  assert(argc==2);const std::string scenario=argv[1];SipTransport s;Peer pbx(true);bind_account(s,pbx);
  s.call_id_.clear();s.media_active_=false;
- if(scenario=="direct-primary"){
+ if(scenario.rfind("spare-",0)==0){
+  Peer original(true);setup(s,original);s.app_accept=false;
+  const bool busy=scenario=="spare-busy-invite";
+  if(busy){s.call_id_.clear();s.media_active_=false;}
+  Peer control(true);s.accept_tcp_client_(control.esp,control.address);
+  assert(s.inbound_tcp_flow_.socket==control.esp);
+  blocked_fd=control.esp;send_budget=scenario=="spare-eagain"?0:3;
+  control.send_to(s,request(control,busy?"INVITE":"OPTIONS",1,"","probe","","probe"));
+  assert(s.inbound_tcp_flow_.socket==control.esp&&!s.inbound_tcp_flow_.tx_pending.empty());
+  assert(!s.reclaim_idle_inbound_tcp_(s.inbound_tcp_flow_));
+  if(scenario=="spare-reclaim"){
+   Peer third(true);s.accept_tcp_client_(third.esp,third.address);
+   assert(fcntl(third.esp,F_GETFD)<0&&errno==EBADF);
+   assert(s.inbound_tcp_flow_.socket==control.esp&&s.tcp_flow_.socket==original.esp);
+  }
+  if(scenario=="spare-deadline"){
+   s.inbound_tcp_flow_.tx_deadline=1;
+   assert(!s.pump_tcp_tx_(s.inbound_tcp_flow_,false));
+   s.handle_tcp_peer_loss_(&s.inbound_tcp_flow_);
+  }else{
+   blocked_fd=-1;assert(s.pump_tcp_tx_(s.inbound_tcp_flow_,true));
+   expect_status(control,busy?503:486);
+  }
+  assert(s.inbound_tcp_flow_.socket<0&&s.inbound_tcp_flow_.tx_pending.empty());
+  assert(s.tcp_flow_.socket==original.esp&&fcntl(original.esp,F_GETFD)>=0);
+  assert(busy?(s.call_id_.empty()&&!s.media_active_):(s.call_id_=="original"&&s.media_active_));
+  assert(s.registration_flows_[0].socket==pbx.esp&&s.registration_.is_registered("office"));
+  blocked_fd=-1;
+ }else if(scenario=="direct-primary"){
   Peer original(true);setup(s,original);s.app_accept=false;
   Peer control(true);s.accept_tcp_client_(control.esp,control.address);
   assert(s.inbound_tcp_flow_.socket==control.esp&&s.tcp_flow_.socket==original.esp);
@@ -87,13 +125,16 @@ int main(int argc,char **argv){
         "g++", "-std=c++17", "-Wall", "-Wextra", "-g", "-fsanitize=address,undefined",
         "-fno-omit-frame-pointer", "-fno-pie", "-no-pie", "-DUSE_ESPHOME_VOIP_REGISTRATION",
         "-I", str(folder), "-I", str(SOURCE.parents[2]), "-I", str(SOURCE), str(cpp),
-        str(SOURCE / "sip_registration.cpp"), "-lcrypto", "-o", str(binary),
+        str(SOURCE / "sip_registration.cpp"), "-lcrypto", "-Wl,--wrap=send", "-o", str(binary),
     ], capture_output=True, text=True)
     assert built.returncode == 0, built.stderr
     return binary
 
 
-@pytest.mark.parametrize("scenario", ["busy-options", "busy-invite", "direct-primary", "partial-primary", "unread-primary"])
+@pytest.mark.parametrize("scenario", [
+    "busy-options", "busy-invite", "direct-primary", "partial-primary", "unread-primary",
+    "spare-partial", "spare-eagain", "spare-reclaim", "spare-deadline", "spare-busy-invite",
+])
 def test_control_tcp_admission_preserves_method_owners(control_admission_binary, scenario):
     result = subprocess.run([control_admission_binary, scenario], capture_output=True, text=True, timeout=8)
     assert result.returncode == 0, result.stdout + result.stderr

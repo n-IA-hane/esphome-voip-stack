@@ -572,10 +572,22 @@ bool SipTransport::flush_tcp_tx_locked_(SipTcpFlow &flow) {
 }
 
 bool SipTransport::pump_tcp_tx_(SipTcpFlow &flow, bool writable) {
-  LockGuard send_lock(this->tcp_send_mutex_);
-  const uint32_t deadline = flow.tx_deadline.load(std::memory_order_acquire);
-  if (deadline == 0 || (!writable && !time_reached(millis(), deadline))) return true;
-  return this->flush_tcp_tx_locked_(flow);
+  {
+    LockGuard send_lock(this->tcp_send_mutex_);
+    const uint32_t deadline = flow.tx_deadline.load(std::memory_order_acquire);
+    if (deadline == 0 || (!writable && !time_reached(millis(), deadline))) return true;
+    if (!this->flush_tcp_tx_locked_(flow)) return false;
+  }
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+  // A stateless response can outlive its last read under backpressure. Return
+  // the bounded spare only after its bytes were sent, using normal idle checks.
+  // Acquire dialog ownership after releasing the send lock, in the usual order.
+  if (&flow == &this->inbound_tcp_flow_ && flow.tx_deadline.load(std::memory_order_acquire) == 0) {
+    LockGuard lock(this->dialog_mutex_);
+    this->reclaim_idle_inbound_tcp_(flow);
+  }
+#endif
+  return true;
 }
 
 void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
@@ -643,8 +655,9 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
       const int err = errno;
       if (err == EINTR) continue;
       if (err == EWOULDBLOCK || err == EAGAIN || err == ENOTCONN || err == EINPROGRESS || err == EALREADY) {
-        // Only release the spare once no unread record remains in the socket.
-        if (flow == &this->inbound_tcp_flow_ && flow->rx_buffer.empty()) this->close_tcp_flow_(*flow);
+        // Both unread requests and retained response bytes still own the spare.
+        if (flow == &this->inbound_tcp_flow_ && flow->rx_buffer.empty() &&
+            flow->tx_deadline.load(std::memory_order_acquire) == 0) this->close_tcp_flow_(*flow);
         return;
       }
       ESP_LOGW(TAG, "SIP TCP RX failed: %s (%d: %s)", socket_errno_name(err), err, socket_errno_text(err));
@@ -667,8 +680,9 @@ void SipTransport::handle_sip_stream_(int socket, const sockaddr_in &src) {
         if (this->call_id_.empty() && (owned || !this->should_accept_session_())) {
           this->send_stateless_response_(msg, src, 503, "Service Unavailable", "retry_new_connection", false, 1);
           this->dispatch_socket_ = -2;
-          this->close_tcp_flow_(*flow);
-          return;
+          // Drain already framed control records through the same path. The
+          // spare is released at read exhaustion or after a retained TX flush.
+          continue;
         }
       }
       this->handle_sip_datagram_unlocked_(msg.data(), msg.size(), src);
@@ -861,7 +875,8 @@ bool SipTransport::reclaim_idle_inbound_tcp_(SipTcpFlow &flow) {
   const int socket = flow.socket.load(std::memory_order_acquire);
   if (socket < 0 || !flow.received_record || !flow.rx_buffer.empty() ||
       flow.connecting_socket >= 0 || flow.connect_requested.load(std::memory_order_acquire) ||
-      flow.close_requested.load(std::memory_order_acquire) || this->terminal_transaction_pending_locked_())
+      flow.close_requested.load(std::memory_order_acquire) ||
+      flow.tx_deadline.load(std::memory_order_acquire) != 0 || this->terminal_transaction_pending_locked_())
     return false;
   {
     LockGuard pending_lock(this->tcp_tx_pending_mutex_);
