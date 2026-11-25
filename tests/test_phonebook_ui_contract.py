@@ -47,6 +47,7 @@ class VoipStack {
  bool is_idle()const{return idle;}bool can_start_call_()const{return idle;}
  bool is_registered(const std::string&line)const{return line!="direct"&&line!="missing";}
  void publish_destination_(){++publishes;}
+ void contact_selection_changed_(){}
  // Observe the existing call-owner boundary, never simulate SIP success.
  void start(){++starts;idle=false;observed_route=phonebook_.current_route();
 #ifdef USE_ESPHOME_VOIP_REGISTRATION

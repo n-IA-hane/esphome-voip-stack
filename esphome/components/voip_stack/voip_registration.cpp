@@ -334,6 +334,7 @@ bool VoipStack::select_line(const std::string& id) {
   // identity, authentication context or transport of a running call.
   if (id != "direct" && !this->is_registered(id)) return false;
   this->default_line_ = id;
+  if (this->resolve_selected_dial_target_()) this->publish_destination_();
   return true;
 }
 void VoipStack::start_call_on_line_(const std::string &target, const std::string &line) {

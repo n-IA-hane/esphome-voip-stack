@@ -550,6 +550,10 @@ void VoipStack::setup() {
 
   this->load_settings_();
   this->load_routing_settings_();
+  // YAML contacts were installed before setup. Commit the initial selection
+  // only after that entire batch; LDAP may supply the first later batch.
+  this->initial_contact_ready_ = true;
+  this->maybe_select_initial_contact_();
   this->publish_initial_state_later_();
 
   ESP_LOGI(TAG, "VoIP Stack ready as SIP phone on %s/%u RTP UDP/%u",
@@ -764,7 +768,7 @@ void VoipStack::dump_config() {
   ESP_LOGCONFIG(TAG, "  Routing: SIP dial plan");
   ESP_LOGCONFIG(TAG, "  HA peer name: %s", this->ha_peer_name_.c_str());
   ESP_LOGCONFIG(TAG, "  Audio capability: %s", this->audio_capability_());
-  ESP_LOGCONFIG(TAG, "  HA as first contact: %s", YESNO(this->use_ha_as_first_contact_));
+  ESP_LOGCONFIG(TAG, "  Initial SIP contact: %s", this->initial_contact_.empty() ? "first alphabetical" : this->initial_contact_.c_str());
   ESP_LOGCONFIG(TAG, "  Phonebook source: HA SIP phonebook");
 #ifdef USE_ESPHOME_VOIP_STACK_MIC
   ESP_LOGCONFIG(TAG, "  Microphone: %s", this->microphone_ ? "direct" : (this->microphone_source_ ? "source" : "none"));
@@ -1030,7 +1034,6 @@ void VoipStack::publish_entity_states() {
 
   this->publish_transport_();
   this->publish_sip_snapshot_();
-  this->publish_media_diagnostics_();
 #ifdef USE_TEXT_SENSOR
   if (this->last_reason_sensor_ != nullptr) {
     this->last_reason_sensor_->publish_state(this->last_reason_);

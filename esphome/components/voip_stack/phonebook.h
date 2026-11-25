@@ -339,15 +339,13 @@ class Phonebook {
     count = accepted;
     if (info != nullptr) info->contacts = count;
     bool unchanged = final_count == this->entries_.size();
-    size_t position = 0;
-    for (const auto &old : this->entries_)
-      if (retained(old)) {
-        if (unchanged && !same_entry_(this->entries_[position], old)) unchanged = false;
-        ++position;
-      }
-    for (size_t i = 0; i < count; ++i) {
-        if (unchanged && !same_entry_(this->entries_[position], entries[i])) unchanged = false;
-        ++position;
+    // Provider arrival order and display order are independent. Retained rows
+    // are unchanged by definition; compare the admitted provider content as a
+    // bounded set so a sorted UI does not republish an identical refresh.
+    for (size_t i = 0; unchanged && i < count; ++i) {
+      unchanged = std::any_of(this->entries_.begin(), this->entries_.end(), [&](const ContactEntry &old) {
+        return !retained(old) && same_entry_(old, entries[i]);
+      });
     }
     if (unchanged) return DirectoryCommitResult::UNCHANGED;
     if (!this->ensure_directory_capacity_(final_count)) return DirectoryCommitResult::CAPACITY;
@@ -394,6 +392,39 @@ class Phonebook {
       return {};
 #endif
     });
+  }
+
+  bool select_first() {
+    this->index_ = 0;
+    return !this->entries_.empty();
+  }
+
+  // Deterministic display order without a locale table or a temporary copy of
+  // every contact. Identity tie-breaks also make reversed LDAP arrival stable.
+  // Sorting never changes an existing selection's account/route identity.
+  void sort_by_name() {
+    const auto selected = this->snapshot_selection_();
+    const auto compare_name = [](std::string_view left, std::string_view right) {
+      for (size_t i = 0; i < std::min(left.size(), right.size()); ++i) {
+        const auto fold = [](unsigned char value) {
+          return value >= 'A' && value <= 'Z' ? static_cast<unsigned char>(value + ('a' - 'A')) : value;
+        };
+        const auto a = fold(left[i]), b = fold(right[i]);
+        if (a != b) return a < b ? -1 : 1;
+      }
+      return left.size() == right.size() ? 0 : left.size() < right.size() ? -1 : 1;
+    };
+    std::sort(this->entries_.begin(), this->entries_.end(), [&](const ContactEntry &left, const ContactEntry &right) {
+      const int name = compare_name(left.name, right.name);
+      if (name != 0) return name < 0;
+      if (left.stable_id() != right.stable_id()) return left.stable_id() < right.stable_id();
+#ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
+      if (left.account_id != right.account_id) return std::string_view(left.account_id) < std::string_view(right.account_id);
+#endif
+      if (left.route != right.route) return std::string_view(left.route) < std::string_view(right.route);
+      return std::string_view(left.name) < std::string_view(right.name);
+    });
+    this->restore_selection_(selected);
   }
 
   /// Step through positions in order. No-op on empty phonebook.

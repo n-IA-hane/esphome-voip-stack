@@ -90,6 +90,8 @@ public:
   }
   std::string ha_peer_name_="HA",device_name_="Phone",device_route_id_="phone",pending_dialplan_target_;
   bool ha_media_fallback_pending_=false,ha_media_fallback_attempted_=false,send_ok=true;
+  std::string selected_dial_target_; bool selected_dial_target_resolved_=false,initial_contact_applied_=false;
+  void contact_selection_changed_(){selected_dial_target_.clear();selected_dial_target_resolved_=false;initial_contact_applied_=true;}
   uint32_t calling_start_time_=0;AudioFormat tx_audio_format_,rx_audio_format_;int invites=0,stops=0;
   unsigned terminations=0;
   Trigger outgoing_call_trigger_,bridge_request_trigger_,call_failed_trigger_;
@@ -99,7 +101,6 @@ public:
   bool can_start_call_() const;
   void start();void start_call_();
   void start_call_attempt_(bool);
-  void set_call_sip_mode_(bool){}
   enum class ApplicationMediaStart:uint8_t{NONE,ORIGINATE,ANSWER,CONFIRM,OFFER};
   void begin_application_media_start_(ApplicationMediaStart);void finish_application_media_start_(ApplicationMediaStart);void pump_application_media_start_();
   uint32_t prepared_peer_ip_=0x7f000001;uint16_t prepared_peer_port_=5060;bool prepared_peer_tcp_=false;

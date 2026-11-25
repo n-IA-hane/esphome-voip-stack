@@ -280,7 +280,7 @@ void VoipStack::set_mic_gain_db(float db) {
 // === Contacts ===
 // Phonebook owns merge logic. add_contact uses one idempotent
 // merge: same shape = noop, missing endpoint = upgrade, mismatch = replace.
-// Slot order is stable; only flush_contacts wipes.
+// The component presents alphabetical order, retaining selection by identity.
 
 void VoipStack::add_contact(const std::string &entry, const std::string &id, ContactKind kind,
                             const std::string &account, bool auto_blf) {
@@ -351,16 +351,43 @@ std::string VoipStack::normalize_phonebook_for_transport_(const std::string &con
   return out;
 }
 
-bool VoipStack::maybe_auto_select_ha_first_() {
-  if (!this->use_ha_as_first_contact_) return false;
-  if (this->first_contacts_batch_committed_) return false;
-  if (this->ha_peer_name_.empty()) return false;
+bool VoipStack::resolve_selected_dial_target_() {
+  if (this->selected_dial_target_.empty()) return false;
   if (this->call_state_.load(std::memory_order_acquire) != CallState::IDLE) return false;
-  if (this->phonebook_.find(this->ha_peer_name_) == nullptr) return false;
-  if (!this->phonebook_.select(this->ha_peer_name_)) return false;
+  const bool previously_resolved = this->selected_dial_target_resolved_;
+  this->selected_dial_target_resolved_ = false;
+  const ContactEntry *match = nullptr;
+  const auto account_for = [this](const ContactEntry &entry) { return this->get_contact_account_view(entry); };
+  for (size_t i = 0; i < this->phonebook_.size(); ++i) {
+    const auto *entry = this->phonebook_.at(i);
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+    if (this->default_line_ != "direct" && account_for(*entry) != this->default_line_) continue;
+#endif
+    if (entry->stable_id() != this->selected_dial_target_ &&
+        std::string_view(entry->route) != this->selected_dial_target_ &&
+        (entry->number.empty() || std::string_view(entry->number) != this->selected_dial_target_)) continue;
+    if (match != nullptr) return previously_resolved;  // Keep the explicit target when a directory is ambiguous.
+    match = entry;
+  }
+  if (match == nullptr || !this->phonebook_.select(match->stable_id(), account_for(*match), account_for)) return previously_resolved;
+  this->selected_dial_target_resolved_ = true;
+  return true;
+}
 
-  this->first_contacts_batch_committed_ = true;
-  ESP_LOGI(TAG, "Selected HA peer '%s' as initial destination", this->ha_peer_name_.c_str());
+bool VoipStack::maybe_select_initial_contact_() {
+  if (!this->initial_contact_ready_ || this->initial_contact_applied_ ||
+      this->call_state_.load(std::memory_order_acquire) != CallState::IDLE) return false;
+  this->phonebook_.sort_by_name();
+  if (this->initial_contact_.empty()) {
+    if (!this->phonebook_.select_first()) return false;
+  } else {
+    // A configured target remains dialable through the ordinary SIP line even
+    // while LDAP is absent. Later directory metadata may give it a label, but
+    // cannot change the selected target or substitute an alphabetical fallback.
+    this->selected_dial_target_ = this->initial_contact_;
+    this->resolve_selected_dial_target_();
+  }
+  this->initial_contact_applied_ = true;
   return true;
 }
 
@@ -388,6 +415,7 @@ bool VoipStack::set_contact(const std::string &name) {
     return false;
   }
   if (this->phonebook_.select(name)) {
+    this->contact_selection_changed_();
     this->publish_destination_();
     ESP_LOGI(TAG, "Selected contact: %s", name.c_str());
     return true;
@@ -410,6 +438,7 @@ bool VoipStack::call_contact(const std::string &id, std::string_view account) {
   const auto *entry = this->phonebook_.find_id(id, account, account_for);
   if (entry == nullptr) return false;
   if (!this->phonebook_.select(id, account, account_for)) return false;
+  this->contact_selection_changed_();
   this->pending_dialplan_target_.clear();
   this->publish_destination_();
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
@@ -482,11 +511,9 @@ DirectoryCommitResult VoipStack::commit_contact_directory(const void *provider, 
     if (sip_parse_target_uri(own_uri, own)) own.port = account.config.port;
   }
 #endif
-  const auto self = [this, &own](const ContactEntry &entry) {
-    return (!this->device_route_id_.empty() &&
-            (entry.route == this->device_route_id_ || entry.stable_id() == this->device_route_id_)) ||
-           sip_matches_aor(own, entry.route);
-  };
+  // LDAP rows identify SIP accounts. A hardware node name is not an alias of
+  // this account and must never hide an unrelated account with that username.
+  const auto self = [&own](const ContactEntry &entry) { return sip_matches_aor(own, entry.route); };
   size_t retained_count = 0;
   for (size_t i = 0; i < count; ++i) {
     if (self(entries[i])) continue;
@@ -554,10 +581,22 @@ void VoipStack::call_(const std::string &value) {
   }
 
   if (this->phonebook_.select(target)) {
+    this->contact_selection_changed_();
     this->pending_dialplan_target_.clear();
     this->publish_destination_();
     ESP_LOGI(TAG, "Selected contact: %s", target.c_str());
     this->start();
+    return;
+  }
+
+  SipTargetParts direct_target;
+  if (sip_parse_target_uri(target, direct_target)) {
+    this->selected_dial_target_ = target;
+    this->selected_dial_target_resolved_ = false;
+    this->initial_contact_applied_ = true;
+    this->pending_dialplan_target_.clear();
+    this->publish_destination_();
+    this->start_call_();
     return;
   }
 
@@ -570,6 +609,7 @@ void VoipStack::call_(const std::string &value) {
     return;
   }
 
+  this->contact_selection_changed_();
   this->pending_dialplan_target_ = target;
   this->publish_destination_();
   ESP_LOGI(TAG, "Routing target '%s' through HA peer '%s'",
@@ -579,7 +619,9 @@ void VoipStack::call_(const std::string &value) {
 
 void VoipStack::next_contact() {
   if (this->phonebook_.empty()) return;
-  this->phonebook_.next();
+  if (this->selected_dial_target_.empty() || this->selected_dial_target_resolved_) this->phonebook_.next();
+  else this->phonebook_.select_first();
+  this->contact_selection_changed_();
   this->publish_last_reason_("");
   this->clear_terminal_call_snapshot_();
   this->publish_destination_();
@@ -588,7 +630,9 @@ void VoipStack::next_contact() {
 
 void VoipStack::prev_contact() {
   if (this->phonebook_.empty()) return;
+  if (!this->selected_dial_target_.empty() && !this->selected_dial_target_resolved_) this->phonebook_.select_first();
   this->phonebook_.prev();
+  this->contact_selection_changed_();
   this->publish_last_reason_("");
   this->clear_terminal_call_snapshot_();
   this->publish_destination_();
@@ -597,44 +641,54 @@ void VoipStack::prev_contact() {
 
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
 std::string VoipStack::get_current_destination() const {
+  if (!this->selected_dial_target_.empty() && !this->selected_dial_target_resolved_) return this->selected_dial_target_;
   return std::string(this->phonebook_.current_name());
 }
 #else
 const std::string &VoipStack::get_current_destination() const {
+  if (!this->selected_dial_target_.empty() && !this->selected_dial_target_resolved_) return this->selected_dial_target_;
   return this->phonebook_.current_name();
 }
 #endif
 
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
 std::string VoipStack::get_current_destination_route() const {
+  if (!this->selected_dial_target_.empty() && !this->selected_dial_target_resolved_) return this->selected_dial_target_;
   return std::string(this->phonebook_.current_route());
 }
 #else
 const std::string &VoipStack::get_current_destination_route() const {
+  if (!this->selected_dial_target_.empty() && !this->selected_dial_target_resolved_) return this->selected_dial_target_;
   return this->phonebook_.current_route();
 }
 #endif
 
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
 std::string VoipStack::get_current_contact_ip() const {
+  if (!this->selected_dial_target_.empty() && !this->selected_dial_target_resolved_) return {};
   return std::string(this->phonebook_.current_ip());
 }
 #else
 const std::string &VoipStack::get_current_contact_ip() const {
+  static const std::string empty;
+  if (!this->selected_dial_target_.empty() && !this->selected_dial_target_resolved_) return empty;
   return this->phonebook_.current_ip();
 }
 #endif
 
 uint16_t VoipStack::get_current_contact_port() const {
+  if (!this->selected_dial_target_.empty() && !this->selected_dial_target_resolved_) return 0;
   return this->phonebook_.current_port();
 }
 
 uint16_t VoipStack::get_current_contact_rtp_port() const {
+  if (!this->selected_dial_target_.empty() && !this->selected_dial_target_resolved_) return 0;
   const auto *c = this->phonebook_.current();
   return c ? c->rtp_port : 0;
 }
 
 bool VoipStack::get_current_contact_sip_transport_tcp() const {
+  if (!this->selected_dial_target_.empty() && !this->selected_dial_target_resolved_) return this->protocol_ == TransportType::TCP;
   const auto *c = this->phonebook_.current();
   return c != nullptr && c->endpoint_type == ContactEndpointType::SIP && c->sip_transport_tcp;
 }
@@ -687,6 +741,9 @@ void VoipStack::publish_contacts_() {
 }
 
 void VoipStack::publish_phonebook_changed_() {
+  this->phonebook_.sort_by_name();
+  this->maybe_select_initial_contact_();
+  this->resolve_selected_dial_target_();
 #ifdef USE_ESPHOME_VOIP_BLF
   this->sync_blf_contacts_();
 #endif

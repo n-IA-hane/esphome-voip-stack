@@ -26,6 +26,7 @@ def app_source():
   void end_call_(CallEndReason why,const std::string&){++terminations;termination_reason=why;terminated_identity=identity;call_state_=CallState::IDLE;identity={};}
   bool is_registered(const std::string&id){return transport_->is_registered(id);}
   bool select_line(const std::string&);
+  bool resolve_selected_dial_target_(){return false;}
   void start_call_on_line_(const std::string&,const std::string&);
 ''')
     for marker, replacement in [
@@ -111,6 +112,17 @@ int main(int argc,char**argv){
  VoipStack app;auto&s=*app.transport_;Peer qa(tcp),ha(tcp);
  bind_account(s,qa,"7101"); // actual REGISTER qa/7101 initializes the existing hooks/owner.
  bind_line(s,ha,1,"ha","home-user");
+ if(scenario=="initial-user"||scenario=="initial-uri"){
+  app.phonebook_.clear();app.default_line_="qa";
+  app.selected_dial_target_=scenario=="initial-user"?"7102":"sip:7102@foreign.example:5080;transport=udp";
+  app.start();
+  const auto invite=pick(qa.drain(),"INVITE");
+  const std::string uri=scenario=="initial-user"?"sip:7102@pbx.example":app.selected_dial_target_;
+  assert(invite.rfind("INVITE "+uri+" SIP/2.0",0)==0);
+  assert(header_value(invite,"From").find("7101@pbx.example")!=std::string::npos);
+  assert(s.active_account_==0&&ha.drain().empty()&&app.identity.dest_route==app.selected_dial_target_);
+  for(auto&flow:s.registration_flows_)s.close_tcp_flow_(flow);close(s.sip_socket_);return 0;
+ }
  app.sink_ready=false;
  app.start_call_on_line("7102","qa",false,false);
  assert(app.call_state_==CallState::CALLING&&qa.drain().empty());
@@ -175,3 +187,10 @@ def test_registered_deferred_invite_retries_on_its_original_account(deferred_bin
 def test_preinvite_abort_releases_line_before_default_ha_call(deferred_binary,transport,scenario):
     run=subprocess.run([deferred_binary,scenario,'401',transport],capture_output=True,text=True,timeout=10)
     assert run.returncode==0,run.stdout+run.stderr
+
+
+@pytest.mark.parametrize('transport', ['udp', 'tcp'])
+@pytest.mark.parametrize('scenario', ['initial-user', 'initial-uri'])
+def test_initial_target_without_ldap_uses_registered_account_and_wire_uri(deferred_binary, transport, scenario):
+    run = subprocess.run([deferred_binary, scenario, '401', transport], capture_output=True, text=True, timeout=10)
+    assert run.returncode == 0, run.stdout + run.stderr

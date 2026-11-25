@@ -188,12 +188,14 @@ struct VoipStack {
   uint32_t last_sip_snapshot_refresh_ms_{0}, cycle_started_at_{0}, packets{0};
   static constexpr uint32_t calling_timeout_ms_=3000, ringing_timeout_ms_=3000;
   bool audio_debug_{false}, cycle_active_{false};
+  bool maybe_select_initial_contact_(){return false;}
+  bool resolve_selected_dial_target_(){return false;}
+  void publish_destination_(){}
   void pump_application_media_start_() {}
   void handle_call_timeouts_(uint32_t, uint32_t) {}
   void disable_loop() {}
   template<class F> void defer(F) {}
   template<class F> void defer(const char *, F) {}
-  void publish_media_diagnostics_() {}
   std::string get_state_str() const {
     switch (call_state_.load()) {
       case CallState::RINGING: return "ringing";

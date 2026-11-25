@@ -12,7 +12,7 @@ CONF_HA_INTEGRATION = "ha_integration"
 LEGACY_PACKAGE = "legacy_ha_package"
 ACTIONS = {
     "start_call", "start_call_on_line", "hangup_call_if_id", "answer_call", "decline_call", "hangup_call",
-    "set_ha_peer_name", "add_contact", "set_pbx_media_diagnostics",
+    "set_ha_peer_name", "add_contact",
     "remove_contact", "flush_contacts", "send_dtmf", "call_mailbox", "pickup_contact",
 }
 # ESPHome device discovery uses the short state entity. SIP Contact and SDP

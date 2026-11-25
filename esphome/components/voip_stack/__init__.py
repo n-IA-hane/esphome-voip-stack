@@ -81,7 +81,7 @@ CONF_REASON = "reason"
 CONF_TRANSPORT = "transport"
 CONF_SIP_PORT = "sip_port"
 CONF_RTP_PORT = "rtp_port"
-CONF_USE_HA_AS_FIRST_CONTACT = "use_ha_as_first_contact"
+CONF_INITIAL_CONTACT = "initial_contact"
 CONF_AUDIO_DEBUG = "audio_debug"
 CONF_AUDIO = "audio"
 CONF_VIDEO = "video"
@@ -632,10 +632,16 @@ CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), ha_integration.p
         cv.Optional(CONF_RING_GROUPS, default=""): _validate_group_list,
         cv.Optional(CONF_QUEUES): _validate_group_list,
         cv.Optional(CONF_PAGING_AUTO_ANSWER_PEERS, default=[]): cv.ensure_list(cv.ipv4address),
-        # On the first post-boot phonebook population, select the HA peer row
-        # as the current destination so a freshly booted ESP is tuned to HA
-        # instead of whichever contact happens to be first in the phonebook.
-        cv.Optional(CONF_USE_HA_AS_FIRST_CONTACT, default=False): cv.boolean,
+        # A normal SIP destination, independent of directory provider or UI.
+        cv.Optional(CONF_INITIAL_CONTACT, default=""): lambda value: registration.bounded(cv.string(value).strip(), 2048),
+        cv.Optional("use_ha_as_first_contact"): cv.invalid(
+            "use_ha_as_first_contact is retired. Use initial_contact with a SIP username, "
+            "number or URI; leave it empty for the first alphabetical contact."
+        ),
+        cv.Optional("delete_contact_missing_from"): cv.invalid(
+            "delete_contact_missing_from is retired. Use ldap_directory for synchronized directories, "
+            "or remove_contact/flush_contacts for explicit local contact changes."
+        ),
         # Targeted diagnostics: logs PCM peak/RMS on VoIP TX/RX.
         # Keep disabled by default; enable only on devices under audio-level test.
         cv.Optional(CONF_AUDIO_DEBUG, default=False): cv.boolean,
@@ -1095,7 +1101,7 @@ async def _add_core_settings(var, config):
     if config[CONF_PAGING_AUTO_ANSWER_PEERS]:
         cg.add_define("USE_ESPHOME_VOIP_PAGING")
         cg.add(var.set_paging_auto_answer_peers([str(ip) for ip in config[CONF_PAGING_AUTO_ANSWER_PEERS]]))
-    cg.add(var.set_use_ha_as_first_contact(config[CONF_USE_HA_AS_FIRST_CONTACT]))
+    cg.add(var.set_initial_contact(config[CONF_INITIAL_CONTACT]))
     cg.add(var.set_audio_debug(config[CONF_AUDIO_DEBUG]))
     if config[CONF_AUDIO_DEBUG]:
         cg.add_define("USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG")
@@ -1348,6 +1354,16 @@ _register_simple_action("voip_stack.start", StartAction)
 _register_simple_action("voip_stack.stop", StopAction)
 _register_simple_action("voip_stack.dump_diagnostics", DumpDiagnosticsAction)
 _register_simple_action("voip_stack.answer_call", AnswerCallAction)
+
+
+@automation.register_action(
+    "voip_stack.set_contacts", StartAction,
+    cv.invalid("voip_stack.set_contacts CSV batches are retired. Use static_contacts in YAML, "
+               "voip_stack.add_contact for local runtime contacts, or ldap_directory for synchronized directories."),
+    synchronous=True,
+)
+async def retired_set_contacts_action_to_code(config, action_id, template_arg, args):
+    raise cv.Invalid("voip_stack.set_contacts is retired")
 
 
 @automation.register_action(

@@ -71,7 +71,7 @@ void LdapDirectory::account_changed_() {
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   voip_stack::SipAccountSnapshot snapshot;
   if (!this->parent_->get_account_snapshot(this->account_id_, &snapshot)) {
-    this->lock_(); this->config_.credentials_ready = false; this->active_ = false; this->unlock_();
+    this->lock_(); this->config_.credentials_ready = false; this->config_.sip_aor.clear(); this->active_ = false; this->unlock_();
     this->interrupt_worker_();
     this->parent_->commit_contact_directory(this, {}, this->account_id_);
     this->account_loaded_ = false;
@@ -91,6 +91,7 @@ void LdapDirectory::account_changed_() {
   this->config_.username = snapshot.config.username;
   this->config_.password = snapshot.config.password;
   this->config_.sip_host = snapshot.config.registrar;
+  this->config_.sip_aor = snapshot.config.address_of_record();
   this->config_.sip_port = snapshot.config.port;
   this->config_.sip_tcp = snapshot.config.tcp;
   this->config_.credentials_ready = true;
@@ -175,6 +176,8 @@ void LdapDirectory::worker_run_() {
   Configuration cfg = this->config_;
   const uint32_t generation = this->generation_.load();
   this->unlock_();
+  voip_stack::SipTargetParts own;
+  if (voip_stack::sip_parse_target_uri(cfg.sip_aor, own)) own.port = cfg.sip_port;
   const std::string host = cfg.host.empty() ? cfg.sip_host : cfg.host;
   bool ok = this->stream_.connect(host, cfg.port, this->timeout_ms_, cfg.tls, cfg.ca_pem) &&
       generation == this->generation_.load();
@@ -189,7 +192,7 @@ void LdapDirectory::worker_run_() {
     ok = client.bind(dn, cfg.password, this->timeout_ms_) && generation == this->generation_.load();
     Search search;
     search.base_dn = cfg.base_dn; search.filter = cfg.filter; search.size_limit = MAX_SEARCH_RESULTS;
-    ok = ok && client.search_each(search, [this, &cfg, &discarded, generation](Entry &&entry) {
+    ok = ok && client.search_each(search, [this, &cfg, &own, &discarded, generation](Entry &&entry) {
       if (generation != this->generation_.load()) return false;
       // Subtree searches may include the organizational-unit container.
       if (entry.first("labeledURI").empty() && entry.first("telephoneNumber").empty() &&
@@ -204,6 +207,9 @@ void LdapDirectory::worker_run_() {
       contact.id = std::move(mapped.id); contact.name = std::move(mapped.name);
       contact.number = std::move(mapped.number);
       contact.route = mapped.uri.empty() ? std::move(mapped.user) : std::move(mapped.uri);
+      // Do not spend a bounded stage slot on our own account. Commit also
+      // verifies the current account identity when the main loop consumes it.
+      if (voip_stack::sip_matches_aor(own, contact.route)) return true;
       contact.ip = std::move(mapped.host); contact.port = mapped.port; contact.sip_transport_tcp = mapped.tcp;
       contact.endpoint_type = voip_stack::ContactEndpointType::SIP;
       const std::string &kind = mapped.kind;

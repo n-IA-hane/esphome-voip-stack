@@ -271,6 +271,17 @@ void VoipStack::start_call_attempt_(bool via_ha) {
       : (this->get_current_destination_route().empty()
              ? dest_name
              : this->get_current_destination_route());
+  // Full SIP URIs remain usable without a phonebook/LDAP row. Registered
+  // lines retain their registrar/proxy next hop; this only fills an otherwise
+  // absent direct endpoint using the same SIP URI parser as the transport.
+  if (!via_ha && dial_ip.empty()) {
+    SipTargetParts direct_target;
+    if (sip_parse_target_uri(dest_route, direct_target)) {
+      dial_ip.assign(direct_target.host.data(), direct_target.host.size());
+      dial_port = direct_target.port;
+      if (direct_target.has_transport) dial_sip_tcp = direct_target.tcp;
+    }
+  }
   const std::string call_id = "esp-" + std::to_string(static_cast<unsigned>(esp_random())) + "-" + std::to_string(millis()) +
         "-" + std::to_string(static_cast<unsigned>(esp_random())) + "@esphome";
 
@@ -298,11 +309,6 @@ void VoipStack::start_call_attempt_(bool via_ha) {
   this->set_remote_endpoint(dial_ip, dial_port, dial_rtp_port);
   this->set_call_identity_(call_id, caller_route, caller_name,
                             dest_route, dest_name, true);
-  this->set_call_sip_mode_(
-#ifdef USE_ESPHOME_VOIP_REGISTRATION
-      outgoing_line != "direct" ||
-#endif
-      via_ha);
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
   // Claim this receive session before any signaling can admit its RTP.
   this->reset_rx_audio_();
@@ -462,104 +468,19 @@ const char *VoipStack::get_state_str() const {
   return call_state_to_str(this->call_state_.load(std::memory_order_acquire));
 }
 
-bool VoipStack::parse_pbx_media_diagnostic_pair_(const std::string &value, bool video,
-                                               std::array<PbxMediaOperation, 2> *result) {
-  static constexpr const char *NAMES[] = {"unknown", "inactive", "forwarded", "repacketized", "resampled",
-                                        "codec_converted", "resampled_codec_converted", "converted"};
-  if (value.size() > 2 * (sizeof("resampled_codec_converted") - 1) + 1) return false;
-  const auto comma = value.find(',');
-  if (comma == std::string::npos || value.find(',', comma + 1) != std::string::npos) return false;
-  std::array<PbxMediaOperation, 2> parsed;
-  for (size_t side = 0; side != 2; ++side) {
-    const std::string token = side == 0 ? value.substr(0, comma) : value.substr(comma + 1);
-    bool found = false;
-    for (size_t index = 0; index != sizeof(NAMES) / sizeof(NAMES[0]); ++index) {
-      const auto operation = static_cast<PbxMediaOperation>(index);
-      const bool allowed = video ? (operation == PbxMediaOperation::UNKNOWN || operation == PbxMediaOperation::INACTIVE ||
-                                    operation == PbxMediaOperation::FORWARDED || operation == PbxMediaOperation::CONVERTED)
-                                 : operation != PbxMediaOperation::CONVERTED;
-      if (!allowed) continue;
-      if (token == NAMES[index]) {
-        parsed[side] = operation;
-        found = true;
-        break;
-      }
-    }
-    if (!found) return false;
-  }
-  *result = parsed;
-  return true;
-}
-
-std::string VoipStack::format_pbx_media_diagnostic_pair_(const std::array<PbxMediaOperation, 2> &value) {
-  static constexpr const char *LABELS[] = {"unknown", "off", "forwarded", "repacketized", "resampled",
-                                         "codec converted", "resampled+codec", "converted"};
-  if (value[0] == PbxMediaOperation::INACTIVE && value[1] == PbxMediaOperation::INACTIVE) return {};
-  const auto label = [](PbxMediaOperation operation) { return LABELS[static_cast<uint8_t>(operation)]; };
-  if (value[0] == value[1]) return label(value[0]);
-  if (value[0] == PbxMediaOperation::INACTIVE) return std::string("Rx ") + label(value[1]);
-  if (value[1] == PbxMediaOperation::INACTIVE) return std::string("Tx ") + label(value[0]);
-  return std::string("Tx ") + label(value[0]) + "/Rx " + label(value[1]);
-}
-
-void VoipStack::set_call_sip_mode_(bool via_pbx) {
-  LockGuard lock(this->call_state_mutex_);
-  this->pbx_media_diagnostics_ = {};
-  this->pbx_media_diagnostics_.via_pbx = via_pbx;
-}
-
-bool VoipStack::set_pbx_media_diagnostics(const std::string &call_id, const std::string &audio,
-                                       const std::string &video) {
-  std::array<PbxMediaOperation, 2> audio_operations, video_operations;
-  if (call_id.empty() || !parse_pbx_media_diagnostic_pair_(audio, false, &audio_operations) ||
-      !parse_pbx_media_diagnostic_pair_(video, true, &video_operations)) return false;
-  {
-    LockGuard lock(this->call_state_mutex_);
-    const auto state = this->call_state_.load(std::memory_order_acquire);
-    if ((state != CallState::IN_CALL && state != CallState::CONNECTING) ||
-        call_id != this->current_call_id_) return false;
-    auto &diagnostics = this->pbx_media_diagnostics_;
-    if (diagnostics.reported && diagnostics.audio == audio_operations && diagnostics.video == video_operations) return true;
-    diagnostics.reported = true;
-    diagnostics.audio = audio_operations;
-    diagnostics.video = video_operations;
-  }
-  this->defer("media_diagnostics", [this]() { this->publish_media_diagnostics_(); });
-  return true;
-}
-
-std::string VoipStack::get_media_diagnostics_str() const {
-  PbxMediaDiagnostics diagnostics;
-  {
-    LockGuard lock(this->call_state_mutex_);
-    if (this->current_call_id_.empty() || this->call_state_.load(std::memory_order_acquire) != CallState::IN_CALL) return {};
-    diagnostics = this->pbx_media_diagnostics_;
-  }
-  if (!diagnostics.reported) return diagnostics.via_pbx ? "Via PBX | unknown" : "Direct";
-  std::string result = "HA PBX";
-  const auto audio = format_pbx_media_diagnostic_pair_(diagnostics.audio);
-  const auto video = format_pbx_media_diagnostic_pair_(diagnostics.video);
-  if (!audio.empty()) result += " | A: " + audio;
-  if (!video.empty()) result += " | V: " + video;
-  return result;
-}
-
-void VoipStack::publish_media_diagnostics_() {
-#ifdef USE_TEXT_SENSOR
-  if (this->media_diagnostics_sensor_ == nullptr) return;
-  const auto value = this->get_media_diagnostics_str();
-  if (this->media_diagnostics_sensor_->state != value) this->media_diagnostics_sensor_->publish_state(value);
-#endif
-}
-
 void VoipStack::publish_state_() {
+  if (this->call_state_.load(std::memory_order_acquire) == CallState::IDLE) {
+    this->defer("initial-contact", [this]() {
+      const bool initial_changed = this->maybe_select_initial_contact_();
+      if (this->resolve_selected_dial_target_() || initial_changed) this->publish_destination_();
+    });
+  }
 #ifdef USE_TEXT_SENSOR
   if (this->state_sensor_ != nullptr) {
     this->state_sensor_->publish_state(this->get_state_str());
   }
 #endif
   this->publish_sip_snapshot_();
-  this->defer("media_diagnostics", [this]() { this->publish_media_diagnostics_(); });
 }
 
 void VoipStack::clear_terminal_call_snapshot_() {
@@ -1265,7 +1186,6 @@ void VoipStack::on_sip_signal_received_(const SipSignal &msg) {
       const std::string dest_name = in_dest_name.empty() ? this->device_name_ : in_dest_name;
       this->set_call_identity_(incoming_cid, in_caller_route, in_caller_name,
                                 dest_route, dest_name);
-      this->set_call_sip_mode_(msg.from_registered_account);
 #ifdef USE_ESPHOME_VOIP_STACK_SPEAKER
       this->reset_rx_audio_();
 #endif

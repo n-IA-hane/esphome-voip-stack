@@ -31,7 +31,7 @@ struct VoipStack {
  bool is_registered(const std::string&id){return transport_->is_registered(id);}
  std::string_view get_contact_account_view(const ContactEntry&)const;std::string get_contact_account(std::string_view,std::string_view = {})const;bool set_blf_watches(const std::vector<BlfWatchConfig>&);void sync_blf_contacts_();
  DirectoryCommitResult commit_contact_directory(const void*,ContactEntry*,size_t,const std::string&,DirectoryCommitInfo* = nullptr);
- void publish_phonebook_changed_(){++publications;sync_blf_contacts_();}
+ void publish_phonebook_changed_(){phonebook_.sort_by_name();++publications;sync_blf_contacts_();}
 };
 '''
     settings = (SOURCE / "voip_settings.cpp").read_text()
@@ -117,6 +117,11 @@ int main(int argc, char **){
   }else{assert(event=="message-summary");++mailboxes;peer.send_to(phone,notification(sub,1));one(peer,"SIP/2.0 200");}
  }
  assert(dialogs==3&&mailboxes==3&&!old_provider.empty()&&!explicit_sub.empty());
+ ContactEntry reordered[]={row("ldap-provider","Directory provider phone","102"),row("ldap-unresolved","Unresolved phone","404","missing"),row("ldap-explicit","Directory explicit phone","101","explicit")};
+ const auto unchanged_publications=app.publications;
+ assert(app.commit_contact_directory(&provider,reordered,3,"office")==DirectoryCommitResult::UNCHANGED);
+ assert(app.publications==unchanged_publications&&app.phonebook_.current()->stable_id()=="ldap-provider");
+ phone.pump_registration_mwi_(clock_ms);assert(peer.drain().empty());
  ContactEntry renamed[]={row("ldap-provider","Provider renamed label","102"),row("ldap-explicit","Explicit renamed label","101","explicit")};
  assert(app.commit_contact_directory(&provider,renamed,2,"office")==DirectoryCommitResult::APPLIED);
  assert(app.phonebook_.current()->stable_id()=="ldap-provider"&&app.phonebook_.current_name()=="Provider renamed label");

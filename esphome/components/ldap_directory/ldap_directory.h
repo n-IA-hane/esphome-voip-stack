@@ -50,7 +50,7 @@ class LdapDirectory : public phone_client::WorkerComponent
  protected:
   struct Configuration {
     std::string host, base_dn, bind_dn, filter{"(|(telephoneNumber=*)(labeledURI=*))"}, username, password, ca_pem;
-    std::string sip_host;
+    std::string sip_host, sip_aor;  // Bound SIP identity, never the manual LDAP bind username.
     uint16_t port{389}, sip_port{5060};
     bool tls{false}, sip_tcp{false}, credentials_ready{false};
   } config_;

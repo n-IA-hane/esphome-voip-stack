@@ -54,10 +54,11 @@ int main(){
  assert(boot.calls==0);
 #endif
 #endif
- ContactEntry manual;manual.id="manual";manual.name="Manual";manual.route="100";assert(book.add_entry(manual)==AddResult::Added);
+ ContactEntry manual;manual.id="manual";manual.name="Name4 manual";manual.route="100";assert(book.add_entry(manual)==AddResult::Added);
  auto first=snapshot();begin();assert(book.replace_directory(&provider,std::move(first))==DirectoryCommitResult::APPLIED);const auto cold=end();
- assert(book.size()==10&&book.select("row5"));
- auto same=snapshot();begin();assert(book.replace_directory(&provider,std::move(same))==DirectoryCommitResult::UNCHANGED);const auto warm=end();
+ assert(book.size()==10&&book.select("row5"));book.sort_by_name();
+ // UI order interleaves the manual row; a provider's order is not a change.
+ auto same=snapshot();std::reverse(same.begin(),same.end());begin();assert(book.replace_directory(&provider,std::move(same))==DirectoryCommitResult::UNCHANGED);const auto warm=end();
  assert(book.current()->stable_id()=="row5");
  auto changed=snapshot();changed[5].name="Renamed";begin();assert(book.replace_directory(&provider,std::move(changed))==DirectoryCommitResult::APPLIED);const auto update=end();
  assert(book.current_name()=="Renamed"&&book.current()->stable_id()=="row5");

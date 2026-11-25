@@ -267,7 +267,8 @@ api:
 Keep your microphone and/or speaker configuration. The component works with
 native ESPHome audio as well as Audio Stack. HA integration is enabled when
 API is configured; use `voip_stack.ha_integration: false` for standalone SIP.
-Routing through HA remains controlled separately by `use_ha_as_first_contact`.
+The selected SIP line owns routing. `initial_contact` selects only the initial
+destination; an empty value selects the first alphabetical phonebook entry.
 
 Automatic discovery exposes the short **VoIP State** entity. SIP Contact and SDP
 provide routing and media capabilities. The retired `endpoint` text sensor must
@@ -619,7 +620,7 @@ Peer A, a P4 at `192.0.2.10`, calls the Box:
 voip_stack:
   id: phone
   ha_integration: false
-  use_ha_as_first_contact: false
+  initial_contact: ""
   transport: udp
   sip_port: 5060
   registration:
@@ -639,7 +640,7 @@ Peer B, a Box at `192.0.2.11`, calls the P4:
 voip_stack:
   id: phone
   ha_integration: false
-  use_ha_as_first_contact: false
+  initial_contact: ""
   transport: udp
   sip_port: 5060
   registration:
@@ -859,7 +860,6 @@ platform entities you need:
 | `text_sensor` | `contacts` | Published local contact list. |
 | `text_sensor` | `transport` | Active signaling transport. |
 | `text_sensor` | `sip_snapshot` | SIP and media details captured on call or configuration changes. Run `voip_stack.dump_diagnostics` for current counters. With `audio_debug: true`, active calls also sample every 500 ms. |
-| `text_sensor` | `media_diagnostics` | Optional call-scoped processing indicator for the phone display. It does not select a route, codec or account. |
 | `text` | `ring_groups` | Editable comma-separated ring group memberships. |
 | `text` | `queues` | Editable comma-separated queue declarations; HA owns agent login and pause. |
 | `text` | `conference_groups` | Editable comma-separated conference group memberships. |
@@ -924,27 +924,51 @@ button:
     decline: { name: Decline }
 ```
 
-### Optional media processing indicator
+### Optional account media processing sensor
 
-The `media_diagnostics` text sensor is a display aid. `Direct` describes the
-current call's direct SIP line. A matched registered line starts as `Via PBX |
-unknown`: another PBX's processing cannot be inferred from its IP address or
-the negotiated codecs. The indicator is cleared when the call ends.
+VoIP Stack HA exposes media processing as a diagnostic sensor of the SIP
+account. No ESP API action or automatic on-screen label is required. The sensor
+summarizes the account's active calls; per-call attributes distinguish individual
+legs and media directions. It can report `unknown` or `mixed`, so a single value
+must not be interpreted as proof that this ESP leg uses a particular codec or
+route. A direct SIP call outside HA is not observable by that HA sensor.
 
-HA can optionally report its committed processing through the native API
-service `set_pbx_media_diagnostics(call_id, audio, video)`. Both media arguments
-contain `tx,rx` operations relative to this ESP, and the Call-ID must match its
-active SIP dialog. A report during the existing connecting phase is retained
-until the call is in progress. Missing services, disconnected API clients and stale Call-IDs
-do not affect calls. This service does not change SIP signaling, accounts,
-negotiation, media routes or media ownership.
+To consume it on an ESP, use the existing ESPHome `homeassistant` text sensor.
+Choose the **actual entity ID** of the account's media processing sensor in HA
+and replace the example substitution below. This example adds no display content;
+your own YAML decides whether and how to present the state.
 
-The compact display distinguishes forwarded audio, packet-time adaptation,
-resampling and codec conversion, including combined resampling and conversion.
-HA video conversion includes JPEG geometry changes even when the codec stays
-JPEG. Audio at 16 kHz on the wire with a 48 kHz local speaker is local ESP
-resampling; local video fitting to the display is also separate from HA
-processing. Inactive media directions are omitted from the display.
+```yaml
+substitutions:
+  account_media_processing_entity: sensor.replace_with_actual_account_media_processing
+
+text_sensor:
+  - platform: homeassistant
+    id: account_media_processing
+    entity_id: ${account_media_processing_entity}
+    internal: true
+```
+
+For copied custom YAML, remove `voip_stack` text sensor type `media_diagnostics`
+and API action `set_pbx_media_diagnostics`. SIP Call-ID, routing and media ownership
+continue to belong to the SIP dialog, independently of this optional HA entity.
+
+### Contact selection migration
+
+Replace `use_ha_as_first_contact` with `initial_contact`. For an explicit initial
+destination, use its SIP username, number or full `sip:` URI. With a registered
+line, the normal account routes that destination even when LDAP is unavailable.
+A direct line needs a usable URI or an existing local contact endpoint. The empty
+default selects the first contact in ASCII case-insensitive alphabetical name
+order, with stable identity/account/route tie-breaks. This is not locale collation
+for accented names. Manual next/previous/contact selection is retained on refresh.
+An explicit target never silently falls back to another directory row.
+
+Remove the retired `delete_contact_missing_from` option and firmware
+`voip_stack.set_contacts` CSV action. Use `ldap_directory` for a synchronized
+snapshot, `static_contacts` for local YAML contacts, and `add_contact`,
+`remove_contact` or `flush_contacts` for deliberate local runtime edits. HA's
+central JSON `set_contacts` service is a separate supported interface.
 
 ## Configuration reference
 
@@ -966,7 +990,7 @@ processing. Inactive media directions are omitted from the display.
 | `ha_integration.queues` | enabled with HA | Queue configuration text; `false` omits it. |
 | `paging_auto_answer_peers` | `[]` | Trusted source IPv4 addresses for per-call direct paging; at most 16 retained. |
 | `registration.accounts[].allow_paging_auto_answer` | `false` | Allow per-call paging from that matched manual PBX account. |
-| `use_ha_as_first_contact` | `false` | Pin the HA peer at the top of the dial plan. |
+| `initial_contact` | `""` | Initial SIP username, number or URI. Empty selects the first alphabetical contact. Explicit targets remain usable without LDAP on the selected SIP line. |
 | `ringing_timeout` / `calling_timeout` | none | Guard timers. |
 | `dc_offset_removal` | `false` | Remove DC bias on TX. |
 | `audio_debug` | `false` | Verbose audio-path diagnostics. |

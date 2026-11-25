@@ -263,9 +263,9 @@ class VoipStack : public Component {
 #endif
   const char *get_audio_capability() const { return this->audio_capability_(); }
 
-  // Direct SIP URIs are dialed peer-to-peer. Logical names without host/port
-  // are routed through HA as a SIP B2BUA bridge.
-  void set_use_ha_as_first_contact(bool enabled) { this->use_ha_as_first_contact_ = enabled; }
+  // Empty selects the first alphabetical contact; a value is a normal SIP
+  // destination, including when no directory has been populated.
+  void set_initial_contact(const std::string &target) { this->initial_contact_ = target; }
   void set_audio_debug(bool enabled) { this->audio_debug_ = enabled; }
   void set_tx_audio_format(uint32_t sample_rate, uint8_t pcm_format, uint8_t channels, uint16_t frame_ms,
                            uint8_t codec = 0) {
@@ -418,10 +418,6 @@ class VoipStack : public Component {
                : ConnectionState::CONNECTED;
   }
   const char *get_state_str() const;
-  // Optional presentation only. The SIP dialog remains the identity owner.
-  bool set_pbx_media_diagnostics(const std::string &call_id, const std::string &audio,
-                                 const std::string &video);
-  std::string get_media_diagnostics_str() const;
 
 #ifdef USE_TEXT_SENSOR
   // Optional text-sensor platform registration.
@@ -432,7 +428,6 @@ class VoipStack : public Component {
   void set_transport_sensor(text_sensor::TextSensor *sensor) { this->transport_sensor_ = sensor; }
   void set_last_reason_sensor(text_sensor::TextSensor *sensor) { this->last_reason_sensor_ = sensor; }
   void set_sip_snapshot_sensor(text_sensor::TextSensor *sensor) { this->sip_snapshot_sensor_ = sensor; }
-  void set_media_diagnostics_sensor(text_sensor::TextSensor *sensor) { this->media_diagnostics_sensor_ = sensor; }
 #endif
 #ifdef USE_TEXT
   void set_ring_groups_text(text::Text *entity) { this->ring_groups_text_ = entity; }
@@ -568,7 +563,13 @@ class VoipStack : public Component {
  protected:
   // Phonebook cycle helpers (see voip_settings.cpp).
   std::string normalize_phonebook_for_transport_(const std::string &contacts_csv);
-  bool maybe_auto_select_ha_first_();
+  bool maybe_select_initial_contact_();
+  bool resolve_selected_dial_target_();
+  void contact_selection_changed_() {
+    this->selected_dial_target_.clear();
+    this->selected_dial_target_resolved_ = false;
+    this->initial_contact_applied_ = true;
+  }
   void publish_phonebook_changed_();
 
   bool has_microphone_() const {
@@ -822,7 +823,6 @@ class VoipStack : public Component {
   text_sensor::TextSensor *transport_sensor_{nullptr};    // SIP signaling transport: "udp" or "tcp"
   text_sensor::TextSensor *last_reason_sensor_{nullptr};  // terminal reason for HA/card mirroring
   text_sensor::TextSensor *sip_snapshot_sensor_{nullptr};
-  text_sensor::TextSensor *media_diagnostics_sensor_{nullptr};
   std::string last_sip_snapshot_;
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
   uint32_t last_sip_snapshot_refresh_ms_{0};
@@ -871,9 +871,12 @@ class VoipStack : public Component {
   // hass.config.location_name through voip_stack.set_ha_peer_name for default
   // dial-plan selection. phonebook entry. Direct P2P usage can leave it empty.
   std::string ha_peer_name_;
-  bool use_ha_as_first_contact_{false};
-  bool first_contacts_batch_committed_{false};
-  std::string device_name_;  // This device's friendly name (to exclude from contacts)
+  std::string initial_contact_;
+  std::string selected_dial_target_;  // Explicit SIP target; directory metadata is optional.
+  bool selected_dial_target_resolved_{false};
+  bool initial_contact_ready_{false};
+  bool initial_contact_applied_{false};
+  std::string device_name_;  // Hardware display name; never a SIP account identity.
 #ifdef USE_VOIP_HA_AUTO_REGISTER
   std::string ha_display_name_;
 #endif
@@ -1128,21 +1131,6 @@ class VoipStack : public Component {
   // the helpers below (set/snapshot/clear) are allowed to touch them.
   mutable Mutex call_state_mutex_;
   std::string current_call_id_;
-  enum class PbxMediaOperation : uint8_t {
-    UNKNOWN, INACTIVE, FORWARDED, REPACKETIZED, RESAMPLED, CODEC_CONVERTED,
-    RESAMPLED_CODEC_CONVERTED, CONVERTED
-  };
-  struct PbxMediaDiagnostics {
-    bool via_pbx{false};
-    bool reported{false};
-    std::array<PbxMediaOperation, 2> audio{PbxMediaOperation::UNKNOWN, PbxMediaOperation::UNKNOWN};
-    std::array<PbxMediaOperation, 2> video{PbxMediaOperation::UNKNOWN, PbxMediaOperation::UNKNOWN};
-  } pbx_media_diagnostics_;
-  static bool parse_pbx_media_diagnostic_pair_(const std::string &value, bool video,
-                                               std::array<PbxMediaOperation, 2> *result);
-  static std::string format_pbx_media_diagnostic_pair_(const std::array<PbxMediaOperation, 2> &value);
-  void set_call_sip_mode_(bool via_pbx);
-  void publish_media_diagnostics_();
   std::string current_caller_route_id_;
   std::string current_caller_name_;
   std::string current_dest_route_id_;

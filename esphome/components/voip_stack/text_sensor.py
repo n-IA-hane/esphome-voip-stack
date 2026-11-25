@@ -16,7 +16,6 @@ TYPE_SIP_SNAPSHOT = "sip_snapshot"
 TYPE_DESTINATION = "destination"
 TYPE_CALLER = "caller"
 TYPE_CONTACTS = "contacts"
-TYPE_MEDIA_DIAGNOSTICS = "media_diagnostics"
 
 TYPES = {
     TYPE_STATE: ("VoIP State", "mdi:phone-settings", "set_state_sensor"),
@@ -26,8 +25,17 @@ TYPES = {
     TYPE_DESTINATION: ("VoIP Destination", "mdi:phone-forward", "set_destination_sensor"),
     TYPE_CALLER: ("VoIP Caller", "mdi:phone-incoming", "set_caller_sensor"),
     TYPE_CONTACTS: ("VoIP Contacts", "mdi:account-group", "set_contacts_sensor"),
-    TYPE_MEDIA_DIAGNOSTICS: ("VoIP Media Diagnostics", "mdi:information-outline", "set_media_diagnostics_sensor"),
 }
+
+
+def _validate_type(value):
+    if isinstance(value, str) and value.lower() == "media_diagnostics":
+        raise cv.Invalid(
+            "media_diagnostics moved to the HA SIP account's media processing sensor. "
+            "For optional display use text_sensor platform: homeassistant with its real entity_id; "
+            "remove the old voip_stack sensor and set_pbx_media_diagnostics action."
+        )
+    return cv.one_of(*TYPES, lower=True)(value)
 
 
 def _apply_type_defaults(config):
@@ -41,7 +49,7 @@ def _apply_type_defaults(config):
 CONFIG_SCHEMA = cv.All(
     text_sensor.text_sensor_schema().extend(
         {
-            cv.Required(CONF_TYPE): cv.one_of(*TYPES, lower=True),
+            cv.Required(CONF_TYPE): _validate_type,
             cv.Optional(CONF_VOIP_STACK_ID): cv.use_id(VoipStack),
         }
     ),

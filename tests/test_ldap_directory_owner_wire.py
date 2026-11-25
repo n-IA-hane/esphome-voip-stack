@@ -1,6 +1,7 @@
 """Actual LDAP stage/commit owners over independent TCP and verified TLS peers."""
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import os
 import socket
 import ssl
 import subprocess
@@ -10,7 +11,7 @@ import pytest
 from phone_client_openssl_adapter import write_adapter
 from test_refer_dialog_runtime import block
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("VOIP_TEST_PRODUCTION_ROOT", Path(__file__).resolve().parents[1]))
 
 
 @pytest.fixture(scope="module")
@@ -66,7 +67,7 @@ struct Trigger {unsigned calls=0;void trigger(uint32_t){++calls;}};
 class LdapDirectory:public Component {
  public:
  struct Configuration {
-  std::string host="localhost",base_dn="ou=phonebook,dc=voip",bind_dn="uid={username},dc=voip",filter="(cn=*)",username="Caffè 20%@Casa,1",password="fixture-password",ca_pem,sip_host="pbx.example.test";
+  std::string host="localhost",base_dn="ou=phonebook,dc=voip",bind_dn="uid={username},dc=voip",filter="(cn=*)",username="Caffè 20%@Casa,1",password="fixture-password",ca_pem,sip_host="pbx.example.test",sip_aor;
   uint16_t port=389,sip_port=5060;bool tls=false,sip_tcp=false,credentials_ready=true;
  }config_;
  std::mutex mutex_;
@@ -102,6 +103,7 @@ int main(int argc,char**argv){
  assert(phone.commit_contact_directory(&directory,&previous,1,"ha")==voip_stack::DirectoryCommitResult::APPLIED);
  const bool large=mode.rfind("large-",0)==0;
  if(large){directory.max_entries_=64;directory.stage_capacity_=64;}
+ if(mode=="self-capacity")directory.config_.sip_aor="sip:phone-000@pbx.example.test";
  const auto initial_publications=phone.publications;
  directory.worker_run_();assert(directory.pending_result_);
  if(mode=="all-invalid-256"){
@@ -121,6 +123,11 @@ int main(int argc,char**argv){
   assert(phone.phonebook_.size()==64&&phone.phonebook_.find("Manual")&&!phone.phonebook_.find("Old"));
   for(size_t i=0;i<63;++i){char id[16];std::snprintf(id,sizeof(id),"row-%03u",static_cast<unsigned>(i));assert(phone.phonebook_.find_id(id));}
   assert(!phone.phonebook_.find_id("row-063")&&phone.publications==initial_publications+1);
+ }else if(mode=="self-capacity"){
+  assert(directory.updated_.calls==1&&directory.error_.calls==0&&std::string(directory.status_)=="ready");
+  assert(directory.contact_count_==4&&directory.omitted_count_==0&&directory.discarded_count_==0);
+  assert(phone.phonebook_.size()==5&&!phone.phonebook_.find_id("row-000"));
+  for(unsigned i=1;i<=4;++i){char id[16];std::snprintf(id,sizeof(id),"row-%03u",i);assert(phone.phonebook_.find_id(id));}
  }else if(mode=="limit"){
   assert(directory.updated_.calls==1&&directory.error_.calls==0&&std::string(directory.status_)=="truncated");
   assert(directory.search_limited_&&directory.timer_delay==directory.refresh_ms_&&phone.phonebook_.find_id("entry-new"));
@@ -226,7 +233,7 @@ def response(mid, operation, code=0, *, bad=False, row=None):
 
 
 @pytest.mark.parametrize("tls", [False, True], ids=["tcp", "verified-tls"])
-@pytest.mark.parametrize("scenario", ["success", "mixed", "all-invalid", "all-invalid-256", "duplicate", "capacity", "empty", "limit", "truncated", "wrong-id", "stale", "large-65", "large-256", "large-limited", "overflow-257", "empty-limit"])
+@pytest.mark.parametrize("scenario", ["success", "mixed", "all-invalid", "all-invalid-256", "duplicate", "capacity", "empty", "limit", "truncated", "wrong-id", "stale", "large-65", "large-256", "large-limited", "overflow-257", "empty-limit", "self-capacity"])
 def test_real_peer_atomic_snapshot_failure_manual_and_generation(owner_binary, tls_certificate, tls, scenario):
     certificate, key = tls_certificate
     with socket.socket() as listener, ThreadPoolExecutor(max_workers=1) as executor:
@@ -252,6 +259,12 @@ def test_real_peer_atomic_snapshot_failure_manual_and_generation(owner_binary, t
                     assert search["protocolOp"].getName() == "searchRequest"
                     assert int(search["protocolOp"]["searchRequest"]["sizeLimit"]) == 256
                     mid = int(search["messageID"])
+                    if scenario == "self-capacity":
+                        for row in reversed(range(5)):
+                            stream.sendall(response(mid, "searchResEntry", row=row))
+                        stream.sendall(response(mid, "searchResDone"))
+                        assert message(stream)["protocolOp"].getName() == "unbindRequest"
+                        return
                     if scenario == "all-invalid-256":
                         for row in range(256):
                             stream.sendall(response(mid, "searchResEntry", row=row, bad=True))
@@ -281,7 +294,7 @@ def test_real_peer_atomic_snapshot_failure_manual_and_generation(owner_binary, t
                         assert message(stream)["protocolOp"].getName() == "unbindRequest"
 
         pending = executor.submit(peer)
-        mode = scenario if scenario in {"success", "mixed", "empty", "stale", "limit", "all-invalid-256"} or scenario.startswith("large-") else "failure"
+        mode = scenario if scenario in {"success", "mixed", "empty", "stale", "limit", "all-invalid-256", "self-capacity"} or scenario.startswith("large-") else "failure"
         result = subprocess.run([owner_binary, mode, str(listener.getsockname()[1]), str(int(tls)), certificate],
                                 capture_output=True, text=True, timeout=6)
         pending.result(timeout=5)

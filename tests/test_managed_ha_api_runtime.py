@@ -55,8 +55,6 @@ struct VoipStack {
  void set_account(const SipAccountConfig&c,bool persist){account=c;persisted=persist;++writes;}
  void set_ha_display_name(const std::string&s){display=s;}
  void publish_entity_states(){}
- std::string media_call,media_audio,media_video;
- bool set_pbx_media_diagnostics(const std::string&call,const std::string&audio,const std::string&video){media_call=call;media_audio=audio;media_video=video;return true;}
  void remove_account(std::string,bool){}void reset_account(std::string){}void register_account(std::string id){registered=id;}
  void unregister_account(std::string){}void select_line(std::string){}void start_call_on_line(std::string target,std::string line,bool send,bool receive){command_target=target;command_line=line;command_send=send;command_receive=receive;}
  void call(std::string){}void hangup_call_if_id(std::string){}
@@ -75,9 +73,7 @@ int main(int argc,char**argv){
  assert(adapter.services.at("start_call_on_line").args==std::vector<std::string>({"dest","line","send_video","receive_video"}));
  adapter.services.at("start_call_on_line").invoke({std::string("Caffè @ Office"),std::string("ha"),false,true});
  assert(parent.command_target=="Caffè @ Office"&&parent.command_line=="ha"&&!parent.command_send&&parent.command_receive);
- assert(adapter.services.at("set_pbx_media_diagnostics").args==std::vector<std::string>({"call_id","audio","video"}));
- adapter.services.at("set_pbx_media_diagnostics").invoke({std::string("sip-leg"),std::string("forwarded,resampled"),std::string("inactive,converted")});
- assert(parent.media_call=="sip-leg"&&parent.media_audio=="forwarded,resampled"&&parent.media_video=="inactive,converted");
+ assert(!adapter.services.count("set_pbx_media_diagnostics"));
  assert(!adapter.services.count("start_call_via_ha")&&!adapter.services.count("set_media_route")&&!adapter.services.count("set_roster_json"));
  assert(!adapter.services.count("set_contacts"));
  auto&service=adapter.services.at("set_account");
