@@ -20,10 +20,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - audio_version: 4.0.1
-            audio_sha: 891fdfc531ad38d9e90b5e9088be60a66c82ed4c
           - audio_version: 4.1.0
+            audio_contract: runtime
             audio_sha: e06373fa41529064cb852e2312a32a8148ddaaac
+          - audio_version: 4.0.1
+            audio_contract: older-library-compatibility
+            audio_sha: 891fdfc531ad38d9e90b5e9088be60a66c82ed4c
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -35,7 +37,7 @@ jobs:
       - name: Install test dependencies
         run: >-
           python -m pip install
-          "esphome @ git+https://github.com/esphome/esphome.git@373224c141dceadbb67ace263040cbfc802c5968"
+          "esphome @ git+https://github.com/esphome/esphome.git@1feda1bcaa861a5f2e933f2c65d599e44f4b132b"
           pytest==9.0.3
           ruff==0.15.21
           ldap3==2.9.1
@@ -51,6 +53,18 @@ jobs:
           esphome/components
           tests
           tools
+
+      - name: Verify the pinned builder's runtime audio dependency
+        run: |
+          python -m esphome compile tests/minimal_no_text.yaml --only-generate
+          python - <<'PYCODE'
+          from pathlib import Path
+          import yaml
+          manifest = Path("tests/.esphome/build/voip-minimal-no-text/src/idf_component.yml")
+          dependencies = yaml.safe_load(manifest.read_text())["dependencies"]
+          actual = dependencies["esphome/esp-audio-libs"]["version"]
+          assert str(actual) == "4.1.0", f"Native runtime test pin differs from generated firmware: {actual}"
+          PYCODE
 
       - name: Fetch the firmware's audio resampler for native DSP tests
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -85,7 +99,7 @@ jobs:
           ref: dev
           path: .test-deps/esphome-video-renderer
 
-      - name: Run contract tests
+      - name: Run ${{ matrix.audio_contract }} contract tests
         env:
           ESP_AUDIO_LIBS_SOURCE: ${{ github.workspace }}/.test-deps/esp-audio-libs
           VIDEO_RENDERER_SOURCE: ${{ github.workspace }}/.test-deps/esphome-video-renderer
@@ -96,7 +110,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: esp-native-results-${{ matrix.audio_version }}
+          name: esp-native-results-${{ matrix.audio_contract }}-${{ matrix.audio_version }}
           path: |
             test-results/native.xml
             test-results/audio-libs-sha.txt
@@ -167,7 +181,7 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install official ESPHome
-        run: python -m pip install "esphome @ git+https://github.com/esphome/esphome.git@373224c141dceadbb67ace263040cbfc802c5968"
+        run: python -m pip install "esphome @ git+https://github.com/esphome/esphome.git@1feda1bcaa861a5f2e933f2c65d599e44f4b132b"
       - name: Compile and link the audio firmware
         env:
           CONFIGURATION: ${{ matrix.configuration }}
