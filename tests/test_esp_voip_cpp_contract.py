@@ -2206,7 +2206,7 @@ def test_sip_tcp_rx_is_bounded_and_active_dialog_accept_is_guarded() -> None:
     assert "tcp_flow_.connect_requested" in send
     assert "if (socket < 0 || replacing_session)" in send
     assert "send_sip_tcp_record_(data, size, socket)" in send
-    assert "send_sip_tcp_bytes_(message.data(), message.size())" in send
+    assert "send_sip_tcp_record_(data, size, this->dispatch_socket_)" in send
     assert "this->wake_sip_task_();" in send
 
     promote = cpp_method(sip_cpp, r"SipTransport::promote_tcp_flow_")
@@ -2954,7 +2954,10 @@ def test_udp_invite_server_final_retransmits_until_matching_ack() -> None:
     assert 'header_value(request, "To")' in acknowledge
     assert "this->completed_invite_.status < 300" in acknowledge
     assert "branch == this->completed_invite_.branch" in acknowledge
-    assert "this->completed_invite_.awaiting_ack = false;" in acknowledge
+    assert "this->retire_completed_invite_ack_(" in acknowledge
+    retired = cpp_method(sip_cpp, r"SipTransport::retire_completed_invite_ack_")
+    assert "this->completed_invite_.awaiting_ack = false;" in retired
+    assert "SipSignalType::TERMINAL_COMPLETE" in retired
 
     datagram = dialog_request_method("handle_dialog_ack_")
     assert "acknowledge_completed_invite_(msg, src," in datagram
@@ -2964,7 +2967,8 @@ def test_udp_invite_server_final_retransmits_until_matching_ack() -> None:
         datagram.index("if (completed_status >= 300)") :
         datagram.index("const uint32_t expected_ip")
     ]
-    assert "emit_dialog_status_(SipSignalType::TERMINAL_COMPLETE, completed_status, std::move(request_call_id))" in non_2xx_ack
+    assert "SipSignalType::TERMINAL_COMPLETE" not in non_2xx_ack
+    assert "return;" in non_2xx_ack
     assert "return;" in non_2xx_ack
     assert "completed_status >= 200 && completed_status < 300" in datagram
 

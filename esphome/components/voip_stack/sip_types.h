@@ -339,28 +339,6 @@ inline bool choose_common_audio_format(const AudioFormatList &preferred, const A
   return false;
 }
 
-inline bool audio_format_list_supports_rtp_ptime(const AudioFormatList &list, uint8_t ptime,
-                                                 size_t max_payload = UDP_SAFE_AUDIO_PAYLOAD_BYTES) {
-  for (uint8_t i = 0; i < list.count; i++) {
-    const AudioFormat &candidate = list.formats[i];
-    if (candidate.frame_ms == ptime && audio_format_rtp_encoding(candidate, max_payload) != nullptr) return true;
-  }
-  return false;
-}
-
-inline uint8_t choose_common_audio_ptime(const AudioFormatList &tx, const AudioFormatList &rx,
-                                         size_t max_payload = UDP_SAFE_AUDIO_PAYLOAD_BYTES) {
-  static constexpr uint8_t kPreference[] = {10, 16, 20, 32};
-  for (uint8_t ptime : kPreference) {
-    if ((tx.count != 0 || rx.count != 0) &&
-        (tx.count == 0 || audio_format_list_supports_rtp_ptime(tx, ptime, max_payload)) &&
-        (rx.count == 0 || audio_format_list_supports_rtp_ptime(rx, ptime, max_payload))) {
-      return ptime;
-    }
-  }
-  return 0;
-}
-
 inline bool audio_format_list_match_udp_safe(const AudioFormatList &list, const AudioFormat &remote,
                                              AudioFormat *local,
                                              size_t max_payload = UDP_SAFE_AUDIO_PAYLOAD_BYTES) {

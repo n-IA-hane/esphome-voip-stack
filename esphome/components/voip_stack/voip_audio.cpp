@@ -116,22 +116,6 @@ bool VoipStack::is_tx_stream_ready_() const {
          this->transport_ != nullptr && this->transport_->is_connected();
 }
 
-void VoipStack::send_chunk_(const uint8_t *data, size_t length) {
-  if (!this->is_tx_stream_ready_())
-    return;
-#ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
-  if (this->audio_debug_) {
-    const AudioFormat tx_format = this->get_current_tx_audio_format_();
-    this->record_tx_debug_(data, length, tx_format);
-  }
-#endif
-  this->transport_->send_audio_frame(data, length);
-}
-
-void VoipStack::process_tx_chunk_(const uint8_t *audio_chunk) {
-  this->send_chunk_(audio_chunk, this->tx_audio_chunk_bytes_());
-}
-
 void VoipStack::send_chunk_(const uint8_t *data, size_t length, const TransportAudioTxContext &context) {
   if (!this->is_tx_stream_ready_()) return;
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG

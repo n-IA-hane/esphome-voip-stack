@@ -143,13 +143,6 @@ struct RtpAudioPayloads {
     return pcm;
   }
 
-  RtpAudioPayloads decoded_pcm_payloads() const {
-    RtpAudioPayloads pcm;
-    for (uint8_t i = 0; i < this->count; ++i)
-      pcm.add(this->entries[i].payload_type, decoded_pcm_format(this->entries[i].format));
-    return pcm;
-  }
-
   bool operator==(const RtpAudioPayloads &other) const {
     if (this->count != other.count) return false;
     for (uint8_t i = 0; i < this->count; ++i) {

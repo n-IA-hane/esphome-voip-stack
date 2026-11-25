@@ -375,11 +375,6 @@ void SipTransport::registration_notify_(void* ctx, const std::string& id, Regist
     self->registration_callback_(self->registration_context_, id, state, status);
 }
 
-bool SipTransport::registration_send_(void* ctx, size_t index, const std::string& message, uint32_t ip,
-                                      uint16_t port, bool tcp) {
-  return registration_send_view_(ctx, index, message, ip, port, tcp);
-}
-
 bool SipTransport::registration_send_view_(void* ctx, size_t index, std::string_view message, uint32_t ip,
                                       uint16_t port, bool tcp) {
   auto* self = static_cast<SipTransport*>(ctx);

@@ -39,6 +39,7 @@ def test_pcm_and_mic_debug_are_periodic_pending_metadata(tmp_path, enabled, prod
 #include <thread>
 #include <vector>
 #include "sip_types.h"
+#include "transport.h"
 #include "voip_fsm.h"
 #include "audio_core_audio_utils.h"
 std::atomic<bool>entered{false},release_console{false},sent{false},queued{false};
@@ -52,7 +53,7 @@ uint32_t millis(){return now;}
 namespace esphome::voip_stack {
 const char*TAG="fixture";
 struct Buffer{size_t available(){return 12;}};
-struct Transport{void send_audio_frame(const uint8_t*,size_t){sent=true;}};
+struct Transport{void send_audio_frame(const uint8_t*,size_t,const TransportAudioTxContext&){sent=true;}};
 struct Dc{int16_t process(int16_t x){return x;}};
 struct VoipStack{
  bool audio_debug_=true,dc_offset_removal_=false;unsigned dc_channel_phase_=0;
@@ -66,7 +67,9 @@ struct VoipStack{
  const char*get_call_state_str(){return call_state_to_str(call_state_.load());}
  size_t tx_audio_chunk_bytes_(){return 4;}size_t mic_processing_samples_(){return 2;}
  bool write_mic_buffer_(const uint8_t*,size_t){queued=true;return true;}
- void send_chunk_(const uint8_t*,size_t);void on_microphone_data_(const uint8_t*,size_t);
+ void send_chunk_(const uint8_t*,size_t,const TransportAudioTxContext&);
+ void produce_chunk(const uint8_t*data,size_t bytes){send_chunk_(data,bytes,TransportAudioTxContext{tx_audio_format_});}
+ void on_microphone_data_(const uint8_t*,size_t);
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
  uint32_t audio_debug_last_tx_log_ms_=0,audio_debug_tx_frames_=0;
  uint32_t audio_debug_last_mic_callback_ms_=0,audio_debug_mic_callbacks_=0,audio_debug_last_mic_log_ms_=0;
@@ -102,10 +105,10 @@ int main(){
  for(auto token:{"callbacks=1","len=4","delta_ms=0","tx_frame_bytes=4","accum_available=12","tx_queue_depth=2","tx_drops=3","tx_drop_bytes=4","tx_format=16000:1:1:16","state=in_call","producer_ms=1000"})
   assert(lines[1].find(token)!=std::string::npos);
  const auto initial=lines.size();owner.emit_audio_debug_pending_();assert(lines.size()==initial);
- now=1500;owner.send_chunk_(reinterpret_cast<uint8_t*>(pcm),4);owner.on_microphone_data_(reinterpret_cast<uint8_t*>(pcm),4);
+ now=1500;owner.produce_chunk(reinterpret_cast<uint8_t*>(pcm),4);owner.on_microphone_data_(reinterpret_cast<uint8_t*>(pcm),4);
  owner.emit_audio_debug_pending_();assert(lines.size()==initial); // Sampling remains 1Hz.
- now=2000;owner.send_chunk_(reinterpret_cast<uint8_t*>(pcm),4);owner.on_microphone_data_(reinterpret_cast<uint8_t*>(pcm),4);
- now=3000;owner.send_chunk_(reinterpret_cast<uint8_t*>(pcm),4);owner.on_microphone_data_(reinterpret_cast<uint8_t*>(pcm),4);
+ now=2000;owner.produce_chunk(reinterpret_cast<uint8_t*>(pcm),4);owner.on_microphone_data_(reinterpret_cast<uint8_t*>(pcm),4);
+ now=3000;owner.produce_chunk(reinterpret_cast<uint8_t*>(pcm),4);owner.on_microphone_data_(reinterpret_cast<uint8_t*>(pcm),4);
  assert((owner.audio_debug_stats_quality_.load()&12U)==12U); // Latest pending samples coalesced explicitly.
  owner.emit_audio_debug_pending_();assert(lines.size()==initial+2);
  assert(lines[initial].find("frames=4")!=std::string::npos&&lines[initial].find("producer_ms=3000")!=std::string::npos);
@@ -113,18 +116,18 @@ int main(){
  now=4000;owner.record_tx_debug_(nullptr,0,owner.tx_audio_format_);
  owner.emit_audio_debug_pending_();assert(lines.back().find("empty state=in_call")!=std::string::npos);
  now=5000;owner.tx_audio_format_.pcm_format=PcmFormat::S32LE;
- owner.send_chunk_(reinterpret_cast<uint8_t*>(pcm),4);owner.emit_audio_debug_pending_();
+ owner.produce_chunk(reinterpret_cast<uint8_t*>(pcm),4);owner.emit_audio_debug_pending_();
  assert(lines.back().find("levels=skipped_non_s16")!=std::string::npos);
- now=6000;owner.audio_debug_pcm_.busy.test_and_set();owner.send_chunk_(reinterpret_cast<uint8_t*>(pcm),4);
+ now=6000;owner.audio_debug_pcm_.busy.test_and_set();owner.produce_chunk(reinterpret_cast<uint8_t*>(pcm),4);
  assert(owner.audio_debug_stats_quality_.load()&1U);owner.audio_debug_pcm_.busy.clear();
- now=7000;owner.send_chunk_(reinterpret_cast<uint8_t*>(pcm),4);
+ now=7000;owner.produce_chunk(reinterpret_cast<uint8_t*>(pcm),4);
  assert(owner.audio_debug_pcm_.pending);
  owner.audio_debug_=false;const auto n=lines.size();
- owner.send_chunk_(reinterpret_cast<uint8_t*>(pcm),4);owner.on_microphone_data_(reinterpret_cast<uint8_t*>(pcm),4);
+ owner.produce_chunk(reinterpret_cast<uint8_t*>(pcm),4);owner.on_microphone_data_(reinterpret_cast<uint8_t*>(pcm),4);
  owner.emit_audio_debug_pending_();assert(lines.size()==n);
  // Console formatting runs outside the claim: a producer can publish during it.
- VoipStack another;now=8000;another.send_chunk_(reinterpret_cast<uint8_t*>(pcm),4);
- on_log=[&](){now=9000;another.send_chunk_(reinterpret_cast<uint8_t*>(pcm),4);};
+ VoipStack another;now=8000;another.produce_chunk(reinterpret_cast<uint8_t*>(pcm),4);
+ on_log=[&](){now=9000;another.produce_chunk(reinterpret_cast<uint8_t*>(pcm),4);};
  another.emit_audio_debug_pending_();assert(another.audio_debug_pcm_.pending);
  assert(another.audio_debug_pcm_.data.producer_ms==9000);
  another.emit_audio_debug_pending_();assert(!another.audio_debug_pcm_.pending);
@@ -133,15 +136,15 @@ int main(){
 #endif
 }
 ''')
-    order = ['owner.send_chunk_(reinterpret_cast<uint8_t*>(pcm),4)',
+    order = ['owner.produce_chunk(reinterpret_cast<uint8_t*>(pcm),4)',
              'owner.on_microphone_data_(reinterpret_cast<uint8_t*>(pcm),4)']
     if producer == 'mic-first':
         order.reverse()
     source.write_text(source.read_text().replace('WORKER_ORDER', ';'.join(order)))
     binary = tmp_path/'pending' 
     flags = ['-DUSE_ESPHOME_VOIP_STACK_AUDIO_DEBUG'] if enabled else []
-    built = subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-pthread',
-        '-DUSE_ESPHOME_VOIP_STACK_MIC',*flags,'-I',str(COMPONENT),str(source),'-o',str(binary)],capture_output=True,text=True)
+    built = subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-pthread',
+        '-DUSE_ESP32','-DUSE_ESPHOME_VOIP_STACK_MIC',*flags,'-I',str(COMPONENT),str(source),'-o',str(binary)],capture_output=True,text=True)
     assert built.returncode == 0, built.stderr
     run = subprocess.run(['bash','-c','ulimit -c 0; exec "$1"','bash',str(binary)],capture_output=True,text=True,timeout=3)
     assert run.returncode == 0, run.stderr

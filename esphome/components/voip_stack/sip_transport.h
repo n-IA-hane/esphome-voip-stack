@@ -279,7 +279,6 @@ class SipTransport : public SipPhoneTransport {
   void handle_sip_udp_datagram_(char *buf, int n, const sockaddr_in &src);
   bool send_sip_bytes_(const char *data, size_t size, uint32_t ip_v4,
                        uint16_t port);
-  bool send_sip_tcp_(const std::string &message);
   bool send_sip_tcp_bytes_(const char *data, size_t size);
   bool send_sip_tcp_record_(const std::string &message, int socket);
   bool send_sip_tcp_record_(const char *data, size_t size, int socket);
@@ -1039,7 +1038,6 @@ class SipTransport : public SipPhoneTransport {
   void cancel_registration_dns_();
   void invalidate_registration_dns_(size_t index);
   static std::string registration_hash_(const std::string &algorithm, const std::string &input);
-  static bool registration_send_(void *, size_t, const std::string &, uint32_t, uint16_t, bool);
   static bool registration_send_view_(void *, size_t, std::string_view, uint32_t, uint16_t, bool);
   static std::string registration_local_ip_(void *, uint32_t);
   static void registration_notify_(void *, const std::string &, RegistrationState, uint16_t);

@@ -636,9 +636,7 @@ class VoipStack : public Component {
   void tx_task_();
 
   bool is_tx_stream_ready_() const;
-  void send_chunk_(const uint8_t *data, size_t length);
   void send_chunk_(const uint8_t *data, size_t length, const TransportAudioTxContext &context);
-  void process_tx_chunk_(const uint8_t *audio_chunk);
 #endif
 #ifdef USE_ESPHOME_VOIP_STACK_AUDIO_DEBUG
   void record_tx_debug_(const uint8_t *pcm, size_t bytes, const AudioFormat &format);

@@ -53,7 +53,7 @@ def registration_transport_source(*, full_invite=False):
     code += "\nvoid SipTransport::invalidate_registration_dns_(size_t) {}\n"
     names = ["registration_flow_index_", "registration_socket_index_", "account_in_use_", "retire_registration_flow_", "set_account", "remove_account",
              "register_account", "is_registered", "prepare_account_line", "clear_account_line", "registration_ingress_",
-             "retry_authenticated_request_", "remember_registration_routes_", "registration_send_", "registration_send_view_"]
+             "retry_authenticated_request_", "remember_registration_routes_", "registration_send_view_"]
     for name in names:
         marker = next(line for line in adapter.splitlines() if "SipTransport::" + name + "(" in line)
         code += "\n" + block(adapter, marker)

@@ -449,10 +449,6 @@ bool SipTransport::send_sip_udp_bytes_(const char *data, size_t size,
   return true;
 }
 
-bool SipTransport::send_sip_tcp_(const std::string &message) {
-  return this->send_sip_tcp_bytes_(message.data(), message.size());
-}
-
 bool SipTransport::send_sip_tcp_bytes_(const char *data, size_t size) {
   // SIP commands can originate from the component/main task while the SIP
   // task sends responses. Serialize the complete record so partial TCP writes
