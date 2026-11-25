@@ -708,7 +708,9 @@ CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), ha_integration.p
         cv.Optional(
             CONF_SIGNALING_BUFFERS_IN_PSRAM, default=False
         ): _validate_signaling_buffers_in_psram,
-        # Ringing timeout: auto-decline call if not answered within this time
+        # Incoming ringing is unlimited unless configured. Outgoing uses the
+        # explicit calling value, else an explicit ringing value, else 180s.
+        # Preserve omission here: an explicit 0 disables that application limit.
         cv.Optional(CONF_RINGING_TIMEOUT): cv.positive_time_period_milliseconds,
         cv.Optional(CONF_CALLING_TIMEOUT): cv.positive_time_period_milliseconds,
         # Trigger when incoming call (auto_answer OFF)
@@ -1205,8 +1207,8 @@ async def _add_device_and_audio_settings(var, config):
     if CONF_RINGING_TIMEOUT in config:
         cg.add(var.set_ringing_timeout(config[CONF_RINGING_TIMEOUT]))
 
-    # Calling timeout: caller in CALLING with no final SIP response.
-    # Auto-fires SIP timeout handling when expired.
+    # Outgoing attempt, including remote ringing. The C++ setters preserve
+    # explicit 0 and resolve the ringing fallback only when calling is omitted.
     if CONF_CALLING_TIMEOUT in config:
         cg.add(var.set_calling_timeout(config[CONF_CALLING_TIMEOUT]))
 

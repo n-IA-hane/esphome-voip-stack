@@ -179,6 +179,24 @@ with BYE without replacing the original conversation. This transfer policy is
 separate from the normal outgoing call's configurable `calling_timeout` and SIP
 Timer B, which stops expiring once a provisional response arrives.
 
+Normal outgoing calls have a default application deadline of **180 seconds**
+when neither `calling_timeout` nor `ringing_timeout` is configured. An explicit
+`calling_timeout` takes precedence; otherwise an explicit `ringing_timeout`
+also supplies the outgoing deadline for compatibility. An explicit `0s`
+disables the corresponding application deadline, including this fallback.
+For example, `calling_timeout: 0s` with `ringing_timeout: 30s` leaves outgoing
+ringing unlimited while declining unanswered incoming calls after 30 seconds.
+Incoming ringing remains unlimited when `ringing_timeout` is omitted.
+
+The outgoing budget starts when INVITE is submitted, after local media
+preparation. Entering remote ringing or receiving repeated 100/180/183 responses
+does not restart it. Expiry sends CANCEL and retains the terminal SIP exchange
+until its final response or bounded cleanup; a crossed answer receives ACK and
+BYE. Calls can therefore ring beyond 32 seconds without leaving an unconfigured
+device occupied forever after a peer disappears. This is an application policy,
+not SIP Timer C. It does not change the separate no-response, media-preparation,
+REFER or SIP transaction deadlines.
+
 Rebuild the ESP with the 2026.11.0 component to use this capability.
 Updating the Home Assistant integration alone does not update ESP firmware.
 The Spotpear Ball V2 FULL profile has been checked with Waveshare S3 Audio,
@@ -1008,7 +1026,8 @@ central JSON `set_contacts` service is a separate supported interface.
 | `paging_auto_answer_peers` | `[]` | Trusted source IPv4 addresses for per-call direct paging; at most 16 retained. |
 | `registration.accounts[].allow_paging_auto_answer` | `false` | Allow per-call paging from that matched manual PBX account. |
 | `initial_contact` | `""` | Initial SIP username, number or URI. Empty selects the first alphabetical contact. Explicit targets remain usable without LDAP on the selected SIP line. |
-| `ringing_timeout` / `calling_timeout` | none | Guard timers. |
+| `ringing_timeout` | omitted | Incoming unanswered-call deadline; omitted or `0s` disables it. When configured, also supplies the outgoing fallback if `calling_timeout` is omitted. |
+| `calling_timeout` | `180s` when both options are omitted | Total outgoing INVITE attempt, including remote ringing. Explicit value takes precedence over `ringing_timeout`; explicit `0s` disables the application deadline. |
 | `dc_offset_removal` | `false` | Remove DC bias on TX. |
 | `audio_debug` | `false` | Verbose audio-path diagnostics. |
 | `buffers_in_psram` | `false` | Place VoIP-owned buffers in PSRAM. |

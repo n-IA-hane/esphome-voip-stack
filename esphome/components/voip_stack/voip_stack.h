@@ -221,10 +221,17 @@ class VoipStack : public Component {
   // Effective ESPHome node name, including the optional MAC suffix.
   // Matches the slug HA uses for the esphome.{slug}_start_call action.
   void set_device_route_id(const std::string &id) { this->device_route_id_ = id; }
-  // CALLING / RINGING timeouts (0 disables). They send CANCEL or a SIP
-  // timeout final response and tear down locally.
-  void set_calling_timeout(uint32_t ms) { this->calling_timeout_ms_ = ms; }
-  void set_ringing_timeout(uint32_t ms) { this->ringing_timeout_ms_ = ms; }
+  // Application timeout policy: explicit calling value (including 0), then
+  // explicit ringing value, then the outgoing default. Keep an explicit 0
+  // distinct from an omitted value, regardless of codegen setter order.
+  void set_calling_timeout(uint32_t ms) {
+    this->calling_timeout_ms_ = ms;
+    this->calling_timeout_configured_ = true;
+  }
+  void set_ringing_timeout(uint32_t ms) {
+    this->ringing_timeout_ms_ = ms;
+    if (!this->calling_timeout_configured_) this->calling_timeout_ms_ = ms;
+  }
   template<typename F> void add_on_state_callback(F &&callback) {
     this->state_callback_.add(std::forward<F>(callback));
   }
@@ -1117,8 +1124,11 @@ class VoipStack : public Component {
   bool accept_direct_calls_{false};
   bool do_not_disturb_{false};
 
-  // SIP call timeouts (0 = disabled). Pending outbound calls send CANCEL.
-  uint32_t calling_timeout_ms_{0};
+  // Application call timeouts (0 = disabled), separate from SIP timers.
+  // Bound an otherwise unconfigured outgoing attempt after provisional SIP
+  // progress. The budget runs from INVITE submission, not from each 1xx.
+  uint32_t calling_timeout_ms_{180000};
+  bool calling_timeout_configured_{false};
   uint32_t ringing_timeout_ms_{0};
   uint32_t ringing_start_time_{0};
   uint32_t calling_start_time_{0};

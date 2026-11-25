@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "esphome/components/voip_stack"
 
 
-def incoming_source() -> str:
-    source = (COMPONENT / "voip_fsm.cpp").read_text()
+def incoming_source(component=COMPONENT) -> str:
+    source = (component / "voip_fsm.cpp").read_text()
     adapter = (ROOT / "tests/fixtures/incoming_setup.cpp").read_text()
     methods = "\n".join(block(source, marker) for marker in (
         "void VoipStack::on_sip_signal_received_(",

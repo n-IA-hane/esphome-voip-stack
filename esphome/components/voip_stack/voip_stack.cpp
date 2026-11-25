@@ -696,11 +696,9 @@ void VoipStack::loop() {
   }
 #endif
 #endif
-  // Auto-decline timeouts (0 = disabled). CALLING falls back to
-  // ringing_timeout when calling_timeout is unset.
-  const uint32_t calling_to = this->calling_timeout_ms_ > 0
-                                ? this->calling_timeout_ms_
-                                : this->ringing_timeout_ms_;
+  // Configuration setters resolve omission/fallback once, preserving an
+  // explicit 0. Provisional responses never restart this application budget.
+  const uint32_t calling_to = this->calling_timeout_ms_;
 
   this->handle_call_timeouts_(now, calling_to);
   const CallState state = this->call_state_.load(std::memory_order_acquire);
