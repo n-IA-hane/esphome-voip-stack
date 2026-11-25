@@ -84,7 +84,7 @@ struct Parent {
 class LdapDirectory:public Component {
  public:
  struct Configuration {
-  std::string host="ldap.example.test",base_dn="dc=voip",bind_dn="{username}",filter="(cn=*)",username="phone",password="fixture",ca_pem,sip_host="example.test";
+  std::string host="ldap.example.test",base_dn="dc=voip",bind_dn="{username}",filter="(cn=*)",username="phone",password="fixture",ca_pem,sip_host="example.test",sip_aor="sip:phone@example.test";
   uint16_t port=389,sip_port=5060;
   bool tls=false,sip_tcp=false,credentials_ready=true;
  } config_;

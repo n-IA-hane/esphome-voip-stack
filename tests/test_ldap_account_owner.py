@@ -35,7 +35,7 @@ class VoipStack {
 namespace esphome::ldap_directory {
 class LdapDirectory {
  public:
- struct Configuration {std::string username,password,sip_host;uint16_t sip_port=0;bool sip_tcp=false,credentials_ready=false;}config_;
+ struct Configuration {std::string username,password,sip_host,sip_aor;uint16_t sip_port=0;bool sip_tcp=false,credentials_ready=false;}config_;
  voip_stack::VoipStack*parent_;std::string account_id_="ha";
  uint32_t account_revision_=0,last_success_=1;bool account_loaded_=false,active_=true,ready_=true;
  size_t contact_count_=1,omitted_count_=0,discarded_count_=0;bool search_limited_=false;uint32_t reported_generation_=0;const char*status_="ready";
@@ -55,6 +55,7 @@ int main(){
  assert(registration.set_account(account,1));directory.account_changed_();
  assert(directory.account_loaded_&&directory.config_.credentials_ready&&directory.config_.username=="Caffè 20%@Casa");
  assert(directory.config_.password==account.password&&directory.config_.sip_host==account.registrar&&directory.config_.sip_port==5062&&directory.config_.sip_tcp);
+ assert(directory.config_.sip_aor==account.address_of_record());
  auto revision=directory.account_revision_;auto generation=directory.generation_.load();assert(directory.refreshes==1);
  voip_stack::SipAccountSnapshot snapshot;assert(parent.transport.get_account_snapshot("ha",&snapshot));
  // Consumers own a copy, not a pointer or reference into the reusable slot.
@@ -68,6 +69,7 @@ int main(){
  assert(directory.account_revision_!=revision&&directory.generation_>generation&&directory.refreshes==2&&directory.config_.password==account.password);
  assert(registration.remove_account("ha"));directory.account_changed_();
  assert(!directory.account_loaded_&&!directory.config_.credentials_ready&&!directory.active_&&directory.contact_count_==0&&directory.last_success_==0);
+ assert(directory.config_.sip_aor.empty());
  assert(parent.phonebook.size()==1&&parent.phonebook.find("Manual"));
  assert(!parent.transport.get_account_snapshot("ha",&snapshot)&&!parent.transport.get_account_snapshot("ha",nullptr));
 }

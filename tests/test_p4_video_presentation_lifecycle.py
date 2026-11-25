@@ -197,6 +197,7 @@ int esp_imgfx_color_convert_open(const esp_imgfx_color_convert_cfg_t*c,void**p){
 int esp_imgfx_color_convert_close(void*){return 0;}
 int esp_imgfx_color_convert_process(void*,const esp_imgfx_data_t*i,esp_imgfx_data_t*o){++conversions;std::memcpy(o->data,i->data,i->data_len);if(convert_hook)convert_hook();return 0;}
 struct lv_area_t{int x1,y1,x2,y2;};struct lv_obj_t{int width=1280,height=720;};
+lv_obj_t active_screen;lv_obj_t*lv_screen_active(){return &active_screen;}void lv_obj_invalidate_area(lv_obj_t*,const lv_area_t*){}
 void lv_obj_get_coords(lv_obj_t*p,lv_area_t*a){*a={0,0,p->width-1,p->height-1};}int lv_area_get_width(const lv_area_t*a){return a->x2-a->x1+1;}int lv_area_get_height(const lv_area_t*a){return a->y2-a->y1+1;}
 bool xSemaphoreTake(std::mutex*m,int wait){assert(wait==0);return m->try_lock();}void xSemaphoreGive(std::mutex*m){m->unlock();}
 #define ESP_LOGE(...) ((void)0)
@@ -210,6 +211,7 @@ namespace esphome::mipi_dsi{struct MipiDsi{
 };}
 using namespace esphome;
 struct P4VideoRenderer{
+ lv_area_t presented_area_{};bool presented_area_valid_{false};std::atomic<bool>presentation_in_flight_{false};
  uint16_t max_decode_width_=800,max_decode_height_=800;static constexpr size_t kH264Level30MaxMacroblocks=1620;
  void*i420_converter_=nullptr;uint16_t i420_converter_width_=0,i420_converter_height_=0;bool i420_converter_failure_logged_=false;
  std::vector<uint8_t>storage=std::vector<uint8_t>(960000);uint8_t*optimized_yuv420_=storage.data();size_t optimized_yuv420_capacity_=960000;
