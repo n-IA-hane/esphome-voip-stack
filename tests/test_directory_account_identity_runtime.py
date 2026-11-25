@@ -33,16 +33,20 @@ METHOD
 }
 using namespace esphome::voip_stack;
 int main(int argc,char**argv){
- assert(argc==2);VoipStack phone;phone.device_route_id_=argv[1];
+ assert(argc==3);VoipStack phone;phone.device_route_id_=argv[1];
+ const std::string mode=argv[2];const bool external=mode=="external-ldap";
+ phone.account_known=mode!="unknown-account";
  phone.account.id="office";phone.account.username="100";phone.account.domain="pbx.example";phone.account.registrar="pbx.example";
  ContactEntry entries[5];int index=0;
  for(const auto&route:{"sip:100@pbx.example","sip:phone101@pbx.example","sip:102@pbx.example","sip:100@other.example","sip:100@pbx.example:5070"}){
   auto&entry=entries[index];entry.id=index==1?"phone101":"entry-"+std::to_string(index);
-  entry.name="Desk";entry.route=route;entry.account_id="office";++index;
+  entry.name="Desk";entry.route=route;entry.account_id=external?"":"office";++index;
  }
  int provider;
- assert(phone.commit_contact_directory(&provider,entries,5,"office")==DirectoryCommitResult::APPLIED);
- assert(phone.phonebook_.size()==4&&!phone.phonebook_.find_id("entry-0"));
+ assert(phone.commit_contact_directory(&provider,entries,5,external?"":"office")==DirectoryCommitResult::APPLIED);
+ const bool known=phone.account_known&&!external;
+ assert(phone.phonebook_.size()==(known?4:5));
+ assert((phone.phonebook_.find_id("entry-0")==nullptr)==known);
  assert(phone.phonebook_.find_id("phone101")&&phone.phonebook_.find_id("entry-2"));
  assert(phone.phonebook_.find_id("entry-3")&&phone.phonebook_.find_id("entry-4"));
  assert(!phone.phonebook_.find("Desk")); // Duplicate labels are valid; ambiguous lookup stays rejected.
@@ -63,6 +67,7 @@ int main(int argc,char**argv){
 
 
 @pytest.mark.parametrize("node", ["phone101", "different-node"])
-def test_account_identity_keeps_unrelated_matching_node_name(directory_identity_binary, node):
-    result = subprocess.run([directory_identity_binary, node], capture_output=True, text=True, timeout=5)
+@pytest.mark.parametrize("mode", ["known-account", "external-ldap", "unknown-account"])
+def test_account_identity_keeps_unrelated_matching_node_name(directory_identity_binary, node, mode):
+    result = subprocess.run([directory_identity_binary, node, mode], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stdout + result.stderr

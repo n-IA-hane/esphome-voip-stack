@@ -993,11 +993,26 @@ continue to belong to the SIP dialog, independently of this optional HA entity.
 Replace `use_ha_as_first_contact` with `initial_contact`. For an explicit initial
 destination, use its SIP username, number or full `sip:` URI. With a registered
 line, the normal account routes that destination even when LDAP is unavailable.
+A full SIP URI does not bypass a selected registered line: its URI stays in
+the request while the account keeps its registrar/proxy next hop and identity.
 A direct line needs a usable URI or an existing local contact endpoint. The empty
 default selects the first contact in ASCII case-insensitive alphabetical name
 order, with stable identity/account/route tie-breaks. This is not locale collation
 for accented names. Manual next/previous/contact selection is retained on refresh.
 An explicit target never silently falls back to another directory row.
+
+The maintained packages use an empty initial target unless
+`voip_initial_contact` is configured. After upgrading, the first alphabetical
+entry can therefore be a group or service; HA is not given automatic priority.
+Set the substitution to the desired SIP destination to keep a specific startup
+selection. BLF subscriptions and contact-list actions use contact/account
+identities, so a renamed entry can move without inheriting another row's state.
+
+LDAP excludes the configured SIP account's own canonical address when that
+identity is available. Explicit external LDAP credentials without an associated
+SIP account cannot identify a self row automatically; such a row may remain.
+The hardware node name and LDAP bind username are not treated as SIP aliases,
+because doing so can hide a different account with a matching label or username.
 
 Remove the retired `delete_contact_missing_from` option and firmware
 `voip_stack.set_contacts` CSV action. Use `ldap_directory` for a synchronized

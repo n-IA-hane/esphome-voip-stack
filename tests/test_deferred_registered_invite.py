@@ -112,15 +112,15 @@ int main(int argc,char**argv){
  VoipStack app;auto&s=*app.transport_;Peer qa(tcp),ha(tcp);
  bind_account(s,qa,"7101"); // actual REGISTER qa/7101 initializes the existing hooks/owner.
  bind_line(s,ha,1,"ha","home-user");
- if(scenario=="initial-user"||scenario=="initial-uri"){
+ if(scenario=="initial-user"||scenario=="initial-uri"||scenario=="public-uri"){
   app.phonebook_.clear();app.default_line_="qa";
-  app.selected_dial_target_=scenario=="initial-user"?"7102":"sip:7102@foreign.example:5080;transport=udp";
-  app.start();
+  const std::string target=scenario=="initial-user"?"7102":"sip:7102@foreign.example:5080;transport=udp";
+  if(scenario=="public-uri")app.call(target);else{app.selected_dial_target_=target;app.start();}
   const auto invite=pick(qa.drain(),"INVITE");
-  const std::string uri=scenario=="initial-user"?"sip:7102@pbx.example":app.selected_dial_target_;
+  const std::string uri=scenario=="initial-user"?"sip:7102@pbx.example":target;
   assert(invite.rfind("INVITE "+uri+" SIP/2.0",0)==0);
   assert(header_value(invite,"From").find("7101@pbx.example")!=std::string::npos);
-  assert(s.active_account_==0&&ha.drain().empty()&&app.identity.dest_route==app.selected_dial_target_);
+  assert(s.active_account_==0&&ha.drain().empty()&&app.identity.dest_route==target);
   for(auto&flow:s.registration_flows_)s.close_tcp_flow_(flow);close(s.sip_socket_);return 0;
  }
  app.sink_ready=false;
@@ -190,7 +190,7 @@ def test_preinvite_abort_releases_line_before_default_ha_call(deferred_binary,tr
 
 
 @pytest.mark.parametrize('transport', ['udp', 'tcp'])
-@pytest.mark.parametrize('scenario', ['initial-user', 'initial-uri'])
+@pytest.mark.parametrize('scenario', ['initial-user', 'initial-uri', 'public-uri'])
 def test_initial_target_without_ldap_uses_registered_account_and_wire_uri(deferred_binary, transport, scenario):
     run = subprocess.run([deferred_binary, scenario, '401', transport], capture_output=True, text=True, timeout=10)
     assert run.returncode == 0, run.stdout + run.stderr

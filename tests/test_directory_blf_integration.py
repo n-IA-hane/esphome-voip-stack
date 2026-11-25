@@ -104,7 +104,8 @@ int main(int argc, char **){
  int provider;ContactEntry initial[]={row("ldap-unresolved","Unresolved phone","404","missing"),row("ldap-explicit","Directory explicit phone","101","explicit"),row("ldap-provider","Directory provider phone","102")};
  assert(app.commit_contact_directory(&provider,initial,3,"office")==DirectoryCommitResult::APPLIED);
  assert(app.get_contact_account("ldap-explicit")=="explicit"&&app.get_contact_account("ldap-provider")=="office"&&app.get_contact_account("manual")=="fallback");
- assert(app.phonebook_.select("ldap-provider"));phone.pump_registration_mwi_(clock_ms);auto initial_wire=peer.drain();assert(initial_wire.size()==6);
+ assert(app.phonebook_.select("ldap-provider"));const auto old_cursor=app.phonebook_.cursor();
+ phone.pump_registration_mwi_(clock_ms);auto initial_wire=peer.drain();assert(initial_wire.size()==6);
  std::string old_provider,explicit_sub;unsigned dialogs=0,mailboxes=0;
  for(const auto&sub:initial_wire){assert(sub.rfind("SUBSCRIBE ",0)==0);const auto event=header_value(sub,"Event");
   peer.send_to(phone,response(sub,200));
@@ -125,7 +126,16 @@ int main(int argc, char **){
  ContactEntry renamed[]={row("ldap-provider","Provider renamed label","102"),row("ldap-explicit","Explicit renamed label","101","explicit")};
  assert(app.commit_contact_directory(&provider,renamed,2,"office")==DirectoryCommitResult::APPLIED);
  assert(app.phonebook_.current()->stable_id()=="ldap-provider"&&app.phonebook_.current_name()=="Provider renamed label");
+ assert(app.phonebook_.cursor()!=old_cursor); // The display position actually moved.
  phone.pump_registration_mwi_(clock_ms);assert(peer.drain().empty());
+ // Existing dialog notifications still update their canonical account/contact,
+ // not whichever entry now occupies the previous phonebook position.
+ peer.send_to(phone,notify_dialog(old_provider,2,dialog_document("<dialog id='active'><state>confirmed</state></dialog>",2)));
+ one(peer,"SIP/2.0 200");
+ BlfStateInfo moved,other;
+ assert(phone.get_blf_info("ldap-provider",&moved)&&moved.state==BlfState::ACTIVE&&moved.account_id=="office");
+ assert(phone.get_blf_info("ldap-explicit",&other)&&other.state==BlfState::IDLE&&other.account_id=="explicit");
+ assert(app.phonebook_.current()->stable_id()==moved.contact_id);
  ContactEntry duplicate[]={row("duplicate","Bad","201"),row("duplicate","Other","202")};const auto publications=app.publications;
  assert(app.commit_contact_directory(&provider,duplicate,2,"office")==DirectoryCommitResult::INVALID&&app.publications==publications);
  assert(app.phonebook_.current()->stable_id()=="ldap-provider");
@@ -134,7 +144,7 @@ int main(int argc, char **){
  const auto stop=one(peer,"SUBSCRIBE ");assert(header_value(stop,"Expires")=="0"&&header_value(stop,"Call-ID")==header_value(old_provider,"Call-ID"));
  assert(app.phonebook_.current()->stable_id()=="ldap-provider"&&app.phonebook_.current_route()=="202");
  peer.send_to(phone,response(stop,200));phone.pump_registration_mwi_(clock_ms);assert(peer.drain().empty());
- peer.send_to(phone,notify_dialog(stop,2,"","terminated;reason=deactivated"));one(peer,"SIP/2.0 200");phone.pump_registration_mwi_(clock_ms);
+ peer.send_to(phone,notify_dialog(stop,3,"","terminated;reason=deactivated"));one(peer,"SIP/2.0 200");phone.pump_registration_mwi_(clock_ms);
  const auto replacement=one(peer,"SUBSCRIBE ");assert(header_value(replacement,"To").find("sip:202@")!=std::string::npos&&header_value(replacement,"From").find("sip:100@")!=std::string::npos&&header_value(replacement,"Call-ID")!=header_value(old_provider,"Call-ID"));
  peer.send_to(phone,response(replacement,200));peer.send_to(phone,notify_dialog(replacement,1,dialog_document("")));one(peer,"SIP/2.0 200");
  peer.send_to(phone,notify_dialog(old_provider,9,dialog_document("<dialog id='stale'><state>confirmed</state></dialog>",99)));one(peer,"SIP/2.0 481");

@@ -173,7 +173,8 @@ enum class AddResult : uint8_t {
 };
 
 /// Local contact list with idempotent merge semantics. Slot order is
-/// stable across re-adds so next/prev never jump on republish.
+/// stable across re-adds until explicit display sorting. Sorting restores the
+/// selected account/contact identity; positional indices are not identifiers.
 class Phonebook {
  public:
   static constexpr size_t MAX_CONTACTS = 64;
