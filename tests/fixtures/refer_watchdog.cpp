@@ -42,6 +42,7 @@ void watchdog_case(bool old_tcp,bool new_tcp,unsigned outcome) {
   else target.send_to(sip,response(invite,outcome));
   auto answer=target.drain();
   if(outcome!=408)assert(answer.size()==1&&answer[0].rfind("ACK ",0)==0);
+  else assert(answer.size()==1&&answer[0].rfind("CANCEL ",0)==0);
   auto notified=original.drain();
   assert(notified.size()==1&&message_body(notified[0]).rfind("SIP/2.0 "+std::to_string(outcome),0)==0);
   assert(header_value(notified[0],"Subscription-State").find("terminated")==0);
@@ -54,6 +55,44 @@ void watchdog_case(bool old_tcp,bool new_tcp,unsigned outcome) {
   }else{
     assert(sip.call_id_.empty()&&!sip.media_active_);
     assert(sip.delivered.size()==1&&sip.delivered[0].type==SipSignalType::BYE);
+  }
+  cleanup(sip);
+}
+
+void refer_action_timeout_case(bool old_tcp,bool new_tcp,bool original_ended,unsigned late_status) {
+  SipTransport sip;Peer original(old_tcp),target(new_tcp);setup(sip,original);
+  auto invite=begin(sip,original,target);
+  const uint32_t deadline=sip.refer_dialog_->attempt_deadline_ms;
+  if(original_ended){
+    original.send_to(sip,request(original,"BYE",3));
+    const auto ended=original.drain();assert(ended.size()==1&&ended[0].rfind("SIP/2.0 200",0)==0);
+  }
+  target.send_to(sip,response(invite,180));
+  clock_ms=deadline-1;sip.pump_refer_();
+  assert(target.drain().empty()&&original.drain().empty()&&!sip.refer_retiring_);
+  clock_ms=deadline;sip.pump_refer_();
+  const auto cancelled=target.drain();
+  assert(cancelled.size()==1&&cancelled[0].rfind("CANCEL ",0)==0);
+  const auto final=original.drain();
+  assert(final.size()==1&&message_body(final[0])=="SIP/2.0 408 Transfer Failed\r\n");
+  assert(header_value(final[0],"Subscription-State").find("terminated")==0);
+  original.send_to(sip,response(final[0],200));
+  target.send_to(sip,response(cancelled[0],200));
+  sip.pump_refer_();assert(original.drain().empty());
+  target.send_to(sip,response(invite,late_status));
+  const auto completed=target.drain();
+  assert(completed.size()==(late_status==200?2u:1u)&&completed[0].rfind("ACK ",0)==0);
+  if(late_status==200){
+    assert(completed[1].rfind("BYE ",0)==0);
+    target.send_to(sip,response(completed[1],200));
+  }
+  sip.pump_refer_();assert(original.drain().empty());
+  if(original_ended){
+    assert(sip.call_id_.empty()&&!sip.media_active_);
+    assert(sip.delivered.size()==1&&sip.delivered[0].type==SipSignalType::BYE);
+  }else{
+    assert(sip.call_id_=="original"&&sip.media_active_&&sip.remote_audio_expected());
+    assert(sip.delivered.empty());
   }
   cleanup(sip);
 }

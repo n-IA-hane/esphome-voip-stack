@@ -128,4 +128,5 @@ void replay_case(bool old_tcp,bool new_tcp){
  cleanup(s);
 }
 void watchdog_case(bool,bool,unsigned);
-int main(int argc,char**argv){assert(argc>=4);if(std::string(argv[1])=="auth")auth_case(std::atoi(argv[2]),std::atoi(argv[3]),std::atoi(argv[4]),std::atoi(argv[5]));else if(std::string(argv[1])=="watchdog")watchdog_case(std::atoi(argv[2]),std::atoi(argv[3]),std::atoi(argv[4]));else replay_case(std::atoi(argv[2]),std::atoi(argv[3]));}
+void refer_action_timeout_case(bool,bool,bool,unsigned);
+int main(int argc,char**argv){assert(argc>=4);if(std::string(argv[1])=="auth")auth_case(std::atoi(argv[2]),std::atoi(argv[3]),std::atoi(argv[4]),std::atoi(argv[5]));else if(std::string(argv[1])=="watchdog")watchdog_case(std::atoi(argv[2]),std::atoi(argv[3]),std::atoi(argv[4]));else if(std::string(argv[1])=="action-timeout"){assert(argc==6);refer_action_timeout_case(std::atoi(argv[2]),std::atoi(argv[3]),std::atoi(argv[4]),std::atoi(argv[5]));}else replay_case(std::atoi(argv[2]),std::atoi(argv[3]));}

@@ -1055,6 +1055,8 @@ class SipTransport : public SipPhoneTransport {
     bool remote_sip_tcp_{false};
     std::string owner_call_id, target_uri;
     bool owner_invite_ended{false}, reporter_available{true};
+    // REFER action policy, independent of the candidate's SIP transaction state.
+    uint32_t attempt_deadline_ms{0};
     CompletedServerTransaction accepted_refer;
     std::string call_id_, local_tag_, remote_tag_, branch_;
     std::string local_uri_, local_contact_uri_, remote_uri_, remote_target_uri_;

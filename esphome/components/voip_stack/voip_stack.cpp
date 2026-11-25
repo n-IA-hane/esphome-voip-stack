@@ -611,7 +611,7 @@ void VoipStack::handle_call_timeouts_(uint32_t now_ms, uint32_t calling_timeout_
   if (state == CallState::IN_CALL && this->has_speaker_() && this->transport_ != nullptr) {
     if (!this->transport_->remote_audio_expected()) {
       // Keep the baseline fresh until the replacement dialog commits media.
-      // The existing SIP transaction timer still bounds the REFER attempt.
+      // The REFER owner's action deadline still bounds the replacement attempt.
       this->media_timeout_rtp_rx_packets_.store(this->transport_->received_audio_packets(), std::memory_order_release);
       this->last_peer_audio_ms_.store(now_ms, std::memory_order_release);
       return;

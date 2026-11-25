@@ -199,6 +199,7 @@ bool SipTransport::handle_refer_(const std::string &message, const sockaddr_in &
   candidate->accepted_refer = std::move(this->completed_control_);
   this->remote_dialog_cseq_ = this->refer_cseq_;
   this->refer_wire_id_ = make_token("refer-");
+  candidate->attempt_deadline_ms = millis() + SIP_TRANSACTION_TIMEOUT_MS;
   this->refer_expires_ = millis() + 2 * SIP_TRANSACTION_TIMEOUT_MS;
   this->refer_retiring_ = false;
   this->refer_signal_pending_ = false;
@@ -358,6 +359,18 @@ void SipTransport::pump_refer_() {
       this->finish_failed_refer_(this->refer_status_ >= 300 ? this->refer_status_ : 500,
                                  "Transfer Failed");
     }
+  }
+  // The application is still IN_CALL while REFER owns a replacement attempt.
+  // Its 32-second action policy must survive provisional SIP responses, while
+  // ordinary INVITE Timer B remains limited to Calling. Keep the candidate for
+  // its CANCEL/final response, including ACK+BYE for a crossed late 2xx.
+  if (!this->refer_retiring_ && time_reached(millis(), this->refer_dialog_->attempt_deadline_ms)) {
+    {
+      ReferScope scope(*this);
+      if (this->outgoing_invite_pending_.load(std::memory_order_acquire))
+        this->send_cancel_unlocked_(this->call_id_);
+    }
+    this->finish_failed_refer_(408, "Transfer Failed");
   }
   const auto &dialog = *this->refer_dialog_;
   if (this->refer_retiring_ && dialog.call_id_.empty() && dialog.pending_invite_.empty() &&

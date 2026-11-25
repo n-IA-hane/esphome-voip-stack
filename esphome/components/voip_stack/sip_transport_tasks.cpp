@@ -127,6 +127,7 @@ void SipTransport::sip_task_() {
           include_txn(this->refer_dialog_->pending_bye_);
           include_txn(this->refer_dialog_->pending_notify_);
           include_txn(this->refer_dialog_->pending_notify_final_);
+          if (!this->refer_retiring_) include_at(this->refer_dialog_->attempt_deadline_ms);
           include_at(this->refer_expires_);
         }
         for (const auto &completed : this->completed_refers_) {

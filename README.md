@@ -172,6 +172,13 @@ Hanging up on the ESP itself cancels the pending transfer. Authentication challe
 transfer explicitly: this receiver does not retry with SIP Digest credentials. A destination failure
 preserves the original conversation only if its caller has not already hung up.
 
+The REFER owner bounds its replacement attempt to 32 seconds, including ringing.
+On expiry it sends CANCEL and one final `NOTIFY` with status 408. It retains the
+candidate while cancellation finishes; a crossed late answer is ACKed and ended
+with BYE without replacing the original conversation. This transfer policy is
+separate from the normal outgoing call's configurable `calling_timeout` and SIP
+Timer B, which stops expiring once a provisional response arrives.
+
 Rebuild the ESP with the 2026.11.0 component to use this capability.
 Updating the Home Assistant integration alone does not update ESP firmware.
 The Spotpear Ball V2 FULL profile has been checked with Waveshare S3 Audio,
