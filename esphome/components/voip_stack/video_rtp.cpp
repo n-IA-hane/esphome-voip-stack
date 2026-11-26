@@ -592,9 +592,9 @@ bool VideoRtpSession::start(bool activate) {
   this->reset_audio_pacing_burst_();
   xSemaphoreTake(this->audio_pacing_, 0);
 #endif
+  this->tx_send_failures_.store(0, std::memory_order_release);
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   this->tx_backpressure_events_ = 0;
-  this->tx_send_failures_ = 0;
   this->tx_max_access_unit_ms_ = 0;
   this->tx_slow_send_calls_ = 0;
   this->tx_max_send_us_ = 0;
@@ -902,13 +902,14 @@ void VideoRtpSession::stop() {
           false, std::memory_order_acq_rel)) {
     ESP_LOGI(TAG,
              "Video session evidence: tx=%u rx=%u completed_au=%u "
-             "dropped_au=%u",
+             "dropped_au=%u send_fail=%u",
              (unsigned) this->tx_packets_.load(std::memory_order_acquire),
              (unsigned) this->rx_packets_.load(std::memory_order_acquire),
              (unsigned) this->tx_access_units_ok_.load(
                  std::memory_order_acquire),
              (unsigned) this->dropped_access_units_.load(
-                 std::memory_order_acquire));
+                 std::memory_order_acquire),
+             (unsigned) this->tx_send_failures_.load(std::memory_order_acquire));
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
     ESP_LOGI(TAG,
              "Video session totals: tx=%u rx=%u completed_au=%u "
@@ -921,7 +922,7 @@ void VideoRtpSession::stop() {
              (unsigned) this->dropped_access_units_.load(
                  std::memory_order_acquire),
              (unsigned) this->tx_backpressure_events_,
-             (unsigned) this->tx_send_failures_,
+             (unsigned) this->tx_send_failures_.load(std::memory_order_acquire),
              (unsigned) this->tx_slow_send_calls_,
              (unsigned) this->tx_max_send_us_,
              (unsigned) this->tx_max_access_unit_ms_);
@@ -1320,7 +1321,7 @@ void VideoRtpSession::send_access_unit_(
              (unsigned) this->dropped_access_units_.load(
                  std::memory_order_acquire),
              (unsigned) this->tx_backpressure_events_,
-             (unsigned) this->tx_send_failures_,
+             (unsigned) this->tx_send_failures_.load(std::memory_order_acquire),
              (unsigned) this->tx_slow_send_calls_,
              (unsigned) this->tx_max_send_us_, (unsigned) elapsed_ms,
              (unsigned) this->tx_max_access_unit_ms_);
@@ -1527,9 +1528,7 @@ bool VideoRtpSession::send_rtp_packet_(uint8_t *packet, size_t size,
   if (send_elapsed_us >= 5000U) this->tx_slow_send_calls_++;
 #endif
   if (sent <= 0) {
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
-    this->tx_send_failures_++;
-#endif
+    this->tx_send_failures_.fetch_add(1, std::memory_order_acq_rel);
     return abort_payload();
   }
   this->tx_packets_.fetch_add(1, std::memory_order_acq_rel);

@@ -370,9 +370,9 @@ class VideoRtpSession {
   bool send_remote_pli_{false};
   uint32_t last_rtcp_ms_{0};
   uint32_t last_pli_ms_{0};
+  std::atomic<uint32_t> tx_send_failures_{0};
 #ifdef USE_ESPHOME_VOIP_STACK_VIDEO_DEBUG
   uint32_t tx_backpressure_events_{0};
-  uint32_t tx_send_failures_{0};
   uint32_t tx_max_access_unit_ms_{0};
   uint32_t tx_slow_send_calls_{0};
   uint32_t tx_max_send_us_{0};
