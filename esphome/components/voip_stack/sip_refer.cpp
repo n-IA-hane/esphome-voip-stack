@@ -104,8 +104,17 @@ void SipTransport::handle_refer_subscribe_(const std::string &message, const soc
     this->send_stateless_response_(message, src, 400, "Invalid Expires");
     return;
   }
+  const std::string contact = header_value(message, "Contact");
+  const std::string refreshed_target = strip_angle_uri(contact);
+  if (!contact.empty() && refreshed_target.empty()) {
+    this->send_stateless_response_(message, src, 400, "Bad Request");
+    return;
+  }
   const uint32_t granted = std::min(requested, dialog.subscription_interval_ms / 1000U);
   if (!this->send_stateless_response_(message, src, 200, "OK", "", true, -1, "", granted)) return;
+  // SUBSCRIBE is a target refresh. Reuse confirmed-dialog request routing:
+  // Contact changes the remote target, never the established Route set.
+  if (!refreshed_target.empty()) this->remote_target_uri_ = refreshed_target;
   this->remote_dialog_cseq_ = cseq_number(header_value(message, "CSeq"));
   dialog.subscription_deadline_ms = millis() + granted * 1000U;
   // RFC 3515/6665: refreshing the event lease never changes the referred

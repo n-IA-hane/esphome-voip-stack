@@ -157,7 +157,7 @@ handoff. The established transmit format and speaker format remain unchanged.
 
 This receiver supports **in-dialog blind transfers of UDP or TCP audio calls
 to IPv4 SIP addresses**, including a change of signalling transport. Video
-transfers, hostname targets and attended-transfer URI headers remain unsupported.
+transfers, unrelated hostname targets and attended-transfer URI headers remain unsupported.
 Unsupported requests are rejected without replacing the current conversation.
 
 The replacement offer retains the active transmit codec and packet time. On
@@ -168,9 +168,11 @@ REFER replacement path.
 
 A remote BYE ends the original conversation without cancelling an accepted
 transfer. The ESP continues calling the destination and reports the result.
-Hanging up on the ESP itself cancels the pending transfer. Authentication challenges (401/407) fail the
-transfer explicitly: this receiver does not retry with SIP Digest credentials. A destination failure
-preserves the original conversation only if its caller has not already hung up.
+Hanging up on the ESP itself cancels the pending transfer. A registered transfer
+to its configured account authority reuses that account's SIP Digest handling.
+Other destinations do not inherit its credentials: a 401/407 challenge fails
+that transfer explicitly. A destination failure preserves the original
+conversation only if its caller has not already hung up.
 
 `calling_timeout` is the single application limit for ordinary outgoing calls
 and REFER replacement attempts. A positive value counts from INVITE submission,
@@ -223,6 +225,8 @@ it with an in-dialog `SUBSCRIBE` for `Event: refer;id=<REFER CSeq>`. Lease expir
 or `Expires: 0` stops event reporting without cancelling the transfer. Reporting
 a final outcome after unlimited ringing therefore requires a valid subscription;
 subscription refresh never extends a finite calling deadline.
+Accepted subscription refreshes update the dialog's Contact target through the
+existing request-routing owner while preserving the established Route set.
 
 Rebuild the ESP with the updated component to use this behavior.
 Updating the Home Assistant integration alone does not update ESP firmware.
