@@ -164,33 +164,6 @@ class P4RendererVideoSink final : public RendererVideoSink {
   // Preserve the original P4 transport pool defaults. Renderer bounds still
   // apply independently when an access unit is submitted.
   size_t max_encoded_access_unit_bytes() const override { return 0; }
-  bool start_video(const VideoCapability &capability) override {
-    if (!RendererVideoSink::start_video(capability)) return false;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-    const auto caps = this->renderer_->get_capabilities();
-    this->fps_ = std::max<uint8_t>(1, std::min(caps.preferred.max_fps, capability.max_fps));
-    this->cadence_.reset(this->fps_);
-#endif
-    return true;
-  }
-  bool set_video_active(bool active) override {
-    if (!RendererVideoSink::set_video_active(active)) return false;
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-    if (active) this->cadence_.reset(this->fps_);
-#endif
-    return true;
-  }
-  bool consume_video_access_unit(const EncodedVideoAccessUnit &unit) override {
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-    if (!this->cadence_.accept(unit.timestamp_90khz)) return false;
-#endif
-    return RendererVideoSink::consume_video_access_unit(unit);
-  }
- protected:
-#ifdef USE_ESPHOME_VOIP_STACK_VIDEO_JPEG
-  RtpFrameCadence90k cadence_{};
-  uint8_t fps_{1};
-#endif
 };
 
 }  // namespace esphome::voip_stack
