@@ -109,3 +109,10 @@ def test_udp_registration_owner_publishes_observed_contact_and_retires_only_its_
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "PASS nat-contact-owner udp\n"
+
+
+def test_positive_old_contact_in_success_is_not_treated_as_retired(registration_binary):
+    result = subprocess.run([registration_binary, "retirement-positive", "udp"],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "PASS retirement-positive udp\n"

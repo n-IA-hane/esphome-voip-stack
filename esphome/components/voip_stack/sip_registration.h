@@ -77,7 +77,7 @@ class SipRegistration {
  public:
   static constexpr size_t CAPACITY = VOIP_REGISTRATION_CAPACITY;
   static_assert(CAPACITY >= 1 && CAPACITY <= 4, "Registration capacity must be between one and four");
-  enum class RequestKind : uint8_t { REGISTRATION, KEEPALIVE };
+  enum class RequestKind : uint8_t { REGISTRATION, RETIREMENT, KEEPALIVE };
   struct Hooks {
     void* context{nullptr};
     bool (*send)(void*, size_t, std::string_view, uint32_t, uint16_t, bool){nullptr};
@@ -106,7 +106,7 @@ class SipRegistration {
     RegistrationState state{RegistrationState::DISABLED};
     SipDigest digest, proxy_digest;
     std::string call_id, tag, branch, contact;
-    // One prior generated URI, retained until the atomic Contact replacement succeeds.
+    // One prior generated URI, retained until its separate unregister transaction succeeds.
     std::string retiring_contact;
     RegistrationMessage request;
     uint32_t cseq{0}, target_ip{0}, next_ms{0}, deadline_ms{0}, interval_ms{500}, negotiated_expires{0},

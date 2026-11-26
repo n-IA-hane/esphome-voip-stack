@@ -139,20 +139,25 @@ int main(int argc, char** argv) {
     h.feed(h.first, mapping(response(request, 401,
         "WWW-Authenticate: Digest realm=\"probe\",nonce=\"unrelated\",algorithm=MD5\r\n"), 42000), due + 1);
     auto refresh = h.first.receive();
-    assert(refresh.rfind("REGISTER ", 0) == 0 && field(refresh, "Expires") == "3600");
+    assert(refresh.rfind("REGISTER ", 0) == 0 && field(refresh, "Expires") == (tcp ? "3600" : "0"));
     if (tcp) assert(field(refresh, "Contact") == field(initial, "Contact"));
     else {
       assert(field(refresh, "Contact") == "<sip:esphome-" + config.id +
-          "@127.0.0.1:42000;transport=udp>;expires=3600");
-      assert(refresh.find("Contact: <sip:esphome-" + config.id +
-          "@127.0.0.1:5060;transport=udp>;expires=0\r\n") != std::string::npos);
+          "@127.0.0.1:5060;transport=udp>;expires=0");
+      assert(field(refresh, "Expires") == "0");
       assert(refresh.find("Contact: *") == std::string::npos);
     }
     if (scenario == "credentials") {
       assert(field(refresh, "Authorization").find("nonce=\"retained\"") != std::string::npos);
       assert(h.manager.account(0).digest.nonce == "retained" && h.manager.account(0).digest.nonce_count == 2);
     }
-    h.feed(h.first, mapping(h.success(refresh), 42000), due + 2);
+    if (!tcp) {
+      h.feed(h.first, mapping(response(refresh, 200), 42000), due + 2);
+      refresh = h.first.receive();
+      assert(field(refresh, "Contact") == "<sip:esphome-" + config.id +
+          "@127.0.0.1:42000;transport=udp>;expires=3600");
+    }
+    h.feed(h.first, mapping(h.success(refresh), 42000), due + 3);
     assert(h.manager.is_registered(config.id));
   } else if (scenario == "loss") {
     h.manager.connection_lost(0, due + 1);

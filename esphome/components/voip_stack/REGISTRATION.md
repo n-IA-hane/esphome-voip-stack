@@ -77,11 +77,14 @@ Via-derived mapped address when the registrar rewrites that Contact.
 
 For UDP, the registration owner also learns the reachable endpoint from the
 `received` and `rport` parameters in its correlated successful response. If it
-differs from the advertised Contact, one subsequent REGISTER replaces that
-account's old URI (`expires=0`) with the observed URI. Other contacts sharing
-the account, such as a desktop softphone, remain registered. Authentication and
-retries retain the pending replacement until it is acknowledged. A local
-non-NAT registration does not require an extra exchange.
+differs from the advertised Contact, a separate REGISTER retires the old URI
+with that Contact alone and a global `Expires: 0`. Only after the response
+confirms its removal does a new REGISTER publish the observed URI. The owner
+keeps its Call-ID and advances CSeq; no wildcard unregister is sent. This
+preserves other devices, such as a desktop softphone with its own registration
+Call-ID. Authentication and retries retain the pending retirement until it is
+acknowledged. The new binding becomes usable only after its own acknowledgment.
+A local non-NAT registration does not require an extra exchange.
 
 This preserves a DNS registrar and virtual service address through NAT without
 relaxing the registered-peer incoming check or enabling direct calls. The SIP

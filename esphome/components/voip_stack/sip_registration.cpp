@@ -424,6 +424,7 @@ bool SipRegistration::set_account(const SipAccountConfig& c, uint32_t now) {
       }
   if (i < 0) return false;
   auto& a = this->accounts_[i];
+  if (!a.retiring_contact.empty()) return false;
   const uint32_t revision = ++this->next_config_revision_;
   a = {};
   a.config_revision = revision;
@@ -438,7 +439,7 @@ bool SipRegistration::set_account(const SipAccountConfig& c, uint32_t now) {
 }
 bool SipRegistration::remove_account(const std::string& id) {
   const int i = this->find(id);
-  if (i < 0) return false;
+  if (i < 0 || !this->accounts_[i].retiring_contact.empty()) return false;
   const uint32_t revision = ++this->next_config_revision_;
   this->accounts_[i] = {};
   this->accounts_[i].config_revision = revision;
@@ -451,7 +452,7 @@ bool SipRegistration::request_registration(const std::string& id, bool on, uint3
   // Do not abandon an in-flight non-INVITE transaction. Apply the intent when
   // its final response arrives, maintaining monotonic CSeq on this Call-ID.
   a.desired = on;
-  if (a.pending && a.request_kind != RequestKind::REGISTRATION) {
+  if (a.pending && a.request_kind == RequestKind::KEEPALIVE) {
     a.pending = false;
     a.request_kind = RequestKind::REGISTRATION;
     a.request.clear();
@@ -485,12 +486,13 @@ void SipRegistration::retry_(size_t i, uint16_t status, uint32_t now, uint32_t d
   a.proxy_auth_attempts = 0;
   a.failures = std::min<uint8_t>(a.failures + 1, 6);
   a.next_ms = now + (delay_ms ? delay_ms : std::min<uint32_t>(30000U << (a.failures - 1), 900000));
-  a.scheduled = a.desired;
+  a.scheduled = a.desired || !a.retiring_contact.empty();
   this->state_(i, a.desired ? RegistrationState::RETRY : RegistrationState::DISABLED, status);
 }
 bool SipRegistration::begin_(size_t i, uint32_t now) {
   auto& a = this->accounts_[i];
-  a.request_kind = RequestKind::REGISTRATION;
+  const bool retiring = !a.retiring_contact.empty();
+  a.request_kind = retiring ? RequestKind::RETIREMENT : RequestKind::REGISTRATION;
   const auto& c = a.config;
   if (this->hooks_.send == nullptr || this->hooks_.resolve == nullptr || this->hooks_.local_ip == nullptr)
     return false;
@@ -518,7 +520,9 @@ bool SipRegistration::begin_(size_t i, uint32_t now) {
   if (c.tcp || a.contact.empty()) a.contact = contact;
   a.branch = "z9hG4bK" + this->token_();
   ++a.cseq;
-  a.requested_expires = a.desired ? c.expires : 0;
+  a.requested_expires = !retiring && a.desired ? c.expires : 0;
+  if (retiring) a.bound = false;
+  const std::string& request_contact = retiring ? a.retiring_contact : a.contact;
   const std::string registrar_uri = "sip:" + c.registrar + ":" + std::to_string(c.port);
   const auto aor = c.address_of_record();
   std::string message =
@@ -526,10 +530,8 @@ bool SipRegistration::begin_(size_t i, uint32_t now) {
       ":" + std::to_string(this->hooks_.local_port) + ";branch=" + a.branch + ";rport\r\n" +
       "Max-Forwards: 70\r\nFrom: <" + aor + ">;tag=" + a.tag + "\r\nTo: <" + aor + ">\r\n" +
       "Call-ID: " + a.call_id + "\r\nCSeq: " + std::to_string(a.cseq) + " REGISTER\r\n" + "Contact: <" +
-      a.contact + ">;expires=" + std::to_string(a.desired ? c.expires : 0) + "\r\n" +
-      "Expires: " + std::to_string(a.desired ? c.expires : 0) + "\r\nUser-Agent: ESPHome-VoIP-Stack\r\n";
-  if (!a.retiring_contact.empty())
-    message += "Contact: <" + a.retiring_contact + ">;expires=0\r\n";
+      request_contact + ">;expires=" + std::to_string(a.requested_expires) + "\r\n" +
+      "Expires: " + std::to_string(a.requested_expires) + "\r\nUser-Agent: ESPHome-VoIP-Stack\r\n";
   for (auto* digest : {&a.digest, &a.proxy_digest}) {
     if (digest->empty()) continue;
     const std::string authorization =
@@ -607,7 +609,7 @@ void SipRegistration::tick(uint32_t now) {
       a.bound = false;
       if (a.desired && a.pending) this->state_(i, RegistrationState::REGISTERING, 0);
     }
-    if (a.pending && a.request_kind != RequestKind::REGISTRATION &&
+    if (a.pending && a.request_kind == RequestKind::KEEPALIVE &&
         (!a.bound || !a.desired || reached(now, a.registration_next_ms))) {
       a.pending = false;
       a.request_kind = RequestKind::REGISTRATION;
@@ -617,7 +619,7 @@ void SipRegistration::tick(uint32_t now) {
     if (a.pending) {
       if (reached(now, a.deadline_ms)) {
         const auto kind = a.request_kind;
-        if (kind == RequestKind::REGISTRATION) this->retry_(i, 408, now);
+        if (kind != RequestKind::KEEPALIVE) this->retry_(i, 408, now);
         else {
           a.pending = false;
           a.request_kind = RequestKind::REGISTRATION;
@@ -631,7 +633,7 @@ void SipRegistration::tick(uint32_t now) {
         if (!this->hooks_.send(this->hooks_.context, i, std::string_view(a.request.data(), a.request.size()),
                               a.target_ip, a.target_port, false)) {
           const auto kind = a.request_kind;
-          if (kind == RequestKind::REGISTRATION) this->retry_(i, 503, now);
+          if (kind != RequestKind::KEEPALIVE) this->retry_(i, 503, now);
           else {
             a.pending = false;
             a.request_kind = RequestKind::REGISTRATION;
@@ -669,7 +671,7 @@ bool SipRegistration::next_deadline(uint32_t now, uint32_t* remaining) const {
     const uint32_t deadline = a.pending && a.config.tcp ? a.deadline_ms : a.next_ms;
     uint32_t delta = reached(now, deadline) ? 0 : deadline - now;
     if (a.pending) delta = std::min(delta, reached(now, a.deadline_ms) ? 0U : a.deadline_ms - now);
-    if (a.request_kind != RequestKind::REGISTRATION)
+    if (a.request_kind == RequestKind::KEEPALIVE)
       delta = std::min(delta, reached(now, a.registration_next_ms) ? 0U : a.registration_next_ms - now);
     if (!found || delta < best) best = delta;
     found = true;
@@ -696,7 +698,7 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
     if (!a.pending || a.target_ip != ip || a.target_port != port || a.config.tcp != tcp ||
         (tcp && flow_index != static_cast<int>(i)) ||
         !decimal(sequence.substr(0, separator), &cseq) || cseq != a.cseq ||
-        method != (a.request_kind == RequestKind::REGISTRATION ? "REGISTER" : "OPTIONS") ||
+        method != (a.request_kind == RequestKind::KEEPALIVE ? "OPTIONS" : "REGISTER") ||
         via_parameter(header_view(message, "Via"), "branch") != std::string_view(a.branch)) return true;
     const auto response_via = header_view(message, "Via");
     const auto request_via = header_view(std::string_view(a.request.data(), a.request.size()), "Via");
@@ -712,7 +714,7 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
     const auto completed_kind = a.request_kind;
     a.pending = false;
     a.request_kind = RequestKind::REGISTRATION;
-    if (completed_kind != RequestKind::REGISTRATION) {
+    if (completed_kind == RequestKind::KEEPALIVE) {
       a.request.erase(0, a.request.size());
       a.next_ms = a.registration_next_ms;
       a.keepalive_next_ms = now + this->keepalive_interval_ms_;
@@ -757,6 +759,27 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
       }
     }
     if (status >= 200 && status < 300) {
+      if (completed_kind == RequestKind::RETIREMENT) {
+        std::string expires;
+        const bool present = find_registered_contact(message, a.retiring_contact, &expires);
+        uint32_t granted = 0;
+        if (present && (expires.empty() || !decimal(expires, &granted) || granted != 0)) {
+          this->retry_(i, 502, now);
+          return true;
+        }
+        a.retiring_contact.clear();
+        a.bound = false;
+        a.negotiated_expires = 0;
+        a.auth_attempts = 0;
+        a.proxy_auth_attempts = 0;
+        a.failures = 0;
+        if (a.desired) this->begin_(i, now);
+        else {
+          a.scheduled = false;
+          this->state_(i, RegistrationState::DISABLED, status);
+        }
+        return true;
+      }
       uint32_t expires = a.requested_expires;
       // Require our Contact in a successful registration response. A generic
       // Expires header must not accidentally acknowledge another binding.
@@ -811,8 +834,8 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
         a.scheduled = a.desired;
         a.next_ms = now + 1000;
       }
-      // RFC 3261 10.2.2: retire only our prior URI, alongside its replacement.
-      // A correlated successful REGISTER is the sole owner of this UDP mapping.
+      // Retire our old URI before publishing the new one: some registrars
+      // remove every binding with this Call-ID on a targeted unregister.
       if (!a.config.tcp && a.bound && a.desired && a.observed_ip) {
         auto contact = observed_contact(a);
         if (contact != a.contact) {

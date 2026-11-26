@@ -179,13 +179,61 @@ int main(int argc, char** argv) {
   Harness h(tcp);
   auto c = h.config();
   assert(c.valid());
+  if (scenario == "retirement-positive") {
+    assert(!tcp);
+    // Frozen live frames 566..572: the registrar keeps the old URI positive.
+    constexpr uint32_t vip = 0x0afffffe;
+    c.id = "fusion"; c.username = "418";
+    c.registrar = "fusionpbx.tecnodata.net"; c.port = 5060;
+    h.hooks.resolve = [](void*, size_t, const std::string&) { return uint32_t{0x0afffffe}; };
+    h.hooks.local_ip = [](void*, uint32_t) { return std::string("172.16.199.63"); };
+    h.hooks.send = [](void* ctx, size_t index, std::string_view message, uint32_t ip, uint16_t port, bool stream) {
+      assert(index == 0 && ip == 0x0afffffe && port == 5060 && !stream);
+      auto& peer = static_cast<Harness*>(ctx)->first;
+      return send(peer.esp, message.data(), message.size(), 0) == static_cast<ssize_t>(message.size());
+    };
+    h.manager.set_hooks(h.hooks);
+    const std::string old_uri = "sip:esphome-fusion@172.16.199.63:5060;transport=udp";
+    const std::string new_uri = "sip:esphome-fusion@172.16.199.1:5060;transport=udp";
+    const std::string zoiper = "<sip:418@172.16.199.1:47941;transport=TCP>;expires=31";
+    const auto feed = [&](const std::string& request, unsigned status, const std::string& extra, uint32_t now) {
+      auto message = response(request, status, extra);
+      const auto at = message.find(";rport");
+      assert(at != std::string::npos);
+      message.replace(at, 6, ";received=172.16.199.1;rport=5060");
+      assert(h.manager.handle_response(message, vip, 5060, false, -1, now));
+    };
+    assert(h.manager.set_account(c, 0)); h.manager.tick(0);
+    auto initial = h.first.receive();
+    feed(initial, 401, "WWW-Authenticate: Digest realm=\"pbx\",nonce=\"retirement-witness\",algorithm=MD5,qop=\"auth\"\r\n", 1);
+    auto authenticated = h.first.receive();
+    assert(field(authenticated, "CSeq") == "2 REGISTER");
+    feed(authenticated, 200, "Contact: " + zoiper + ",<" + old_uri + ">;expires=120\r\n", 2);
+    auto replacement = h.first.receive();
+    assert(field(replacement, "CSeq") == "3 REGISTER");
+    assert(field(replacement, "Contact") == "<" + old_uri + ">;expires=0");
+    assert(field(replacement, "Expires") == "0");
+    // Exact granted lifetimes from the acknowledging 200 in live frame 572.
+    feed(replacement, 200, "Contact: " + zoiper + ",<" + old_uri +
+         ">;expires=120,<" + new_uri + ">;expires=120\r\n", 3);
+    assert(!h.manager.is_registered("fusion"));
+    assert(h.manager.account(0).contact == new_uri);
+    assert(h.manager.account(0).last_status == 502);
+    // An acknowledged positive old binding must remain owned until proved retired.
+    assert(h.manager.account(0).retiring_contact == old_uri);
+    assert(h.manager.account(0).scheduled && !h.manager.account(0).pending);
+    h.manager.tick(30003);
+    auto retry = h.first.receive();
+    assert(field(retry, "Contact") == "<" + old_uri + ">;expires=0");
+    assert(field(retry, "Expires") == "0");
+    std::cout << "PASS retirement-positive udp\n";
+    return 0;
+  }
   if (scenario == "nat-contact-owner") {
     assert(!tcp);
-    // Wire tuple from the office hairpin: local .63, NAT .1, registrar VIP.
     constexpr uint32_t vip = 0x0afffffe;
     const std::string mode = argc > 3 ? argv[3] : "basic";
-    c.registrar = "fusionpbx.tecnodata.net";
-    c.port = 5060;
+    c.registrar = "fusionpbx.tecnodata.net"; c.port = 5060;
     h.hooks.resolve = [](void*, size_t, const std::string&) { return uint32_t{0x0afffffe}; };
     h.hooks.local_ip = [](void*, uint32_t) { return std::string("192.168.1.63"); };
     h.hooks.send = [](void* ctx, size_t index, std::string_view message, uint32_t ip, uint16_t port, bool stream) {
@@ -195,153 +243,119 @@ int main(int argc, char** argv) {
       return send(peer.esp, message.data(), message.size(), 0) == static_cast<ssize_t>(message.size());
     };
     h.manager.set_hooks(h.hooks);
-    const auto accept = [&](const std::string& request, uint32_t now, const std::string& received = "192.168.1.1",
-                            uint16_t port = 5060) {
-      auto message = h.success(request, 60);
-      const auto at = message.find(";rport");
-      message.replace(at, 6, ";received=" + received + ";rport=" + std::to_string(port));
+    const auto feed = [&](const std::string& request, unsigned status, const std::string& extra, uint32_t now,
+                          const std::string& ip = "192.168.1.1", uint16_t port = 5060) {
+      auto message = response(request, status, extra);
+      message.replace(message.find(";rport"), 6, ";received=" + ip + ";rport=" + std::to_string(port));
       if (mode == "via-lws") {
-        const auto protocol_end = message.find("UDP ");
-        message.replace(protocol_end, 4, "udp\t ");
-        const auto parameters = message.find(";branch=");
-        message.insert(parameters, " \t\r\n ");
+        message.replace(message.find("UDP "), 4, "udp\t ");
+        message.insert(message.find(";branch="), " \t\r\n ");
       }
       assert(h.manager.handle_response(message, vip, 5060, false, -1, now));
     };
+    const std::string old = "sip:esphome-office@192.168.1.63:5060;transport=udp";
+    std::string mapped = "sip:esphome-office@192.168.1.1:5060;transport=udp";
     assert(h.manager.set_account(c, 0)); h.manager.tick(0);
     auto initial = h.first.receive();
-    assert(field(initial, "Contact") == "<sip:esphome-office@192.168.1.63:5060;transport=udp>;expires=3600");
+    assert(field(initial, "Contact") == "<" + old + ">;expires=3600");
     if (mode == "uncorrelated") {
-      auto mapped_response = h.success(initial, 60);
-      mapped_response.replace(mapped_response.find(";rport"), 6, ";received=192.168.1.1;rport=5060");
+      auto bad = response(initial, 200, "Contact: <" + old + ">;expires=60\r\n");
+      bad.replace(bad.find(";rport"), 6, ";received=192.168.1.1;rport=5060");
       for (const std::string name : {"Call-ID", "CSeq", "Via"}) {
-        auto bad = mapped_response;
-        const auto value = field(mapped_response, name);
-        const auto start = bad.find(value);
-        assert(start != std::string::npos);
-        bad.insert(start, "wrong");
-        h.manager.handle_response(bad, vip, 5060, false, -1, 1);
+        auto wrong = bad; wrong.insert(wrong.find(field(bad, name)), "wrong");
+        h.manager.handle_response(wrong, vip, 5060, false, -1, 1);
         assert(h.manager.account(0).pending && h.manager.account(0).observed_ip == 0);
       }
-      h.manager.handle_response(mapped_response, vip + 1, 5060, false, -1, 1);
-      h.manager.handle_response(mapped_response, vip, 5061, false, -1, 1);
-      h.manager.handle_response(mapped_response, vip, 5060, true, 0, 1);
-      assert(h.manager.account(0).pending && h.manager.account(0).observed_ip == 0);
-    }
-    if (mode == "local-ip-change") {
-      accept(initial, 1, "192.168.1.63");
-      assert(h.manager.is_registered("office") && h.manager.account(0).cseq == 1);
-      h.hooks.local_ip = [](void*, uint32_t) { return std::string("192.168.1.64"); };
-      h.manager.set_hooks(h.hooks);
-      h.manager.connection_lost(0, 2); h.manager.tick(2);
-      auto refresh = h.first.receive();
-      assert(field(refresh, "Via").find("192.168.1.64:5060") != std::string::npos);
-      accept(refresh, 3, "192.168.1.64");
-      auto corrected = h.first.receive();
-      assert(field(corrected, "Contact") == "<sip:esphome-office@192.168.1.64:5060;transport=udp>;expires=3600");
-      assert(corrected.find("Contact: <sip:esphome-office@192.168.1.63:5060;transport=udp>;expires=0\r\n") != std::string::npos);
-      accept(corrected, 4, "192.168.1.64");
-      assert(h.manager.is_registered("office") && !h.manager.account(0).pending);
-      assert(h.manager.account(0).observed_ip == 0xc0a80140 && h.manager.account(0).retiring_contact.empty());
-      std::cout << "PASS nat-contact-owner udp\n"; return 0;
-    }
-    if (mode == "no-nat") {
-      accept(initial, 1, "192.168.1.63");
-      assert(h.manager.is_registered("office") && !h.manager.account(0).pending);
-      assert(h.manager.account(0).cseq == 1 && h.manager.account(0).retiring_contact.empty());
-      assert(h.manager.account(0).contact == "sip:esphome-office@192.168.1.63:5060;transport=udp");
-      std::cout << "PASS nat-contact-owner udp\n"; return 0;
     }
     if (mode == "malformed") {
-      for (const std::string mapping : {";received=bad;rport=5060", ";received=192.168.1.1;rport=0",
-          ";received=192.168.1.1;rport=65536", ";received=224.0.0.1;rport=5060",
-          ";received=192.168.1.1;rport=5060;rport=5061"}) {
-        auto bad = h.success(initial, 60);
-        bad.replace(bad.find(";rport"), 6, mapping);
-        assert(h.manager.handle_response(bad, vip, 5060, false, -1, 1));
-        assert(h.manager.account(0).observed_ip == 0 && !h.manager.account(0).pending);
-        assert(h.manager.request_registration("office", true, 1)); h.manager.tick(1);
-        initial = h.first.receive();
-      }
-      auto wrong = h.success(initial, 60);
-      wrong.replace(wrong.find("192.168.1.63:5060"), std::string("192.168.1.63:5060").size(), "192.168.1.99:5060");
-      assert(h.manager.handle_response(wrong, vip, 5060, false, -1, 1));
-      assert(h.manager.account(0).pending && h.manager.account(0).observed_ip == 0);
-      // Fresh account restores CSeq 1 for the common original witness below.
-      assert(h.manager.set_account(c, 1)); h.manager.tick(1); initial = h.first.receive();
+      feed(initial, 200, "Contact: <" + old + ">;expires=60\r\n", 1, "bad", 0);
+      assert(h.manager.account(0).observed_ip == 0 && !h.manager.account(0).pending);
+      assert(h.manager.request_registration("office", true, 1)); h.manager.tick(1); initial = h.first.receive();
     }
-    accept(initial, 1);
-    assert(h.manager.account(0).observed_ip == 0xc0a80101);
-    // Original failing witness: accepting the local Contact leaves PBX routing around NAT.
-    assert(h.manager.account(0).pending);
-    auto rewrite = h.first.receive();
-    const std::string mapped = "<sip:esphome-office@192.168.1.1:5060;transport=udp>";
-    assert(field(rewrite, "Contact") == mapped + ";expires=3600");
-    assert(rewrite.find("Contact: <sip:esphome-office@192.168.1.63:5060;transport=udp>;expires=0\r\n") != std::string::npos);
-    assert(field(rewrite, "Call-ID") == field(initial, "Call-ID"));
-    assert(field(rewrite, "CSeq") == "2 REGISTER");
-    assert(rewrite.find("Contact: *") == std::string::npos);
-    assert(rewrite.find("another-phone") == std::string::npos);
-    if (mode == "auth" || mode == "retry") {
-      auto challenge = response(rewrite, mode == "auth" ? 401 : 503,
-          "WWW-Authenticate: Digest realm=\"pbx\",nonce=\"rewrite\",algorithm=MD5,qop=\"auth\"\r\n");
-      assert(h.manager.handle_response(challenge, vip, 5060, false, -1, 2));
-      if (mode == "retry") h.manager.tick(30002);
-      rewrite = h.first.receive();
-      assert(field(rewrite, "Contact") == mapped + ";expires=3600");
-      assert(rewrite.find("Contact: <sip:esphome-office@192.168.1.63:5060;transport=udp>;expires=0\r\n") != std::string::npos);
-      if (mode == "auth") assert(!field(rewrite, "Authorization").empty());
-    }
-    if (mode == "intent") assert(h.manager.request_registration("office", false, 2));
-    accept(rewrite, 2);
-    if (mode == "mapping") {
-      h.manager.tick(48002);
+    const bool no_nat = mode == "no-nat" || mode == "local-ip-change";
+    feed(initial, 200, "Contact: <" + old + ">;expires=60\r\n", 1, no_nat ? "192.168.1.63" : "192.168.1.1");
+    if (no_nat) {
+      assert(h.manager.is_registered("office") && !h.manager.account(0).pending);
+      assert(h.manager.account(0).cseq == 1 && h.manager.account(0).retiring_contact.empty());
+      if (mode == "no-nat") { std::cout << "PASS nat-contact-owner udp\n"; return 0; }
+      h.hooks.local_ip = [](void*, uint32_t) { return std::string("192.168.1.64"); };
+      h.manager.set_hooks(h.hooks); h.manager.connection_lost(0, 2); h.manager.tick(2);
       auto refresh = h.first.receive();
-      accept(refresh, 48003, "192.168.1.2", 5070);
+      feed(refresh, 200, "Contact: <" + old + ">;expires=60\r\n", 3, "192.168.1.64");
+      mapped = "sip:esphome-office@192.168.1.64:5060;transport=udp";
+    }
+    assert(!h.manager.is_registered("office") && h.manager.account(0).pending);
+    auto retirement = h.first.receive();
+    assert(field(retirement, "Contact") == "<" + old + ">;expires=0");
+    assert(field(retirement, "Expires") == "0");
+    assert(retirement.find("Contact: <" + mapped + ">") == std::string::npos);
+    assert(retirement.find("Contact: *") == std::string::npos);
+    assert(field(retirement, "Call-ID") == field(initial, "Call-ID"));
+    if (mode == "auth" || mode == "retry") {
+      feed(retirement, mode == "auth" ? 401 : 503,
+          "WWW-Authenticate: Digest realm=\"pbx\",nonce=\"retire\",algorithm=MD5,qop=\"auth\"\r\n", 4);
+      if (mode == "retry") {
+        assert(!h.manager.account(0).pending && !h.manager.account(0).bound);
+        assert(!h.manager.set_account(c, 5));
+        assert(!h.manager.remove_account("office"));
+        assert(h.manager.account(0).retiring_contact == old);
+        h.manager.tick(30004);
+      }
+      retirement = h.first.receive();
+      assert(field(retirement, "Contact") == "<" + old + ">;expires=0");
+      assert(field(retirement, "Expires") == "0");
+      if (mode == "auth") assert(!field(retirement, "Authorization").empty());
+    }
+    if (mode == "intent") assert(h.manager.request_registration("office", false, 4));
+    // A Call-ID-based registrar removes all of this Call-ID's bindings here.
+    // No new Contact exists yet, and the unrelated peer's Call-ID is untouched.
+    const std::string other = "Contact: <sip:418@192.168.1.1:47941;transport=TCP>;expires=31\r\n";
+    feed(retirement, 200, mode == "reset" ? other + "Contact: <" + old + ">;expires=0\r\n" : other, 5);
+    assert(h.manager.account(0).retiring_contact.empty());
+    if (mode == "intent") {
+      assert(!h.manager.account(0).pending && !h.manager.is_registered("office"));
+      assert(h.manager.account(0).state == RegistrationState::DISABLED);
+      std::cout << "PASS nat-contact-owner udp\n"; return 0;
+    }
+    auto publish = h.first.receive();
+    assert(field(publish, "Contact") == "<" + mapped + ">;expires=3600");
+    assert(field(publish, "Expires") == "3600");
+    assert(publish.find("expires=0") == std::string::npos && publish.find("Contact: *") == std::string::npos);
+    assert(!h.manager.is_registered("office"));
+    const std::string observed = mode == "local-ip-change" ? "192.168.1.64" : "192.168.1.1";
+    feed(publish, 200, other + "Contact: <" + mapped + ">;expires=60\r\n", 6, observed);
+    assert(h.manager.is_registered("office") && !h.manager.account(0).pending);
+    assert(h.manager.match_incoming("418", vip, false, -1) == 0);
+    assert(h.manager.match_incoming("418", 0xc0a8013d, false, -1) < 0);
+    if (mode == "mapping") {
+      h.manager.tick(48006); auto refresh = h.first.receive();
+      feed(refresh, 200, "Contact: <" + mapped + ">;expires=60\r\n", 48007, "192.168.1.2", 5070);
+      auto retire = h.first.receive();
+      assert(field(retire, "Contact") == "<" + mapped + ">;expires=0");
+      feed(retire, 200, other, 48008);
       auto changed = h.first.receive();
       assert(field(changed, "Contact") == "<sip:esphome-office@192.168.1.2:5070;transport=udp>;expires=3600");
-      assert(changed.find("Contact: " + mapped + ";expires=0\r\n") != std::string::npos);
-      assert(changed.find("192.168.1.63:5060;transport=udp>;expires=") == std::string::npos);
-      accept(changed, 48004, "192.168.1.2", 5070);
-      assert(h.manager.account(0).retiring_contact.empty() && !h.manager.account(0).pending);
-      std::cout << "PASS nat-contact-owner udp\n"; return 0;
-    }
-    if (mode == "other-line") {
-      auto other = c;
-      other.id = "ha";  // Same AOR on a distinct account-owned registration.
-      assert(h.manager.set_account(other, 3)); h.manager.tick(3);
-      auto request = h.second.receive();
-      accept(request, 4, "192.168.1.63");
-      assert(h.manager.is_registered("ha") && h.manager.account(1).cseq == 1);
-      const auto other_contact = h.manager.account(1).contact;
-      assert(h.manager.request_registration("office", false, 5)); h.manager.tick(5);
-      auto unregister = h.first.receive();
-      assert(unregister.find("Contact: " + mapped + ";expires=0\r\n") != std::string::npos);
-      assert(unregister.find("esphome-ha@") == std::string::npos && unregister.find("Contact: *") == std::string::npos);
-      assert(h.manager.is_registered("ha") && h.manager.account(1).cseq == 1);
-      assert(h.manager.account(1).contact == other_contact && h.manager.account(1).retiring_contact.empty());
-      std::cout << "PASS nat-contact-owner udp\n"; return 0;
+      feed(changed, 200, "Contact: <sip:esphome-office@192.168.1.2:5070;transport=udp>;expires=60\r\n", 48009, "192.168.1.2", 5070);
+      assert(h.manager.is_registered("office"));
     }
     if (mode == "reset") {
-      assert(h.manager.set_account(c, 3));
-      assert(h.manager.account(0).observed_ip == 0 && h.manager.account(0).retiring_contact.empty());
-      h.manager.tick(3);
-      auto fresh = h.first.receive();
-      assert(field(fresh, "Contact") == field(initial, "Contact"));
-      assert(h.manager.remove_account("office"));
-      assert(h.manager.account(0).observed_ip == 0 && h.manager.account(0).contact.empty());
-      std::cout << "PASS nat-contact-owner udp\n"; return 0;
+      assert(h.manager.set_account(c, 7)); assert(h.manager.account(0).observed_ip == 0);
+      assert(h.manager.remove_account("office")); assert(h.manager.account(0).contact.empty());
+    } else {
+      if (mode == "other-line") {
+        auto second = c; second.id = "ha";
+        assert(h.manager.set_account(second, 7)); h.manager.tick(7);
+        auto request = h.second.receive();
+        feed(request, 200, "Contact: <sip:esphome-ha@192.168.1.63:5060;transport=udp>;expires=60\r\n", 8, "192.168.1.63");
+        assert(h.manager.is_registered("ha"));
+      }
+      const uint32_t disable_at = mode == "mapping" ? 48010 : 9;
+      assert(h.manager.request_registration("office", false, disable_at)); h.manager.tick(disable_at);
+      auto unregister = h.first.receive();
+      assert(field(unregister, "Expires") == "0" && unregister.find("Contact: *") == std::string::npos);
+      if (mode == "other-line") assert(h.manager.is_registered("ha") && h.manager.account(1).cseq == 1);
     }
-    if (mode != "intent") assert(h.manager.is_registered("office") && !h.manager.account(0).pending);
-    assert(h.manager.match_incoming("418", vip, false, -1) == (mode == "intent" ? -1 : 0));
-    assert(h.manager.match_incoming("418", 0xc0a8013d, false, -1) < 0);
-    assert(h.manager.request_registration("office", false, 3)); h.manager.tick(3);
-    auto unregister = h.first.receive();
-    assert(field(unregister, "Contact") == mapped + ";expires=0");
-    assert(field(unregister, "Expires") == "0");
-    assert(unregister.find("192.168.1.63:5060;transport=udp>;expires=") == std::string::npos);
-    std::cout << "PASS nat-contact-owner udp\n";
-    return 0;
+    std::cout << "PASS nat-contact-owner udp\n"; return 0;
   }
   if (scenario == "managed-literal") {
     c.username = "Caffè 20%@Casa";
@@ -673,6 +687,14 @@ int main(int argc, char** argv) {
       accepted.replace(marker, 6, ";received=" + host + ";rport=" + std::to_string(port));
     }
     h.feed(h.first, accepted, 3);
+    if (expected && h.manager.account(0).pending &&
+        h.manager.account(0).request_kind == SipRegistration::RequestKind::RETIREMENT) {
+      auto retiring = h.first.receive();
+      assert(field(retiring, "Expires") == "0");
+      h.feed(h.first, response(retiring, 200), 4);
+      auto published = h.first.receive();
+      h.feed(h.first, h.success(published, 60), 5);
+    }
     assert(h.manager.is_registered("office") == expected);
     if (expected) assert(h.manager.account(0).negotiated_expires == 60);
     else assert(h.manager.account(0).state == RegistrationState::RETRY);
