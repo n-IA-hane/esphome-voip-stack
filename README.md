@@ -157,7 +157,7 @@ handoff. The established transmit format and speaker format remain unchanged.
 
 This receiver supports **in-dialog blind transfers of UDP or TCP audio calls
 to IPv4 SIP addresses**, including a change of signalling transport. Video
-transfers, hostname targets and attended-transfer URI headers remain unsupported.
+transfers, unrelated hostname targets and attended-transfer URI headers remain unsupported.
 Unsupported requests are rejected without replacing the current conversation.
 
 The replacement offer retains the active transmit codec and packet time. On
@@ -168,36 +168,67 @@ REFER replacement path.
 
 A remote BYE ends the original conversation without cancelling an accepted
 transfer. The ESP continues calling the destination and reports the result.
-Hanging up on the ESP itself cancels the pending transfer. Authentication challenges (401/407) fail the
-transfer explicitly: this receiver does not retry with SIP Digest credentials. A destination failure
-preserves the original conversation only if its caller has not already hung up.
+Hanging up on the ESP itself cancels the pending transfer. A registered transfer
+to its configured account authority reuses that account's SIP Digest handling.
+Other destinations do not inherit its credentials: a 401/407 challenge fails
+that transfer explicitly. A destination failure preserves the original
+conversation only if its caller has not already hung up.
 
-The REFER owner bounds its replacement attempt to 32 seconds, including ringing.
-On expiry it sends CANCEL and one final `NOTIFY` with status 408. It retains the
-candidate while cancellation finishes; a crossed late answer is ACKed and ended
-with BYE without replacing the original conversation. This transfer policy is
-separate from the normal outgoing call's configurable `calling_timeout` and SIP
-Timer B, which stops expiring once a provisional response arrives.
+`calling_timeout` is the single application limit for ordinary outgoing calls
+and REFER replacement attempts. A positive value counts from INVITE submission,
+after local media preparation. Entering remote ringing or receiving repeated
+100/180/183 responses never restarts it. At expiry the owner sends CANCEL and,
+for a live REFER subscription, one final `NOTIFY` with status 408. It retains the
+candidate through the terminal SIP exchange. A crossed late answer is ACKed and
+ended with BYE, without replacing the original conversation.
 
-Normal outgoing calls have a default application deadline of **180 seconds**
-when neither `calling_timeout` nor `ringing_timeout` is configured. An explicit
-`calling_timeout` takes precedence; otherwise an explicit `ringing_timeout`
-also supplies the outgoing deadline for compatibility. An explicit `0s`
-disables the corresponding application deadline, including this fallback.
-For example, `calling_timeout: 0s` with `ringing_timeout: 30s` leaves outgoing
-ringing unlimited while declining unanswered incoming calls after 30 seconds.
-Incoming ringing remains unlimited when `ringing_timeout` is omitted.
+The component has **no built-in outgoing ringing limit**. An omitted
+`calling_timeout` and an explicit `calling_timeout: 0s` both mean unlimited.
+If a peer disappears after a provisional response, that outgoing call or transfer
+can therefore remain pending until the user hangs up. SIP no-response and
+transaction cleanup timers are separate protocol behavior and remain bounded.
+After a configured deadline, a completely silent peer may require up to another
+32 seconds of terminal cleanup before a new call is admitted; the phone does not
+pretend to be idle while its SIP transaction still owns the line.
 
-The outgoing budget starts when INVITE is submitted, after local media
-preparation. Entering remote ringing or receiving repeated 100/180/183 responses
-does not restart it. Expiry sends CANCEL and retains the terminal SIP exchange
-until its final response or bounded cleanup; a crossed answer receives ACK and
-BYE. Calls can therefore ring beyond 32 seconds without leaving an unconfigured
-device occupied forever after a peer disappears. This is an application policy,
-not SIP Timer C. It does not change the separate no-response, media-preparation,
-REFER or SIP transaction deadlines.
+The maintained Home Assistant firmware packages explicitly supply this user
+configuration, including every public YAML entrypoint:
 
-Rebuild the ESP with the 2026.11.0 component to use this capability.
+```yaml
+substitutions:
+  voip_calling_timeout: 120s
+```
+
+Change the substitution to another duration, or `0s` for unlimited ringing.
+Custom YAML users configure `voip_stack.calling_timeout` themselves. Durations
+must fit the wrap-safe millisecond deadline range (at most 2147483647ms).
+`ringing_timeout` now affects **incoming calls only**; it no longer supplies an
+outgoing fallback. Both keys may be omitted independently. For example,
+`calling_timeout: 0s` with `ringing_timeout: 30s` leaves outgoing ringing unlimited
+and declines unanswered incoming calls after 30 seconds. Configurations that
+previously used only a positive `ringing_timeout` receive specific migration
+guidance to set `calling_timeout` explicitly.
+
+The P4 phone package retains its 30-second incoming limit. Its outgoing limit
+changes from the former inherited 30 seconds to the explicitly configured
+120 seconds. This separation does not change media watchdogs or SIP Timer B,
+which stops expiring once a provisional INVITE response arrives.
+
+REFER event reporting has its own finite lease, as required by
+[RFC 3515 section 3.4](https://www.rfc-editor.org/rfc/rfc3515.html#section-3.4)
+and [RFC 6665 section 4.2.2](https://www.rfc-editor.org/rfc/rfc6665.html#section-4.2.2).
+The first `NOTIFY` advertises the granted interval; subsequent notifications
+report its remaining time. A finite attempt receives its configured duration
+plus the existing SIP terminal completion allowance. An unlimited attempt uses
+a renewable lease of two SIP transaction intervals. The subscriber refreshes
+it with an in-dialog `SUBSCRIBE` for `Event: refer;id=<REFER CSeq>`. Lease expiry
+or `Expires: 0` stops event reporting without cancelling the transfer. Reporting
+a final outcome after unlimited ringing therefore requires a valid subscription;
+subscription refresh never extends a finite calling deadline.
+Accepted subscription refreshes update the dialog's Contact target through the
+existing request-routing owner while preserving the established Route set.
+
+Rebuild the ESP with the updated component to use this behavior.
 Updating the Home Assistant integration alone does not update ESP firmware.
 The Spotpear Ball V2 FULL profile has been checked with Waveshare S3 Audio,
 including an occupied destination, immediate retry and hangup from both ends.
@@ -997,9 +1028,15 @@ A full SIP URI does not bypass a selected registered line: its URI stays in
 the request while the account keeps its registrar/proxy next hop and identity.
 A direct line needs a usable URI or an existing local contact endpoint. The empty
 default selects the first contact in ASCII case-insensitive alphabetical name
-order, with stable identity/account/route tie-breaks. This is not locale collation
-for accented names. Manual next/previous/contact selection is retained on refresh.
+order, then canonical SIP username and stable identity/account/route tie-breaks.
+This is not locale collation for accented names. Manual next/previous/contact selection is retained on refresh.
 An explicit target never silently falls back to another directory row.
+
+The automatic empty-target choice skips the selected contact line's own SIP
+address, including static contacts and directory rows without a provider account.
+It does not mistake the same username at another SIP host for that account. An
+all-self list remains unselected until an eligible row arrives. Explicit initial
+targets and manual selection can still choose those rows.
 
 The maintained packages use an empty initial target unless
 `voip_initial_contact` is configured. After upgrading, the first alphabetical
@@ -1041,8 +1078,8 @@ central JSON `set_contacts` service is a separate supported interface.
 | `paging_auto_answer_peers` | `[]` | Trusted source IPv4 addresses for per-call direct paging; at most 16 retained. |
 | `registration.accounts[].allow_paging_auto_answer` | `false` | Allow per-call paging from that matched manual PBX account. |
 | `initial_contact` | `""` | Initial SIP username, number or URI. Empty selects the first alphabetical contact. Explicit targets remain usable without LDAP on the selected SIP line. |
-| `ringing_timeout` | omitted | Incoming unanswered-call deadline; omitted or `0s` disables it. When configured, also supplies the outgoing fallback if `calling_timeout` is omitted. |
-| `calling_timeout` | `180s` when both options are omitted | Total outgoing INVITE attempt, including remote ringing. Explicit value takes precedence over `ringing_timeout`; explicit `0s` disables the application deadline. |
+| `ringing_timeout` | omitted | Incoming unanswered-call deadline only; omitted or `0s` leaves it unlimited. |
+| `calling_timeout` | omitted | Total outgoing INVITE and REFER attempt, including remote ringing. Omitted or `0s` is unlimited. Maintained packages explicitly supply the user substitution `voip_calling_timeout: 120s`. |
 | `dc_offset_removal` | `false` | Remove DC bias on TX. |
 | `audio_debug` | `false` | Verbose audio-path diagnostics. |
 | `buffers_in_psram` | `false` | Place VoIP-owned buffers in PSRAM. |

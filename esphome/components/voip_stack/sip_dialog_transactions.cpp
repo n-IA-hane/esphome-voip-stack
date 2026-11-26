@@ -170,8 +170,8 @@ void SipTransport::remember_udp_transaction_(const std::string &method, const st
   UdpTransaction *txn = nullptr;
   if (method == "NOTIFY") {
     if (!this->refer_dialog_) return;
-    txn = this->refer_dialog_->pending_notify_.empty()
-        ? &this->refer_dialog_->pending_notify_ : &this->refer_dialog_->pending_notify_final_;
+    txn = header_value(message, "Subscription-State").rfind("terminated", 0) == 0
+        ? &this->refer_dialog_->pending_notify_final_ : &this->refer_dialog_->pending_notify_;
   } else if (method == "INVITE") {
     txn = &this->pending_invite_;
   } else if (method == "CANCEL") {
@@ -230,6 +230,10 @@ void SipTransport::pump_udp_retransmits_unlocked_() {
                txn.udp ? "UDP" : "TCP", method,
                (unsigned) SIP_TRANSACTION_TIMEOUT_MS);
       txn.clear();
+      if (std::strcmp(method, "NOTIFY") == 0 && this->refer_dialog_) {
+        this->refer_dialog_->reporter_available = false;
+        this->refer_dialog_->subscription_notify_pending = false;
+      }
       if (!owns_dialog) return;
       if (std::strcmp(method, "INVITE") == 0) {
         invite_timed_out = true;

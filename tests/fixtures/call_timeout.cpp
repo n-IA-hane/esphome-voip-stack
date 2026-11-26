@@ -45,7 +45,8 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  uint32_t expected_timeout = 180000;
+  uint32_t expected_timeout = 120000;
+  if (scenario.rfind("configured-", 0) == 0 || scenario == "answer-after32") app.set_calling_timeout(expected_timeout);
   if (scenario == "calling-zero") {
     app.set_calling_timeout(0);
     app.set_ringing_timeout(30000);
@@ -54,12 +55,12 @@ int main(int argc, char **argv) {
     app.set_ringing_timeout(30000);
     app.set_calling_timeout(0);
     expected_timeout = 0;
-  } else if (scenario == "ringing-zero") {
+  } else if (scenario == "ringing-zero" || scenario == "outgoing-omitted") {
     app.set_ringing_timeout(0);
     expected_timeout = 0;
-  } else if (scenario == "ringing-fallback") {
+  } else if (scenario == "ringing-independent") {
     app.set_ringing_timeout(60000);
-    expected_timeout = 60000;
+    expected_timeout = 0;
   } else if (scenario == "calling-precedence") {
     app.set_calling_timeout(90000);
     app.set_ringing_timeout(30000);
@@ -102,20 +103,20 @@ int main(int argc, char **argv) {
     app.fire_timeout_decline_();  // The explicit opt-out still permits hangup.
     app.drain();
   } else {
-    if (scenario == "default-repeated") {
+    if (scenario == "configured-repeated") {
       clock_ms = 60100;
       for (const unsigned status : {100, 180, 183}) {
         wire.deliver(wire.reply(invite, status, "A"));
         app.drain();
         assert(app.calling_start_time_ == 100);
       }
-      clock_ms = 170100;
+      clock_ms = 110100;
       wire.deliver(wire.reply(invite, 183, "A"));
       app.drain();
       assert(app.calling_start_time_ == 100);
     }
     pump(expected_timeout - 1);
-    assert(app.call_state_ == (scenario == "default-repeated" ? CallState::REMOTE_RINGING : progress));
+    assert(app.call_state_ == (scenario == "configured-repeated" ? CallState::REMOTE_RINGING : progress));
     wire.quiet();
     pump(expected_timeout);
     assert(app.call_state_ == CallState::TERMINATING);
@@ -125,13 +126,13 @@ int main(int argc, char **argv) {
   assert(cancel.rfind("CANCEL ", 0) == 0);
   assert(wire.phone.snapshot().terminal_transaction_pending && !app.can_start_call_());
   const auto terminal_deadline = wire.phone.pending_invite_.deadline_ms;
-  if (scenario == "default-silent") {
+  if (scenario == "configured-silent") {
     clock_ms = terminal_deadline;
     wire.phone.pump_udp_retransmits_();
     app.drain();
   } else {
     wire.deliver(wire.reply(cancel, 200, "A"));
-    if (scenario == "default-late200") {
+    if (scenario == "configured-late200") {
       wire.deliver(wire.reply(invite, 183, "A"));
       assert(wire.phone.pending_invite_.deadline_ms == terminal_deadline);
       wire.deliver(wire.reply(invite, 200, "A", wire.answer(invite)));

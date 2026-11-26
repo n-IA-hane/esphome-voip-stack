@@ -29,7 +29,7 @@ void SipTransport::dispatch_dialog_message_(const std::string &msg, const SipSta
   }
   const std::string method(start.method);
   ESP_LOGD(TAG, "SIP RX method=%s len=%u", method.c_str(), (unsigned) msg.size());
-  if ((method == "CANCEL" || method == "BYE" || method == "REFER") &&
+  if ((method == "CANCEL" || method == "BYE" || method == "REFER" || method == "SUBSCRIBE") &&
       this->replay_completed_response_(msg, src, method,
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
                                          this->dispatch_is_udp_()
@@ -45,6 +45,8 @@ void SipTransport::dispatch_dialog_message_(const std::string &msg, const SipSta
     this->send_stateless_response_(msg, src, 491, "Request Pending");
   } else if (method == "REFER") {
     this->handle_refer_(msg, src);
+  } else if (method == "SUBSCRIBE") {
+    this->handle_refer_subscribe_(msg, src);
   } else if (method == "INVITE") {
     this->handle_invite_(msg, src);
   } else if (method == "ACK") {

@@ -57,6 +57,15 @@ def _validate_signaling_buffers_in_psram(value):
 CONF_AEC_REF_DELAY_MS = "aec_reference_delay_ms"
 CONF_RINGING_TIMEOUT = "ringing_timeout"
 CONF_CALLING_TIMEOUT = "calling_timeout"
+
+
+def _validate_calling_timeout(value):
+    value = cv.positive_time_period_milliseconds(value)
+    if value.total_milliseconds > 0x7FFFFFFF:
+        raise cv.Invalid("calling_timeout must not exceed 2147483647ms for wrap-safe SIP deadlines")
+    return value
+
+
 CONF_ON_DESTINATION_CHANGED = "on_destination_changed"
 CONF_ON_PEER_CHANGED = "on_peer_changed"
 CONF_ON_PHONEBOOK_UPDATE = "on_phonebook_update"
@@ -708,11 +717,10 @@ CONFIG_SCHEMA = cv.All(cv.require_esphome_version(2026, 10, 0), ha_integration.p
         cv.Optional(
             CONF_SIGNALING_BUFFERS_IN_PSRAM, default=False
         ): _validate_signaling_buffers_in_psram,
-        # Incoming ringing is unlimited unless configured. Outgoing uses the
-        # explicit calling value, else an explicit ringing value, else 180s.
-        # Preserve omission here: an explicit 0 disables that application limit.
+        # Components supply no application ringing policy. Omission and zero
+        # are unlimited; maintained packages explicitly configure outgoing time.
         cv.Optional(CONF_RINGING_TIMEOUT): cv.positive_time_period_milliseconds,
-        cv.Optional(CONF_CALLING_TIMEOUT): cv.positive_time_period_milliseconds,
+        cv.Optional(CONF_CALLING_TIMEOUT): _validate_calling_timeout,
         # Trigger when incoming call (auto_answer OFF)
         cv.Optional(CONF_ON_RINGING): automation.validate_automation(single=True),
         # Trigger when in_call starts
@@ -780,6 +788,16 @@ def _consume_voip_sockets(config):
 
 def _final_validate(config):
     """Cross-component validation + socket reservation."""
+    if (
+        CONF_CALLING_TIMEOUT not in config
+        and CONF_RINGING_TIMEOUT in config
+        and config[CONF_RINGING_TIMEOUT].total_milliseconds > 0
+    ):
+        _LOGGER.warning(
+            "voip_stack.ringing_timeout now applies only to incoming calls. "
+            "Set calling_timeout explicitly to limit outgoing calls and REFER "
+            "attempts; an omitted value or 0s leaves them unlimited."
+        )
     registration.final_validate(config)
     ha_integration.validate(config, fv.full_config.get())
     blf.final_validate(config, fv.full_config.get())

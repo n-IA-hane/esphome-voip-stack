@@ -94,15 +94,15 @@ def call_timeout_binary(tmp_path_factory):
 
 @pytest.mark.parametrize("transport", ["udp", "tcp"])
 @pytest.mark.parametrize("status", [100, 180])
-@pytest.mark.parametrize("scenario", ["default-silent", "default-repeated", "default-late200", "answer-after32"])
-def test_outgoing_default_deadline_preserves_sip_completion(call_timeout_binary, transport, status, scenario):
+@pytest.mark.parametrize("scenario", ["configured-silent", "configured-repeated", "configured-late200", "answer-after32"])
+def test_outgoing_configured_deadline_preserves_sip_completion(call_timeout_binary, transport, status, scenario):
     result = subprocess.run([call_timeout_binary, transport, str(status), scenario],
                             capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("transport", ["udp", "tcp"])
-@pytest.mark.parametrize("scenario", ["calling-zero", "calling-zero-last", "ringing-zero", "ringing-fallback", "calling-precedence", "incoming-default"])
+@pytest.mark.parametrize("scenario", ["calling-zero", "calling-zero-last", "ringing-zero", "ringing-independent", "outgoing-omitted", "calling-precedence", "incoming-default"])
 def test_explicit_timeout_policy_precedence_and_disabled_zero(call_timeout_binary, transport, scenario):
     result = subprocess.run([call_timeout_binary, transport, "180", scenario],
                             capture_output=True, text=True, timeout=5)

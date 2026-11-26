@@ -1,5 +1,6 @@
 #include "sip_transport.h"
 #include "sip_message.h"
+#include "sip_header_name.h"
 
 #if defined(USE_ESP32) && defined(USE_ESPHOME_VOIP_SIP_TRANSPORT)
 #include <algorithm>
@@ -38,13 +39,111 @@ void SipTransport::emit_sip_signal_(SipSignal &&signal) {
   SipPhoneTransport::emit_sip_signal_(std::move(signal));
 }
 
-void SipTransport::notify_refer_(uint32_t refer_cseq, uint16_t status, const char *reason) {
+void SipTransport::notify_refer_(uint32_t refer_cseq, uint16_t status, const char *reason,
+                                 const char *subscription_reason) {
   if (!this->refer_dialog_ || !this->refer_dialog_->reporter_available) return;
+  auto &dialog = *this->refer_dialog_;
+  const uint32_t now = millis();
+  if (subscription_reason == nullptr && time_reached(now, dialog.subscription_deadline_ms))
+    subscription_reason = "timeout";
+  const bool terminated = status >= 200 || subscription_reason != nullptr;
+  if (!terminated && !dialog.pending_notify_.empty()) {
+    // SUBSCRIBE refreshes may overlap the outstanding notification. Coalesce
+    // current state in the same owner instead of overwriting its transaction.
+    dialog.subscription_notify_pending = true;
+    return;
+  }
+  dialog.subscription_notify_pending = false;
   SipRequestOptions options;
   options.content_type = "message/sipfrag;version=2.0";
-  options.extra_headers = "Event: refer;id=" + std::to_string(refer_cseq) + "\r\nSubscription-State: " +
-      (status < 200 ? "active;expires=32\r\n" : "terminated;reason=noresource\r\n");
+  options.extra_headers = "Event: refer;id=" + std::to_string(refer_cseq) + "\r\nSubscription-State: ";
+  if (terminated) {
+    options.extra_headers += std::string("terminated;reason=") +
+        (subscription_reason != nullptr ? subscription_reason : "noresource") + "\r\n";
+    dialog.reporter_available = false;
+  } else {
+    const uint32_t remaining = (dialog.subscription_deadline_ms - now + 999U) / 1000U;
+    options.extra_headers += "active;expires=" + std::to_string(remaining) + "\r\n";
+  }
   this->send_request_("NOTIFY", "SIP/2.0 " + std::to_string(status) + " " + reason + "\r\n", options);
+}
+
+void SipTransport::handle_refer_subscribe_(const std::string &message, const sockaddr_in &src) {
+  const std::string event = header_values(message, "Event");
+  const size_t separator = event.find(';');
+  if (trim_copy(event.substr(0, separator)) != "refer") {
+    this->send_stateless_response_(message, src, 489, "Bad Event");
+    return;
+  }
+  if (this->refer_context_active_ || !this->refer_dialog_ || this->refer_retiring_ ||
+      !this->refer_dialog_->reporter_available ||
+      time_reached(millis(), this->refer_dialog_->subscription_deadline_ms)) {
+    this->send_stateless_response_(message, src, 481, "Subscription Does Not Exist");
+    return;
+  }
+  if (this->reject_if_stale_dialog_(message, src, "SUBSCRIBE")) return;
+  bool has_id = false;
+  for (size_t position = separator; position != std::string::npos;) {
+    const size_t end = event.find(';', position + 1);
+    const std::string parameter = trim_copy(event.substr(position + 1, end - position - 1));
+    const size_t equals = parameter.find('=');
+    if (sip_header_name_equal(trim_copy(parameter.substr(0, equals)), "id")) {
+      if (has_id || equals == std::string::npos ||
+          trim_copy(parameter.substr(equals + 1)) != std::to_string(this->refer_cseq_)) {
+        this->send_stateless_response_(message, src, 481, "Subscription Does Not Exist");
+        return;
+      }
+      has_id = true;
+    }
+    position = end;
+  }
+  auto &dialog = *this->refer_dialog_;
+  uint32_t requested = dialog.subscription_interval_ms / 1000U;
+  const std::string expires = header_values(message, "Expires");
+  if (!expires.empty() && !parse_decimal_u32(expires, UINT32_MAX, &requested)) {
+    this->send_stateless_response_(message, src, 400, "Invalid Expires");
+    return;
+  }
+  const std::string contact = header_value(message, "Contact");
+  const std::string refreshed_target = strip_angle_uri(contact);
+  if (!contact.empty() && refreshed_target.empty()) {
+    this->send_stateless_response_(message, src, 400, "Bad Request");
+    return;
+  }
+  const uint32_t granted = std::min(requested, dialog.subscription_interval_ms / 1000U);
+  if (!this->send_stateless_response_(message, src, 200, "OK", "", true, -1, "", granted)) return;
+  // SUBSCRIBE is a target refresh. Reuse confirmed-dialog request routing:
+  // Contact changes the remote target, never the established Route set.
+  if (!refreshed_target.empty()) this->remote_target_uri_ = refreshed_target;
+  this->remote_dialog_cseq_ = cseq_number(header_value(message, "CSeq"));
+  dialog.subscription_deadline_ms = millis() + granted * 1000U;
+  // RFC 3515/6665: refreshing the event lease never changes the referred
+  // INVITE's application deadline; Expires: 0 only ends the subscription.
+  this->notify_refer_(this->refer_cseq_, 100, "Trying", granted == 0 ? "timeout" : nullptr);
+  this->wake_sip_task_();
+}
+
+void SipTransport::retire_refer_() {
+  if (this->refer_retiring_) return;
+  this->refer_retiring_ = true;
+  this->refer_expires_ = millis() + SIP_TRANSACTION_TIMEOUT_MS;
+}
+
+bool SipTransport::next_refer_deadline_(uint32_t now, uint32_t *delay_ms) const {
+  if (!this->refer_dialog_ || delay_ms == nullptr) return false;
+  const auto &dialog = *this->refer_dialog_;
+  bool pending = false;
+  const auto include = [&](uint32_t deadline) {
+    const uint32_t remaining = time_reached(now, deadline) ? 0 : deadline - now;
+    if (!pending || remaining < *delay_ms) *delay_ms = remaining;
+    pending = true;
+  };
+  if (this->refer_retiring_) include(this->refer_expires_);
+  else {
+    if (dialog.attempt_timeout_ms != 0) include(dialog.attempt_deadline_ms);
+    if (dialog.reporter_available) include(dialog.subscription_deadline_ms);
+  }
+  return pending;
 }
 
 bool SipTransport::end_refer_invite_usage_(bool reporter_available) {
@@ -62,7 +161,7 @@ bool SipTransport::end_refer_invite_usage_(bool reporter_available) {
 void SipTransport::cancel_refer_() {
   if (this->refer_context_active_ || !this->refer_dialog_ || this->refer_retiring_) return;
   this->notify_refer_(this->refer_cseq_, 487, "Request Terminated");
-  this->refer_retiring_ = true;
+  this->retire_refer_();
   ReferScope scope(*this);
   if (this->outgoing_invite_pending_.load()) this->send_cancel_unlocked_(this->call_id_);
   else if (!this->call_id_.empty()) this->send_bye_unlocked_(this->call_id_);
@@ -70,7 +169,7 @@ void SipTransport::cancel_refer_() {
 
 void SipTransport::finish_failed_refer_(uint16_t status, const char *reason) {
   this->notify_refer_(this->refer_cseq_, status, reason);
-  this->refer_retiring_ = true;
+  this->retire_refer_();
   if (this->refer_dialog_->owner_invite_ended && this->call_id_ == this->refer_dialog_->owner_call_id) {
     SipSignal signal;
     signal.type = SipSignalType::BYE;
@@ -199,8 +298,16 @@ bool SipTransport::handle_refer_(const std::string &message, const sockaddr_in &
   candidate->accepted_refer = std::move(this->completed_control_);
   this->remote_dialog_cseq_ = this->refer_cseq_;
   this->refer_wire_id_ = make_token("refer-");
-  candidate->attempt_deadline_ms = millis() + SIP_TRANSACTION_TIMEOUT_MS;
-  this->refer_expires_ = millis() + 2 * SIP_TRANSACTION_TIMEOUT_MS;
+  candidate->attempt_timeout_ms = this->calling_timeout_ms_;
+  // RFC 3515 gives the refer event no universal default duration. Cover the
+  // finite attempt plus terminal signaling. An unlimited action gets a finite
+  // renewable lease based on the existing SIP transaction completion interval.
+  const uint64_t lease_ms = static_cast<uint64_t>(this->calling_timeout_ms_) +
+      2U * SIP_TRANSACTION_TIMEOUT_MS;
+  candidate->subscription_interval_ms = static_cast<uint32_t>(
+      std::min<uint64_t>((lease_ms + 999U) / 1000U, INT32_MAX / 1000U)) * 1000U;
+  candidate->subscription_deadline_ms = millis() + candidate->subscription_interval_ms;
+  this->refer_expires_ = 0;
   this->refer_retiring_ = false;
   this->refer_signal_pending_ = false;
   this->refer_dialog_ = std::move(candidate);
@@ -223,7 +330,9 @@ bool SipTransport::handle_refer_(const std::string &message, const sockaddr_in &
   }
   if (!sent) {
     this->notify_refer_(this->refer_cseq_, 503, "Service Unavailable");
-    this->refer_retiring_ = true;
+    this->retire_refer_();
+  } else if (this->refer_dialog_->attempt_timeout_ms != 0) {
+    this->refer_dialog_->attempt_deadline_ms = millis() + this->refer_dialog_->attempt_timeout_ms;
   }
   this->wake_sip_task_();
   return true;
@@ -307,6 +416,12 @@ void SipTransport::pump_refer_() {
     if (completed && time_reached(millis(), completed->expires_ms)) completed.reset();
   }
   if (!this->refer_dialog_) return;
+  if (!this->refer_retiring_ && this->refer_dialog_->reporter_available) {
+    if (time_reached(millis(), this->refer_dialog_->subscription_deadline_ms))
+      this->notify_refer_(this->refer_cseq_, 100, "Trying", "timeout");
+    else if (this->refer_dialog_->subscription_notify_pending && this->refer_dialog_->pending_notify_.empty())
+      this->notify_refer_(this->refer_cseq_, 100, "Trying");
+  }
   {
     ReferScope scope(*this);
     this->pump_udp_retransmits_unlocked_();
@@ -315,7 +430,7 @@ void SipTransport::pump_refer_() {
     ReferScope scope(*this);
     if (this->outgoing_invite_pending_.load()) this->send_cancel_unlocked_(this->call_id_);
     else if (!this->call_id_.empty()) this->send_bye_unlocked_(this->call_id_);
-    this->refer_retiring_ = true;
+    this->retire_refer_();
   }
   if (this->refer_signal_pending_ && !this->refer_retiring_) {
     this->refer_signal_pending_ = false;
@@ -340,7 +455,7 @@ void SipTransport::pump_refer_() {
       if (this->logical_call_id_.empty()) this->logical_call_id_ = original;
       this->logical_wire_id_ = this->call_id_;
       this->refer_wire_id_ = original;
-      this->refer_retiring_ = true;
+      this->retire_refer_();
       {
         ReferScope scope(*this);
         if (original_ended) this->reset_dialog_();
@@ -361,20 +476,17 @@ void SipTransport::pump_refer_() {
     }
   }
   // The application is still IN_CALL while REFER owns a replacement attempt.
-  // Its 32-second action policy must survive provisional SIP responses, while
-  // ordinary INVITE Timer B remains limited to Calling. Keep the candidate for
-  // its CANCEL/final response, including ACK+BYE for a crossed late 2xx.
-  if (!this->refer_retiring_ && time_reached(millis(), this->refer_dialog_->attempt_deadline_ms)) {
+  // It shares the configured outgoing policy, not INVITE Timer B. A zero
+  // budget survives provisional responses until local hangup or a peer result.
+  // Keep the candidate through CANCEL, including ACK+BYE for crossed late 2xx.
+  if (!this->refer_retiring_ && this->refer_dialog_->attempt_timeout_ms != 0 &&
+      time_reached(millis(), this->refer_dialog_->attempt_deadline_ms)) {
     {
       ReferScope scope(*this);
       if (this->outgoing_invite_pending_.load(std::memory_order_acquire))
         this->send_cancel_unlocked_(this->call_id_);
     }
     this->finish_failed_refer_(408, "Transfer Failed");
-    // A delayed worker may reach this phase after the original total bound.
-    // Newly created CANCEL/NOTIFY records still need their completion budget;
-    // this runs once on phase entry and never extends the ringing deadline.
-    this->refer_expires_ = millis() + SIP_TRANSACTION_TIMEOUT_MS;
   }
   const auto &dialog = *this->refer_dialog_;
   if (this->refer_retiring_ && dialog.call_id_.empty() && dialog.pending_invite_.empty() &&
@@ -402,7 +514,8 @@ void SipTransport::pump_refer_() {
       break;
     }
   }
-  if (this->refer_dialog_ && time_reached(millis(), this->refer_expires_)) this->release_refer_dialog_();
+  if (this->refer_dialog_ && this->refer_retiring_ && time_reached(millis(), this->refer_expires_))
+    this->release_refer_dialog_();
 }
 
 }  // namespace voip_stack

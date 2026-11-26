@@ -28,6 +28,7 @@ struct VoipStack {
 };
 void watchdog_case(bool old_tcp,bool new_tcp,unsigned outcome) {
   SipTransport sip;Peer original(old_tcp),target(new_tcp);setup(sip,original);
+  sip.set_calling_timeout(120000);
   auto invite=begin(sip,original,target);
   assert(sip.remote_audio_expected());
   VoipStack phone(sip);
@@ -38,7 +39,7 @@ void watchdog_case(bool old_tcp,bool new_tcp,unsigned outcome) {
   phone.handle_call_timeouts_(clock_ms,0);
   assert(phone.terminations==0&&"REFER ringing must survive the media watchdog");
   assert(target.drain().empty()&&original.drain().empty());
-  if(outcome==408){clock_ms=33100;sip.pump_refer_();}
+  if(outcome==408){clock_ms=sip.refer_dialog_->attempt_deadline_ms;sip.pump_refer_();}
   else target.send_to(sip,response(invite,outcome));
   auto answer=target.drain();
   if(outcome!=408)assert(answer.size()==1&&answer[0].rfind("ACK ",0)==0);
@@ -61,6 +62,7 @@ void watchdog_case(bool old_tcp,bool new_tcp,unsigned outcome) {
 
 void refer_action_timeout_case(bool old_tcp,bool new_tcp,bool original_ended,unsigned late_status,bool late_pump) {
   SipTransport sip;Peer original(old_tcp),target(new_tcp);setup(sip,original);
+  sip.set_calling_timeout(120000);
   auto invite=begin(sip,original,target);
   const uint32_t deadline=sip.refer_dialog_->attempt_deadline_ms;
   if(original_ended){

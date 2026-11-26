@@ -32,6 +32,10 @@ bool SipTransport::handle_response_(const std::string &message, const sockaddr_i
           response_cseq == sip_record_unfold(sip_record_first(request, "CSeq")) &&
           branch == via_branch(sip_record_unfold(sip_record_first(request, "Via")))) {
         if (status >= 200) transaction->clear();
+        if (status >= 300) {
+          this->refer_dialog_->reporter_available = false;
+          this->refer_dialog_->subscription_notify_pending = false;
+        }
         return true;
       }
     }

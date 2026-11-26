@@ -16,9 +16,7 @@
 #include "sip_signaling_string.h"
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
 #include "sip_registration.h"
-#if defined(USE_ESPHOME_VOIP_DIRECTORY) || defined(USE_VOIP_HA_AUTO_REGISTER)
 #include "sip_account_view.h"
-#endif
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
 #include "sip_mwi.h"
 #endif
@@ -86,6 +84,7 @@ class SipTransport : public SipPhoneTransport {
   ~SipTransport() override;
 
   void set_accept_direct_calls(bool enabled) { this->accept_direct_calls_ = enabled; }
+  void set_calling_timeout(uint32_t milliseconds) { this->calling_timeout_ms_ = milliseconds; }
   bool initialized() const {
 #ifdef USE_ESPHOME_VOIP_STACK_SIGNALING_PSRAM
     if (!this->sip_rx_scratch_.initialized()) return false;
@@ -124,9 +123,7 @@ class SipTransport : public SipPhoneTransport {
                       bool allow_missing = false);
   bool register_account(const std::string &id, bool enabled);
   bool is_registered(const std::string &id);
-#if defined(USE_ESPHOME_VOIP_DIRECTORY) || defined(USE_VOIP_HA_AUTO_REGISTER)
   bool get_account_snapshot(const std::string &id, SipAccountSnapshot *out);
-#endif
   bool prepare_account_line(const std::string &id, std::string *host, uint16_t *port, bool *tcp);
   std::string registration_account_domain(const std::string &id) {
     LockGuard lock(this->dialog_mutex_);
@@ -295,14 +292,15 @@ class SipTransport : public SipPhoneTransport {
                                 const std::string &app_reason = "",
                                 bool cache_transaction = false,
                                 int retry_after_seconds = -1,
-                                const std::string &body = "");
+                                const std::string &body = "",
+                                int expires_seconds = -1);
   std::string format_response_(uint16_t status, const char *reason,
                                const std::string &via, const std::string &from,
                                const std::string &to, const std::string &call_id,
                                const std::string &cseq, const std::string &app_reason,
                                const std::string &body, bool add_contact_ua,
                                bool add_to_tag, bool stateless,
-                               int retry_after_seconds);
+                               int retry_after_seconds, int expires_seconds);
   struct SipTcpFlow;
   struct ReferDialog;
   struct ReferDeleter {
@@ -343,11 +341,15 @@ class SipTransport : public SipPhoneTransport {
   void swap_negotiation_(ReferDialog &other);
   bool prepare_refer_media_(ReferDialog &other);
   bool handle_refer_(const std::string &message, const sockaddr_in &src);
+  void handle_refer_subscribe_(const std::string &message, const sockaddr_in &src);
   void pump_refer_();
+  bool next_refer_deadline_(uint32_t now, uint32_t *delay_ms) const;
   void swap_dialog_(ReferDialog &other);
-  void notify_refer_(uint32_t refer_cseq, uint16_t status, const char *reason);
+  void notify_refer_(uint32_t refer_cseq, uint16_t status, const char *reason,
+                     const char *subscription_reason = nullptr);
   bool end_refer_invite_usage_(bool reporter_available);
   void cancel_refer_();
+  void retire_refer_();
   void finish_failed_refer_(uint16_t status, const char *reason);
   void emit_sip_signal_(SipSignal &&signal);
 
@@ -719,6 +721,7 @@ class SipTransport : public SipPhoneTransport {
   std::string refer_wire_id_;
 
   bool accept_direct_calls_{false};
+  uint32_t calling_timeout_ms_{0};
   uint16_t sip_port_{5060};
   uint16_t rtp_port_{40000};
   size_t udp_max_payload_{UDP_SAFE_AUDIO_PAYLOAD_BYTES};
@@ -1056,7 +1059,10 @@ class SipTransport : public SipPhoneTransport {
     std::string owner_call_id, target_uri;
     bool owner_invite_ended{false}, reporter_available{true};
     // REFER action policy, independent of the candidate's SIP transaction state.
-    uint32_t attempt_deadline_ms{0};
+    uint32_t attempt_timeout_ms{0}, attempt_deadline_ms{0};
+    // A finite renewable event lease is independent of an unlimited attempt.
+    uint32_t subscription_interval_ms{0}, subscription_deadline_ms{0};
+    bool subscription_notify_pending{false};
     CompletedServerTransaction accepted_refer;
     std::string call_id_, local_tag_, remote_tag_, branch_;
     std::string local_uri_, local_contact_uri_, remote_uri_, remote_target_uri_;

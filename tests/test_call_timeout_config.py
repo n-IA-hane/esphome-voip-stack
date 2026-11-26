@@ -10,8 +10,8 @@ from test_sip_registration_config import ROOT, run_config
 
 
 @pytest.mark.parametrize("options,outgoing,incoming", [
-    ("", 180000, 0),
-    ("  ringing_timeout: 30s\n", 30000, 30000),
+    ("", 0, 0),
+    ("  ringing_timeout: 30s\n", 0, 30000),
     ("  ringing_timeout: 0s\n", 0, 0),
     ("  calling_timeout: 240s\n", 240000, 0),
     ("  calling_timeout: 0s\n  ringing_timeout: 30s\n", 0, 30000),
@@ -37,3 +37,23 @@ def test_public_timeout_configuration_preserves_omission_and_explicit_zero(tmp_p
                               capture_output=True, text=True)
     assert compiled.returncode == 0, compiled.stderr
     subprocess.run([binary], check=True)
+
+
+@pytest.mark.parametrize("value,valid", [("2147483647ms", True), ("2147483648ms", False)])
+def test_calling_timeout_fits_wrap_safe_millisecond_deadlines(tmp_path, value, valid):
+    result = run_config(tmp_path, f"  calling_timeout: {value}\n", generate=False)
+    assert (result.returncode == 0) is valid, result.stdout + result.stderr
+    if not valid:
+        assert "wrap-safe SIP deadlines" in result.stdout + result.stderr
+
+
+def test_legacy_incoming_fallback_has_specific_migration_guidance(tmp_path):
+    result = run_config(tmp_path, "  ringing_timeout: 30s\n", generate=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "now applies only to incoming calls" in result.stderr
+
+
+def test_intentional_zero_does_not_receive_a_migration_warning(tmp_path):
+    result = run_config(tmp_path, "  calling_timeout: 0s\n  ringing_timeout: 30s\n", generate=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "now applies only to incoming calls" not in result.stderr

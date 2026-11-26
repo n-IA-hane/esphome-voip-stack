@@ -379,7 +379,23 @@ bool VoipStack::maybe_select_initial_contact_() {
       this->call_state_.load(std::memory_order_acquire) != CallState::IDLE) return false;
   this->phonebook_.sort_by_name();
   if (this->initial_contact_.empty()) {
-    if (!this->phonebook_.select_first()) return false;
+    const auto eligible = [this](const ContactEntry &entry) {
+#ifdef USE_ESPHOME_VOIP_REGISTRATION
+      SipAccountSnapshot account;
+      const auto line = this->get_contact_account_view(entry);
+      if (line != "direct" && this->get_account_snapshot(std::string(line), &account)) {
+        SipTargetParts own;
+        own.user = account.config.username;
+        own.host = account.config.domain;
+        own.port = account.config.port;
+        if (sip_matches_aor(own, entry.route) || std::string_view(entry.route) == own.user) return false;
+      }
+#else
+      (void) entry;
+#endif
+      return true;
+    };
+    if (!this->phonebook_.select_first_matching(eligible)) return false;
   } else {
     // A configured target remains dialable through the ordinary SIP line even
     // while LDAP is absent. Later directory metadata may give it a label, but

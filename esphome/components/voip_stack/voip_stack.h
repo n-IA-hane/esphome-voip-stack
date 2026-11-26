@@ -58,9 +58,7 @@
 #include "voip_fsm.h"
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
 #include "sip_registration.h"
-#if defined(USE_ESPHOME_VOIP_DIRECTORY) || defined(USE_VOIP_HA_AUTO_REGISTER)
 #include "sip_account_view.h"
-#endif
 #ifdef USE_ESPHOME_VOIP_MWI
 #include "message_waiting.h"
 #endif
@@ -150,9 +148,7 @@ class VoipStack : public Component {
   bool register_account(const std::string &id);
   bool unregister_account(const std::string &id);
   bool is_registered(const std::string &id);
-#if defined(USE_ESPHOME_VOIP_DIRECTORY) || defined(USE_VOIP_HA_AUTO_REGISTER)
   bool get_account_snapshot(const std::string &id, SipAccountSnapshot *out);
-#endif
 #ifdef USE_ESPHOME_VOIP_DIRECTORY
   template<typename F> void add_on_account_changed_callback(F &&callback) {
     this->account_changed_callbacks_.add(std::forward<F>(callback));
@@ -221,17 +217,10 @@ class VoipStack : public Component {
   // Effective ESPHome node name, including the optional MAC suffix.
   // Matches the slug HA uses for the esphome.{slug}_start_call action.
   void set_device_route_id(const std::string &id) { this->device_route_id_ = id; }
-  // Application timeout policy: explicit calling value (including 0), then
-  // explicit ringing value, then the outgoing default. Keep an explicit 0
-  // distinct from an omitted value, regardless of codegen setter order.
-  void set_calling_timeout(uint32_t ms) {
-    this->calling_timeout_ms_ = ms;
-    this->calling_timeout_configured_ = true;
-  }
-  void set_ringing_timeout(uint32_t ms) {
-    this->ringing_timeout_ms_ = ms;
-    if (!this->calling_timeout_configured_) this->calling_timeout_ms_ = ms;
-  }
+  // Incoming and outgoing application limits are independent. Omission and
+  // explicit zero both leave that direction unlimited; packages supply policy.
+  void set_calling_timeout(uint32_t ms) { this->calling_timeout_ms_ = ms; }
+  void set_ringing_timeout(uint32_t ms) { this->ringing_timeout_ms_ = ms; }
   template<typename F> void add_on_state_callback(F &&callback) {
     this->state_callback_.add(std::forward<F>(callback));
   }
@@ -1125,10 +1114,8 @@ class VoipStack : public Component {
   bool do_not_disturb_{false};
 
   // Application call timeouts (0 = disabled), separate from SIP timers.
-  // Bound an otherwise unconfigured outgoing attempt after provisional SIP
-  // progress. The budget runs from INVITE submission, not from each 1xx.
-  uint32_t calling_timeout_ms_{180000};
-  bool calling_timeout_configured_{false};
+  // The outgoing budget runs from INVITE submission, not from each 1xx.
+  uint32_t calling_timeout_ms_{0};
   uint32_t ringing_timeout_ms_{0};
   uint32_t ringing_start_time_{0};
   uint32_t calling_start_time_{0};

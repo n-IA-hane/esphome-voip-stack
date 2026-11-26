@@ -866,7 +866,8 @@ bool SipTransport::reject_if_stale_dialog_(const std::string &request, const soc
   const uint32_t expected_ip = this->remote_ip_v4_.load(std::memory_order_acquire);
   const bool host_matches = expected_ip == 0 || ntohl(src.sin_addr.s_addr) == expected_ip;
   bool dialog_tags_match = true;
-  if (std::strcmp(method_name, "BYE") == 0 || std::strcmp(method_name, "REFER") == 0) {
+  if (std::strcmp(method_name, "BYE") == 0 || std::strcmp(method_name, "REFER") == 0 ||
+      std::strcmp(method_name, "SUBSCRIBE") == 0) {
     const std::string from_tag = tag_from_header(header_value(request, "From"));
     const std::string to_tag = tag_from_header(header_value(request, "To"));
     dialog_tags_match = !this->remote_tag_.empty() && !this->local_tag_.empty() &&
