@@ -101,3 +101,11 @@ def test_registration_engine_emits_no_code_when_disabled(registration_binary, tm
     assert result.returncode == 0, result.stderr
     symbols = subprocess.run(["nm", "--defined-only", str(output)], capture_output=True, text=True, check=True)
     assert symbols.stdout == ""
+
+
+@pytest.mark.parametrize("mode", ["basic", "no-nat", "malformed", "auth", "retry", "mapping", "reset", "intent", "uncorrelated", "other-line", "via-lws", "local-ip-change"])
+def test_udp_registration_owner_publishes_observed_contact_and_retires_only_its_binding(registration_binary, mode):
+    result = subprocess.run([registration_binary, "nat-contact-owner", "udp", mode],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "PASS nat-contact-owner udp\n"

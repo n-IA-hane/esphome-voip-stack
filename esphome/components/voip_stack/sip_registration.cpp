@@ -56,6 +56,8 @@ bool decimal(std::string_view s, uint32_t* out) {
 // Top Via tokens associate a rewritten binding with this response transaction.
 std::string_view via_parameter(std::string_view via, std::string_view wanted) {
   via = via.substr(0, via.find(','));
+  std::string_view result;
+  bool found = false;
   size_t pos = via.find(';');
   while (pos != std::string_view::npos) {
     const auto end = via.find(';', ++pos);
@@ -71,12 +73,32 @@ std::string_view via_parameter(std::string_view via, std::string_view wanted) {
     if (same && eq != std::string_view::npos) {
       auto value = item.substr(eq + 1);
       const auto first_value = value.find_first_not_of(" \t\r\n");
-      return first_value == std::string_view::npos ? std::string_view{} :
+      if (found) return {};  // Ambiguous duplicate transaction/mapping parameters.
+      found = true;
+      result = first_value == std::string_view::npos ? std::string_view{} :
           value.substr(first_value, value.find_last_not_of(" \t\r\n") - first_value + 1);
     }
     pos = end;
   }
-  return {};
+  return result;
+}
+// Via's protocol and sent-by may carry legal SWS/LWS and token casing.
+// Compare their normalized characters without allocating an unfolded record.
+bool same_via_sent_by(std::string_view response, std::string_view request) {
+  response = response.substr(0, response.find(';'));
+  request = request.substr(0, request.find(';'));
+  const auto next = [](std::string_view& value) {
+    const auto start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string_view::npos) { value = {}; return -1; }
+    const int c = std::tolower(static_cast<unsigned char>(value[start]));
+    value.remove_prefix(start + 1);
+    return c;
+  };
+  while (true) {
+    const int left = next(response), right = next(request);
+    if (left != right) return false;
+    if (left < 0) return true;
+  }
 }
 uint32_t ipv4(std::string_view value) {
   uint32_t result = 0;
@@ -90,11 +112,29 @@ uint32_t ipv4(std::string_view value) {
   }
   return result;
 }
+bool private_ipv4(uint32_t ip) {
+  return (ip >> 24) == 10 || (ip >> 20) == 0xac1 || (ip >> 16) == 0xc0a8;
+}
+std::string observed_contact(const SipRegistration::Account& a) {
+  char address[22];
+  std::snprintf(address, sizeof(address), "%u.%u.%u.%u:%u", a.observed_ip >> 24,
+                (a.observed_ip >> 16) & 255, (a.observed_ip >> 8) & 255, a.observed_ip & 255,
+                a.observed_port);
+  return "sip:esphome-" + a.config.id + "@" + address + ";transport=udp";
+}
 bool observe_mapping(SipRegistration::Account& a, std::string_view message) {
   const auto via = header_view(message, "Via");
   const uint32_t address = ipv4(via_parameter(via, "received"));
   uint32_t port = 0;
-  if (!address || !decimal(via_parameter(via, "rport"), &port) || port == 0 || port > 65535) return false;
+  if ((address >> 24) == 0 || (address >> 24) >= 224 ||
+      !decimal(via_parameter(via, "rport"), &port) || port == 0 || port > 65535) return false;
+  // PJSUA's default avoids replacing a public Contact through a public server
+  // with a private observation. Private registrar hairpins remain supported.
+  const auto at = a.contact.find('@');
+  const auto colon = a.contact.find(':', at == std::string::npos ? 0 : at);
+  const uint32_t contact_ip = at == std::string::npos ? 0 :
+      ipv4(std::string_view(a.contact).substr(at + 1, colon - at - 1));
+  if (contact_ip && !private_ipv4(contact_ip) && !private_ipv4(a.target_ip) && private_ipv4(address)) return false;
   const bool changed = a.observed_ip != 0 && (a.observed_ip != address || a.observed_port != port);
   a.observed_ip = address;
   a.observed_port = port;
@@ -475,7 +515,7 @@ bool SipRegistration::begin_(size_t i, uint32_t now) {
   }
   const std::string contact = "sip:esphome-" + c.id + "@" + local_ip + ":" + std::to_string(this->hooks_.local_port) +
               ";transport=" + (c.tcp ? "tcp" : "udp");
-  a.contact = contact;
+  if (c.tcp || a.contact.empty()) a.contact = contact;
   a.branch = "z9hG4bK" + this->token_();
   ++a.cseq;
   a.requested_expires = a.desired ? c.expires : 0;
@@ -488,6 +528,8 @@ bool SipRegistration::begin_(size_t i, uint32_t now) {
       "Call-ID: " + a.call_id + "\r\nCSeq: " + std::to_string(a.cseq) + " REGISTER\r\n" + "Contact: <" +
       a.contact + ">;expires=" + std::to_string(a.desired ? c.expires : 0) + "\r\n" +
       "Expires: " + std::to_string(a.desired ? c.expires : 0) + "\r\nUser-Agent: ESPHome-VoIP-Stack\r\n";
+  if (!a.retiring_contact.empty())
+    message += "Contact: <" + a.retiring_contact + ">;expires=0\r\n";
   for (auto* digest : {&a.digest, &a.proxy_digest}) {
     if (digest->empty()) continue;
     const std::string authorization =
@@ -518,9 +560,9 @@ bool SipRegistration::begin_(size_t i, uint32_t now) {
 bool SipRegistration::begin_keepalive_(size_t i, uint32_t now) {
   auto& a = this->accounts_[i];
   const auto& c = a.config;
-  const auto at = a.contact.find('@');
-  const auto end = a.contact.find(';', at);
-  if (at == std::string::npos || this->hooks_.send == nullptr) return false;
+  if (this->hooks_.send == nullptr || this->hooks_.local_ip == nullptr) return false;
+  const std::string local_ip = this->hooks_.local_ip(this->hooks_.context, a.target_ip);
+  if (local_ip.empty() || local_ip == "0.0.0.0") return false;
   a.registration_next_ms = a.next_ms;
   char branch[30];
   const unsigned first = this->hooks_.random == nullptr ? 1 : this->hooks_.random();
@@ -536,7 +578,8 @@ bool SipRegistration::begin_keepalive_(size_t i, uint32_t now) {
   append("OPTIONS sip:"); append(c.registrar); append(":");
   std::snprintf(number, sizeof(number), "%u", c.port); append(number);
   append(" SIP/2.0\r\nVia: SIP/2.0/"); append(c.tcp ? "TCP" : "UDP"); append(" ");
-  append(std::string_view(a.contact).substr(at + 1, end == std::string::npos ? end : end - at - 1));
+  append(local_ip); append(":");
+  std::snprintf(number, sizeof(number), "%u", this->hooks_.local_port); append(number);
   append(";branch="); append(a.branch); append(";rport\r\nMax-Forwards: 70\r\nFrom: <");
   append_address_of_record(a.request, c); append(">;tag="); append(a.tag);
   append("\r\nTo: <"); append_address_of_record(a.request, c);
@@ -655,6 +698,9 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
         !decimal(sequence.substr(0, separator), &cseq) || cseq != a.cseq ||
         method != (a.request_kind == RequestKind::REGISTRATION ? "REGISTER" : "OPTIONS") ||
         via_parameter(header_view(message, "Via"), "branch") != std::string_view(a.branch)) return true;
+    const auto response_via = header_view(message, "Via");
+    const auto request_via = header_view(std::string_view(a.request.data(), a.request.size()), "Via");
+    if (!same_via_sent_by(response_via, request_via)) return true;
     uint32_t status = 0;
     if (message.size() < 12 || !decimal(message.substr(8, 3), &status) || status < 100 || status > 699)
       return true;
@@ -673,6 +719,13 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
       // A final keepalive response proves reachability, not capabilities or
       // REGISTER renewal. Only a correlated observed mapping can require rebind.
       if (observe_mapping(a, message)) {
+        if (!a.config.tcp) {
+          auto contact = observed_contact(a);
+          if (contact != a.contact) {
+            a.retiring_contact = std::move(a.contact);
+            a.contact = std::move(contact);
+          }
+        }
         this->begin_(i, now);
       }
       return true;
@@ -733,6 +786,7 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
       a.failures = 0;
       a.auth_attempts = 0;
       a.proxy_auth_attempts = 0;
+      a.retiring_contact.clear();
       observe_mapping(a, message);
       a.bound = expires > 0;
       a.keepalive_next_ms = now + this->keepalive_interval_ms_;
@@ -756,6 +810,16 @@ bool SipRegistration::handle_response(const std::string& message, uint32_t ip, u
         this->state_(i, RegistrationState::DISABLED, status);
         a.scheduled = a.desired;
         a.next_ms = now + 1000;
+      }
+      // RFC 3261 10.2.2: retire only our prior URI, alongside its replacement.
+      // A correlated successful REGISTER is the sole owner of this UDP mapping.
+      if (!a.config.tcp && a.bound && a.desired && a.observed_ip) {
+        auto contact = observed_contact(a);
+        if (contact != a.contact) {
+          a.retiring_contact = std::move(a.contact);
+          a.contact = std::move(contact);
+          this->begin_(i, now);
+        }
       }
       return true;
     }

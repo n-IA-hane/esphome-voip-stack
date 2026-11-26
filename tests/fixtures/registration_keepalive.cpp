@@ -18,10 +18,10 @@ void operator delete[](void* value) noexcept { std::free(value); }
 void operator delete(void* value, size_t) noexcept { std::free(value); }
 void operator delete[](void* value, size_t) noexcept { std::free(value); }
 
-std::string mapping(std::string message, unsigned port = 41000) {
+std::string mapping(std::string message, unsigned port = 5060) {
   const auto start = message.find(";rport\r\n");
   assert(start != std::string::npos);
-  message.replace(start, 8, ";received=198.51.100.1;rport=" + std::to_string(port) + "\r\n");
+  message.replace(start, 8, ";received=127.0.0.1;rport=" + std::to_string(port) + "\r\n");
   return message;
 }
 void no_record(Peer& peer) {
@@ -140,7 +140,14 @@ int main(int argc, char** argv) {
         "WWW-Authenticate: Digest realm=\"probe\",nonce=\"unrelated\",algorithm=MD5\r\n"), 42000), due + 1);
     auto refresh = h.first.receive();
     assert(refresh.rfind("REGISTER ", 0) == 0 && field(refresh, "Expires") == "3600");
-    assert(field(refresh, "Contact") == field(initial, "Contact"));
+    if (tcp) assert(field(refresh, "Contact") == field(initial, "Contact"));
+    else {
+      assert(field(refresh, "Contact") == "<sip:esphome-" + config.id +
+          "@127.0.0.1:42000;transport=udp>;expires=3600");
+      assert(refresh.find("Contact: <sip:esphome-" + config.id +
+          "@127.0.0.1:5060;transport=udp>;expires=0\r\n") != std::string::npos);
+      assert(refresh.find("Contact: *") == std::string::npos);
+    }
     if (scenario == "credentials") {
       assert(field(refresh, "Authorization").find("nonce=\"retained\"") != std::string::npos);
       assert(h.manager.account(0).digest.nonce == "retained" && h.manager.account(0).digest.nonce_count == 2);

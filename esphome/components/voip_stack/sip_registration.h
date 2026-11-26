@@ -106,6 +106,8 @@ class SipRegistration {
     RegistrationState state{RegistrationState::DISABLED};
     SipDigest digest, proxy_digest;
     std::string call_id, tag, branch, contact;
+    // One prior generated URI, retained until the atomic Contact replacement succeeds.
+    std::string retiring_contact;
     RegistrationMessage request;
     uint32_t cseq{0}, target_ip{0}, next_ms{0}, deadline_ms{0}, interval_ms{500}, negotiated_expires{0},
         requested_expires{0};
