@@ -75,6 +75,21 @@ including their session variants, with `qop=auth` or the legacy no-qop form.
 Successful bindings must match the account Contact, including a verified
 Via-derived mapped address when the registrar rewrites that Contact.
 
+For UDP, the registration owner also learns the reachable endpoint from the
+`received` and `rport` parameters in its correlated successful response. If it
+differs from the advertised Contact, one subsequent REGISTER replaces that
+account's old URI (`expires=0`) with the observed URI. Other contacts sharing
+the account, such as a desktop softphone, remain registered. Authentication and
+retries retain the pending replacement until it is acknowledged. A local
+non-NAT registration does not require an extra exchange.
+
+This preserves a DNS registrar and virtual service address through NAT without
+relaxing the registered-peer incoming check or enabling direct calls. The SIP
+identity, domain, credentials and configured registrar remain unchanged. It
+follows the same registration-session approach documented by
+[PJSIP for Contact updates](https://docs.pjsip.org/en/latest/api/generated/pjsip/group/group__PJSUA__LIB__BASE.html).
+The automatic Contact update applies to UDP; TCP keeps its existing flow policy.
+
 YAML actions and conditions:
 
 | Name | Arguments |
