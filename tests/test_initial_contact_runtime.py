@@ -42,7 +42,9 @@ def initial_contact_binary(tmp_path_factory, request):
     return binary
 
 
-@pytest.mark.parametrize("scenario", ["alphabetical", "explicit-no-directory", "account-scoped", "late-directory"])
+@pytest.mark.parametrize("scenario", ["alphabetical", "explicit-no-directory", "account-scoped", "late-directory",
+                                   "static-self", "only-self", "explicit-self", "same-user-other-host",
+                                   "bare-self", "username-tie"])
 def test_initial_target_order_refresh_and_manual_selection(initial_contact_binary, scenario):
     result = subprocess.run([initial_contact_binary, scenario], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stdout + result.stderr

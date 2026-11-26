@@ -66,6 +66,7 @@ def registration_transport_source(*, full_invite=False):
     code = code.replace("using SipTcpFlow=::SipTcpFlow;", "using SipTcpFlow=::SipTcpFlow;\n" + extra)
     code = code.replace("struct SipTransport: SipPhoneTransport {", "struct SipTransport: SipPhoneTransport {\n")
     prefix = '''#include "sip_registration.h"
+#include "sip_account_view.h"
 #if defined(USE_ESPHOME_VOIP_MWI) || defined(USE_ESPHOME_VOIP_BLF)
 #include "sip_mwi.h"
 using esphome::voip_stack::SipMwi;
@@ -80,6 +81,7 @@ using esphome::voip_stack::BlfWatchConfig;
 using esphome::voip_stack::SipRegistration;
 using esphome::voip_stack::SipDigest;
 using esphome::voip_stack::SipAccountConfig;
+using esphome::voip_stack::SipAccountSnapshot;
 using esphome::voip_stack::RegistrationState;
 '''
     # The host fixture is global; production registration definitions keep

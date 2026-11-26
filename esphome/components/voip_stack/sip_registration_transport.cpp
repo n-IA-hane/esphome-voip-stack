@@ -640,7 +640,6 @@ bool SipTransport::register_account(const std::string& id, bool enabled) {
   this->wake_sip_task_();
   return result;
 }
-#if defined(USE_ESPHOME_VOIP_DIRECTORY) || defined(USE_VOIP_HA_AUTO_REGISTER)
 bool SipTransport::get_account_snapshot(const std::string &id, SipAccountSnapshot *out) {
   if (out == nullptr) return false;
   LockGuard lock(this->dialog_mutex_);
@@ -652,7 +651,6 @@ bool SipTransport::get_account_snapshot(const std::string &id, SipAccountSnapsho
   out->registered = account.bound && account.desired;
   return true;
 }
-#endif
 
 bool SipTransport::is_registered(const std::string& id) {
   LockGuard lock(this->dialog_mutex_);

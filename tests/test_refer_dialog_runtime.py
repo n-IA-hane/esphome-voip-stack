@@ -183,6 +183,8 @@ struct SipTransport: SipPhoneTransport {
  bool refer_context_active_=false,refer_retiring_=false,refer_signal_pending_=false;
  SipSignalType refer_signal_type_=SipSignalType::PROTOCOL_ERROR;uint16_t refer_status_=0;
  uint32_t refer_cseq_=0,refer_expires_=0;
+ uint32_t calling_timeout_ms_=0;
+ void set_calling_timeout(uint32_t ms){calling_timeout_ms_=ms;}
  std::string logical_call_id_,logical_wire_id_,refer_wire_id_;
 ''' + next(line for line in header.splitlines() if 'bool accept_direct_calls_{' in line) + r'''
  std::atomic<bool> media_active_{true};
@@ -194,7 +196,9 @@ struct SipTransport: SipPhoneTransport {
  struct Wire {std::string method,id,headers,body;};std::vector<Wire> wire;
  uint16_t response=0;unsigned bye_count=0,cancel_count=0;
  bool handle_refer_(const std::string&,const sockaddr_in&);
- void notify_refer_(uint32_t,uint16_t,const char*);
+ void notify_refer_(uint32_t,uint16_t,const char*,const char* = nullptr);
+ void handle_refer_subscribe_(const std::string&,const sockaddr_in&);
+ void retire_refer_();bool next_refer_deadline_(uint32_t,uint32_t*)const;
  bool end_refer_invite_usage_(bool);
  void cancel_refer_();void finish_failed_refer_(uint16_t,const char*);
  void open_media_session_(){if(!refer_context_active_)media_active_=true;}
@@ -205,7 +209,7 @@ struct SipTransport: SipPhoneTransport {
  void release_refer_dialog_(){refer_dialog_.reset();}
  void pump_refer_();void swap_dialog_(ReferDialog&);void swap_negotiation_(ReferDialog&);
  bool reject_if_stale_dialog_(const std::string&,const sockaddr_in&,const char*);
- bool send_stateless_response_(const std::string&,const sockaddr_in&,uint16_t s,const char*,const std::string& = "",bool remember=false){
+ bool send_stateless_response_(const std::string&,const sockaddr_in&,uint16_t s,const char*,const std::string& = "",bool remember=false,int=-1,const std::string& = "",int=-1){
   response=s;if(remember){completed_control_.call_id=call_id_;completed_control_.response="accepted";completed_control_.udp=!remote_sip_tcp_.load();}return true;}
  uint16_t sip_port_=5060;
  enum class SipEvent{NONE};
@@ -239,6 +243,7 @@ struct SipTransport: SipPhoneTransport {
         implementation = implementation.replace('RtpAudioPayloads *rx_payloads)', 'RtpAudioPayloads *rx_payloads = nullptr)')
         implementation = implementation.replace('const RtpAudioPayloads *rx_payloads)', 'const RtpAudioPayloads *rx_payloads = nullptr)')
         code = code.replace(block(code, marker), implementation, 1)
+    code = code.replace(block(code, 'void set_calling_timeout('), block(header, 'void set_calling_timeout('), 1)
     return negotiated_fixture_source(code)
 
 

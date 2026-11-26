@@ -111,7 +111,7 @@ bool SipTransport::send_request_(const std::string &method, const std::string &b
                                            : this->local_contact_uri_) +
          "\r\n";
   msg += "User-Agent: ESPHome-VoIP-Stack-SIP\r\n";
-  msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS, UPDATE, REFER\r\n";
+  msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS, UPDATE, REFER, SUBSCRIBE\r\n";
   msg += "Supported: from-change\r\n";
 #ifdef USE_ESPHOME_VOIP_REGISTRATION
   msg += routes;
@@ -255,7 +255,7 @@ std::string SipTransport::format_response_(
     const std::string &call_id, const std::string &cseq,
     const std::string &app_reason, const std::string &body,
     bool add_contact_ua, bool add_to_tag, bool stateless,
-    int retry_after_seconds) {
+    int retry_after_seconds, int expires_seconds) {
   std::string msg =
       "SIP/2.0 " + std::to_string(status) + " " + reason + "\r\n";
   msg += "Via: " + via + "\r\n";
@@ -285,8 +285,10 @@ std::string SipTransport::format_response_(
            ";text=" + sip_quoted(clean_reason) + "\r\n";
   }
   if (status == 405 || (status == 200 && cseq_method(cseq) == "OPTIONS")) {
-    msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS, UPDATE, REFER\r\n";
+    msg += "Allow: ACK, BYE, CANCEL, INVITE, OPTIONS, UPDATE, REFER, SUBSCRIBE\r\n";
   }
+  if (status == 489 || (status == 200 && cseq_method(cseq) == "OPTIONS"))
+    msg += "Allow-Events: refer\r\n";
   if (status == 200 && cseq_method(cseq) == "OPTIONS") {
     msg += "Accept: application/sdp\r\nSupported: from-change\r\n";
   }
@@ -294,6 +296,7 @@ std::string SipTransport::format_response_(
     msg += "Retry-After: " + std::to_string(retry_after_seconds) +
            "\r\n";
   }
+  if (expires_seconds >= 0) msg += "Expires: " + std::to_string(expires_seconds) + "\r\n";
   if (!body.empty())
     msg += "Content-Type: application/sdp\r\n";
   msg += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
@@ -312,7 +315,7 @@ bool SipTransport::send_response_(uint16_t status, const char *reason,
       status, reason,
       response_via_with_rport(this->last_invite_via_, ip, port),
       this->last_invite_from_, this->last_invite_to_, this->call_id_,
-      this->last_invite_cseq_, app_reason, body, true, true, false, -1);
+      this->last_invite_cseq_, app_reason, body, true, true, false, -1, -1);
   bool response_owned = false;
   if (status >= 200) {
     this->pending_provisional_response_.clear();
@@ -345,7 +348,7 @@ bool SipTransport::send_response_(uint16_t status, const char *reason,
 bool SipTransport::send_stateless_response_(
     const std::string &request, const sockaddr_in &src, uint16_t status,
     const char *reason, const std::string &app_reason,
-    bool cache_transaction, int retry_after_seconds, const std::string &body) {
+    bool cache_transaction, int retry_after_seconds, const std::string &body, int expires_seconds) {
   const uint32_t ip = ntohl(src.sin_addr.s_addr);
   const uint16_t port = ntohs(src.sin_port);
   const std::string via = header_values(request, "Via");
@@ -365,12 +368,12 @@ bool SipTransport::send_stateless_response_(
             : this->local_tag_;
     response_to += ";tag=" + tag;
   }
-  const bool add_contact = (method == "UPDATE" || method == "REFER") &&
+  const bool add_contact = (method == "UPDATE" || method == "REFER" || method == "SUBSCRIBE") &&
                            status >= 200 && status < 300;
   const std::string msg = this->format_response_(
       status, reason, response_via_with_rport(via, ip, port), from,
       response_to, call_id, cseq, app_reason, body, add_contact, false, true,
-      retry_after_seconds);
+      retry_after_seconds, expires_seconds);
 
   bool response_owned = false;
 #ifdef USE_ESPHOME_VOIP_REGISTRATION

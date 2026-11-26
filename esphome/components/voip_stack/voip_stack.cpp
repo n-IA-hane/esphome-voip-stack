@@ -339,6 +339,7 @@ bool VoipStack::setup_transport_() {
     return false;
   }
   transport->set_accept_direct_calls(this->accept_direct_calls_);
+  transport->set_calling_timeout(this->calling_timeout_ms_);
   this->transport_ = std::move(transport);
 #else
   ESP_LOGE(TAG, "SIP transport was not compiled into this firmware");

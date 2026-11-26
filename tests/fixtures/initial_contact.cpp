@@ -1,4 +1,5 @@
 #include "phonebook.h"
+#include "sip_account_view.h"
 #include "voip_fsm.h"
 #include <atomic>
 #include <cassert>
@@ -12,6 +13,12 @@ namespace esphome::voip_stack {
 // snapshots and ordering below execute their actual production methods.
 struct VoipStack {
   Phonebook phonebook_;
+  SipAccountSnapshot known_account;
+  bool get_account_snapshot(const std::string &line, SipAccountSnapshot *out) {
+    if (line != known_account.config.id) return false;
+    *out = known_account;
+    return true;
+  }
   std::atomic<CallState> call_state_{CallState::IDLE};
   std::string initial_contact_, selected_dial_target_, default_line_{"office"};
   bool selected_dial_target_resolved_{false}, initial_contact_ready_{false}, initial_contact_applied_{false};
@@ -118,5 +125,39 @@ int main(int argc, char **argv) {
     phone.next_contact(); assert(phone.get_current_destination_route() == "300");
     phone.publish_phonebook_changed_(); assert(phone.get_current_destination_route() == "300");
     phone.prev_contact(); assert(phone.get_current_destination_route() == "100");
+  } else if (mode == "static-self" || mode == "only-self" || mode == "explicit-self" ||
+             mode == "same-user-other-host" || mode == "bare-self") {
+    phone.known_account.config.id = "office";
+    phone.known_account.config.username = "100";
+    phone.known_account.config.domain = "pbx.example";
+    phone.known_account.config.registrar = "pbx.example";
+    const char *self_route = mode == "bare-self" ? "100" : "sip:%31%30%30@PBX.example:5060";
+    assert(phone.phonebook_.add_entry(row("self", "A Self", self_route)) == AddResult::Added);
+    if (mode != "only-self") {
+      const char *peer_route = mode == "same-user-other-host" ? "sip:100@another.example" : "sip:202@pbx.example";
+      assert(phone.phonebook_.add_entry(row("peer", "Z Peer", peer_route)) == AddResult::Added);
+    }
+    if (mode == "explicit-self") phone.initial_contact_ = "self";
+    phone.boot();
+    if (mode == "only-self") {
+      assert(!phone.initial_contact_applied_);
+      assert(phone.get_current_destination_route().empty());
+      assert(phone.phonebook_.add_entry(row("peer", "Z Peer", "sip:202@pbx.example")) == AddResult::Added);
+      phone.publish_phonebook_changed_();
+      assert(phone.initial_contact_applied_ && phone.get_current_destination_route() == "sip:202@pbx.example");
+    } else if (mode == "explicit-self") {
+      assert(phone.get_current_destination_route() == self_route);
+    } else {
+      assert(phone.phonebook_.current()->stable_id() == "peer");
+      assert(phone.set_contact("self"));
+      phone.publish_phonebook_changed_();
+      assert(phone.get_current_destination_route() == self_route);
+    }
+  } else if (mode == "username-tie") {
+    assert(phone.phonebook_.add_entry(row("a-manual", "Desk", "sip:202@pbx.example")) == AddResult::Added);
+    assert(phone.phonebook_.add_entry(row("z-manual", "Desk", "sip:101@pbx.example")) == AddResult::Added);
+    phone.boot();
+    assert(phone.get_current_destination_route() == "sip:101@pbx.example");
+    assert(phone.phonebook_.current()->stable_id() == "z-manual");
   } else { assert(false); }
 }

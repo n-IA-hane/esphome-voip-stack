@@ -400,6 +400,19 @@ class Phonebook {
     return !this->entries_.empty();
   }
 
+  // Keep excluded rows available to explicit/manual selection. An empty
+  // automatic result must not accidentally expose the first excluded row.
+  template<typename Predicate> bool select_first_matching(Predicate include) {
+    for (size_t i = 0; i < this->entries_.size(); ++i) {
+      if (include(this->entries_[i])) {
+        this->index_ = i;
+        return true;
+      }
+    }
+    this->index_ = SIZE_MAX;
+    return false;
+  }
+
   // Deterministic display order without a locale table or a temporary copy of
   // every contact. Identity tie-breaks also make reversed LDAP arrival stable.
   // Sorting never changes an existing selection's account/route identity.
@@ -418,6 +431,12 @@ class Phonebook {
     std::sort(this->entries_.begin(), this->entries_.end(), [&](const ContactEntry &left, const ContactEntry &right) {
       const int name = compare_name(left.name, right.name);
       if (name != 0) return name < 0;
+      const auto username = [](const ContactEntry &entry) {
+        SipTargetParts target;
+        return sip_parse_target_uri(entry.route, target) ? target.user : std::string(entry.route);
+      };
+      const auto left_user = username(left), right_user = username(right);
+      if (left_user != right_user) return left_user < right_user;
       if (left.stable_id() != right.stable_id()) return left.stable_id() < right.stable_id();
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
       if (left.account_id != right.account_id) return std::string_view(left.account_id) < std::string_view(right.account_id);
@@ -431,15 +450,16 @@ class Phonebook {
   /// Step through positions in order. No-op on empty phonebook.
   void next() {
     if (this->entries_.empty()) return;
-    this->index_ = (this->index_ + 1) % this->entries_.size();
+    this->index_ = this->index_ == SIZE_MAX ? 0 : (this->index_ + 1) % this->entries_.size();
   }
   void prev() {
     if (this->entries_.empty()) return;
-    this->index_ = (this->index_ + this->entries_.size() - 1) % this->entries_.size();
+    this->index_ = this->index_ == SIZE_MAX ? this->entries_.size() - 1 :
+        (this->index_ + this->entries_.size() - 1) % this->entries_.size();
   }
 
   const ContactEntry *current() const {
-    if (this->entries_.empty()) return nullptr;
+    if (this->entries_.empty() || this->index_ == SIZE_MAX) return nullptr;
     return &this->entries_[this->index_ % this->entries_.size()];
   }
   const ContactEntry *at(size_t index) const { return index < this->entries_.size() ? &this->entries_[index] : nullptr; }
@@ -545,7 +565,7 @@ class Phonebook {
     this->entries_.erase(this->entries_.begin() + index);
     if (this->entries_.empty()) {
       this->index_ = 0;
-    } else if (index < this->index_) {
+    } else if (this->index_ != SIZE_MAX && index < this->index_) {
       this->index_--;
     } else if (index == this->index_ && this->index_ >= this->entries_.size()) {
       this->index_ = 0;
@@ -774,6 +794,7 @@ class Phonebook {
 
   struct Selection {
     std::string id;
+    bool unset{false};
     std::array<char, MAX_NAME_BYTES + 1> name{};
 #ifdef USE_ESPHOME_VOIP_CONTACT_METADATA
     std::array<char, 33> account{};
@@ -781,6 +802,7 @@ class Phonebook {
   };
   Selection snapshot_selection_() const {
     Selection result;
+    result.unset = this->index_ == SIZE_MAX;
     if (const auto *current = this->current()) {
       const auto &id = current->stable_id();
       result.id.assign(id.data(), std::min(id.size(), SIP_URI_BYTES));
@@ -792,6 +814,7 @@ class Phonebook {
     return result;
   }
   void restore_selection_(const Selection &selection) {
+    if (selection.unset) { this->index_ = SIZE_MAX; return; }
     this->index_ = 0;
     for (size_t i = 0; !selection.id.empty() && i < this->entries_.size(); ++i)
       if (this->entries_[i].stable_id() == selection.id

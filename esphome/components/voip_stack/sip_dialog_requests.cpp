@@ -394,7 +394,7 @@ void SipTransport::remember_completed_response_(const std::string &request, uint
                                                 const std::string &response, bool header_block) {
   if (response.empty() || peer_ip_v4 == 0 || peer_port == 0 ||
       (method != "INVITE" && method != "CANCEL" && method != "BYE" &&
-       method != "UPDATE" && method != "REFER") ||
+       method != "UPDATE" && method != "REFER" && method != "SUBSCRIBE") ||
       response.rfind("SIP/2.0 ", 0) != 0 || response.size() < 12) {
     return;
   }

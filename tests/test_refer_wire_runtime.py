@@ -52,7 +52,7 @@ template<class T>void reset_string(T&s){s.clear();}
         ('send_stateless_response_', requests),
     ]
     declarations = {
-        'send_stateless_response_': 'bool send_stateless_response_(const std::string&,const sockaddr_in&,uint16_t,const char*,const std::string& = "",bool=false,int=-1,const std::string& = "");',
+        'send_stateless_response_': 'bool send_stateless_response_(const std::string&,const sockaddr_in&,uint16_t,const char*,const std::string& = "",bool=false,int=-1,const std::string& = "",int=-1);',
     }
     for name, text in methods:
         # Remove the fixture implementation, retaining the production declaration.
