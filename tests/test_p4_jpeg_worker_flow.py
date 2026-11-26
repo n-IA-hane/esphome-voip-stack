@@ -61,6 +61,7 @@ enum {JPEG_DOWN_SAMPLING_YUV444,JPEG_DOWN_SAMPLING_YUV422,JPEG_DOWN_SAMPLING_YUV
 struct jpeg_decode_picture_info_t{uint32_t width{},height{};int sample_method=JPEG_DOWN_SAMPLING_YUV420;};
 struct PayloadFrame{uint16_t width,height,color;};
 unsigned info_calls=0,decode_calls=0;
+uint32_t clock_us=0;uint32_t micros(){return clock_us;}
 std::function<void()>decode_hook;
 int jpeg_decoder_get_info(const uint8_t*p,uint32_t size,jpeg_decode_picture_info_t*out){assert(size==sizeof(PayloadFrame));PayloadFrame f;std::memcpy(&f,p,sizeof(f));*out={f.width,f.height,JPEG_DOWN_SAMPLING_YUV420};++info_calls;return ESP_OK;}
 int jpeg_decoder_process(void*,int*,const uint8_t*p,uint32_t size,uint8_t*out,uint32_t capacity,uint32_t*written){
@@ -123,7 +124,7 @@ struct P4VideoRenderer {
  std::atomic<int>pending_surface_{-1};std::atomic<uint32_t>pending_surface_generation_{0},remote_frame_visible_{0};
  std::atomic<bool>rx_active_{false},rx_session_prepared_{false},rx_running_{true},video_ended_pending_{false},surface_ever_presented_{false},presentation_in_flight_{false};
  std::atomic<uint32_t>rx_session_generation_{0},rx_admitted_frames_{0},rx_rendered_frames_{0},rx_presented_frames_{0},rx_refresh_completed_{0};
- std::mutex presentation;std::mutex*presentation_mutex_=&presentation;void*rx_task_handle_=nullptr;video_renderer::StreamFormat rx_format_;uint8_t framerate_=10;
+ std::mutex presentation;std::mutex*presentation_mutex_=&presentation;void*rx_task_handle_=nullptr;video_renderer::StreamFormat rx_format_;uint8_t framerate_=10;video_renderer::FrameCadence cadence_;
  struct{unsigned count=0;std::function<void()>callback;void trigger(){++count;if(callback)callback();}}first_frame_trigger_,video_ended_trigger_;
  std::vector<uint8_t>au=std::vector<uint8_t>(524288);uint8_t*rx_au_=au.data();size_t rx_au_capacity_=524288,rx_au_size_=0;uint32_t rx_au_generation_=0;uint64_t rx_timestamp_us_=0;bool rx_key_frame_=false;SlotState rx_slot_state_;
  bool is_failed(){return false;}void enable_loop_soon_any_context(){}void disable_loop(){}
@@ -135,6 +136,7 @@ struct P4VideoRenderer {
  bool present_surface_direct_(int);bool refresh_layout_();void loop();void on_display_refresh_ready_();
  void worker_one(){do{WORKER}while(false);}
  bool consume(const PayloadFrame&f){
+  clock_us+=100000;
   video_renderer::EncodedFrame frame{reinterpret_cast<const uint8_t*>(&f),sizeof(f),{0,true},true};
 #ifdef FRAME_METADATA
   frame.jpeg_info={f.width,f.height,video_renderer::JpegSampling::YUV420};

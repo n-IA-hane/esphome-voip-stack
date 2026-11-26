@@ -29,6 +29,20 @@ measurements. Camera software admission retains fractional phase, bounds
 recovery credit and runs before PPA/JPEG work. Driver-reported frame intervals
 are checked rather than assuming a successful ioctl applied the requested rate.
 
+The P4 JPEG source passes its negotiated transmit budget into the camera's
+existing consumer start call. The camera admits each consumer before PPA/JPEG;
+there is no second rate gate after encoding. A simultaneous API preview keeps
+its own camera cap and one-shot requests remain independent. Camera callbacks
+carry the source's session token, so stop/redial cannot publish an old encoded
+frame into a new call. Source start, stop and callback validation share the
+existing control mutex.
+
+The P4 receive adapter delegates JPEG work admission to the protocol-neutral
+renderer. The renderer uses arrival time before copy/decode, so direct producers
+and RTP producers get the same cap even when presentation timestamps are absent
+or move backward. RTP clock translation remains in the adapter. H.264 retains
+its postdecode presentation cadence and reference-picture dependencies.
+
 ## Frame ownership and bounds
 
 `EncodedVideoSink::max_encoded_access_unit_bytes()` defaults to zero, preserving
