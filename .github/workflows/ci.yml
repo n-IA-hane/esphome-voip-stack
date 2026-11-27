@@ -112,6 +112,22 @@ jobs:
           test "$(cat test-results/video-camera-sha.txt)" = "0a0d861f9aad5c3d7f844895c44000db525e52a8"
           test -f .test-deps/esphome-esp-video-camera/components/esp_video_camera/esp_video_camera.h
 
+      - name: Fetch the display owner required by the P4 renderer contract
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: n-IA-hane/esphome-intercom
+          ref: 1493fab9bcf3a89c201e0ba1e9a296e5ecca27fa
+          path: .test-deps/esphome-intercom
+          sparse-checkout: esphome/components/mipi_dsi
+          persist-credentials: false
+
+      - name: Verify MIPI display contract dependency
+        run: |
+          git -C .test-deps/esphome-intercom rev-parse HEAD > test-results/mipi-provider-sha.txt
+          test "$(cat test-results/mipi-provider-sha.txt)" = "1493fab9bcf3a89c201e0ba1e9a296e5ecca27fa"
+          test -f .test-deps/esphome-intercom/esphome/components/mipi_dsi/display.py
+          test -f .test-deps/esphome-intercom/esphome/components/mipi_dsi/mipi_dsi.h
+
       - name: Run ${{ matrix.audio_contract }} contract tests
         env:
           ESP_AUDIO_LIBS_SOURCE: ${{ github.workspace }}/.test-deps/esp-audio-libs
@@ -119,6 +135,7 @@ jobs:
           ESP_AUDIO_STACK_SOURCE: ${{ github.workspace }}/.test-deps/esphome-audio-stack
           VIDEO_CAMERA_SOURCE: ${{ github.workspace }}/.test-deps/esphome-esp-video-camera
           ESP_VIDEO_CAMERA_SOURCE: ${{ github.workspace }}/.test-deps/esphome-esp-video-camera
+          MIPI_COMPONENTS_SOURCE: ${{ github.workspace }}/.test-deps/esphome-intercom/esphome/components
         run: python -m pytest -q --junitxml=test-results/native.xml
 
       - name: Preserve native regression results
@@ -131,6 +148,7 @@ jobs:
             test-results/audio-libs-sha.txt
             test-results/audio-stack-sha.txt
             test-results/video-camera-sha.txt
+            test-results/mipi-provider-sha.txt
           if-no-files-found: error
 
   renderer-consumer:
