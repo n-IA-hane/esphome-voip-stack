@@ -37,7 +37,7 @@ jobs:
       - name: Install test dependencies
         run: >-
           python -m pip install
-          "esphome @ git+https://github.com/esphome/esphome.git@1feda1bcaa861a5f2e933f2c65d599e44f4b132b"
+          "esphome @ git+https://github.com/esphome/esphome.git@3f5bf1bbae1b1ec51d5e010e6eff7590f5911dee"
           pytest==9.0.3
           ruff==0.15.21
           ldap3==2.9.1
@@ -99,11 +99,26 @@ jobs:
           ref: dev
           path: .test-deps/esphome-video-renderer
 
+      - name: Fetch the real camera consumer contract
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: n-IA-hane/esphome-esp-video-camera
+          ref: 0a0d861f9aad5c3d7f844895c44000db525e52a8
+          path: .test-deps/esphome-esp-video-camera
+
+      - name: Verify camera contract dependency
+        run: |
+          git -C .test-deps/esphome-esp-video-camera rev-parse HEAD > test-results/video-camera-sha.txt
+          test "$(cat test-results/video-camera-sha.txt)" = "0a0d861f9aad5c3d7f844895c44000db525e52a8"
+          test -f .test-deps/esphome-esp-video-camera/components/esp_video_camera/esp_video_camera.h
+
       - name: Run ${{ matrix.audio_contract }} contract tests
         env:
           ESP_AUDIO_LIBS_SOURCE: ${{ github.workspace }}/.test-deps/esp-audio-libs
           VIDEO_RENDERER_SOURCE: ${{ github.workspace }}/.test-deps/esphome-video-renderer
           ESP_AUDIO_STACK_SOURCE: ${{ github.workspace }}/.test-deps/esphome-audio-stack
+          VIDEO_CAMERA_SOURCE: ${{ github.workspace }}/.test-deps/esphome-esp-video-camera
+          ESP_VIDEO_CAMERA_SOURCE: ${{ github.workspace }}/.test-deps/esphome-esp-video-camera
         run: python -m pytest -q --junitxml=test-results/native.xml
 
       - name: Preserve native regression results
@@ -115,6 +130,7 @@ jobs:
             test-results/native.xml
             test-results/audio-libs-sha.txt
             test-results/audio-stack-sha.txt
+            test-results/video-camera-sha.txt
           if-no-files-found: error
 
   renderer-consumer:
@@ -181,7 +197,7 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install official ESPHome
-        run: python -m pip install "esphome @ git+https://github.com/esphome/esphome.git@1feda1bcaa861a5f2e933f2c65d599e44f4b132b"
+        run: python -m pip install "esphome @ git+https://github.com/esphome/esphome.git@3f5bf1bbae1b1ec51d5e010e6eff7590f5911dee"
       - name: Compile and link the audio firmware
         env:
           CONFIGURATION: ${{ matrix.configuration }}
