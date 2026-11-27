@@ -116,3 +116,10 @@ def test_positive_old_contact_in_success_is_not_treated_as_retired(registration_
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "PASS retirement-positive udp\n"
+
+
+def test_local_address_change_updates_contact_without_registrar_rport_support(registration_binary):
+    result = subprocess.run([registration_binary, "local-address-without-rport", "udp"],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "PASS local-address-without-rport udp\n"

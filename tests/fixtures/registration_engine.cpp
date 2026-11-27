@@ -229,6 +229,39 @@ int main(int argc, char** argv) {
     std::cout << "PASS retirement-positive udp\n";
     return 0;
   }
+  if (scenario == "local-address-without-rport") {
+    assert(!tcp);
+    h.hooks.local_ip = [](void*, uint32_t) { return std::string("192.168.1.63"); };
+    h.manager.set_hooks(h.hooks);
+    const std::string old = "sip:esphome-office@192.168.1.63:5060;transport=udp";
+    const std::string current = "sip:esphome-office@192.168.1.64:5060;transport=udp";
+    assert(h.manager.set_account(c, 0));
+    h.manager.tick(0);
+    const auto initial = h.first.receive();
+    // RFC 3581 is optional: a registrar may return the bare rport unchanged.
+    h.feed(h.first, h.success(initial, 60), 1);
+    assert(h.manager.is_registered("office") && h.manager.account(0).observed_ip == 0);
+
+    h.hooks.local_ip = [](void*, uint32_t) { return std::string("192.168.1.64"); };
+    h.manager.set_hooks(h.hooks);
+    h.manager.connection_lost(0, 2);
+    h.manager.tick(2);
+    const auto retirement = h.first.receive();
+    assert(field(retirement, "Contact") == "<" + old + ">;expires=0");
+    assert(field(retirement, "Expires") == "0");
+    assert(!h.manager.is_registered("office"));
+    h.feed(h.first, response(retirement, 200), 3);
+    const auto publish = h.first.receive();
+    assert(field(publish, "Contact") == "<" + current + ">;expires=3600");
+    assert(field(publish, "Call-ID") == field(initial, "Call-ID"));
+    assert(field(publish, "CSeq") == "3 REGISTER");
+    h.feed(h.first, h.success(publish, 60), 4);
+    assert(h.manager.is_registered("office"));
+    assert(h.manager.account(0).contact == current);
+    assert(h.manager.account(0).retiring_contact.empty());
+    std::cout << "PASS local-address-without-rport udp\n";
+    return 0;
+  }
   if (scenario == "nat-contact-owner") {
     assert(!tcp);
     constexpr uint32_t vip = 0x0afffffe;

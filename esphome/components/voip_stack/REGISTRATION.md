@@ -85,6 +85,9 @@ preserves other devices, such as a desktop softphone with its own registration
 Call-ID. Authentication and retries retain the pending retirement until it is
 acknowledged. The new binding becomes usable only after its own acknowledgment.
 A local non-NAT registration does not require an extra exchange.
+If the registrar does not provide an observed mapping, an actual local address
+change still retires the old local Contact and publishes the current one;
+support for the optional `rport` extension is not required for this recovery.
 
 This preserves a DNS registrar and virtual service address through NAT without
 relaxing the registered-peer incoming check or enabling direct calls. The SIP

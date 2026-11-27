@@ -491,8 +491,6 @@ void SipRegistration::retry_(size_t i, uint16_t status, uint32_t now, uint32_t d
 }
 bool SipRegistration::begin_(size_t i, uint32_t now) {
   auto& a = this->accounts_[i];
-  const bool retiring = !a.retiring_contact.empty();
-  a.request_kind = retiring ? RequestKind::RETIREMENT : RequestKind::REGISTRATION;
   const auto& c = a.config;
   if (this->hooks_.send == nullptr || this->hooks_.resolve == nullptr || this->hooks_.local_ip == nullptr)
     return false;
@@ -518,6 +516,15 @@ bool SipRegistration::begin_(size_t i, uint32_t now) {
   const std::string contact = "sip:esphome-" + c.id + "@" + local_ip + ":" + std::to_string(this->hooks_.local_port) +
               ";transport=" + (c.tcp ? "tcp" : "udp");
   if (c.tcp || a.contact.empty()) a.contact = contact;
+  else if (a.desired && a.observed_ip == 0 && a.retiring_contact.empty() && a.contact != contact) {
+    // RFC 3581 is optional. Without an observed mapping our Contact belongs to
+    // the local interface and must follow its address, preserving the same
+    // targeted retirement used for a proven NAT mapping change.
+    a.retiring_contact = std::move(a.contact);
+    a.contact = contact;
+  }
+  const bool retiring = !a.retiring_contact.empty();
+  a.request_kind = retiring ? RequestKind::RETIREMENT : RequestKind::REGISTRATION;
   a.branch = "z9hG4bK" + this->token_();
   ++a.cseq;
   a.requested_expires = !retiring && a.desired ? c.expires : 0;
