@@ -117,9 +117,12 @@ bool private_ipv4(uint32_t ip) {
 }
 std::string observed_contact(const SipRegistration::Account& a) {
   char address[22];
-  std::snprintf(address, sizeof(address), "%u.%u.%u.%u:%u", a.observed_ip >> 24,
-                (a.observed_ip >> 16) & 255, (a.observed_ip >> 8) & 255, a.observed_ip & 255,
-                a.observed_port);
+  std::snprintf(address, sizeof(address), "%u.%u.%u.%u:%u",
+                static_cast<unsigned>(a.observed_ip >> 24),
+                static_cast<unsigned>((a.observed_ip >> 16) & 255),
+                static_cast<unsigned>((a.observed_ip >> 8) & 255),
+                static_cast<unsigned>(a.observed_ip & 255),
+                static_cast<unsigned>(a.observed_port));
   return "sip:esphome-" + a.config.id + "@" + address + ";transport=udp";
 }
 bool observe_mapping(SipRegistration::Account& a, std::string_view message) {
