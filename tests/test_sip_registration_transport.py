@@ -117,6 +117,13 @@ def test_registration_dialog_contracts(registration_transport_binary, scenario, 
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("operation", ["replace", "remove"])
+def test_contact_retirement_blocks_persistence_before_rejecting_account_changes(registration_transport_binary, operation):
+    result = subprocess.run([registration_transport_binary, "contact-retirement-" + operation, "udp"],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize("target", ["udp", "tcp"])
 def test_lost_account_connection_does_not_abort_a_valid_refer_candidate(registration_transport_binary, target):
     result = subprocess.run([registration_transport_binary, "refer-owner-loss-" + target, "tcp"], capture_output=True, text=True, timeout=10)

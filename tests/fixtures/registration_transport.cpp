@@ -287,6 +287,36 @@ int main(int argc, char **argv) {
     }
     s.close_tcp_flow_(flow); close(s.sip_socket_); return 0;
   }
+  if (scenario == "contact-retirement-replace" || scenario == "contact-retirement-remove") {
+    assert(!tcp);
+    auto &account = s.registration_.account(0);
+    const auto original = account.config;
+    const auto revision = account.config_revision;
+    assert(s.register_account("office", true));
+    s.registration_.tick(clock_ms);
+    const auto refresh = pick(pbx.drain(), "REGISTER");
+    auto answer = response(refresh, 200);
+    answer.replace(answer.find(";rport"), 6, ";received=198.51.100.1;rport=41000");
+    answer.insert(answer.find("Content-Length:"), "Contact: " + header_value(refresh, "Contact") + "\r\n");
+    pbx.send_to(s, answer);
+    const auto retirement = pick(pbx.drain(), "REGISTER");
+    assert(header_value(retirement, "Expires") == "0");
+    pbx.send_to(s, response(retirement, 503));
+    assert(!account.pending && !account.bound && account.scheduled && !account.retiring_contact.empty());
+    const auto retained = account.retiring_contact;
+    unsigned writes = 0;
+    auto commit = [](void *ctx, const std::string &, const SipAccountConfig *) {
+      ++*static_cast<unsigned *>(ctx); return true;
+    };
+    auto replacement = original;
+    replacement.password = "replacement-test-password";
+    if (scenario == "contact-retirement-replace") assert(!s.set_account(replacement, commit, &writes));
+    else assert(!s.remove_account("office", commit, &writes));
+    assert(writes == 0);
+    assert(account.config.same_settings(original) && account.config_revision == revision);
+    assert(account.retiring_contact == retained && account.scheduled);
+    close(s.sip_socket_); return 0;
+  }
   if (scenario == "reset-missing") {
     unsigned commits = 0;
     auto commit = [](void *p, const std::string &, const SipAccountConfig *) { ++*static_cast<unsigned *>(p); return true; };

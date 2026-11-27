@@ -125,6 +125,37 @@ int main(int argc,char**argv){
  if(scenario.rfind("watch-",0)==0){
   managed_subscription_handover(h, transport, original, saved, scenario);return 0;
  }
+ if(scenario=="contact-retirement-replace"||scenario=="contact-retirement-remove"){
+  assert(!h.first.tcp);
+  assert(transport.register_account("ha",true));transport.step(2);
+  const auto refresh=h.first.receive();
+  auto mapped=h.success(refresh);
+  mapped.replace(mapped.find(";rport"),6,";received=198.51.100.1;rport=41000");
+  std::thread map_worker([&]{feed(h.first,mapped,3);});map_worker.join();
+  const auto retirement=h.first.receive();assert(field(retirement,"Expires")=="0");
+  feed(h.first,response(retirement,503),4);
+  const auto retained=h.manager.account(0).retiring_contact;
+  assert(!retained.empty()&&!h.manager.account(0).bound&&!h.manager.account(0).pending);
+  auto replacement=original;replacement.username="updated-name";replacement.port=h.second.port;
+  if(scenario=="contact-retirement-replace")assert(transport.set_account(replacement,persist,&saved));
+  else assert(transport.remove_account("ha",persist,&saved));
+  transport.step(5);
+  assert(saved.count==0&&transport.managed_update_->active);
+  assert(h.manager.account(0).config_revision==revision&&h.manager.account(0).retiring_contact==retained);
+  assert(!h.manager.account(0).desired&&quiet(h.second));
+  const auto retry=h.first.receive();assert(field(retry,"Expires")=="0");
+  assert(field(retry,"Contact")==field(retirement,"Contact"));
+  feed(h.first,response(retry,200),6);transport.step(7);
+  assert(saved.count==1&&!transport.managed_update_->active);
+  if(scenario=="contact-retirement-remove"){
+   assert(saved.removed&&h.manager.find("ha")<0&&quiet(h.second));return 0;
+  }
+  assert(saved.config.username=="updated-name");
+  const auto replacement_request=h.second.receive();
+  assert(field(replacement_request,"From").find("updated-name@")!=std::string::npos);
+  feed(h.second,h.success(replacement_request),8);assert(h.manager.is_registered("ha"));
+  return 0;
+ }
  if(scenario=="noop"){
   transport.active_call=true;
   assert(transport.set_account(original,persist,&saved));transport.step(2);
@@ -212,4 +243,11 @@ int main(int argc,char**argv){
 @pytest.mark.parametrize("transport", ["udp", "tcp"])
 def test_managed_updates_are_idempotent_or_retire_one_old_generation(managed_binary, scenario, transport):
     result = subprocess.run([managed_binary, scenario, transport], capture_output=True, text=True, timeout=8)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("operation", ["replace", "remove"])
+def test_managed_changes_wait_for_contact_retirement_before_persisting(managed_binary, operation):
+    result = subprocess.run([managed_binary, "contact-retirement-" + operation, "udp"],
+                            capture_output=True, text=True, timeout=8)
     assert result.returncode == 0, result.stderr

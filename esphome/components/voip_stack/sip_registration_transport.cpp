@@ -450,7 +450,7 @@ bool SipTransport::set_account(const SipAccountConfig& config, AccountCommit com
   // registrar. A successful unregister leaves the same slot reusable.
   if (i >= 0) {
     const auto &account = this->registration_.account(i);
-    if (account.bound || account.pending || account.resolving) return false;
+    if (account.bound || account.pending || account.resolving || !account.retiring_contact.empty()) return false;
     // An unbound RETRY is only a scheduled future attempt. Its generation can
     // be retired below, including queued TCP/DNS state, after persistence has
     // accepted the replacement. Do not require a FAILED state which ordinary
@@ -490,7 +490,7 @@ bool SipTransport::remove_account(const std::string& id, AccountCommit commit, v
 #endif
   if (i < 0) return allow_missing && commit != nullptr && commit(context, id, nullptr);
   if (this->account_in_use_(i) || !this->registration_subscriptions_retired_(i) || this->registration_.account(i).pending ||
-      this->registration_.account(i).bound)
+      this->registration_.account(i).bound || !this->registration_.account(i).retiring_contact.empty())
     return false;
   if (commit != nullptr && !commit(context, id, nullptr)) return false;
 #ifdef USE_ESPHOME_VOIP_MWI
@@ -559,7 +559,7 @@ void SipTransport::pump_managed_account_(uint32_t now) {
         update.active = false;
         return;
       }
-      if (old.bound || old.pending) {
+      if (old.bound || old.pending || !old.retiring_contact.empty()) {
         update.retiring_revision = old.config_revision;
         update.restore_registration = old.desired;
         update.retiring = true;
