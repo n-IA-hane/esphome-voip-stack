@@ -79,6 +79,7 @@ public:
    assert(!running_.load() && probe::binds == 0 && !probe::factory_direct_calls.has_value());
    probe::factory_direct_calls = enabled;
  }
+ void set_calling_timeout(uint32_t milliseconds) { this->calling_timeout_ms_ = milliseconds; }
  void set_sip_signaling_transport(bool){}
  template<class...T>void set_audio_formats(T...){ }
  template<class...T>void set_audio_callback(T...){ }
@@ -98,6 +99,7 @@ public:
  int sip_task_tcb_{},rtp_task_tcb_{},sip_task_done_storage_{},rtp_task_done_storage_{},rtp_cleanup_done_storage_{};
  int*sip_task_stack_=nullptr,*rtp_task_stack_=nullptr;
  int sip_socket_=-1,sip_tcp_listener_socket_=-1,sip_wake_socket_=-1;uint16_t sip_port_,rtp_port_,sip_wake_port_{};
+ uint32_t calling_timeout_ms_{0};
  bool task_stacks_in_psram_;std::array<std::unique_ptr<int>,4>completed_refers_{};
  bool refer_signal_pending_=false;std::string logical_call_id_,logical_wire_id_;
 };
@@ -108,6 +110,7 @@ public:
 struct VoipStack{
  std::unique_ptr<SipTransport>transport_;uint16_t sip_port_=0,rtp_port_=0;size_t udp_max_payload_=2048;
  bool accept_direct_calls_{false};
+ uint32_t calling_timeout_ms_{0};
  bool task_stacks_in_psram_=true;enum class TransportType{UDP,TCP};TransportType protocol_=TransportType::TCP;
  int tx_audio_formats_=0,rx_audio_formats_=0;
  static void transport_audio_callback_(){}static void transport_sip_signal_callback_(){}
